@@ -1,0 +1,34 @@
+# The streamer's dev loop on a node: build and run it in place from the synced
+# repository. From the repository root:
+#   docker compose -f deploy/streamer/compose.dev.yaml up -d --build
+#   docker compose -f deploy/streamer/compose.dev.yaml exec dev cargo build --release -p cha-streamer
+#   docker compose -f deploy/streamer/compose.dev.yaml exec dev /target/release/cha-streamer \
+#     --run 'google-chrome-stable --no-sandbox --kiosk ... file:///src/spikes/s2-compositor/bench/page/live.html'
+# Signalling on TCP 4495, WebRTC on UDP 4496 (host network).
+name: cha-streamer-dev
+
+services:
+  dev:
+    build:
+      context: ../..
+      dockerfile: deploy/streamer/Dockerfile
+      target: dev
+    image: cha-streamer:dev
+    command: ["sleep", "infinity"]
+    network_mode: host
+    devices:
+      - nvidia.com/gpu=all
+    # Chrome needs more than Docker's default 64 MB of /dev/shm.
+    shm_size: 2gb
+    volumes:
+      - ../..:/src
+      - target:/target
+      - cargo-registry:/root/.cargo/registry
+      - cargo-git:/root/.cargo/git
+      - state:/state
+
+volumes:
+  target:
+  cargo-registry:
+  cargo-git:
+  state:

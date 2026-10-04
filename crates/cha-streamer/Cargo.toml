@@ -1,0 +1,36 @@
+[package]
+name = "cha-streamer"
+version = "0.1.0"
+description = "One environment's media engine: our headless Wayland compositor, zero-copy NVENC, WebRTC"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+# The engine is Linux-only (Wayland, GBM, EGL, NVENC); elsewhere the binary
+# only explains that.
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow = "1"
+axum = "0.8"
+bytes = "1"
+cha-nvenc = { path = "../cha-nvenc" }
+clap = { version = "4", features = ["derive", "env"] }
+serde_json = "1"
+str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Smithay's master (no release since 0.7.0 in June 2025), pinned.
+[target.'cfg(target_os = "linux")'.dependencies.smithay]
+git = "https://github.com/Smithay/smithay"
+rev = "118e34ffc9b99854a2230c4805e1f37dc9029edb"
+default-features = false
+features = ["backend_egl", "backend_gbm", "renderer_gl", "desktop", "wayland_frontend"]
+
+[dev-dependencies]
+serde_json = "1"

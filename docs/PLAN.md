@@ -1,6 +1,6 @@
 # Cha Portal: architecture and delivery plan
 
-*Draft v0.1, 2026-10-03. Based on the research in [`docs/research/`](research/README.md).*
+*Draft v0.2, 2026-10-03. Based on the research in [`docs/research/`](research/README.md). v0.2 moves Phase 1 onto our own engine, without Wolf ([ADR 0004](adr/0004-own-engine-no-wolf.md)).*
 
 Cha Portal (portal.cha.sh) is a self-hosted dashboard for "portaling" into remote environments: a Chrome instance, a KDE desktop, Steam Big Picture, or an external Moonlight-protocol host. It aims for Moonlight-class latency in the browser or in a thin native client. Environments run on **Cha Nodes**, docker compose stacks on GPU servers that enroll with the portal and are driven by it.
 
@@ -23,14 +23,25 @@ Cha Portal (portal.cha.sh) is a self-hosted dashboard for "portaling" into remot
   - **PyroWave** for wired LAN, decoded in the browser by a **WebGPU** port. Nobody ships this yet; it is our wedge.
   - **AV1/HEVC** with adaptive bitrate over WAN.
   - **H.264** for compatibility.
-- **Borrow aggressively**, all licenses compatible with AGPL:
-  - Wolf's MIT pieces: `wayland-display-core` compositor, `inputtino`, `fake-udev`, and the GoW container contract, so GoW images (Steam, etc.) run unmodified.
-  - `moonlight-common-rust` for Moonlight hosts.
-  - PyroWave and its WebGPU port.
-  - Design patterns from Punktfunk (WebTransport certs, shared core) and Nestri (QUIC media-transport rules).
-- **Bootstrap with Wolf.**
-  - **MVP:** run Wolf unmodified on nodes and bridge its Moonlight stream to the browser through `cha-gateway`. Steam in the browser lands early, and the gateway is the same component that later serves external Sunshine/Vibepollo hosts.
-  - **Next phase:** replace Wolf with `cha-streamer` as the default engine. Wolf stays as an optional "Moonlight compatibility" sidecar.
+- **Own the engine** ([ADR 0004](adr/0004-own-engine-no-wolf.md)). We write every piece on the hot path, and every piece small enough to own. A library comes in only when rebuilding it would be a project of its own *and* it is already lean. All licenses are compatible with AGPL.
+  - **Ours:**
+    - the compositor (on Smithay);
+    - the NVENC/CUDA binding (no GStreamer or FFmpeg on the node);
+    - the audio server;
+    - virtual gamepads and their hotplug;
+    - the Docker API client;
+    - the environment images;
+    - `cha-stream/1`;
+    - the WebGPU PyroWave decoder.
+  - **Borrowed:**
+    - Smithay (the Wayland protocol toolkit);
+    - str0m (WebRTC) and quinn (QUIC);
+    - libopus;
+    - libpyrowave (the encoder, pinned);
+    - moonlight-common-rust (external Moonlight hosts only);
+    - Docker Engine.
+  - **Design patterns** from Punktfunk (WebTransport certs, a shared core) and Nestri (QUIC media-transport rules).
+- **No Wolf.** Phase 0 already built a working minimal engine (S2), so Phase 1 ships on `cha-streamer` directly. `cha-gateway` only bridges external Moonlight hosts (Sunshine, Apollo, Vibepollo, Polaris), in Phase 3.
 - **Stack:**
   - **Rust** for every backend and native component, with one shared protocol crate.
   - **Vue 3 + TypeScript** for the portal.
@@ -53,7 +64,8 @@ Cha Portal (portal.cha.sh) is a self-hosted dashboard for "portaling" into remot
 | Backend language | **Rust** (control plane, node agent, streamer, gateway, native client) | Recommendation, approved |
 | Frontend | **Vue 3 + TS + Vite** | Recommendation, approved |
 | Node OS | Linux x86_64, Docker Engine (rootful) with NVIDIA CDI or `/dev/dri` | Assumption |
-| GPUs | All three vendors from the start: NVIDIA (NVENC, CUDA/Vulkan import), AMD and Intel (VA-API, Vulkan Video). PyroWave needs only Vulkan compute. | User hardware + assumption |
+| Build vs borrow | **Our own implementation of everything**, unless rebuilding it would be too large a project; only the most efficient pieces. No Wolf, no Games-on-Whales images, no GStreamer/FFmpeg in the node's media path. Details in [ADR 0004](adr/0004-own-engine-no-wolf.md). | User (2026-10-03) |
+| GPUs | **NVIDIA first** (NVENC through our own binding, CUDA import of the compositor's buffers). AMD and Intel (VA-API or Vulkan Video) come in a later phase. PyroWave needs only Vulkan compute. | User (2026-10-03) |
 | Windows/macOS | Not node hosts. Windows machines join as **external endpoints** (Vibepollo/Sunshine in guest or on bare metal). | Assumption |
 | Isolation | Plain containers, never `--privileged`, per-template security profiles. MicroVMs later. | Fits homelab scope |
 
@@ -80,8 +92,7 @@ flowchart LR
     A["cha-node agent<br/>(docker.sock, volumes, certs,<br/>inventory, reconcile)"]
     S1["cha-streamer (per session)<br/>compositor + capture + encode<br/>+ input + audio + transport"]
     E1["env container<br/>(Steam / KDE / Chrome …)<br/>Wayland client of streamer"]
-    G["cha-gateway<br/>GameStream ⇄ WebRTC / cha-stream/1"]
-    W["Wolf (optional sidecar)<br/>Moonlight host"]
+    G["cha-gateway (Phase 3)<br/>GameStream ⇄ WebRTC / cha-stream/1"]
   end
 
   X["External hosts<br/>Sunshine / Apollo / Vibepollo /<br/>Polaris / Windows VMs"]
@@ -92,7 +103,6 @@ flowchart LR
   N -- "cha-stream/1 over QUIC" --> S1
   S1 --- E1
   P -- "WebRTC / WebTransport" --> G
-  G -- "GameStream (LAN)" --> W
   G -- "GameStream (LAN)" --> X
   P -. "TURN (UDP/TCP/TLS 443)" .-> T
   T -. "relayed" .-> S1
@@ -103,9 +113,9 @@ flowchart LR
 | Component | Responsibility | Key deps (borrowed) |
 |---|---|---|
 | **`cha-control`** | Users, passkeys/OIDC, RBAC, node registry and enrollment, catalog/templates, environment lifecycle, placement, session brokering (WebRTC SDP relay to the node, WebTransport candidates + cert hashes, media tokens, short-lived TURN credentials), share links, audit log, serving the SPA | axum, sqlx (SQLite → Postgres later), webauthn-rs, openidconnect, utoipa (OpenAPI → TS client). coturn as a sidecar. |
-| **`cha-node`** | Enrollment, one outbound WSS channel (yamux + RPC), GPU/encoder/Vulkan inventory, desired-state reconciliation, image pulls, volumes (`dir`/`zfs`/`btrfs`), streamer and gateway process lifecycle, WebTransport cert rotation, Wolf adapter, `cha doctor` preflight | bollard, yamux, nvml-wrapper, ash (Vulkan probe) |
-| **`cha-streamer`** | One per running environment. Headless Wayland compositor → zero-copy DMA-BUF capture → encoder fan-out (PyroWave / HW codecs) → **WebRTC endpoint (ICE-lite) + WebTransport/QUIC endpoint**. Keyboard and mouse injected into the compositor, gamepads via inputtino plus hotplug into the env container, audio capture → Opus. Multi-viewer producer/consumer. | `wayland-display-core` (Wolf, MIT) or `pixelflux` (MPL), inputtino, pyrowave, gstreamer-rs (nvcodec/va/qsv/vulkan), **str0m** (WebRTC, sans-IO, TWCC/BWE, playout-delay), wtransport/quinn, opus |
-| **`cha-gateway`** | Bridges GameStream hosts (local Wolf, external Sunshine/Apollo/Vibepollo/Polaris) to the same WebRTC/WebTransport endpoints. Passes H.264/HEVC/AV1 **and PyroWave** through, no transcoding. Rewrites H.264/HEVC VUI to `max_num_reorder_frames=0` when the host doesn't, so hardware decoders don't buffer. Translates input. Handles pairing. | moonlight-common-rust (GPL-3), the moonlight-web-stream v3 design (WebRTC passthrough) |
+| **`cha-node`** | Enrollment, one outbound WSS channel (yamux + RPC), GPU/encoder/Vulkan inventory, desired-state reconciliation, image pulls, volumes (`dir`/`zfs`/`btrfs`), streamer process lifecycle (the agent supervises; it is never in the media path), WebTransport cert rotation, `cha doctor` preflight | **Own** thin Docker Engine API client over the socket; yamux; ash (Vulkan probe) |
+| **`cha-streamer`** | One per running environment. **Our own** headless Wayland compositor (on Smithay), running at 2–4× the encode rate → zero-copy into the encoders (PyroWave / **our own** NVENC binding) → **WebRTC endpoint (ICE-lite) + WebTransport/QUIC endpoint**. Keyboard and mouse go straight into the compositor's seat. Gamepads are **our own** uinput/uhid devices, hotplugged into the env container. Audio comes from **our own** minimal PulseAudio-protocol server → Opus. Multi-viewer producer/consumer. | Smithay (MIT), NVENC + CUDA driver API (loaded at runtime), libpyrowave, **str0m** (WebRTC, sans-IO, TWCC/BWE, playout-delay), quinn, libopus |
+| **`cha-gateway`** (Phase 3) | Bridges **external** GameStream hosts (Sunshine/Apollo/Vibepollo/Polaris) to the same WebRTC/WebTransport endpoints. Passes H.264/HEVC/AV1 **and PyroWave** through, no transcoding. Rewrites H.264/HEVC VUI to `max_num_reorder_frames=0` when the host doesn't, so hardware decoders don't buffer. Translates input. Handles pairing. Proven in S3. | moonlight-common-rust (GPL-3), the moonlight-web-stream v3 design (WebRTC passthrough) |
 | **`cha-proto`** | Sans-IO protocol core: message schema, datagram framing, fragmentation, FEC, reassembly, jitter/deadline logic, congestion-control feedback, input encoding. Compiled to wasm for the browser. | Leopard-RS-class FEC crate, prost/serde |
 | **Portal SPA** | Dashboard, catalog, launch/connect, node admin, session overlay UI | Vue 3, Vue Router, Pinia, TanStack Query, a Tailwind-based component kit |
 | **`@cha/player`** | Framework-agnostic TS player: transports, decoders, renderer, audio, input, stats overlay. Runs the hot path in Workers. | `cha-proto` wasm, `@cha/pyrowave-webgpu` |
@@ -127,7 +137,7 @@ sequenceDiagram
   C->>A: desired state: env X on node (over WSS RPC)
   A->>A: pull image (digest), prepare volume, allocate GPU + UDP port
   A->>S: start streamer (compositor up, Wayland socket ready)
-  A->>E: start env container (GoW contract: WAYLAND_DISPLAY, PULSE_*, devices, /home)
+  A->>E: start env container (Cha contract: WAYLAND_DISPLAY, PULSE_SERVER, render node, /home)
   A-->>C: env Running {addrs: LAN/overlay/public, WT cert hash signed by node key}
   B->>C: POST /environments/X/connect {decode caps, WebGPU caps, display mode}
   C-->>B: {mediaToken (Ed25519, 60 s), TURN creds, WT candidates + certHashes, codec policy}
@@ -145,7 +155,7 @@ sequenceDiagram
   B-->>S: input / control msgs / receiver reports
 ```
 
-**Environments outlive connections** (Wolf's "lobby" semantics). Disconnecting leaves the environment running until its idle timeout. Reconnecting gets a fresh keyframe.
+**Environments outlive connections.** Disconnecting leaves the environment running until its idle timeout. Reconnecting gets a fresh keyframe.
 
 ---
 
@@ -220,11 +230,11 @@ Rules carried in from the research (Nestri `media-transport.md`, Punktfunk, Vibe
    - **Reach**: Chrome on Windows/macOS/ChromeOS, plus Chrome on Linux with Intel Gen12+ or NVIDIA on Wayland (AMD needs a flag); Safari 26+ (over the DataChannel path, because WebKit's WebTransport is broken); Firefox on Windows and Apple Silicon. **Firefox on Linux has no WebGPU**, so those users get Tier M/W or the native client.
 4. **Native decode.** libpyrowave on Vulkan (Linux/Windows/Android) and its Metal port (macOS/iOS).
 5. **Interop.** `cha-gateway` implements **Vibepollo's PyroWave-over-GameStream contract** (capability bits, `bitStreamFormat=3`, record framing, critical-band FEC). A Vibepollo or Polaris host on the LAN can then be played in the **browser** with PyroWave, which nobody offers today.
-6. **Upstream relations.** Track the Wolf PR #517 GStreamer element and ask Themaister for a bitstream version field. Coordinate capability-bit registration with Nonary and LizardByte.
+6. **Upstream relations.** Ask Themaister for a bitstream version field. Coordinate capability-bit registration with Nonary and LizardByte.
 
 ### 3.4 Multi-viewer and sharing
 
-- **Producer/consumer** (Wolf's interpipe pattern). There is one compositor/capture producer per environment. Each viewer gets its own encoder instance, so viewers can differ in codec, tier and resolution. Viewers with identical parameters share one encoder.
+- **Producer/consumer.** There is one compositor/capture producer per environment. Each viewer gets its own encoder instance, so viewers can differ in codec, tier and resolution. Viewers with identical parameters share one encoder.
 - **Roles:**
   - `owner`
   - `controller` (keyboard/mouse; one at a time, Neko-style request/give/take)
@@ -238,9 +248,9 @@ Rules carried in from the research (Nestri `media-transport.md`, Punktfunk, Vibe
 - **Keyboard and mouse** go straight into the streamer's compositor as Wayland seat events, or via gamescope's EIS socket for games. No uinput is needed.
   - Relative mode (pointer lock, raw) suits games; absolute mode suits desktops.
   - Keys are sent by `KeyboardEvent.code` with a layout hint, and IME text is committed separately.
-- **Gamepads.** In the browser, Gamepad API state snapshots; optionally WebHID for DualSense gyro, touchpad and adaptive triggers. On the node, `inputtino` creates the virtual pad (Xbox/DualSense/Switch) and **hotplugs it into the env container** with Wolf's `mknod` + `fake-udev` recipe. Host udev rules (installed by `cha doctor`) keep the virtual pads away from the host seat.
+- **Gamepads.** In the browser, Gamepad API state snapshots; optionally WebHID for DualSense gyro, touchpad and adaptive triggers. On the node, the streamer creates **its own virtual pads**: uinput for Xbox-style pads, uhid for DualSense (so games get its HID reports). It **hotplugs them into the env container**: it creates the device nodes in the container's private `/dev/input`, writes their udev database entries in the container's private `/run/udev`, and sends the udev "add" event on netlink inside the container's network namespace, where libudev (SDL, Steam) listens. Host udev rules (installed by `cha doctor`) keep the virtual pads away from the host seat.
 - **Cursor.** In desktop mode the cursor is rendered client-side from cursor-shape and position messages, so it feels local. In game mode it is composited into the video.
-- **Audio.** Per-session PipeWire/Pulse null sink → Opus.
+- **Audio.** The streamer runs **its own minimal PulseAudio-protocol server** on a socket in the environment's runtime dir (`PULSE_SERVER`). Apps (Chrome, Firefox, SDL, Steam) play into it, and the samples go straight to Opus. There is no sound daemon in the environment and no extra buffering. Environments that need PipeWire itself (KDE) run it with its Pulse sink pointed at ours.
   - On WebRTC it is a native RTP audio track.
   - On QUIC it goes as datagrams with RED, played client side via `AudioDecoder` + an `AudioWorklet` ring buffer (about 20–40 ms target).
   - Mic uplink comes later via a virtual source.
@@ -271,27 +281,29 @@ These are targets to validate in Phase 0, not measured facts.
 
 | Class | How it runs | Phase |
 |---|---|---|
-| **Gaming (Steam & co.)** | GoW Steam image, unmodified, via the GoW contract. Steam Big Picture under nested gamescope/sway inside our compositor. Also RetroArch, Lutris, Heroic, ES-DE, etc. | MVP via Wolf → Phase 2 on `cha-streamer` |
-| **Browser** | Chrome/Chromium with `--ozone-platform=wayland` as a Wayland client. Neko-derived enterprise policies (kiosk, downloads, extensions). Custom seccomp so Chrome's sandbox stays on (no `--no-sandbox`). | Phase 2 (Firefox via GoW in MVP) |
-| **Full desktop** | KDE Plasma: nested `kwin_wayland --xwayland` under `dbus-run-session`, PipeWire + WirePlumber, no systemd (linuxserver webtop recipe). XFCE via GoW. Prototype `kwin_wayland --virtual` + libei later. | XFCE MVP via Wolf → KDE Phase 2 |
-| **External GameStream host** | Sunshine / Apollo / Vibepollo / Polaris / Wolf on another machine. `cha-gateway` runs on a Cha Node on the same LAN. | Phase 3 (Wolf-local in MVP) |
+| **Test pattern** | Our own Wayland client: a moving pattern, frame counter, frame-ID strip and input flash (the §3.6 latency environment) | Phase 1 |
+| **Browser** | Chrome with `--ozone-platform=wayland` as a Wayland client; Firefox the same way. Neko-derived enterprise policies (kiosk, downloads, extensions). Custom seccomp so Chrome's sandbox stays on (no `--no-sandbox`). Our own images. | Phase 1 |
+| **Full desktop** | XFCE in rootful Xwayland (one fullscreen X server inside our compositor, so we need no X11 window manager of our own). KDE Plasma: nested `kwin_wayland --xwayland` under `dbus-run-session`, PipeWire + WirePlumber, no systemd (linuxserver webtop recipe). Prototype `kwin_wayland --virtual` + libei later. | XFCE Phase 1 → KDE Phase 2 |
+| **Gaming (Steam & co.)** | Our own Steam image. Steam Big Picture under nested gamescope inside our compositor. Also RetroArch, Lutris, Heroic, ES-DE, etc. | Phase 2 (first) |
+| **External GameStream host** | Sunshine / Apollo / Vibepollo / Polaris / Wolf on another machine. `cha-gateway` runs on a Cha Node on the same LAN. | Phase 3 |
 | **Compat web desktops** | Existing Selkies/webtop, KasmVNC, Neko containers launched by the node; their web client is proxied behind portal auth | Later (cheap win) |
 | **Windows VM** | libvirt/QEMU with GPU passthrough or Intel SR-IOV. Vibepollo in the guest, treated as an external GameStream host. | Later |
 | **RDP/VNC/SSH** | Bundled `guacd` | Later |
 
 ### 4.2 Container contract and security profiles
 
-- **GoW container contract**, implemented exactly so GoW images run unmodified:
-  - Variables: `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` with a socket bind mount, `PULSE_SERVER/PULSE_SINK/PULSE_SOURCE`, `GAMESCOPE_WIDTH/HEIGHT/REFRESH`, `PUID/PGID`.
-  - Mounts: `/home/retro` volume and `fake-udev` with a private `/run/udev`.
+- **Cha container contract** (our own images, in `images/`):
+  - Variables: `XDG_RUNTIME_DIR` (a per-environment dir shared with the streamer), `WAYLAND_DISPLAY`, `PULSE_SERVER` (the streamer's socket in that dir), `CHA_WIDTH/HEIGHT/REFRESH`, `CHA_UID/GID`.
+  - Mounts: the runtime dir; a home volume at `/home/cha`; a private `/dev/input` and `/run/udev` that the streamer fills when pads are plugged in.
   - Devices: GPU render node or NVIDIA CDI, plus device-cgroup rules for the `input`/`hidraw` majors (read from `/proc/devices`).
-  - Cha-native images use the same contract plus Cha labels.
+  - Apps run as an unprivileged user. The image's entrypoint waits for the Wayland socket, then starts the app.
+  - Image labels carry the catalog metadata (class, security profile, GPU needs).
 - **Security profiles**, chosen per template and never `--privileged`:
   - `standard`: render node, default seccomp, no extra caps.
   - `browser`: `standard` plus a seccomp profile that lets Chrome's sandbox create user namespaces.
-  - `steam`: user namespaces for pressure-vessel via a **custom seccomp/AppArmor profile**. Fallback is Wolf's `SYS_ADMIN` + unconfined + patched bwrap, chosen after the Phase 0 spike.
+  - `steam`: user namespaces for pressure-vessel via a **custom seccomp/AppArmor profile**. Fallback is `SYS_ADMIN` + unconfined + a patched bwrap, chosen after the S5 spike.
   - `gamepad`: device-cgroup rules for hotplugged pads (needs a rootful runtime).
-- Only `cha-node` is root-equivalent (docker.sock, `/dev/uinput`, `/dev/uhid`, host udev rules). Keep it small and audited.
+- Only `cha-node` is root-equivalent (docker.sock, hotplugging devices into environments, host udev rules). Keep it small and audited. Streamers get the GPU, `/dev/uinput` and `/dev/uhid`, and nothing else privileged.
 
 ### 4.3 Catalog
 
@@ -301,13 +313,13 @@ These are targets to validate in Phase 0, not measured facts.
   - persistence policy
   - default mode
   - pool size
-- **Importers** for the Kasm registry, Wolf `config.toml` apps and linuxserver/Selkies images.
+- **Importers** for the Kasm registry and linuxserver/Selkies images (as compat environments).
 - The node **pre-pulls** images flagged as pinned for that node.
 
 ### 4.4 Persistence
 
 - **Ephemeral:** the container and an anonymous volume, destroyed on stop or idle timeout. Optionally pre-warmed pools later (Kasm "staging").
-- **Persistent:** a **home volume per (user, template)**, mounted at the image's home (e.g. `/home/retro`). The container is *recreated from the image* on every start (Kasm model). This means:
+- **Persistent:** a **home volume per (user, template)**, mounted at the image's home (`/home/cha`). The container is *recreated from the image* on every start (Kasm model). This means:
   - image upgrades are free;
   - a "Reset to template" button just swaps the volume.
 - **Volume drivers:** `dir` by default; `zfs` and `btrfs` give instant clones of golden homes, snapshots, and `send/recv` migration between nodes. Backups via restic/kopia to S3 come later.
@@ -460,7 +472,7 @@ These are targets to validate in Phase 0, not measured facts.
 - `cha doctor` (node) and a "connection test" page in the browser (decode caps, WebGPU features, bandwidth/RTT to each node).
 - Deploy artifacts:
   - `deploy/portal/compose.yaml` (`cha-control`, with an optional `turn` profile for coturn)
-  - `deploy/node/compose.yaml` (with profiles: `wolf`, `gateway`)
+  - `deploy/node/compose.yaml` (the agent; it starts streamers and environments itself. A `gateway` profile comes in Phase 3)
   - `deploy/allinone/compose.yaml` (portal + node on one box, the most common homelab setup)
 
 ---
@@ -469,8 +481,8 @@ These are targets to validate in Phase 0, not measured facts.
 
 **Why Rust everywhere on the backend.**
 - One language for every component that speaks `cha-stream/1`, with a shared protocol crate (also compiled to wasm for the browser).
-- First-class QUIC (quinn, wtransport, iroh), a sans-IO WebRTC stack (str0m), Smithay (compositor), inputtino and PyroWave bindings already exist in Rust.
-- moonlight-common-rust is Rust.
+- The foundations we borrow are Rust already: QUIC (quinn), a sans-IO WebRTC stack (str0m), the Wayland compositor toolkit (Smithay), and moonlight-common-rust.
+- The kernel and driver APIs we own (uinput, uhid, netlink, NVENC, CUDA) are plain C ABIs, easy to call from Rust without a framework.
 
 Go would be the credible alternative for the control plane only (tsnet/Headscale embedding, pion, Coder reuse). Its cost is a split protocol implementation.
 
@@ -481,8 +493,10 @@ portal.cha.sh/
 │  ├─ cha-proto/                 # Sans-IO wire protocol, FEC, CC feedback (→ wasm)
 │  ├─ cha-control/               # portal API server
 │  ├─ cha-node/                  # node agent + `cha doctor`
-│  ├─ cha-streamer/              # per-session media engine
-│  ├─ cha-gateway/               # GameStream ⇄ cha-stream/1
+│  ├─ cha-wire/                  # node ⇄ portal messages
+│  ├─ cha-streamer/              # per-session media engine (our compositor)
+│  ├─ cha-nvenc/                 # our NVENC + CUDA binding (loaded at runtime)
+│  ├─ cha-gateway/               # external GameStream hosts ⇄ cha-stream/1 (Phase 3)
 │  ├─ cha-player/                # native thin client
 │  └─ cha-pyrowave/              # PyroWave FFI (pinned upstream)
 ├─ proto/                        # protobuf: node RPC + control messages
@@ -491,7 +505,7 @@ portal.cha.sh/
 │  ├─ packages/player/           # @cha/player
 │  ├─ packages/pyrowave-webgpu/  # WGSL decoder (fork)
 │  └─ packages/api-client/       # generated from OpenAPI
-├─ images/                       # Cha environment images (chrome, kde, …) + catalog JSON
+├─ images/                       # our environment images (test pattern, chrome, firefox, xfce, …) + catalog JSON
 ├─ deploy/                       # compose files
 └─ docs/
 ```
@@ -507,8 +521,8 @@ Each phase has exit criteria. Sizes are relative (S/M/L/XL), not calendar promis
 | Spike | Question | Gate / output |
 |---|---|---|
 | **S1 Browser PyroWave** | On the **baseline (Chrome 154, M4 MacBook Pro, wired 1 GbE)**, can the browser *receive* PyroWave-shaped traffic for **1440p60** (≈ 300 Mbit/s 4:2:0, ≈ 600 Mbit/s 4:4:4 desk-distance) over (a) WebTransport datagrams (wtransport/quinn server) and (b) WebRTC unreliable DataChannels (str0m server)? Can it decode PyroWave in WebGPU straight to a texture and present within about 1 frame? Firefox and Safari are measured as secondary data points, including whether `wtransport` completes Safari's handshake. | **Pass** (1440p60 4:4:4 at ~590 Mbit/s sustained in Chrome, < 0.5% loss, ≥ 99.5% frames complete, frame spread p99 ≤ wire serialization time + 3 ms, one-way latency p99 ≤ wire time + 6 ms, decode < 1 ms, added present latency ≤ 1 frame; harness and criteria in `spikes/s1-browser-pyrowave/`) → browser PyroWave in Phase 2 on whichever transports passed. **Partial** (passes at 4:2:0 ~300 Mbit/s only) → ship 4:2:0 in the browser and 4:4:4 native. **Fail** → native client moves ahead of Phase 2. |
-| **S2 Compositor** *(milestones 1–3 done 2026-10-03; AMD/Intel deferred to a later phase)* | `wayland-display-core` vs `pixelflux`. In a container on NVIDIA and AMD/Intel: nest a GoW Steam image (gamescope), nested KWin (KDE) and Chrome; zero-copy DMA-BUF → NVENC/VA-API and → PyroWave; runtime resize. | Pick the compositor core; list the upstream patches we need. **M1** (`spikes/s2-compositor/`): gst-wayland-display runs headless on NVIDIA through CDI with Google Chrome as its client. Chrome renders on the GPU at 60 fps. The zero-copy CUDA path costs 1.7–1.8 ms compositor → encoded (NVENC alone is ~1.55 ms) at 1–3% CPU; the copy path costs +1 ms and ~10× the CPU. **M2** (`s2-streamer`, a minimal `cha-streamer`): Chrome in the compositor → NVENC → str0m WebRTC → Chrome on the Mac, with keyboard and mouse back into the compositor. About 6 ms from the node's compositor to the Mac's compositor (p50; ~10 ms p95) at 1440p60 on 1 GbE; first frame 14–17 ms after subscribing. **Input → screen:** Chrome reacts ~4.5 compositor frames after a click (~76 ms at 60 fps); Chrome flags don't help. Running the compositor at 240 fps and encoding every 4th frame cuts click → forwarded frame to ~24 ms; through the stream, click → browser compositor goes from 77–83 ms to 34–35 ms. **`cha-streamer` runs its compositor at 2–4× the encode rate.** **M3 resize:** the output resizes mid-stream in 30–48 ms; the stream skips about one frame. This needed a gst-wayland-display fix (unbounded `max_size` windows collapsed on renegotiation; patch in the spike, to send upstream). Later: AMD/Intel GPUs, pixelflux comparison |
-| **S3 Gateway** *(done 2026-10-03)* | moonlight-common-rust ↔ local Wolf (auto-pair through Wolf's API) → H.264/HEVC/AV1 passthrough → **WebRTC RTP track (str0m vs webrtc-rs; check HEVC/AV1 packetizer support)** with playout-delay 0 → browser; input and gamepad back over DataChannels. Check whether Wolf's bitstream needs the VUI reorder rewrite. | MVP path works: Wolf → moonlight-common-rust → str0m → Chrome with no transcoding. Gateway hop 1–3 µs (p99 ≤ 22 µs); Wolf HEVC reaches the compositor 5.3 ms after the gateway sends it. **str0m** is the WebRTC library. Wolf's all-intra H.264 decodes ~4× slower in Chrome, so Wolf gets P-frame H.264. AV1 needs moonlight-common-rust upstream work. VUI rewrite not needed on the WebRTC path. See `spikes/s3-gateway/README.md` |
+| **S2 Compositor** *(milestones 1–3 done 2026-10-03; AMD/Intel deferred to a later phase)* | `wayland-display-core` vs `pixelflux`. In a container on NVIDIA and AMD/Intel: nest a GoW Steam image (gamescope), nested KWin (KDE) and Chrome; zero-copy DMA-BUF → NVENC/VA-API and → PyroWave; runtime resize. | Pick the compositor core; list the upstream patches we need. **M1** (`spikes/s2-compositor/`): gst-wayland-display runs headless on NVIDIA through CDI with Google Chrome as its client. Chrome renders on the GPU at 60 fps. The zero-copy CUDA path costs 1.7–1.8 ms compositor → encoded (NVENC alone is ~1.55 ms) at 1–3% CPU; the copy path costs +1 ms and ~10× the CPU. **M2** (`s2-streamer`, a minimal `cha-streamer`): Chrome in the compositor → NVENC → str0m WebRTC → Chrome on the Mac, with keyboard and mouse back into the compositor. About 6 ms from the node's compositor to the Mac's compositor (p50; ~10 ms p95) at 1440p60 on 1 GbE; first frame 14–17 ms after subscribing. **Input → screen:** Chrome reacts ~4.5 compositor frames after a click (~76 ms at 60 fps); Chrome flags don't help. Running the compositor at 240 fps and encoding every 4th frame cuts click → forwarded frame to ~24 ms; through the stream, click → browser compositor goes from 77–83 ms to 34–35 ms. **`cha-streamer` runs its compositor at 2–4× the encode rate.** **M3 resize:** the output resizes mid-stream in 30–48 ms; the stream skips about one frame. This needed a gst-wayland-display fix (unbounded `max_size` windows collapsed on renegotiation; patch in the spike, to send upstream). **Decided (ADR 0004):** neither candidate; `cha-streamer` gets our own compositor on Smithay, and these numbers are the bar it must match. Later: AMD/Intel GPUs |
+| **S3 Gateway** *(done 2026-10-03)* | moonlight-common-rust ↔ local Wolf (auto-pair through Wolf's API) → H.264/HEVC/AV1 passthrough → **WebRTC RTP track (str0m vs webrtc-rs; check HEVC/AV1 packetizer support)** with playout-delay 0 → browser; input and gamepad back over DataChannels. Check whether Wolf's bitstream needs the VUI reorder rewrite. | MVP path works: Wolf → moonlight-common-rust → str0m → Chrome with no transcoding. Gateway hop 1–3 µs (p99 ≤ 22 µs); Wolf HEVC reaches the compositor 5.3 ms after the gateway sends it. **str0m** is the WebRTC library. Wolf's all-intra H.264 decodes ~4× slower in Chrome, so Wolf gets P-frame H.264. AV1 needs moonlight-common-rust upstream work. VUI rewrite not needed on the WebRTC path. See `spikes/s3-gateway/README.md`. Since ADR 0004 the gateway serves external hosts only (Phase 3) |
 | **S4 Latency harness** | Frame-ID / timestamp plumbing, test-pattern environment, photodiode or high-speed camera method | A repeatable `latency-bench` used in CI-like manual runs |
 | **S1c Codec compare** *(done 2026-10-03)* | Same content and transport: PyroWave (WebGPU) vs H.264/HEVC/AV1 (WebCodecs, hardware), timed from send to on-screen on the baseline LAN | Hardware codecs 6.9–8.7 ms vs PyroWave 4:2:0 11.4 ms (p50, before encode). Sets the default tier; see §3.2 |
 | **S1d Present path** *(done 2026-10-03)* | Hardware HEVC/AV1 to screen in Chrome: WebCodecs + WebGPU external texture (S1c: ~1.4 ms to draw, then ~3–4 ms to the rendering update) vs `VideoTrackGenerator` → `<video>` vs WebRTC RTP track with playout-delay 0 | Track generator → `<video>` is fastest: 2.7–3.4 ms send → compositor (p50) vs WebRTC 5.4–6.4 and WebGPU external texture 7.3–8.9. WebRTC stays the Phase 1 default (it works everywhere); WebTransport + `<video>` is the Chromium fast path. See §6.1 (render order) and `spikes/s1c-codec-compare/README.md` |
@@ -516,59 +530,64 @@ Each phase has exit criteria. Sizes are relative (S/M/L/XL), not calendar promis
 | **S5 Steam profile** | Minimal seccomp/AppArmor for Steam + pressure-vessel (incl. SteamRT3), vs Wolf's unconfined recipe | The `steam` security profile |
 | **Scaffolding** | Repo, workspaces, CI (fmt/clippy/test, wasm build), license, ADR folder | — |
 
-### Phase 1: MVP "Portal into Wolf" (L)
+### Phase 1: MVP on our own engine (XL)
 
-Delivers **features 1, 2, 4 and part of 3**.
+Delivers **features 1 and 2, Chrome/Firefox/XFCE for feature 3, and the browser half of feature 6**.
 
-- `cha-control`: local accounts plus passkeys, nodes plus enrollment, catalog seeded from GoW apps, **ephemeral** environments, placement v0 (first fit with GPU), connect/broker, media tokens, audit log.
-- `cha-node`: enrollment, WSS channel, inventory, reconcile, **Wolf adapter** (unix-socket API: apps, sessions, lobbies, auto-pairing; owns Wolf's encoder config, e.g. P-frame H.264 per S3), cert rotation, `cha doctor` v0.
-- `cha-gateway`: GameStream → **WebRTC** passthrough for H.264/HEVC (AV1 once moonlight-common-rust negotiates it) plus Opus (playout-delay 0, NACK, VUI rewrite), with keyboard, mouse and gamepad input back over DataChannels. Bitrate is chosen at launch from the probe, because Moonlight's bitrate is fixed per session.
-- `@cha/player`: WebRTC transport, pointer/keyboard lock (both APIs), Gamepad API, stats HUD (`getStats()` + `requestVideoFrameCallback`); WebSocket + WebCodecs fallback.
+- `cha-control`: local accounts plus passkeys, nodes plus enrollment, catalog from our images, **ephemeral** environments, placement v0 (first fit with GPU), connect/broker, media tokens, audit log.
+- `cha-node`: enrollment, WSS channel, inventory, reconcile, our Docker API client, streamer supervision, `cha doctor` v0.
+- `cha-streamer` v1:
+  - **our compositor** on Smithay: xdg-shell, linux-dmabuf, a seat with relative pointer and pointer constraints, rootful Xwayland for X11 apps; it runs at 2–4× the encode rate (S2) and resizes at runtime;
+  - **our NVENC binding**: H.264/HEVC/AV1, zero-copy from the compositor, low-latency config, VUI `max_num_reorder_frames=0`;
+  - a str0m **WebRTC** endpoint (playout-delay 0, NACK), with keyboard, mouse and gamepad input back over DataChannels. Bitrate is set at connect from the probe; ABR comes in Phase 2;
+  - **our Pulse server** → Opus, and **our virtual pads** with hotplug.
+- Images: test pattern, Chrome, Firefox, XFCE.
+- `@cha/player`: WebRTC transport, pointer/keyboard lock (both APIs), Gamepad API, stats HUD (`getStats()` + `requestVideoFrameCallback`), the S2 click → screen probe built in; WebSocket + WebCodecs fallback.
 - Remote access documented via Tailscale (overlay candidates plus the portal on `*.ts.net`). An optional coturn profile with TURN-TLS on 443 and portal-minted credentials.
 - Portal SPA: dashboard (catalog, my environments, launch/connect/stop), node admin, fullscreen session view with overlay.
 - **Exit:**
-  - A Steam game is playable with a controller in Chrome, Firefox and Safari on LAN and over WAN (port-forward or mesh).
-  - The XFCE desktop and Firefox from GoW work.
+  - Chrome, Firefox and XFCE environments work with keyboard, mouse, controller and sound in Chrome, Firefox and Safari, on LAN and over WAN (port-forward or mesh).
+  - `cha-streamer` matches or beats S2's numbers on the same node (§9 Phase 0, S2).
   - Glass-to-glass latency is measured and published in `docs/benchmarks/`.
 
-#### Phase 1 delivery plan (2026-10-03)
+#### Phase 1 delivery plan (2026-10-03, revised for ADR 0004)
 
-Five milestones, each shippable and verified on its own:
+Seven milestones, each shippable and verified on its own:
 
 | # | Milestone | Delivers | Verified by |
 |---|---|---|---|
 | **P1.1** *(done 2026-10-03)* | Foundation | **`crates/cha-control`:** axum + SQLite (sqlx, migrations), config, first-run admin bootstrap (one-time setup token in the log), local accounts (Argon2id) with session cookies, audit log, `/api/*` + serving the SPA. **`web/apps/portal`:** Vue 3 + Router + Pinia + TanStack Query; setup and login, the shell, an empty dashboard. **Checks:** fmt, clippy, tests, typecheck in one script | API integration tests against in-memory SQLite; the SPA in a browser |
 | **P1.2** *(done 2026-10-03)* | Nodes | Join tokens (hashed, 60 min TTL). **`crates/cha-node`:** generates an Ed25519 key, redeems the token, then holds one outbound WSS: a signed hello, 30 s heartbeats, request/response RPC both ways. Inventory: GPUs, encoders, addresses. Node admin page | Agent ↔ control tests; enrolling the RTX 4090 node from the SPA. **Done:** an end-to-end test runs a real portal and agent (enroll, one-time tokens, signed hello, inventory, RPC, removal, a forged key refused); the RTX 4090 node enrolled from the SPA via `deploy/node` (CDI) and answers pings in ~1 ms |
-| **P1.3** | Wolf adapter + catalog | Agent ↔ Wolf unix-socket API: apps, pairing, sessions; Wolf's encoder config (P-frame H.264). Catalog seeded from Wolf's apps. **Environments:** `requested → … → running → stopped/destroyed`, ephemeral, placement v0 (first node with a GPU). The node compose ships Wolf beside the agent | Launch and stop Test ball, Firefox and XFCE from the SPA |
-| **P1.4** | Connect + player | **`crates/cha-gateway`:** S3's gateway as a service beside Wolf, driven by the agent over a local socket. The environment outlives the browser connection, and a reconnect gets a fresh keyframe. **Brokering:** the portal relays SDP over the browser WS and the node WSS, and issues 60 s Ed25519 media tokens. **`web/packages/player`:** WebRTC, pointer and keyboard lock, Gamepad API, stats HUD; the S2 probe built in. **Audio:** Opus | Playing from the SPA with keyboard, mouse and controller; click → screen probe published |
-| **P1.5** | Deploy + exit | `deploy/` compose for the portal and a node; `cha doctor` v0; the Tailscale guide; an optional coturn profile | Phase 1 exit criteria above |
+| **P1.3** *(core working 2026-10-03; browser-side measurement pending)* | Streamer core | **`crates/cha-streamer`:** our compositor on Smithay (headless, GLES on the render node, xdg-shell, linux-dmabuf, a seat with relative pointer and pointer constraints) at 2–4× the encode rate, with runtime resize. **`crates/cha-nvenc`:** NVENC and the CUDA driver API, loaded at runtime. The compositor's output buffers are registered with CUDA and NVENC once, so no frame is copied. Low-latency config: no B-frames, ~1-frame VBV, VUI reorder 0. A str0m WebRTC endpoint with keyboard and mouse into the seat (from S2). Run by hand from a CLI | On the RTX 4090, with Chrome as the client, against S2's GStreamer numbers: compositor → encoded ≤ 1.7 ms (HEVC) / 1.8 ms (H.264), node → Mac compositor ≤ 6 ms (p50), click → browser compositor ≤ 35 ms, resize ≤ 50 ms. **So far** (`crates/cha-streamer/README.md`): HEVC compositor → encoded 1.75 ms p50, the same as S2 back to back under the same shared-GPU load. H.264, HEVC and AV1 all reach the browser. Resize works. Chrome draws at 240 fps once presentation feedback follows the 240 Hz tick. Browser-side timings need a run in Chrome with the GPU idle |
+| **P1.4** | Environments + catalog | **`images/`:** a base image, the test pattern (our own Wayland client), Chrome, Firefox and XFCE. XFCE runs in rootful Xwayland, so the compositor gains Xwayland. The catalog comes from the images' labels. **Agent:** our Docker API client. For each environment it starts a streamer container and the app container (a shared runtime dir, the render node, an unprivileged user) and supervises both. **Environments:** `requested → … → running → stopped/destroyed`, ephemeral, placement v0 (first node with a GPU) | Launching and stopping the test pattern, Chrome, Firefox and XFCE from the SPA |
+| **P1.5** | Connect + player | **Brokering:** the portal relays SDP over the browser WS and the node WSS to the streamer, and issues 60 s Ed25519 media tokens that the streamer checks. The environment outlives the browser connection, and a reconnect gets a fresh keyframe. **`web/packages/player`:** WebRTC, pointer and keyboard lock, stats HUD, the S2 probe built in. A fullscreen session view | Using Chrome, Firefox and XFCE from the SPA with keyboard and mouse; the click → screen probe published |
+| **P1.6** | Sound + gamepads | **Audio:** our minimal PulseAudio-protocol server in the streamer → libopus → a WebRTC audio track. **Gamepads:** our uinput Xbox pad (DualSense over uhid next). The streamer owns the device; the agent, which is root, hotplugs it into the env container (device node, udev entry and event). The player's Gamepad API; host udev rules | Sound in the browser with the A/V offset measured; the test pattern shows the pad's state, and a game plays with it |
+| **P1.7** | Deploy + exit | `deploy/` compose for the portal and a node; `cha doctor` v0; the Tailscale guide; an optional coturn profile | Phase 1 exit criteria above |
 
 **Decisions, recorded as ADRs in `docs/adr/`:**
 - **Node channel for the MVP: JSON messages over one WebSocket**, with request/response correlation and server push. The plan's yamux + protobuf framing comes when streams need it (logs, file transfer). The messages already live in a shared crate.
 - **Auth for P1.1: local accounts with Argon2id passwords. Passkeys (webauthn-rs) are next**, with the same session model.
-- **The gateway runs as its own service beside Wolf** (as in S3), and the agent drives it over a local unix socket: start and stop environment streams, relay SDP. Restarting the agent doesn't drop sessions (§5.1).
+- **Our own engine, without Wolf** (ADR 0004, superseding 0003). Each environment's streamer is its own container that the agent supervises over a local socket, so restarting the agent doesn't drop sessions (§5.1).
 
-### Phase 2: own engine + PyroWave (XL)
+### Phase 2: Steam, KDE, PyroWave and WebTransport (XL)
 
-Delivers **features 3, 6 and 7**.
+Delivers **features 4, 6 and 7**, and KDE for feature 3.
 
-- `cha-streamer` v1:
-  - compositor from S2 and the GoW contract;
-  - encoders (GStreamer HW + PyroWave) and Opus audio;
-  - input (compositor injection, inputtino, fake-udev hotplug);
-  - WebRTC endpoint (str0m, GCC on TWCC) plus the **WebTransport/QUIC `cha-stream/1` endpoint** with the §3.1 congestion-control rules; hot-switching between them;
-  - **runtime resize**, client-side cursor in desktop mode, text clipboard.
-- Environment classes on `cha-streamer`, in this order:
-  1. **Chrome** (first);
-  2. **Steam**, with `cha-streamer` becoming the default engine and Wolf relegated to the optional Moonlight-compat sidecar;
-  3. **KDE Plasma** and XFCE.
+- Environment classes, in this order:
+  1. **Steam** (first): our image, gamescope nested in our compositor, and the `steam` security profile from S5;
+  2. **KDE Plasma**.
+- `cha-streamer` v2:
+  - the **WebTransport/QUIC `cha-stream/1` endpoint** with the §3.1 congestion-control rules, and hot-switching between it and WebRTC;
+  - client-side cursor in desktop mode, text clipboard;
+  - multi-viewer encoders.
 - PyroWave tier:
   - node encoder with damage-aware skipping;
   - `@cha/pyrowave-webgpu` with the subgroup-free path;
   - tier negotiation, bandwidth probe and live tier switching.
 - WAN tier: delay-based ABR for AV1/HEVC/H.264, intra-refresh, RFI/LTR where the encoder supports it, Leopard FEC.
 - **Exit:**
-  - KDE and Steam on `cha-streamer`.
+  - A Steam game is playable with a controller in Chrome, Firefox and Safari, on LAN and over WAN.
+  - A KDE Plasma desktop works.
   - PyroWave 1440p120 4:4:4 on wired LAN in Chrome (if S1 passed).
   - Adaptive AV1 on a lossy or throttled WAN with no stalls longer than 1 s (netem test suite).
 
@@ -586,7 +605,8 @@ Delivers **features 5 and 8**.
   - pair Sunshine, Apollo, Vibepollo or Polaris from the portal (OTP/PIN), with the gateway on a node in the same LAN;
   - **Vibepollo PyroWave contract → browser WebGPU decode**;
   - expose Vibepollo's session controls where its API allows.
-- OIDC; catalog importers (Kasm, Wolf, linuxserver).
+- AMD and Intel nodes: our own encode path (VA-API or Vulkan Video; a spike picks one) and the compositor on their render nodes.
+- OIDC; catalog importers (Kasm, linuxserver).
 - **Exit:**
   - A persistent KDE desktop survives node reboots.
   - A Vibepollo Windows host can be played in the browser with PyroWave on LAN.
@@ -605,7 +625,7 @@ If S1 fails, Phase 4 starts in parallel with Phase 2.
 
 ### Later / backlog
 
-- Moonlight *host* façade inside `cha-streamer`, so stock Moonlight/Artemis clients work without Wolf (adopt Vibepollo's PyroWave contract there too).
+- Moonlight *host* façade inside `cha-streamer`, so stock Moonlight/Artemis clients can play our environments (adopt Vibepollo's PyroWave contract there too).
 - End-to-end HDR10.
 - Pre-warmed pools; mic, webcam and file transfer; recording.
 - Compat environments (Selkies/webtop, KasmVNC, Neko proxied behind portal auth); Guacamole RDP/VNC/SSH.
@@ -627,13 +647,13 @@ If S1 fails, Phase 4 starts in parallel with Phase 2.
 | Chrome's low-latency WebRTC renderer assumes 60 fps; hardware decoders buffer without VUI hints | Hidden frames of latency at 120 Hz+ | VUI `max_num_reorder_frames=0` rewrite; measure at 120/144 Hz in S3/S4. The framed WebTransport path avoids the WebRTC renderer. |
 | PyroWave bitstream/API churn (draft, no version field) | Breaks interop between node/browser/native | Pin the commit everywhere, negotiate a bitstream ID, run a bit-exact CI test against the WebGPU port, and push upstream for a version field |
 | Firefox / Safari WebGPU subgroups missing | PyroWave decode unavailable there | Subgroup-free dequant path |
-| Wolf instability (lobby OOM, NVIDIA zero-copy crashes, one session per cert) | MVP flakiness | Adapter with health checks and restart, a cert per viewer, a fast follow to `cha-streamer` in Phase 2 |
+| Owning the engine makes Phase 1 bigger (compositor, NVENC binding, audio, gamepads, images) | Phase 1 takes longer | S2 already proved the pipeline on the node. Every milestone is measured against S2's GStreamer numbers, and S2 stays in the repo as the A/B baseline. Libraries only where rebuilding is a project of its own (ADR 0004). Steam waits for Phase 2. |
 | Steam sandbox needs broad privileges | Security posture | Custom seccomp/AppArmor (S5). Scope the `steam` profile to gaming templates only. Document the trust model. |
 | QUIC datagram pitfalls (silent eviction, keyframe starvation, hidden queueing) | Multi-second lag at zero loss | Nestri's rules (§3.1) from day one, receiver-truth CC, netem test suite |
 | NVIDIA container fragility (driver coupling, modeset, GPU selection) | Node setup pain | `cha doctor`, CDI default, explicit GPU index per session, a supported driver matrix |
 | Chrome Local Network Access prompts (WebSocket/WebTransport to private IPs; WebRTC exempt) | Confusing first connect on the fast path | WebRTC baseline isn't affected. Split-horizon DNS docs; in-UI detection and explanation. |
 | 14-day cert ceiling | Expired-cert outages | 13-day rotation a day early, NTP check in `cha doctor`, hash re-signalled on reconnect |
-| Scope creep across eight features | Never ships | Phase gates. MVP leans on Wolf so engine work doesn't block the portal/player. |
+| Scope creep across eight features | Never ships | Phase gates, and seven small Phase 1 milestones that each ship and verify on their own. |
 | Dependence on young single-maintainer projects (Vibepollo, moonlight-common-rust, WebGPU port) | Bit-rot | Vendor and pin; contribute upstream; keep adapters thin |
 
 ---
@@ -659,9 +679,9 @@ Still open, not blocking Phase 0:
 |---|---|---|---|
 | 1 | Dashboard to portal into environments | §2, §6.1 | Phase 1 |
 | 2 | Cha Portal Nodes (docker compose, controllable) | §5.1, §7 | Phase 1 |
-| 3 | Chrome / full desktop environments | §4.1 | XFCE + Firefox in Phase 1; Chrome and KDE in Phase 2 |
-| 4 | Steam first-class in Docker | §4.1, §4.2 | Phase 1 (via Wolf); Phase 2 (own engine) |
+| 3 | Chrome / full desktop environments | §4.1 | Chrome, Firefox and XFCE in Phase 1; KDE in Phase 2 |
+| 4 | Steam first-class in Docker | §4.1, §4.2 | Phase 2 (its first item) |
 | 5 | Ephemeral or persistent | §4.4 | Ephemeral in Phase 1; persistent in Phase 3 |
 | 6 | Very fast streaming, browser or native | §3, §6 | Browser in Phase 1/2; native in Phase 4 (earlier if S1 fails) |
 | 7 | First-class PyroWave | §3.3 | Phase 2 (browser and node); Phase 3 (Vibepollo interop) |
-| 8 | Vibepollo / Moonlight endpoints | §2.2 `cha-gateway`, §4.1 | Local Wolf in Phase 1; external hosts in Phase 3 |
+| 8 | Vibepollo / Moonlight endpoints | §2.2 `cha-gateway`, §4.1 | External hosts in Phase 3 (the gateway is proven in S3) |

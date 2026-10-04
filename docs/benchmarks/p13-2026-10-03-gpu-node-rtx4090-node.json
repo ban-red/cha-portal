@@ -1,0 +1,81 @@
+{
+  "benchmark": "P1.3 cha-streamer, node side, A/B against the S2 GStreamer streamer",
+  "date": "2026-10-03",
+  "node": {
+    "host": "gpu-node.lan",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "driver": "595.71.05",
+    "gpu_shared_with": "the owner's ComfyUI (22 GB, generating) and llama-server; nvidia-smi showed 88-100% utilization and 250-346 W during most runs"
+  },
+  "content": "Google Chrome 154.0.8037.97 (kiosk) showing spikes/s2-compositor/bench/page/live.html",
+  "stream": { "width": 2560, "height": 1440, "fps": 60, "bitrate_mbps": 40, "path": "WebRTC (str0m), playout-delay 0" },
+  "note": "Streamer-side statistics (stream complete / encoder logs). The browser pane was hidden, so browser-side timings from these runs are not valid and are not included. Runs are listed in the order they ran; load varied between them.",
+  "runs": [
+    {
+      "engine": "cha-streamer", "codec": "hevc", "compositor_fps": 60,
+      "chrome_commits_per_s": 60, "frames_sent": 902,
+      "composite_to_encoded_ms": { "p50": 1.82, "p99": 4.28 },
+      "encoded_to_sent_us": { "p50": 26, "p99": 554 },
+      "first_frame_ms": 67, "encoder_init_ms": 36
+    },
+    {
+      "engine": "cha-streamer", "codec": "hevc", "compositor_fps": 240,
+      "chrome_commits_per_s": 240, "frames_sent": 902,
+      "composite_to_encoded_ms": { "p50": 1.75, "p99": 4.25 },
+      "encoder_stages_us_p50_p99": { "queue": [16, 686], "surface": [4, 9], "map": [9, 19], "submit": [71, 165], "wait": [1598, 3915], "total": [1697, 4032] },
+      "first_frame_ms": 120, "encoder_init_ms": 59
+    },
+    {
+      "engine": "cha-streamer", "codec": "hevc", "compositor_fps": 60,
+      "frames_sent": 902,
+      "composite_to_encoded_ms": { "p50": 1.78, "p99": 4.53 },
+      "encoder_stages_us_p50_p99": { "wait": [1626, 4050], "total": [1739, 4108] },
+      "first_frame_ms": 55
+    },
+    {
+      "engine": "s2-streamer (gst-wayland-display + nvh265enc)", "codec": "hevc", "compositor_fps": 240,
+      "composite_to_encoded_ms": { "p50": 1.78, "p99": 4.32 },
+      "gpu_after_run": "24 %, 120 W"
+    },
+    {
+      "engine": "cha-streamer", "codec": "hevc", "compositor_fps": 240, "gpu_before_run": "100 %, 346 W",
+      "frames_sent": 899,
+      "composite_to_encoded_ms": { "p50": 1.92, "p99": 4.47 },
+      "encoder_stages_us_p50_p99": { "queue": [13, 86], "surface": [3, 7], "map": [6, 15], "submit": [53, 110], "wait": [1605, 4300], "total": [1685, 4360] },
+      "first_frame_ms": 55, "encoder_init_ms": 31
+    },
+    {
+      "engine": "cha-streamer", "codec": "h264", "compositor_fps": 240,
+      "frames_sent": 901,
+      "composite_to_encoded_ms": { "p50": 4.79, "p99": 7.41 },
+      "encoder_stages_us_p50_p99": { "wait": [4712, 7325], "total": [4768, 7371] },
+      "first_frame_ms": 64, "encoder_init_ms": 44
+    },
+    {
+      "engine": "cha-streamer", "codec": "av1", "compositor_fps": 240,
+      "frames_sent": 902, "keyframe_requests": 0,
+      "composite_to_encoded_ms": { "p50": 2.15, "p99": 6.52 },
+      "encoder_stages_us_p50_p99": { "wait": [2337, 6449], "total": [2409, 6507] },
+      "first_frame_ms": 53, "encoder_init_ms": 39
+    },
+    {
+      "engine": "cha-streamer", "codec": "h264", "compositor_fps": 240, "gpu_after_run": "90 %, 346 W",
+      "frames_sent": 655, "note": "Chrome fell to ~120 commits/s for part of the run (GPU-starved); the compositor was never short of buffers",
+      "composite_to_encoded_ms": { "p50": 2.15, "p99": 5.84 },
+      "encoder_stages_us_p50_p99": { "wait": [2069, 5255], "total": [2178, 5357] },
+      "first_frame_ms": 11, "encoder": "warm"
+    },
+    {
+      "engine": "cha-streamer", "codec": "hevc", "compositor_fps": 240, "test": "resize 2560x1440 -> 1920x1080 -> 1280x720 -> 2560x1440",
+      "frames_sent": 897, "keyframes": 4, "resizes": 3,
+      "composite_to_encoded_ms": { "p50": 2.75, "p99": 4.45 },
+      "first_frame_ms": 10, "encoder": "warm"
+    }
+  ],
+  "findings": [
+    "HEVC compositor -> encoded matches S2 under the same load (1.75-1.78 vs 1.78 ms p50; ~4.3 ms p99 for both) and S2's quiet-GPU result (1.72 ms p50).",
+    "Nearly all of the time is waiting for NVENC; mapping and submitting take <0.1 ms. Under heavy load from another process the wait grows by ~2 ms for every codec, consistent with NVENC's RGB->YUV CUDA kernel waiting for GPU time.",
+    "Chrome paces itself to wp_presentation feedback: with feedback at 60 Hz it drew 60 fps despite 240 Hz frame callbacks; with feedback every 240 Hz tick it draws 238-240 fps.",
+    "A high-priority EGL context hint (EGL_IMG_context_priority) moved nothing measurable and was reverted."
+  ]
+}

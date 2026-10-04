@@ -2,7 +2,7 @@
 
 A self-hosted dashboard for "portaling" into remote environments (a Chrome instance, a KDE desktop, Steam Big Picture, or an external Moonlight-protocol host) with Moonlight-class latency, in the browser or in a thin native client. Environments run on **Cha Nodes**: docker compose stacks on your GPU servers that enroll with the portal.
 
-**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP: the portal, nodes, and streaming Wolf's environments to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work; the Wolf adapter and environments come next.
+**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP on our own streaming engine ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)): the portal, nodes, and Chrome, Firefox and XFCE environments streamed to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work, and the streamer core (P1.3: our compositor, NVENC binding and WebRTC) streams Chrome from the GPU node; environments come next.
 
 - Plan: [`docs/PLAN.md`](docs/PLAN.md)
 - Research (October 2026 landscape): [`docs/research/`](docs/research/README.md)
@@ -13,9 +13,12 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 |---|---|
 | `crates/cha-control` | The portal's server: accounts and sessions, audit log, nodes, the API, serving the SPA (SQLite) |
 | `crates/cha-node` | The node agent: enrolls with a join token, then keeps one WebSocket to the portal (inventory, heartbeats, requests) |
+| `crates/cha-streamer` | One environment's media engine: our headless Wayland compositor (Smithay), zero-copy NVENC, WebRTC ([README](crates/cha-streamer/README.md)) |
+| `crates/cha-nvenc` | Our NVENC + CUDA binding, loaded from the driver at runtime |
 | `crates/cha-wire` | Node ⇄ portal messages and the node's Ed25519 identity ([ADR 0001](docs/adr/0001-node-channel-json-over-websocket.md)) |
 | `web/apps/portal` | The portal SPA (Vue 3, Tailwind) |
-| `deploy/node` | The node's compose stack (the agent today; Wolf and the gateway next) |
+| `deploy/node` | The node's compose stack (the agent) |
+| `deploy/streamer` | The streamer's image and its dev loop on a node |
 | `crates/cha-proto` | `cha-stream/1` wire framing: Sans-IO datagram header, fragmentation, reassembly |
 | `web/packages/pyrowave-webgpu` | `@cha/pyrowave-webgpu`: PyroWave decode on WebGPU (TypeScript host for the WGSL port), draws straight to a canvas |
 | `spikes/s1-browser-pyrowave` | Spike S1: can a browser receive PyroWave-shaped traffic? ([README](spikes/s1-browser-pyrowave/README.md)) |
