@@ -1,0 +1,14 @@
+[
+  {"scenario":"static","codec":"h264","mbps":40.0,"psnr_y":41.88,"psnr_cb":35.69,"psnr_cr":36.18,"psnr_y_min":30.61,"psnr_y_frame0":30.61,"ssim_y":0.9962,"ssim_all":0.9577},
+  {"scenario":"static","codec":"hevc","mbps":18.8,"psnr_y":42.18,"psnr_cb":35.78,"psnr_cr":36.24,"psnr_y_min":29.72,"psnr_y_frame0":29.72,"ssim_y":0.9964,"ssim_all":0.9576},
+  {"scenario":"static","codec":"pyrowave420","mbps":290.0,"psnr_y":41.93,"psnr_cb":36.15,"psnr_cr":36.54,"psnr_y_min":41.93,"psnr_y_frame0":41.93,"ssim_y":0.9950,"ssim_all":0.9599},
+  {"scenario":"static","codec":"pyrowave444","mbps":580.0,"psnr_y":48.71,"psnr_cb":45.76,"psnr_cr":46.41,"psnr_y_min":48.71,"psnr_y_frame0":48.71,"ssim_y":0.9985,"ssim_all":0.9952},
+  {"scenario":"scroll","codec":"h264","mbps":40.0,"psnr_y":42.79,"psnr_cb":36.40,"psnr_cr":36.98,"psnr_y_min":30.61,"psnr_y_frame0":30.61,"ssim_y":0.9976,"ssim_all":0.9642},
+  {"scenario":"scroll","codec":"hevc","mbps":10.8,"psnr_y":42.96,"psnr_cb":36.45,"psnr_cr":37.01,"psnr_y_min":29.72,"psnr_y_frame0":29.72,"ssim_y":0.9976,"ssim_all":0.9644},
+  {"scenario":"scroll","codec":"pyrowave420","mbps":290.0,"psnr_y":46.50,"psnr_cb":36.76,"psnr_cr":37.32,"psnr_y_min":41.42,"psnr_y_frame0":41.93,"ssim_y":0.9973,"ssim_all":0.9664},
+  {"scenario":"scroll","codec":"pyrowave444","mbps":580.0,"psnr_y":54.53,"psnr_cb":50.76,"psnr_cr":51.46,"psnr_y_min":48.46,"psnr_y_frame0":48.71,"ssim_y":0.9993,"ssim_all":0.9976},
+  {"scenario":"flick","codec":"h264","mbps":40.0,"psnr_y":42.79,"psnr_cb":36.85,"psnr_cr":37.54,"psnr_y_min":30.61,"psnr_y_frame0":30.61,"ssim_y":0.9974,"ssim_all":0.9677},
+  {"scenario":"flick","codec":"hevc","mbps":13.1,"psnr_y":43.04,"psnr_cb":36.94,"psnr_cr":37.61,"psnr_y_min":29.72,"psnr_y_frame0":29.72,"ssim_y":0.9976,"ssim_all":0.9683},
+  {"scenario":"flick","codec":"pyrowave420","mbps":290.0,"psnr_y":50.12,"psnr_cb":37.34,"psnr_cr":38.08,"psnr_y_min":41.78,"psnr_y_frame0":41.93,"ssim_y":0.9986,"ssim_all":0.9720},
+  {"scenario":"flick","codec":"pyrowave444","mbps":580.0,"psnr_y":59.52,"psnr_cb":55.69,"psnr_cr":56.37,"psnr_y_min":48.52,"psnr_y_frame0":48.71,"ssim_y":0.9997,"ssim_all":0.9991}
+]

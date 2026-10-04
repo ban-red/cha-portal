@@ -2,6 +2,7 @@
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use cha_control::{AppState, Config, app, db};
 use http_body_util::BodyExt;
@@ -15,6 +16,10 @@ struct TestPortal {
 }
 
 async fn portal() -> TestPortal {
+    portal_with(false).await
+}
+
+async fn portal_with(dev_login: bool) -> TestPortal {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
         listen: "127.0.0.1:0".parse().unwrap(),
@@ -23,6 +28,7 @@ async fn portal() -> TestPortal {
         secure_cookies: false,
         session_days: 14,
         ice: Default::default(),
+        dev_login,
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool).await.unwrap();
@@ -77,6 +83,32 @@ impl TestPortal {
         }
     }
 
+    /// POSTs to dev login as a client at `from`.
+    async fn dev_login(&self, from: &str) -> Reply {
+        let addr: std::net::SocketAddr = from.parse().unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/dev-login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .extension(ConnectInfo(addr))
+            .body(Body::from("{}"))
+            .unwrap();
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let cookie = res
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .map(str::to_string);
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        Reply {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            cookie,
+        }
+    }
+
     /// Runs first-run setup and returns the admin's session cookie.
     async fn setup_admin(&self) -> String {
         let reply = self
@@ -97,7 +129,7 @@ async fn first_run_setup_creates_one_admin() {
     let p = portal().await;
     assert_eq!(
         p.call("GET", "/api/setup", None, None).await.body,
-        json!({ "needed": true })
+        json!({ "needed": true, "devLogin": false })
     );
 
     let wrong = p
@@ -118,7 +150,7 @@ async fn first_run_setup_creates_one_admin() {
 
     assert_eq!(
         p.call("GET", "/api/setup", None, None).await.body,
-        json!({ "needed": false })
+        json!({ "needed": false, "devLogin": false })
     );
     let again = p
         .call("POST", "/api/setup", None, Some(json!({ "token": p.setup_token, "username": "x2", "password": "correct horse battery" })))
@@ -305,4 +337,44 @@ async fn unknown_api_paths_are_json_404s() {
     let reply = p.call("GET", "/api/nope", None, None).await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
     assert_eq!(reply.body["error"], "not_found");
+}
+
+#[tokio::test]
+async fn dev_login_is_off_by_default() {
+    let p = portal().await;
+    assert_eq!(
+        p.dev_login("127.0.0.1:5000").await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn dev_login_creates_the_dev_admin_for_loopback_only() {
+    let p = portal_with(true).await;
+    assert_eq!(
+        p.call("GET", "/api/setup", None, None).await.body,
+        json!({ "needed": true, "devLogin": true })
+    );
+
+    let remote = p.dev_login("192.168.1.20:5000").await;
+    assert_eq!(remote.status, StatusCode::FORBIDDEN);
+    assert_eq!(remote.body["error"], "dev_login_loopback_only");
+
+    let first = p.dev_login("127.0.0.1:5000").await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    assert_eq!(first.body["username"], "dev");
+    assert_eq!(first.body["role"], "admin");
+    let me = p
+        .call("GET", "/api/me", first.cookie.as_deref(), None)
+        .await;
+    assert_eq!(me.body["username"], "dev");
+
+    // Setup is closed, and a second click reuses the same account.
+    assert_eq!(
+        p.call("GET", "/api/setup", None, None).await.body["needed"],
+        false
+    );
+    let again = p.dev_login("[::1]:5000").await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.body["id"], first.body["id"]);
 }

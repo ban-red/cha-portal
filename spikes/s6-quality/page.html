@@ -1,0 +1,140 @@
+<!doctype html>
+<!-- S6's test content: a docs-style desktop page at 2560 px wide. A sidebar of
+     small UI text, prose with links and a table, and syntax-coloured code on a
+     dark panel (colour detail is where 4:2:0 and 4:4:4 differ). A script
+     repeats the sections until the page is tall enough to scroll through. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>S6 test page</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 2560px; background: #ffffff; color: #1f2328;
+         font: 16px/1.6 "Liberation Sans", "DejaVu Sans", sans-serif; }
+  header { height: 52px; display: flex; align-items: center; gap: 28px;
+           padding: 0 24px; background: #24292f; color: #e6edf3; font-size: 14px; z-index: 1; }
+  header b { font-size: 16px; }
+  header span.badge { background: #2da44e; color: #fff; border-radius: 10px; padding: 1px 9px; font-size: 12px; }
+  header input { margin-left: auto; width: 360px; height: 30px; border-radius: 6px; border: 1px solid #57606a;
+                 background: #0d1117; color: #8b949e; padding: 0 10px; font-size: 13px; }
+  main { display: grid; grid-template-columns: 300px 1080px 1180px; }
+  nav { padding: 20px 18px; font-size: 13px; color: #57606a; border-right: 1px solid #d0d7de; background: #f6f8fa; }
+  nav h4 { margin: 18px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #1f2328; }
+  nav a { display: block; color: #0969da; text-decoration: none; padding: 2px 0; }
+  nav a.on { color: #cf222e; font-weight: 600; }
+  article { padding: 24px 40px; }
+  article h2 { font-size: 26px; margin: 26px 0 8px; border-bottom: 1px solid #d0d7de; padding-bottom: 6px; }
+  article h3 { font-size: 19px; margin: 20px 0 6px; }
+  article a { color: #0969da; }
+  article code { background: #eff1f3; border-radius: 4px; padding: 1px 5px; font: 14px "Liberation Mono", monospace; color: #953800; }
+  article .note { border-left: 4px solid #8250df; background: #fbefff; padding: 8px 14px; color: #3e1f79; font-size: 15px; }
+  article .warn { border-left: 4px solid #bf8700; background: #fff8c5; padding: 8px 14px; color: #4d2d00; font-size: 15px; }
+  table { border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  td, th { border: 1px solid #d0d7de; padding: 5px 12px; }
+  th { background: #f6f8fa; }
+  td.ok { color: #1a7f37; } td.bad { color: #cf222e; }
+  aside { background: #0d1117; color: #c9d1d9; padding: 24px 28px; font: 14px/1.55 "Liberation Mono", "DejaVu Sans Mono", monospace; }
+  aside pre { margin: 0 0 22px; white-space: pre; }
+  aside .file { color: #8b949e; font-size: 12px; border-bottom: 1px solid #30363d; margin-bottom: 8px; padding-bottom: 4px; }
+  .k { color: #ff7b72; } .s { color: #a5d6ff; } .n { color: #79c0ff; } .c { color: #8b949e; font-style: italic; }
+  .t { color: #ffa657; } .f { color: #d2a8ff; } .m { color: #7ee787; } .e { color: #f85149; }
+  .add { background: #12261e; display: inline-block; width: 100%; } .del { background: #25171c; display: inline-block; width: 100%; }
+</style>
+</head>
+<body>
+<header><b>Cha Portal</b><span>Environments</span><span>Nodes</span><span>Users</span><span>Audit log</span>
+  <span class="badge">3 running</span><input value="Search docs, environments, nodes…"></header>
+<main>
+<nav id="nav">
+  <h4>Getting started</h4><a>Overview</a><a>Install the portal</a><a>Add a node</a><a class="on">Streaming</a><a>Remote access</a>
+  <h4>Environments</h4><a>Chrome</a><a>Firefox</a><a>XFCE desktop</a><a>KDE Plasma</a><a>Steam</a><a>Test pattern</a>
+  <h4>Reference</h4><a>cha-stream/1</a><a>Control messages</a><a>Media tokens</a><a>Node agent</a><a>Doctor checks</a>
+  <h4>Operations</h4><a>Backups</a><a>Upgrades</a><a>TURN relay</a><a>Tailscale</a><a>Troubleshooting</a>
+</nav>
+<article id="prose">
+  <section>
+  <h2>Streaming an environment</h2>
+  <p>The stream goes straight from the node to the browser; the portal only brokers it. A browser needs a UDP path
+  to the node: on the LAN that is direct, elsewhere it is a mesh such as <a href="#">Tailscale</a>, a forwarded port,
+  or a <a href="#">TURN relay</a>. The player prefers <code>webtransport</code> where Chromium offers it and falls back to
+  WebRTC everywhere else.</p>
+  <p class="note"><b>Note.</b> Codec switches happen in place over WebTransport: the picture stays up until the first
+  frame in the new codec, so a switch costs one or two frames at 60 fps.</p>
+  <h3>Codecs</h3>
+  <table>
+    <tr><th>Codec</th><th>Transport</th><th>Bitrate (1440p60)</th><th>Encode</th><th>Loss</th></tr>
+    <tr><td>H.264</td><td>WebRTC, WebTransport</td><td>40 Mbit/s</td><td class="ok">1.9 ms</td><td>Waits for a keyframe</td></tr>
+    <tr><td>HEVC</td><td>WebRTC, WebTransport</td><td>40 Mbit/s</td><td class="ok">1.7 ms</td><td>Waits for a keyframe</td></tr>
+    <tr><td>AV1</td><td>WebRTC, WebTransport</td><td>40 Mbit/s</td><td class="ok">2.2 ms</td><td>Waits for a keyframe</td></tr>
+    <tr><td>PyroWave 4:2:0</td><td>WebTransport</td><td>290 Mbit/s</td><td class="ok">0.2 ms GPU</td><td>Blurs a region</td></tr>
+    <tr><td>PyroWave 4:4:4</td><td>WebTransport</td><td class="bad">580 Mbit/s</td><td class="ok">0.3 ms GPU</td><td>Blurs a region</td></tr>
+  </table>
+  <p>Every frame of a hardware codec depends on the ones before it, so a lost datagram means the decoder shows garbage
+  until the next keyframe. The page asks for one at once, and the streamer sends nothing that depends on a frame it
+  could not send. PyroWave frames stand alone: a lost packet blurs its 32×32 block of one frame.</p>
+  <p class="warn"><b>Shared GPUs.</b> Image generation or an LLM on the same GPU delays every frame by up to one
+  timeslice per GPU context it passes through. <code>nvidia-smi compute-policy --set-timeslice=1</code> shortens it.</p>
+  <h3>Input</h3>
+  <ul><li>Keyboard and mouse go up the control channel and into the compositor's seat.</li>
+  <li>Gamepads become virtual Xbox 360 controllers through <code>/dev/uinput</code>.</li>
+  <li>Held keys and buttons are released on blur, so nothing sticks.</li></ul>
+  </section>
+</article>
+<aside id="code">
+  <section>
+<div class="file">crates/cha-streamer/src/wt.rs</div>
+<pre><span class="c">/// Sends a frame, or drops it (and, for the hardware codecs, all until</span>
+<span class="c">/// a keyframe, which is asked for). True if sent.</span>
+<span class="k">fn</span> <span class="f">send</span>(
+    <span class="k">&amp;mut</span> <span class="n">self</span>,
+    conn: <span class="k">&amp;</span><span class="t">Connection</span>,
+    frame: <span class="k">&amp;</span><span class="t">EncodedFrame</span>,
+    media: <span class="k">&amp;</span><span class="t">Media</span>,
+    epoch: <span class="t">Instant</span>,
+    stats: <span class="k">&amp;mut</span> <span class="t">StreamerStats</span>,
+) -&gt; <span class="t">bool</span> {
+    stats.frames_generated <span class="k">+=</span> <span class="n">1</span>;
+    <span class="k">let</span> intra <span class="k">=</span> <span class="k">!</span>frame.packets.<span class="f">is_empty</span>();
+    <span class="k">if</span> <span class="n">self</span>.resync <span class="k">&amp;&amp;</span> <span class="k">!</span>frame.key <span class="k">&amp;&amp;</span> <span class="k">!</span>intra {
+        <span class="k">return</span> <span class="n">false</span>;
+    }
+    <span class="k">let</span> sent <span class="k">=</span> <span class="k">if</span> intra {
+        <span class="f">send_packets</span>(conn, frame, <span class="n">self</span>.frame_id, <span class="n">self</span>.stream, epoch, stats)
+    } <span class="k">else</span> {
+        <span class="f">send_frame</span>(conn, <span class="k">&amp;mut</span> <span class="n">self</span>.fragmenter, frame, <span class="n">self</span>.frame_id, <span class="n">self</span>.stream, epoch, stats)
+    };
+    <span class="k">if</span> <span class="k">!</span>sent {
+        stats.frames_dropped <span class="k">+=</span> <span class="n">1</span>;
+        <span class="m">media</span>.<span class="f">request_keyframe</span>(<span class="n">self</span>.codec);
+        <span class="k">return</span> <span class="n">false</span>;
+    }
+    <span class="n">true</span>
+}</pre>
+<div class="file">web/packages/player/src/wt-worker.ts</div>
+<pre><span class="c">// A codec switch starts a new stream (the header's stream byte).</span>
+<span class="k">private</span> <span class="f">fragment</span>(d: <span class="t">Uint8Array</span>, v: <span class="t">DataView</span>, id: <span class="t">number</span>): <span class="t">void</span> {
+  <span class="k">const</span> stream <span class="k">=</span> v.<span class="f">getUint8</span>(<span class="n">2</span>);
+  <span class="k">if</span> (stream <span class="k">!==</span> <span class="k">this</span>.stream) {
+    <span class="k">if</span> (<span class="k">this</span>.stream <span class="k">!==</span> <span class="n">null</span> <span class="k">&amp;&amp;</span> <span class="k">!</span><span class="f">newerStream</span>(<span class="k">this</span>.stream, stream)) <span class="k">return</span>;
+    <span class="k">this</span>.<span class="f">startStream</span>(stream, (v.<span class="f">getUint8</span>(<span class="n">1</span>) <span class="k">&amp;</span> <span class="t">FLAG_INTRA</span>) <span class="k">!==</span> <span class="n">0</span>);
+  }
+  <span class="k">const</span> index <span class="k">=</span> v.<span class="f">getUint16</span>(<span class="n">8</span>, <span class="n">true</span>);
+  <span class="k">const</span> total <span class="k">=</span> v.<span class="f">getUint16</span>(<span class="n">10</span>, <span class="n">true</span>);
+}</pre>
+<div class="file">git diff --stat</div>
+<pre><span class="add"> <span class="m">+ crates/cha-pyrowave/src/lib.rs   | 29 +++++++-</span></span>
+<span class="del"> <span class="e">- crates/cha-streamer/src/wt.rs    | 12 ------</span></span>
+<span class="add"> <span class="m">+ web/packages/player/src/pyro.ts  | 95 ++++++++++++++++</span></span></pre>
+  </section>
+</aside>
+</main>
+<script>
+  // Repeat each column's content until the page is about 8000 px tall.
+  for (const id of ["prose", "code", "nav"]) {
+    const el = document.getElementById(id);
+    const unit = el.innerHTML;
+    while (el.scrollHeight < 8000) el.insertAdjacentHTML("beforeend", unit);
+  }
+</script>
+</body>
+</html>

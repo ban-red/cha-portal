@@ -119,10 +119,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  setupStatus: () => request<{ needed: boolean }>("GET", "/setup"),
+  setupStatus: () => request<{ needed: boolean; devLogin: boolean }>("GET", "/setup"),
   setup: (body: { token: string; username: string; displayName?: string; password: string }) =>
     request<User>("POST", "/setup", body),
   login: (body: { username: string; password: string }) => request<User>("POST", "/auth/login", body),
+  devLogin: () => request<User>("POST", "/auth/dev-login", {}),
   logout: () => request<null>("POST", "/auth/logout", {}),
   me: () => request<User>("GET", "/me"),
   users: () => request<User[]>("GET", "/users"),

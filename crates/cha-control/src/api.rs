@@ -21,6 +21,7 @@ pub fn routes() -> Router<AppState> {
         .route("/health", get(health))
         .route("/setup", get(setup_status).post(setup))
         .route("/auth/login", post(login))
+        .route("/auth/dev-login", post(dev_login))
         .route("/auth/logout", post(logout))
         .route("/me", get(me))
         .route("/users", get(list_users).post(create_user))
@@ -36,9 +37,10 @@ async fn health() -> Json<Value> {
 }
 
 async fn setup_status(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    Ok(Json(
-        json!({ "needed": db::user_count(&state.db).await? == 0 }),
-    ))
+    Ok(Json(json!({
+        "needed": db::user_count(&state.db).await? == 0,
+        "devLogin": state.config.dev_login,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -162,6 +164,74 @@ async fn login(
         &state.db,
         Some(&user.id),
         "login.ok",
+        None,
+        None,
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok((jar.add(cookie), Json(user)))
+}
+
+const DEV_USERNAME: &str = "dev";
+
+/// "Login as Local Dev": with `--dev-login`, signs a loopback client in as the
+/// `dev` admin, creating it (with an unusable random password) on first use.
+/// Closes first-run setup, since the portal then has an account.
+async fn dev_login(
+    State(state): State<AppState>,
+    client: ClientInfo,
+    jar: CookieJar,
+    Json(_): Json<Value>,
+) -> ApiResult<(CookieJar, Json<User>)> {
+    if !state.config.dev_login {
+        return Err(ApiError::NotFound("no such API".into()));
+    }
+    let loopback = client
+        .ip
+        .as_deref()
+        .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+        .is_some_and(|ip| ip.is_loopback());
+    if !loopback {
+        return Err(ApiError::forbidden(
+            "dev_login_loopback_only",
+            "dev login only works from this machine",
+        ));
+    }
+    let mut setup_token = state.setup_token.lock().await;
+    let user = match db::user_for_login(&state.db, DEV_USERNAME).await? {
+        Some(row) => row.user,
+        None => {
+            let user = db::insert_user(
+                &state.db,
+                DEV_USERNAME,
+                "Local Dev",
+                &hash_password(&auth::random_token()?)?,
+                Role::Admin,
+            )
+            .await?;
+            db::audit(
+                &state.db,
+                Some(&user.id),
+                "dev.user_created",
+                Some(&user.id),
+                None,
+                client.ip.as_deref(),
+            )
+            .await?;
+            info!("created the `dev` admin for dev login");
+            user
+        }
+    };
+    *setup_token = None;
+    drop(setup_token);
+    if user.disabled {
+        return Err(ApiError::forbidden("disabled", "this account is disabled"));
+    }
+    let cookie = auth::start_session(&state, &user, &client).await?;
+    db::audit(
+        &state.db,
+        Some(&user.id),
+        "login.dev",
         None,
         None,
         client.ip.as_deref(),

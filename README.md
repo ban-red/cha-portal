@@ -47,7 +47,15 @@ bun install
 ./scripts/check.sh
 ```
 
-To run the portal locally, build the SPA, then start `cha-control`, which serves it on port 8090 with a database in `data/`:
+To run a dev instance of the portal:
+
+```bash
+bun run dev
+```
+
+It starts `cha-control` on port 8090 (database `data/dev.db`) and the SPA on Vite with hot reload at http://localhost:5190, which proxies `/api` to it. The sign-in page shows **Login as Local Dev** (`--dev-login`): it creates a `dev` admin and signs you in. It only answers requests from this machine, and is not for a real portal. Flags after `--` go to `cha-control` (`bun run dev -- --turn-secret …`); Ctrl-C stops both.
+
+To run the portal as it ships instead, build the SPA and start `cha-control` alone, which serves it on port 8090. On first start, its log prints a one-time setup token for creating the first admin at http://localhost:8090:
 
 ```bash
 bun run --cwd web/apps/portal build
@@ -56,8 +64,6 @@ bun run --cwd web/apps/portal build
 ```bash
 cargo run -p cha-control -- --listen 127.0.0.1:8090 --database data/dev.db
 ```
-
-On first start, the log prints a one-time setup token: open http://localhost:8090 and create the first admin with it. Or add `--dev-login` to the command: the sign-in page then shows **Login as Local Dev**, which creates a `dev` admin and signs you in. It only answers requests from this machine, and is not for a real portal. For live UI work, also run `bun run --cwd web/apps/portal dev`. It serves the SPA on port 5190 and proxies `/api` to port 8090.
 
 To add a node, open **Admin → Nodes → Add node** and run the command it shows on the node. Locally, keep the agent's identity in `data/`:
 

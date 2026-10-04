@@ -1,0 +1,17 @@
+# Spike S6 on a Cha Node with an NVIDIA GPU. From the repository root, after
+# building cha/streamer:dev:
+#   docker compose -f spikes/s6-quality/compose.yaml run --rm --build s6-quality
+# Results land in spikes/s6-quality/results/.
+name: cha-s6
+
+services:
+  s6-quality:
+    build:
+      context: ../..
+      dockerfile: spikes/s6-quality/Dockerfile
+    image: cha/s6-quality
+    volumes:
+      - ./results:/out
+    # The whole driver through CDI: NVENC for ffmpeg, Vulkan for PyroWave.
+    devices:
+      - nvidia.com/gpu=all

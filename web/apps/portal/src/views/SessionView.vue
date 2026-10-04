@@ -31,13 +31,18 @@ const problem = ref<string | null>(null);
 const wtSupported = supportsWebTransport();
 // PyroWave (the LAN tier) joins once WebGPU says it can decode it.
 const codecs = ref<Codec[]>(supportedCodecs());
-const PYROWAVE: Codec[] = ["pyrowave420", "pyrowave444"];
+const PYROWAVE: Codec[] = ["pyrowave444", "pyrowave420"];
 if (wtSupported) {
   void supportsPyroWave().then((ok) => {
     if (ok) codecs.value = [...codecs.value, ...PYROWAVE];
   });
 }
-const CODEC_LABEL: Partial<Record<Codec, string>> = { pyrowave420: "PyroWave 4:2:0", pyrowave444: "PyroWave 4:4:4" };
+// PyroWave 4:4:4 is the LAN quality mode: near-lossless text, but ~580 Mbit/s
+// and slower to the screen than the hardware codecs on 1 GbE (spike S6).
+const CODEC_LABEL: Partial<Record<Codec, string>> = {
+  pyrowave444: "LAN quality (PyroWave 4:4:4)",
+  pyrowave420: "PyroWave 4:2:0",
+};
 const CODEC_KEY = "cha.player.codec";
 const saved = (() => {
   try {

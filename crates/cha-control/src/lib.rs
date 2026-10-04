@@ -38,6 +38,9 @@ pub struct Config {
     pub session_days: i64,
     /// STUN and TURN for players.
     pub ice: ice::IceConfig,
+    /// Offer "Login as Local Dev" to loopback clients: it creates (or reuses)
+    /// the `dev` admin and signs in without a password. Never for a real portal.
+    pub dev_login: bool,
 }
 
 #[derive(Clone)]
@@ -117,6 +120,9 @@ pub async fn run(config: Config) -> Result<()> {
         .is_none_or(|d| !d.join("index.html").exists())
     {
         warn!("no built portal SPA found; serving the API only");
+    }
+    if config.dev_login {
+        warn!("dev login is ON: any loopback client can sign in as the `dev` admin");
     }
     tokio::spawn(async move {
         loop {

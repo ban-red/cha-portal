@@ -7,6 +7,8 @@ import { ApiError, api, type User } from "../api";
 export const useSession = defineStore("session", () => {
   const user = ref<User | null>(null);
   const setupNeeded = ref(false);
+  /** The server runs with `--dev-login`. */
+  const devLoginEnabled = ref(false);
   const loaded = ref(false);
   const isAdmin = computed(() => user.value?.role === "admin");
 
@@ -14,6 +16,7 @@ export const useSession = defineStore("session", () => {
     if (loaded.value && !force) return;
     const status = await api.setupStatus();
     setupNeeded.value = status.needed;
+    devLoginEnabled.value = status.devLogin;
     user.value = status.needed ? null : await currentUser();
     loaded.value = true;
   }
@@ -31,6 +34,11 @@ export const useSession = defineStore("session", () => {
     user.value = await api.login({ username, password });
   }
 
+  async function devLogin(): Promise<void> {
+    user.value = await api.devLogin();
+    setupNeeded.value = false;
+  }
+
   async function setup(token: string, username: string, password: string, displayName?: string): Promise<void> {
     user.value = await api.setup({ token, username, password, displayName });
     setupNeeded.value = false;
@@ -41,5 +49,5 @@ export const useSession = defineStore("session", () => {
     user.value = null;
   }
 
-  return { user, setupNeeded, loaded, isAdmin, load, login, setup, logout };
+  return { user, setupNeeded, devLoginEnabled, loaded, isAdmin, load, login, devLogin, setup, logout };
 });

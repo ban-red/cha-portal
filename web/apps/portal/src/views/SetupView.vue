@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 
 import { ApiError } from "../api";
 import AuthCard from "../components/AuthCard.vue";
+import DevLoginButton from "../components/DevLoginButton.vue";
 import FormError from "../components/FormError.vue";
 import { useSession } from "../stores/session";
 
@@ -64,5 +65,6 @@ async function submit() {
         {{ busy ? "Creating…" : "Create admin" }}
       </button>
     </form>
+    <DevLoginButton />
   </AuthCard>
 </template>

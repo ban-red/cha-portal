@@ -32,6 +32,10 @@ struct Args {
     /// portal mints a day's credentials per connection with it.
     #[arg(long, env = "CHA_TURN_SECRET", hide_env_values = true)]
     turn_secret: Option<String>,
+    /// Let loopback clients sign in as a `dev` admin with one click (local
+    /// development only).
+    #[arg(long, env = "CHA_DEV_LOGIN")]
+    dev_login: bool,
 }
 
 #[tokio::main]
@@ -62,6 +66,7 @@ async fn main() -> Result<()> {
                 .collect(),
             turn_secret: args.turn_secret.filter(|s| !s.is_empty()),
         },
+        dev_login: args.dev_login,
     })
     .await
 }
