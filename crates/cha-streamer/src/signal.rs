@@ -19,11 +19,14 @@ use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
 use crate::audio::Audio;
+use crate::codec::VideoCodec;
 use crate::compositor::{self, fit_size};
 use crate::gamepad::Gamepads;
 use crate::media::{EncodeSettings, FrameHub, Media};
 use crate::net;
+use crate::pyro::PyroSettings;
 use crate::session;
+use crate::wt;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -48,9 +51,18 @@ struct Args {
     /// Video bitrate in Mbit/s.
     #[arg(long, default_value_t = 40)]
     mbps: u32,
-    /// Codecs offered.
-    #[arg(long, value_delimiter = ',', default_value = "hevc,h264,av1")]
+    /// Codecs offered. PyroWave (WebTransport only) needs libpyrowave and is
+    /// left out without it.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "hevc,h264,av1,pyrowave420,pyrowave444"
+    )]
     codecs: Vec<String>,
+    /// PyroWave's budget at 4:2:0, 1440p and `--fps` (4:4:4 gets twice as
+    /// much); scaled with the picture's area.
+    #[arg(long, default_value_t = 290)]
+    pyrowave_mbps: u32,
     /// The Wayland socket's name in $XDG_RUNTIME_DIR.
     #[arg(long, default_value = "wayland-0")]
     socket: String,
@@ -68,6 +80,10 @@ struct Args {
     /// WebRTC UDP port (ICE-lite).
     #[arg(long, default_value_t = 4496)]
     webrtc_port: u16,
+    /// WebTransport UDP port (`cha-stream/1`, the Chromium fast path); 0 for
+    /// none.
+    #[arg(long, default_value_t = 4497)]
+    wt_port: u16,
     /// Addresses browsers may reach WebRTC on (host candidates). Default:
     /// every IPv4 address of this machine except loopback and container
     /// bridges, so LAN and mesh (Tailscale, WireGuard) clients connect directly.
@@ -109,6 +125,10 @@ struct Args {
     /// Gamepads made at start, for apps that look for pads only once.
     #[arg(long, default_value_t = 1)]
     gamepads: usize,
+    /// Make PyroWave's Vulkan device on the render node's GPU, say how that
+    /// went and exit (the node doctor runs this).
+    #[arg(long)]
+    probe_pyrowave: bool,
 }
 
 /// Who may start a stream.
@@ -132,6 +152,9 @@ struct AppState {
     webrtc_port: u16,
     hosts: Vec<IpAddr>,
     public: Vec<IpAddr>,
+    /// WebTransport: its port (0 for none) and certificate's SHA-256.
+    wt_port: u16,
+    cert_hash_hex: String,
 }
 
 pub fn main() -> Result<()> {
@@ -145,11 +168,37 @@ pub fn main() -> Result<()> {
     str0m::crypto::from_feature_flags().install_process_default();
     let args = Args::parse();
 
-    let codecs = args
+    let mut codecs = args
         .codecs
         .iter()
-        .map(|c| Codec::from_name(c).ok_or_else(|| anyhow!("unknown codec {c}")))
+        .map(|c| VideoCodec::from_name(c).ok_or_else(|| anyhow!("unknown codec {c}")))
         .collect::<Result<Vec<_>>>()?;
+    let pyrowave = match (cha_pyrowave::available(), pci_ids(&args.render_node)) {
+        (Ok(()), Some((vendor, device))) => Some(PyroSettings::new(
+            vendor,
+            device,
+            args.pyrowave_mbps,
+            args.fps,
+        )),
+        (Err(err), _) => {
+            info!("no PyroWave: {err}");
+            None
+        }
+        (_, None) => {
+            info!("no PyroWave: the render node's PCI ids are unknown");
+            None
+        }
+    };
+    if args.probe_pyrowave {
+        return probe_pyrowave(pyrowave);
+    }
+    if pyrowave.is_none() {
+        codecs.retain(|c| c.hw().is_some());
+    }
+    let pyrowave = pyrowave.filter(|_| codecs.iter().any(|c| c.hw().is_none()));
+    if let Some(settings) = &pyrowave {
+        settings.warm();
+    }
     let runtime_dir =
         PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR must be set")?);
     ensure_runtime_dir(&runtime_dir, args.app_uid)?;
@@ -184,6 +233,7 @@ pub fn main() -> Result<()> {
             bitrate_bps: args.mbps * 1_000_000,
         },
         codecs,
+        pyrowave,
         (width, height),
     ));
     let runtime = tokio::runtime::Runtime::new()?;
@@ -243,6 +293,19 @@ pub fn main() -> Result<()> {
         .map(IpAddr::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    let names: Vec<IpAddr> = hosts.iter().chain(&args.public_address).copied().collect();
+    let wt = if args.wt_port == 0 {
+        None
+    } else {
+        let _runtime = runtime.enter();
+        match wt::bind(args.wt_port, &names) {
+            Ok(bound) => Some(bound),
+            Err(err) => {
+                warn!("no WebTransport: {err:#}");
+                None
+            }
+        }
+    };
     let state = Arc::new(AppState {
         media,
         audio,
@@ -254,7 +317,27 @@ pub fn main() -> Result<()> {
         webrtc_port: args.webrtc_port,
         hosts,
         public: args.public_address.clone(),
+        wt_port: if wt.is_some() { args.wt_port } else { 0 },
+        cert_hash_hex: wt
+            .as_ref()
+            .map(|(_, hash)| hash.clone())
+            .unwrap_or_default(),
     });
+    if let Some((endpoint, _)) = wt {
+        let authorizing = Arc::clone(&state);
+        let taking = Arc::clone(&state);
+        let sessions = Arc::new(wt::Sessions {
+            media: Arc::clone(&state.media),
+            audio: state.audio.clone(),
+            gamepads: state.gamepads.clone(),
+            authorize: Box::new(move |token| authorize(&authorizing.auth, token)),
+            take_over: Box::new(move |running| {
+                let state = Arc::clone(&taking);
+                Box::pin(async move { take_over(&state.current, running).await })
+            }),
+        });
+        runtime.spawn(wt::serve(endpoint, sessions));
+    }
     let app = Router::new()
         .route("/info", get(info_handler))
         .route("/streams", get(streams_handler))
@@ -297,6 +380,26 @@ fn pci_slot(render_node: &Path) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// The render node's PCI vendor and device ids (PyroWave picks its GPU by them).
+fn pci_ids(render_node: &Path) -> Option<(u32, u32)> {
+    let name = render_node.file_name()?.to_str()?;
+    let read = |file: &str| {
+        let text = std::fs::read_to_string(format!("/sys/class/drm/{name}/device/{file}")).ok()?;
+        u32::from_str_radix(text.trim().trim_start_matches("0x"), 16).ok()
+    };
+    Some((read("vendor")?, read("device")?))
+}
+
+fn probe_pyrowave(settings: Option<PyroSettings>) -> Result<()> {
+    let settings = settings.context("PyroWave isn't available (see above)")?;
+    settings.device().map_err(|e| anyhow!("{e}"))?;
+    println!(
+        "PyroWave ready on {:04x}:{:04x}",
+        settings.vendor_id, settings.device_id
+    );
+    Ok(())
+}
+
 /// Runs the app against the compositor and restarts it when it exits.
 fn keep_running(command: String, socket: String) {
     std::thread::spawn(move || {
@@ -322,7 +425,6 @@ fn keep_running(command: String, socket: String) {
 async fn info_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let (width, height) = state.media.size();
     Json(json!({
-        // WebRTC only, like the S3 gateway; the page reads these for its other paths.
         "gateway": true,
         "input": true,
         "audio": state.audio.is_some(),
@@ -331,8 +433,9 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "width": width,
         "height": height,
         "resize": true,
-        "wt_port": 0,
-        "cert_hash_hex": "",
+        "wt_port": state.wt_port,
+        "cert_hash_hex": state.cert_hash_hex,
+        "addresses": state.hosts.iter().chain(&state.public).collect::<Vec<_>>(),
     }))
 }
 
@@ -347,10 +450,11 @@ async fn streams_handler(State(state): State<Arc<AppState>>) -> Json<Vec<Value>>
                 json!({
                     "name": format!("live-{}", codec.name()),
                     "codec": codec.name(),
-                    "codecString": match codec {
-                        Codec::H264 => "avc1.640033",
-                        Codec::Hevc => "hev1.1.6.L153.B0",
-                        Codec::Av1 => "av01.0.13M.08",
+                    "codecString": match codec.hw() {
+                        Some(Codec::H264) => "avc1.640033",
+                        Some(Codec::Hevc) => "hev1.1.6.L153.B0",
+                        Some(Codec::Av1) => "av01.0.13M.08",
+                        None => "pyrowave",
                     },
                     "width": width,
                     "height": height,
@@ -373,37 +477,17 @@ async fn media_offer_handler(
     // Check the token before touching the body.
     let query = query.unwrap_or_default();
     let presented = query_value(&query, "token").unwrap_or("");
-    match &state.auth {
-        Auth::Token(token) => {
-            if !constant_time_eq(presented.as_bytes(), token.as_bytes()) {
-                // The length (never the value) tells a mistyped token from a
-                // truncated or padded one.
-                warn!(
-                    presented_chars = presented.len(),
-                    expected_chars = token.len(),
-                    "rejected a stream request: missing or wrong token"
-                );
-                return Err((StatusCode::FORBIDDEN, "missing or wrong token".into()));
-            }
-        }
-        Auth::Portal { key, environment } => {
-            match cha_wire::verify_media_token(key, presented, environment, unix_now()) {
-                Ok(claims) => {
-                    info!(user = %claims.sub, role = %claims.role, "media token accepted")
-                }
-                Err(err) => {
-                    warn!("rejected a stream request: media token {err}");
-                    return Err((StatusCode::FORBIDDEN, format!("media token {err}")));
-                }
-            }
-        }
+    if let Err(why) = authorize(&state.auth, presented) {
+        return Err((StatusCode::FORBIDDEN, why));
     }
     let bad_request = |err: anyhow::Error| (StatusCode::BAD_REQUEST, format!("{err:#}"));
     let offer: SdpOffer = serde_json::from_str(&body).map_err(|e| bad_request(e.into()))?;
     let name = query_value(&query, "name").ok_or_else(|| bad_request(anyhow!("missing ?name=")))?;
+    // WebRTC carries the hardware codecs only.
     let codec = name
         .strip_prefix("live-")
         .and_then(Codec::from_name)
+        .filter(|c| state.media.codecs().contains(&VideoCodec::Hw(*c)))
         .ok_or_else(|| bad_request(anyhow!("unknown stream {name}")))?;
     let params = session::SessionParams {
         codec,
@@ -433,6 +517,47 @@ async fn media_offer_handler(
     let (answer, running) = session::start(params, offer).await.map_err(bad_request)?;
     *current = Some(running);
     Ok(Json(answer))
+}
+
+/// Whether `presented` may start a stream; the error says why not.
+fn authorize(auth: &Auth, presented: &str) -> std::result::Result<(), String> {
+    match auth {
+        Auth::Token(token) => {
+            if !constant_time_eq(presented.as_bytes(), token.as_bytes()) {
+                // The length (never the value) tells a mistyped token from a
+                // truncated or padded one.
+                warn!(
+                    presented_chars = presented.len(),
+                    expected_chars = token.len(),
+                    "rejected a stream request: missing or wrong token"
+                );
+                return Err("missing or wrong token".into());
+            }
+        }
+        Auth::Portal { key, environment } => {
+            match cha_wire::verify_media_token(key, presented, environment, unix_now()) {
+                Ok(claims) => {
+                    info!(user = %claims.sub, role = %claims.role, "media token accepted")
+                }
+                Err(err) => {
+                    warn!("rejected a stream request: media token {err}");
+                    return Err(format!("media token {err}"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Stops the running session, whatever its transport, so `next` can have
+/// the environment (one viewer until sharing, plan §3.4).
+async fn take_over(current: &tokio::sync::Mutex<Option<session::Running>>, next: session::Running) {
+    let mut current = current.lock().await;
+    if let Some(old) = current.take() {
+        let _ = old.stop.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), old.handle).await;
+    }
+    *current = Some(next);
 }
 
 fn unix_now() -> i64 {

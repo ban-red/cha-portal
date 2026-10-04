@@ -17,6 +17,8 @@ anyhow = "1"
 axum = "0.8"
 bytes = "1"
 cha-nvenc = { path = "../cha-nvenc" }
+cha-pyrowave = { path = "../cha-pyrowave" }
+cha-proto.workspace = true
 cha-wire = { path = "../cha-wire" }
 clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
@@ -28,6 +30,7 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wtransport = { version = "0.7", features = ["quinn"] }
 
 # Smithay's master (no release since 0.7.0 in June 2025), pinned.
 [target.'cfg(target_os = "linux")'.dependencies.smithay]

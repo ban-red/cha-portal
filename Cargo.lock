@@ -562,6 +562,13 @@ name = "cha-proto"
 version = "0.0.1"
 
 [[package]]
+name = "cha-pyrowave"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "cha-streamer"
 version = "0.1.0"
 dependencies = [
@@ -569,6 +576,8 @@ dependencies = [
  "axum",
  "bytes",
  "cha-nvenc",
+ "cha-proto",
+ "cha-pyrowave",
  "cha-wire",
  "clap",
  "libc",
@@ -581,6 +590,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "wtransport",
 ]
 
 [[package]]

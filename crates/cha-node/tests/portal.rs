@@ -159,6 +159,7 @@ impl Runtime for FakeRuntime {
             Ok(StreamerEndpoint {
                 http_port: 47000,
                 webrtc_port: 47001,
+                webtransport_port: 47002,
             })
         })
     }

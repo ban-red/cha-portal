@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "Cha Portal's browser player: WebRTC from a node's streamer, input back, stats",
+  "description": "Cha Portal's browser player: WebRTC or WebTransport from a node's streamer, hardware codecs or PyroWave, input back, stats",
   "exports": {
     ".": "./src/index.ts"
   },
@@ -12,6 +12,11 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "typescript": "~6.0.3"
+    "typescript": "~6.0.3",
+    "@webgpu/types": "^0.1.74",
+    "vite": "^8.3.2"
+  },
+  "dependencies": {
+    "@cha/pyrowave-webgpu": "workspace:*"
   }
 }

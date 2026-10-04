@@ -6,17 +6,34 @@
 #   runtime  the streamer alone, one container per environment:
 #              docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
 #
-# The NVIDIA driver (EGL, GBM backend, CUDA, NVENC) comes from the CDI spec at
-# run time; nothing NVIDIA is installed in the image.
+# The NVIDIA driver (EGL, GBM backend, CUDA, NVENC, Vulkan) comes from the CDI
+# spec at run time; nothing NVIDIA is installed in the image (libX11 and
+# libXext are there because NVIDIA's Vulkan driver, libGLX_nvidia, links
+# them). libpyrowave (PyroWave, MIT) is built from upstream at the commit
+# the browser decoder is pinned to.
 FROM ubuntu:26.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates libglvnd0 libegl1 libgles2 libgbm1 libxkbcommon0 libopus0 \
+      ca-certificates libglvnd0 libegl1 libgles2 libgbm1 libxkbcommon0 libopus0 libvulkan1 \
+      libx11-6 libxext6 \
     && rm -rf /var/lib/apt/lists/*
 ENV NVIDIA_DRIVER_CAPABILITIES=all \
     XDG_RUNTIME_DIR=/run/cha
 
+FROM base AS pyrowave
+RUN apt-get update && apt-get install -y --no-install-recommends git cmake ninja-build g++ \
+    && rm -rf /var/lib/apt/lists/*
+ARG PYROWAVE_REV=89f7e47d4abbf650c91fae766728af866c5e32a0
+RUN git clone --quiet https://github.com/Themaister/pyrowave.git /src/pyrowave \
+ && cd /src/pyrowave && git checkout --quiet "$PYROWAVE_REV" \
+ && ./checkout_granite.sh >/dev/null \
+ && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release >/dev/null \
+ && ninja -C build pyrowave-shared \
+ && cp -L build/libpyrowave-shared.so.0 /usr/local/lib/libpyrowave-shared.so.0
+
 FROM base AS dev
+COPY --from=pyrowave /usr/local/lib/libpyrowave-shared.so.0 /usr/local/lib/
+RUN ldconfig
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl gnupg git build-essential pkg-config clang libclang-dev cmake \
       libgbm-dev libxkbcommon-dev libegl-dev libdrm-dev libopus-dev \
@@ -43,5 +60,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
  && cp /target/release/cha-streamer /usr/local/bin/cha-streamer
 
 FROM base AS runtime
+COPY --from=pyrowave /usr/local/lib/libpyrowave-shared.so.0 /usr/local/lib/
+RUN ldconfig
 COPY --from=build /usr/local/bin/cha-streamer /usr/local/bin/cha-streamer
 ENTRYPOINT ["cha-streamer"]

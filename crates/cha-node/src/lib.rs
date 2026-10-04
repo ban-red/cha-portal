@@ -373,6 +373,14 @@ async fn handle(
                 .map(|answer| NodeResponse::Answer { answer })
                 .map_err(|e| format!("{e:#}"))
         }
+        NodeRequest::StreamerInfo { environment_id } => {
+            let runtime = runtime.ok_or(NO_RUNTIME)?;
+            runtime
+                .streamer_info(environment_id)
+                .await
+                .map(|info| NodeResponse::StreamerInfo { info })
+                .map_err(|e| format!("{e:#}"))
+        }
         NodeRequest::StopEnvironment { id } => {
             let runtime = runtime.ok_or(NO_RUNTIME)?;
             runtime

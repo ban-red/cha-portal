@@ -50,6 +50,7 @@
       "devDependencies": {
         "@tailwindcss/vite": "^4.3.3",
         "@vitejs/plugin-vue": "^6.0.9",
+        "@webgpu/types": "^0.1.74",
         "tailwindcss": "^4.3.3",
         "typescript": "~6.0.3",
         "vite": "^8.3.2",
@@ -59,8 +60,13 @@
     "web/packages/player": {
       "name": "@cha/player",
       "version": "0.0.0",
+      "dependencies": {
+        "@cha/pyrowave-webgpu": "workspace:*",
+      },
       "devDependencies": {
+        "@webgpu/types": "^0.1.74",
         "typescript": "~6.0.3",
+        "vite": "^8.3.2",
       },
     },
     "web/packages/pyrowave-webgpu": {

@@ -37,6 +37,8 @@ const LIST_LIMIT: i64 = 50;
 /// streamer, no longer.
 const MEDIA_TOKEN_SECS: i64 = 60;
 const CODECS: [&str; 3] = ["h264", "hevc", "av1"];
+/// The LAN tier's codec (plan §3.2), over WebTransport only.
+const PYROWAVE_CODECS: [&str; 2] = ["pyrowave420", "pyrowave444"];
 const WIDTH: u32 = 2560;
 const HEIGHT: u32 = 1440;
 const FPS: u32 = 60;
@@ -287,23 +289,72 @@ async fn stop(
     Ok(Json(view(row, &nodes_by_id(&state).await?)))
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Transport {
+    #[default]
+    WebRtc,
+    /// `cha-stream/1` over WebTransport: the browser connects to the streamer
+    /// itself, with the URLs and certificate hash this returns.
+    WebTransport,
+}
+
 #[derive(Deserialize)]
 struct ConnectRequest {
     /// `h264`, `hevc` or `av1`: what this browser decodes best.
     codec: String,
+    #[serde(default)]
+    transport: Transport,
     /// The browser's WebRTC offer (`{"type": "offer", "sdp": …}`).
+    #[serde(default)]
     offer: serde_json::Value,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ConnectResponse {
-    answer: serde_json::Value,
     codec: String,
+    transport: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    answer: Option<serde_json::Value>,
+    /// WebTransport: one URL per address of the node, best first, each with
+    /// the media token; the browser takes the first that connects.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    urls: Vec<String>,
+    /// WebTransport: the streamer's self-signed certificate (SHA-256, hex),
+    /// for `serverCertificateHashes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cert_hash: Option<String>,
 }
 
 /// Brokers a WebRTC connection: the offer goes to the environment's streamer
 /// through its node, with a short-lived media token only this portal can sign;
 /// the answer comes back the same way. Media then flows node → browser.
+/// From a streamer's `/info`: a WebTransport URL per address it has (best
+/// first), carrying the media token, and its certificate's hash.
+fn webtransport_urls(
+    info: &serde_json::Value,
+    codec: &str,
+    token: &str,
+) -> Option<(Vec<String>, String)> {
+    let port = info["wt_port"].as_u64().filter(|p| *p > 0)?;
+    let hash = info["cert_hash_hex"].as_str().filter(|h| !h.is_empty())?;
+    let urls = info["addresses"]
+        .as_array()?
+        .iter()
+        .filter_map(|a| a.as_str())
+        .map(|addr| {
+            let host = if addr.contains(':') {
+                format!("[{addr}]")
+            } else {
+                addr.to_string()
+            };
+            format!("https://{host}:{port}/media?codec={codec}&token={token}")
+        })
+        .collect::<Vec<_>>();
+    (!urls.is_empty()).then(|| (urls, hash.to_string()))
+}
+
 async fn connect(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
@@ -318,13 +369,21 @@ async fn connect(
             format!("the environment is {}", row.state),
         ));
     }
-    if !CODECS.contains(&req.codec.as_str()) {
+    let pyrowave = PYROWAVE_CODECS.contains(&req.codec.as_str());
+    if !CODECS.contains(&req.codec.as_str()) && !pyrowave {
         return Err(ApiError::bad_request(
             "bad_codec",
-            "codec must be h264, hevc or av1",
+            "codec must be h264, hevc, av1, pyrowave420 or pyrowave444",
         ));
     }
-    if req.offer.get("sdp").and_then(|s| s.as_str()).is_none() {
+    if pyrowave && req.transport != Transport::WebTransport {
+        return Err(ApiError::bad_request(
+            "bad_codec",
+            "PyroWave goes over WebTransport only",
+        ));
+    }
+    if req.transport == Transport::WebRtc && req.offer.get("sdp").and_then(|s| s.as_str()).is_none()
+    {
         return Err(ApiError::bad_request("bad_offer", "the offer has no SDP"));
     }
     let node_id = row
@@ -341,37 +400,77 @@ async fn connect(
         .into(),
         exp: db::now() + MEDIA_TOKEN_SECS,
     };
-    let reply = state
-        .nodes
-        .request(
-            &node_id,
-            NodeRequest::Connect {
-                environment_id: id.clone(),
+    let media_token = sign_media_token(&state.media_key, &claims);
+    let response = match req.transport {
+        Transport::WebRtc => {
+            let reply = state
+                .nodes
+                .request(
+                    &node_id,
+                    NodeRequest::Connect {
+                        environment_id: id.clone(),
+                        codec: req.codec.clone(),
+                        offer: req.offer,
+                        media_token,
+                    },
+                )
+                .await?;
+            let NodeResponse::Answer { answer } = reply else {
+                return Err(ApiError::conflict(
+                    "node_error",
+                    "the node answered something else",
+                ));
+            };
+            ConnectResponse {
                 codec: req.codec.clone(),
-                offer: req.offer,
-                media_token: sign_media_token(&state.media_key, &claims),
-            },
-        )
-        .await?;
-    let NodeResponse::Answer { answer } = reply else {
-        return Err(ApiError::conflict(
-            "node_error",
-            "the node answered something else",
-        ));
+                transport: "webrtc",
+                answer: Some(answer),
+                urls: Vec::new(),
+                cert_hash: None,
+            }
+        }
+        Transport::WebTransport => {
+            let reply = state
+                .nodes
+                .request(
+                    &node_id,
+                    NodeRequest::StreamerInfo {
+                        environment_id: id.clone(),
+                    },
+                )
+                .await?;
+            let NodeResponse::StreamerInfo { info } = reply else {
+                return Err(ApiError::conflict(
+                    "node_error",
+                    "the node answered something else",
+                ));
+            };
+            let (urls, cert_hash) =
+                webtransport_urls(&info, &req.codec, &media_token).ok_or_else(|| {
+                    ApiError::conflict(
+                        "no_webtransport",
+                        "this environment's streamer doesn't offer WebTransport",
+                    )
+                })?;
+            ConnectResponse {
+                codec: req.codec.clone(),
+                transport: "webtransport",
+                answer: None,
+                urls,
+                cert_hash: Some(cert_hash),
+            }
+        }
     };
     db::audit(
         &state.db,
         Some(&user.id),
         "environment.connected",
         Some(&id),
-        Some(json!({ "codec": req.codec })),
+        Some(json!({ "codec": req.codec, "transport": response.transport })),
         client.ip.as_deref(),
     )
     .await?;
-    Ok(Json(ConnectResponse {
-        answer,
-        codec: req.codec,
-    }))
+    Ok(Json(response))
 }
 
 /// Placement v0: the first connected node with an NVIDIA GPU that can encode.
@@ -540,5 +639,26 @@ mod tests {
         let chrome = template("chrome").unwrap();
         assert_eq!(chrome.security, SecurityProfile::Browser);
         assert!(chrome.shm_mb >= 512);
+        assert!(template("steam").unwrap().persistent);
+    }
+
+    #[test]
+    fn webtransport_urls_cover_every_address() {
+        let info = json!({
+            "wt_port": 47002,
+            "cert_hash_hex": "ab12",
+            "addresses": ["192.168.1.5", "100.64.0.7", "fd7a::1"],
+        });
+        let (urls, hash) = webtransport_urls(&info, "hevc", "tok").unwrap();
+        assert_eq!(hash, "ab12");
+        assert_eq!(
+            urls[0],
+            "https://192.168.1.5:47002/media?codec=hevc&token=tok"
+        );
+        assert_eq!(
+            urls[2],
+            "https://[fd7a::1]:47002/media?codec=hevc&token=tok"
+        );
+        assert!(webtransport_urls(&json!({ "wt_port": 0 }), "hevc", "tok").is_none());
     }
 }

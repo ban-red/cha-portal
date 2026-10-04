@@ -38,6 +38,13 @@ pub struct Slot {
     dmabuf: Dmabuf,
 }
 
+impl Slot {
+    /// The buffer itself, for encoders that import it (PyroWave).
+    pub fn dmabuf(&self) -> &Dmabuf {
+        &self.dmabuf
+    }
+}
+
 struct EglImage {
     display: EGLDisplay,
     image: egl_ffi::types::EGLImage,
@@ -152,6 +159,18 @@ impl OutputPool {
     ) -> Result<(Fourcc, Vec<Modifier>)> {
         let mut tried = Vec::new();
         for (fourcc, modifiers) in formats {
+            // NVIDIA's GL allocates compressed block-linear buffers, which its
+            // Vulkan can't import (PyroWave reads the buffers through Vulkan).
+            let uncompressed: Vec<Modifier> = modifiers
+                .iter()
+                .copied()
+                .filter(|m| !nvidia_compressed(*m))
+                .collect();
+            let modifiers = if uncompressed.is_empty() {
+                modifiers
+            } else {
+                uncompressed
+            };
             let mut candidates = vec![modifiers.clone()];
             if modifiers.contains(&Modifier::Linear) && modifiers.len() > 1 {
                 candidates.push(vec![Modifier::Linear]);
@@ -281,6 +300,13 @@ impl State {
     }
 }
 
+/// An NVIDIA block-linear modifier with compression (its `c` field):
+/// `DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(c, s, g, k, h)` in drm_fourcc.h.
+fn nvidia_compressed(modifier: Modifier) -> bool {
+    let m: u64 = modifier.into();
+    (m >> 56) == 0x03 && (m >> 23) & 0x7 != 0
+}
+
 /// Compositor counters, logged every few seconds.
 #[derive(Default)]
 pub struct Stats {
@@ -334,5 +360,18 @@ impl Stats {
         self.starved = 0;
         self.commits = 0;
         self.render_us.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spots_nvidia_compression() {
+        // What NVIDIA's GBM picked (compressed) and what its Vulkan imports.
+        assert!(nvidia_compressed(Modifier::from(0x0300_0000_00e0_8014)));
+        assert!(!nvidia_compressed(Modifier::from(0x0300_0000_0060_6014)));
+        assert!(!nvidia_compressed(Modifier::Linear));
     }
 }

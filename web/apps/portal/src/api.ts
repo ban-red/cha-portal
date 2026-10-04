@@ -142,8 +142,18 @@ export const api = {
   /** STUN and TURN for the next connection (TURN credentials last a day). */
   iceServers: () => request<{ iceServers: RTCIceServer[] }>("GET", "/ice"),
   /** Brokers a WebRTC connection to the environment's streamer. */
-  connect: (id: string, body: { codec: string; offer: RTCSessionDescriptionInit }) =>
-    request<{ answer: RTCSessionDescriptionInit; codec: string }>(
+  connect: (
+    id: string,
+    body: { codec: string; offer?: RTCSessionDescriptionInit; transport?: "webrtc" | "webtransport" },
+  ) =>
+    request<{
+      codec: string;
+      transport: "webrtc" | "webtransport";
+      answer?: RTCSessionDescriptionInit;
+      /** WebTransport: the streamer's URLs, best first, and its certificate's hash. */
+      urls?: string[];
+      certHash?: string;
+    }>(
       "POST",
       `/environments/${encodeURIComponent(id)}/connect`,
       body,

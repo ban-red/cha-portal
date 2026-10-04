@@ -16,8 +16,10 @@ use smithay::reexports::calloop::channel;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::codec::VideoCodec;
 use crate::compositor::{Command, MAX_SIZE, Slot, fit_size};
 use crate::input::Input;
+use crate::pyro::{PyroSettings, PyroWorker};
 
 /// One composited frame, sitting in an output buffer until every encoder that
 /// got it lets go.
@@ -32,9 +34,13 @@ pub struct Frame {
     pub rendered: Instant,
 }
 
-/// One encoded access unit (Annex-B for H.264/HEVC, OBUs for AV1).
+/// One encoded access unit (Annex-B for H.264/HEVC, OBUs for AV1, a
+/// PyroWave frame).
 pub struct EncodedFrame {
     pub data: Bytes,
+    /// PyroWave: the packets `data` splits into, one datagram each. Empty
+    /// for the hardware codecs (any fragmentation does).
+    pub packets: Vec<cha_pyrowave::Packet>,
     pub key: bool,
     /// When the composited frame was ready.
     pub composited: Instant,
@@ -52,12 +58,12 @@ struct MailboxState {
 }
 
 #[derive(Default)]
-struct Mailbox {
+pub struct Mailbox {
     state: Mutex<MailboxState>,
     ready: Condvar,
 }
 
-enum Wake {
+pub enum Wake {
     Frame(Frame, bool),
     Keyframe,
     Idle,
@@ -78,7 +84,7 @@ impl Mailbox {
         self.ready.notify_one();
     }
 
-    fn wait(&self, timeout: Duration) -> Wake {
+    pub fn wait(&self, timeout: Duration) -> Wake {
         let state = self.state.lock().expect("mailbox lock");
         let (mut state, _) = self
             .ready
@@ -119,13 +125,21 @@ impl FrameHub {
     fn attach(&self, mailbox: Arc<Mailbox>) {
         self.mailboxes.lock().expect("hub lock").push(mailbox);
     }
+
+    fn detach(&self, mailbox: &Arc<Mailbox>) {
+        self.mailboxes
+            .lock()
+            .expect("hub lock")
+            .retain(|m| !Arc::ptr_eq(m, mailbox));
+    }
 }
 
-type Subscribers = Arc<Mutex<Vec<mpsc::Sender<EncodedFrame>>>>;
+pub type Subscribers = Arc<Mutex<Vec<mpsc::Sender<EncodedFrame>>>>;
 
 struct EncoderThread {
     mailbox: Arc<Mailbox>,
     subscribers: Subscribers,
+    thread: std::thread::JoinHandle<()>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -139,8 +153,10 @@ pub struct Media {
     compositor: channel::Sender<Command>,
     cuda: Arc<CudaContext>,
     settings: EncodeSettings,
-    codecs: Vec<Codec>,
-    encoders: Mutex<HashMap<Codec, EncoderThread>>,
+    codecs: Vec<VideoCodec>,
+    /// PyroWave's, if it's offered.
+    pyrowave: Option<PyroSettings>,
+    encoders: Mutex<HashMap<VideoCodec, EncoderThread>>,
     size: Mutex<(u32, u32)>,
 }
 
@@ -150,7 +166,8 @@ impl Media {
         compositor: channel::Sender<Command>,
         cuda: Arc<CudaContext>,
         settings: EncodeSettings,
-        codecs: Vec<Codec>,
+        codecs: Vec<VideoCodec>,
+        pyrowave: Option<PyroSettings>,
         size: (u32, u32),
     ) -> Self {
         Self {
@@ -159,12 +176,13 @@ impl Media {
             cuda,
             settings,
             codecs,
+            pyrowave,
             encoders: Mutex::default(),
             size: Mutex::new(size),
         }
     }
 
-    pub fn codecs(&self) -> &[Codec] {
+    pub fn codecs(&self) -> &[VideoCodec] {
         &self.codecs
     }
 
@@ -174,7 +192,7 @@ impl Media {
     }
 
     /// Frames of `codec` from now on, starting with a keyframe.
-    pub fn subscribe(&self, codec: Codec) -> Result<mpsc::Receiver<EncodedFrame>> {
+    pub fn subscribe(&self, codec: VideoCodec) -> Result<mpsc::Receiver<EncodedFrame>> {
         anyhow::ensure!(
             self.codecs.contains(&codec),
             "{} isn't offered here",
@@ -182,6 +200,14 @@ impl Media {
         );
         let (tx, rx) = mpsc::channel(8);
         let mut encoders = self.encoders.lock().expect("encoders lock");
+        // An encoder that gave up (it logged why) gets another go.
+        if let Some(dead) = encoders.remove(&codec) {
+            if dead.thread.is_finished() {
+                self.hub.detach(&dead.mailbox);
+            } else {
+                encoders.insert(codec, dead);
+            }
+        }
         let encoder = encoders
             .entry(codec)
             .or_insert_with(|| self.start_encoder(codec));
@@ -195,7 +221,7 @@ impl Media {
         Ok(rx)
     }
 
-    pub fn request_keyframe(&self, codec: Codec) {
+    pub fn request_keyframe(&self, codec: VideoCodec) {
         if let Some(encoder) = self.encoders.lock().expect("encoders lock").get(&codec) {
             encoder.mailbox.request_keyframe();
         }
@@ -216,24 +242,39 @@ impl Media {
         let _ = self.compositor.send(Command::Input(input));
     }
 
-    fn start_encoder(&self, codec: Codec) -> EncoderThread {
+    fn start_encoder(&self, codec: VideoCodec) -> EncoderThread {
         let mailbox = Arc::new(Mailbox::default());
         let subscribers: Subscribers = Arc::default();
-        let worker = EncoderWorker {
-            codec,
-            cuda: Arc::clone(&self.cuda),
-            settings: self.settings,
-            mailbox: Arc::clone(&mailbox),
-            subscribers: Arc::clone(&subscribers),
-        };
-        std::thread::Builder::new()
-            .name(format!("encode-{}", codec.name()))
-            .spawn(move || worker.run())
-            .expect("spawning an encoder thread");
+        let builder = std::thread::Builder::new().name(format!("encode-{}", codec.name()));
+        let thread = match (codec, self.pyrowave.clone()) {
+            (VideoCodec::Hw(codec), _) => {
+                let worker = EncoderWorker {
+                    codec,
+                    cuda: Arc::clone(&self.cuda),
+                    settings: self.settings,
+                    mailbox: Arc::clone(&mailbox),
+                    subscribers: Arc::clone(&subscribers),
+                };
+                builder.spawn(move || worker.run())
+            }
+            (VideoCodec::PyroWave(chroma), Some(settings)) => {
+                let worker = PyroWorker {
+                    chroma,
+                    settings,
+                    mailbox: Arc::clone(&mailbox),
+                    subscribers: Arc::clone(&subscribers),
+                };
+                builder.spawn(move || worker.run())
+            }
+            // Not offered: subscribe() refused it already.
+            (VideoCodec::PyroWave(_), None) => builder.spawn(|| ()),
+        }
+        .expect("spawning an encoder thread");
         self.hub.attach(Arc::clone(&mailbox));
         EncoderThread {
             mailbox,
             subscribers,
+            thread,
         }
     }
 }
@@ -336,6 +377,7 @@ impl EncoderWorker {
             }
             self.deliver(EncodedFrame {
                 data: Bytes::copy_from_slice(&out),
+                packets: Vec::new(),
                 key,
                 composited,
                 encoded,
@@ -422,6 +464,7 @@ impl EncoderWorker {
         for subscriber in rest {
             let _ = subscriber.try_send(EncodedFrame {
                 data: frame.data.clone(),
+                packets: Vec::new(),
                 ..frame
             });
         }

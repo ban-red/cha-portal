@@ -10,8 +10,12 @@ const player = new Player({
 await player.connect();
 ```
 
-- **Media.** Recvonly WebRTC video and audio tracks; the streamer stamps playout-delay 0 on video. The node streams straight to the browser, while the portal only brokers the offer and answer, with a 60 s media token.
+- **Transports.** `transport: "auto"` (the default) takes WebTransport where the browser has WebTransport, WebCodecs and track generators (Chromium), and falls back to WebRTC. Pass `webTransport` (the portal's URLs and certificate hash) to allow it.
+  - **WebTransport** (`wt-worker.ts`): `cha-stream/1` datagrams reassembled in a worker, frames handed over in order from a keyframe, a keyframe asked for when one is lost; WebCodecs decodes into track generators feeding `<video>` and `<audio>`.
+  - **WebRTC:** recvonly video and audio tracks; the streamer stamps playout-delay 0 on video. The node streams straight to the browser, while the portal only brokers the offer and answer, with a 60 s media token.
 - **Codec.** The best this browser can receive, in the order measured on the baseline (P1.3): HEVC, then H.264, then AV1.
+  - **`switchCodec()`** changes codec in place over WebTransport: a decoder for the new codec is ready first, and the picture stays up until the new stream's first frame (gaps under 35 ms). Over WebRTC, or when the streamer doesn't answer within 3 s, it reconnects.
+  - **PyroWave** (`pyrowave420`, `pyrowave444`; `pyro.ts`): the LAN tier, over WebTransport only, where WebGPU has subgroups (`supportsPyroWave()`). Frames are intra-only, so the worker hands over every frame, partial ones at the deadline, and never waits for a keyframe. `@cha/pyrowave-webgpu` decodes into an offscreen canvas; each frame becomes a VideoFrame for the same track generator as WebCodecs.
 - **Input** (`input.ts`) goes up the `control` DataChannel.
   - **Pointer:** absolute positions on the picture. With `lockPointer()`, raw relative motion scaled to stream pixels, for games.
   - **Keyboard:** keys by `KeyboardEvent.code`. Held keys and buttons are released on blur, so nothing sticks.

@@ -12,7 +12,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use cha_nvenc::Codec;
-use serde::Serialize;
 use str0m::change::{SdpAnswer, SdpOffer};
 use str0m::channel::ChannelId;
 use str0m::format::Codec as RtpCodec;
@@ -27,8 +26,9 @@ use tokio::time::sleep_until;
 use tracing::{info, warn};
 
 use crate::audio::{Audio, AudioPacket};
-use crate::gamepad::{Gamepads, PadState};
-use crate::input::BrowserInput;
+use crate::codec::VideoCodec;
+use crate::control::{Control, ServerMsg, StreamerStats, percentile};
+use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media};
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
@@ -126,73 +126,6 @@ pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<(SdpAnswer,
     Ok((answer, Running { stop, handle }))
 }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "t", rename_all = "snake_case")]
-enum ServerMsg {
-    Hello {
-        stream: serde_json::Value,
-    },
-    Pong {
-        c: f64,
-        s_us: u64,
-    },
-    /// Frame `id` went out with RTP timestamp `rtp` at `s_us` (session clock).
-    /// `c_us`/`e_us`: when it was composited and encoded, same clock.
-    Sent {
-        id: u32,
-        rtp: u32,
-        s_us: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        c_us: Option<u64>,
-        e_us: u64,
-    },
-    /// Input carrying a `probe` id reached the streamer at `s_us`.
-    Probe {
-        id: u64,
-        s_us: u64,
-    },
-    /// The output was resized to `w`×`h` at `s_us` (as asked, rounded to fit).
-    Resized {
-        w: u32,
-        h: u32,
-        s_us: u64,
-    },
-    Stats {
-        elapsed_ms: u64,
-        #[serde(flatten)]
-        stats: StreamerStats,
-    },
-    Done {
-        #[serde(flatten)]
-        stats: StreamerStats,
-    },
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-struct StreamerStats {
-    frames_generated: u64,
-    frames_sent: u64,
-    bytes_sent: u64,
-    keyframes: u64,
-    /// Browser PLI/FIR, each turned into a force-key-unit request.
-    keyframe_requests: u64,
-    /// From the session being ready to the first frame.
-    first_frame_ms: Option<u64>,
-    /// Composited frame ready → encoded.
-    composite_to_encoded_ms_p50: Option<f64>,
-    composite_to_encoded_ms_p99: Option<f64>,
-    /// Encoded → handed to str0m.
-    encoded_to_sent_us_p50: Option<u64>,
-    encoded_to_sent_us_p99: Option<u64>,
-    frame_interval_ms_p50: Option<f64>,
-    frame_interval_ms_p99: Option<f64>,
-    inputs: u64,
-    inputs_unmapped: u64,
-    resizes: u64,
-    audio_packets: u64,
-    audio_bytes: u64,
-}
-
 struct Session {
     rtc: Rtc,
     /// One per host candidate, all on the same port where possible.
@@ -204,6 +137,8 @@ struct Session {
     mid: Option<Mid>,
     audio_mid: Option<Mid>,
     control: Option<ChannelId>,
+    /// What the page's control messages do (shared with WebTransport).
+    handler: Control,
     connected: bool,
     frames: Option<mpsc::Receiver<EncodedFrame>>,
     audio: Option<mpsc::Receiver<AudioPacket>>,
@@ -230,6 +165,12 @@ impl Session {
         stopped: oneshot::Receiver<()>,
     ) -> Self {
         let epoch = Instant::now();
+        let handler = Control {
+            epoch,
+            codec: VideoCodec::Hw(params.codec),
+            media: Arc::clone(&params.media),
+            gamepads: params.gamepads.clone(),
+        };
         Self {
             rtc,
             sockets,
@@ -240,6 +181,7 @@ impl Session {
             mid: None,
             audio_mid: None,
             control: None,
+            handler,
             connected: false,
             frames: None,
             audio: None,
@@ -336,7 +278,11 @@ impl Session {
             return Ok(());
         }
         self.subscribed_at = Some(Instant::now());
-        self.frames = Some(self.params.media.subscribe(self.params.codec)?);
+        self.frames = Some(
+            self.params
+                .media
+                .subscribe(VideoCodec::Hw(self.params.codec))?,
+        );
         if let (Some(audio), Some(_)) = (&self.params.audio, self.audio_mid) {
             self.audio = Some(audio.subscribe());
         }
@@ -502,7 +448,9 @@ impl Session {
             Event::MediaAdded(m) if m.kind == MediaKind::Audio => self.audio_mid = Some(m.mid),
             Event::KeyframeRequest(_) => {
                 self.stats.keyframe_requests += 1;
-                self.params.media.request_keyframe(self.params.codec);
+                self.params
+                    .media
+                    .request_keyframe(VideoCodec::Hw(self.params.codec));
             }
             Event::ChannelOpen(id, label) if label == "control" => {
                 self.control = Some(id);
@@ -528,58 +476,11 @@ impl Session {
     }
 
     fn handle_client_line(&mut self, line: &str) {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
-            return;
-        };
-        match msg.get("t").and_then(|t| t.as_str()) {
-            Some("ping") => {
-                if let Some(c) = msg.get("c").and_then(|c| c.as_f64()) {
-                    let s_us = self.epoch.elapsed().as_micros() as u64;
-                    self.send_control(&ServerMsg::Pong { c, s_us });
-                }
-            }
-            Some("resize") => {
-                let dim = |k: &str| msg.get(k).and_then(|v| v.as_u64()).map(|v| v as u32);
-                if let (Some(w), Some(h)) = (dim("w"), dim("h")) {
-                    let (w, h) = self.params.media.resize(w, h);
-                    self.stats.resizes += 1;
-                    let s_us = self.epoch.elapsed().as_micros() as u64;
-                    self.send_control(&ServerMsg::Resized { w, h, s_us });
-                }
-            }
-            Some("input") => {
-                let received_us = self.epoch.elapsed().as_micros() as u64;
-                self.stats.inputs += 1;
-                if msg.get("k").and_then(|k| k.as_str()) == Some("pad") {
-                    match (
-                        &self.params.gamepads,
-                        serde_json::from_value::<PadState>(msg),
-                    ) {
-                        (Some(pads), Ok(state)) => pads.update(&state),
-                        _ => self.stats.inputs_unmapped += 1,
-                    }
-                    return;
-                }
-                let probe = msg.get("probe").and_then(|p| p.as_u64());
-                let media = &self.params.media;
-                match serde_json::from_value::<BrowserInput>(msg)
-                    .ok()
-                    .and_then(|i| {
-                        let (w, h) = media.size();
-                        i.to_compositor(w, h)
-                    }) {
-                    Some(input) => media.input(input),
-                    None => self.stats.inputs_unmapped += 1,
-                }
-                // The page's latency probe: echo when its click arrived.
-                if let Some(id) = probe {
-                    self.send_control(&ServerMsg::Probe {
-                        id,
-                        s_us: received_us,
-                    });
-                }
-            }
-            _ => {}
+        let mut replies = Vec::new();
+        self.handler
+            .handle_line(line, &mut self.stats, &mut |m| replies.push(m));
+        for reply in replies {
+            self.send_control(&reply);
         }
     }
 
@@ -646,12 +547,4 @@ async fn next_frame(frames: &mut Option<mpsc::Receiver<EncodedFrame>>) -> Option
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
     }
-}
-
-fn percentile<T: Copy>(sorted: &[T], q: f64) -> Option<T> {
-    if sorted.is_empty() {
-        return None;
-    }
-    let i = ((sorted.len() as f64 * q) as usize).min(sorted.len() - 1);
-    Some(sorted[i])
 }

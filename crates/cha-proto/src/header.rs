@@ -41,6 +41,15 @@ impl Flags {
     pub const CRITICAL: u8 = 1 << 1;
     /// Fragment is FEC parity rather than frame data.
     pub const PARITY: u8 = 1 << 2;
+    /// For codecs sent as independent units (PyroWave packets): the unit
+    /// goes on in the next fragment. A unit is usable only whole.
+    pub const CONTINUES: u8 = 1 << 3;
+    /// The fragment carries on the unit of the one before (so a fragment
+    /// whose predecessor was lost can't pass for a unit's start).
+    pub const CONTINUED: u8 = 1 << 4;
+    /// The stream's frames stand alone and their units decode on their own
+    /// (PyroWave): use what arrives, never wait for a keyframe.
+    pub const INTRA: u8 = 1 << 5;
 
     pub fn has(self, bit: u8) -> bool {
         self.0 & bit != 0

@@ -138,6 +138,11 @@ pub enum NodeRequest {
         offer: serde_json::Value,
         media_token: String,
     },
+    /// The streamer's own description (`GET /info`): its WebTransport port,
+    /// certificate hash and addresses, for a browser connecting that way.
+    StreamerInfo {
+        environment_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +161,9 @@ pub enum NodeResponse {
     /// The streamer's SDP answer.
     Answer {
         answer: serde_json::Value,
+    },
+    StreamerInfo {
+        info: serde_json::Value,
     },
 }
 
@@ -202,6 +210,9 @@ pub enum SecurityProfile {
 pub struct StreamerEndpoint {
     pub http_port: u16,
     pub webrtc_port: u16,
+    /// 0 when it has none (an older streamer).
+    #[serde(default)]
+    pub webtransport_port: u16,
 }
 
 /// What a node asks the portal.

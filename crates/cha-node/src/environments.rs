@@ -43,6 +43,8 @@ const BROWSER_SECCOMP: &str = include_str!("../profiles/seccomp-browser.json");
 /// loads on the node (`deploy/node/host/apparmor/cha-sandbox`).
 pub const SANDBOX_APPARMOR: &str = "cha-sandbox";
 const APP_HOME: &str = "/home/cha";
+/// Each environment's streamer: HTTP (localhost), WebRTC and WebTransport.
+const PORTS_PER_ENVIRONMENT: u16 = 3;
 
 /// An environment that stopped on its own.
 #[derive(Debug, Clone)]
@@ -76,6 +78,11 @@ pub trait Runtime: Send + Sync + 'static {
     fn running(&self) -> BoxFuture<'_, Result<Vec<String>>>;
     /// Hands a browser's offer to the environment's streamer; returns its answer.
     fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Value>>;
+    /// The environment's streamer describes itself (`GET /info`).
+    fn streamer_info(&self, environment_id: String) -> BoxFuture<'_, Result<Value>> {
+        let _ = environment_id;
+        Box::pin(async { bail!("this runtime can't describe its streamers") })
+    }
     /// Environments that stop on their own from now on.
     fn exits(&self) -> broadcast::Receiver<Exit>;
 }
@@ -272,7 +279,7 @@ impl DockerRuntime {
         let mut state = self.state.lock().expect("state lock");
         let used: HashSet<u16> = state.ports.values().copied().collect();
         let port = (0..self.config.max_environments)
-            .map(|n| self.config.port_base + 2 * n)
+            .map(|n| self.config.port_base + PORTS_PER_ENVIRONMENT * n)
             .find(|p| !used.contains(p))
             .ok_or_else(|| {
                 anyhow!(
@@ -353,6 +360,8 @@ impl DockerRuntime {
             &port.to_string(),
             "--webrtc-port",
             &(port + 1).to_string(),
+            "--wt-port",
+            &(port + 2).to_string(),
             "--portal-key",
             &spec.portal_key,
             "--environment-id",
@@ -486,7 +495,7 @@ impl DockerRuntime {
             request.codec,
             encode(&request.media_token)
         );
-        post_local(port, &path, &request.offer).await
+        local(Method::POST, port, &path, Some(&request.offer)).await
     }
 
     async fn running_ids(&self) -> Result<Vec<String>> {
@@ -523,6 +532,20 @@ impl Runtime for DockerRuntime {
         Box::pin(self.connect_environment(request))
     }
 
+    fn streamer_info(&self, environment_id: String) -> BoxFuture<'_, Result<Value>> {
+        Box::pin(async move {
+            let port = self
+                .state
+                .lock()
+                .expect("state lock")
+                .ports
+                .get(&environment_id)
+                .copied()
+                .ok_or_else(|| anyhow!("environment {environment_id} isn't running here"))?;
+            local(Method::GET, port, "/info", None).await
+        })
+    }
+
     fn exits(&self) -> broadcast::Receiver<Exit> {
         self.exits.subscribe()
     }
@@ -532,6 +555,7 @@ fn endpoint(http_port: u16) -> StreamerEndpoint {
     StreamerEndpoint {
         http_port,
         webrtc_port: http_port + 1,
+        webtransport_port: http_port + 2,
     }
 }
 
@@ -574,8 +598,8 @@ fn compact(json: &str) -> String {
         .unwrap_or_else(|_| json.to_string())
 }
 
-/// POSTs JSON to a streamer's signalling port on this host.
-async fn post_local(port: u16, path: &str, body: &Value) -> Result<Value> {
+/// A request to a streamer's signalling port on this host.
+async fn local(method: Method, port: u16, path: &str, body: Option<&Value>) -> Result<Value> {
     let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .context("reaching the environment's streamer")?;
@@ -583,12 +607,16 @@ async fn post_local(port: u16, path: &str, body: &Value) -> Result<Value> {
     tokio::spawn(async move {
         let _ = conn.await;
     });
+    let payload = match body {
+        Some(body) => Bytes::from(serde_json::to_vec(body)?),
+        None => Bytes::new(),
+    };
     let request = Request::builder()
-        .method(Method::POST)
+        .method(method)
         .uri(path)
         .header("host", "127.0.0.1")
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(serde_json::to_vec(body)?)))?;
+        .body(Full::new(payload))?;
     let response = tokio::time::timeout(Duration::from_secs(10), sender.send_request(request))
         .await
         .context("the streamer didn't answer")??;
@@ -673,10 +701,10 @@ mod tests {
     }
 
     #[test]
-    fn allocates_port_pairs_until_full() {
+    fn allocates_port_triples_until_full() {
         let rt = runtime();
         assert_eq!(rt.allocate("a").unwrap(), 47000);
-        assert_eq!(rt.allocate("b").unwrap(), 47002);
+        assert_eq!(rt.allocate("b").unwrap(), 47003);
         assert!(rt.allocate("c").is_err());
         rt.state.lock().unwrap().ports.remove("a");
         assert_eq!(rt.allocate("c").unwrap(), 47000);
@@ -717,6 +745,7 @@ mod tests {
         let arg = |name: &str| cmd[cmd.iter().position(|a| *a == name).unwrap() + 1];
         assert_eq!(arg("--http-port"), "47002");
         assert_eq!(arg("--webrtc-port"), "47003");
+        assert_eq!(arg("--wt-port"), "47004");
         assert_eq!(arg("--app-uid"), "1000");
         assert_eq!(arg("--listen"), "127.0.0.1");
         assert_eq!(arg("--portal-key"), "cG9ydGFs");

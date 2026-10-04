@@ -2,10 +2,14 @@
 import {
   Player,
   supportedCodecs,
+  supportsPyroWave,
+  supportsWebTransport,
+  isPyroWave,
   type Codec,
   type PlayerState,
   type ProbeResult,
   type StatsSnapshot,
+  type Transport,
 } from "@cha/player";
 import { useQuery } from "@tanstack/vue-query";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
@@ -24,7 +28,16 @@ const video = ref<HTMLVideoElement | null>(null);
 const state = ref<PlayerState>("idle");
 const problem = ref<string | null>(null);
 
-const codecs = supportedCodecs();
+const wtSupported = supportsWebTransport();
+// PyroWave (the LAN tier) joins once WebGPU says it can decode it.
+const codecs = ref<Codec[]>(supportedCodecs());
+const PYROWAVE: Codec[] = ["pyrowave420", "pyrowave444"];
+if (wtSupported) {
+  void supportsPyroWave().then((ok) => {
+    if (ok) codecs.value = [...codecs.value, ...PYROWAVE];
+  });
+}
+const CODEC_LABEL: Partial<Record<Codec, string>> = { pyrowave420: "PyroWave 4:2:0", pyrowave444: "PyroWave 4:4:4" };
 const CODEC_KEY = "cha.player.codec";
 const saved = (() => {
   try {
@@ -33,7 +46,39 @@ const saved = (() => {
     return null;
   }
 })();
-const codec = ref<Codec>(saved && codecs.includes(saved) ? saved : (codecs[0] ?? "h264"));
+// A saved PyroWave choice holds if this browser can do WebTransport (WebGPU is
+// checked when connecting).
+const codec = ref<Codec>(
+  saved && (codecs.value.includes(saved) || (wtSupported && PYROWAVE.includes(saved)))
+    ? saved
+    : (codecs.value[0] ?? "h264"),
+);
+
+// WebTransport where the browser has it (Chromium), else WebRTC.
+type TransportChoice = "auto" | Transport;
+const TRANSPORT_KEY = "cha.player.transport";
+const transportChoice = ref<TransportChoice>(
+  (() => {
+    try {
+      const saved = localStorage.getItem(TRANSPORT_KEY) as TransportChoice | null;
+      return saved && ["auto", "webrtc", "webtransport"].includes(saved) ? saved : "auto";
+    } catch {
+      return "auto";
+    }
+  })(),
+);
+/** The transport the connection ended up on. */
+const transport = ref<Transport | null>(null);
+function setTransport(t: TransportChoice) {
+  transportChoice.value = t;
+  try {
+    localStorage.setItem(TRANSPORT_KEY, t);
+  } catch {
+    // Private mode: just this session.
+  }
+  retries = 0;
+  void connect();
+}
 
 const SOUND_KEY = "cha.player.muted";
 const muted = ref(
@@ -85,11 +130,19 @@ async function connect() {
     video: video.value,
     codec: codec.value,
     iceServers,
+    transport: transportChoice.value,
+    webTransport: async (c) => {
+      const r = await api.connect(id.value, { codec: c, transport: "webtransport" });
+      return { urls: r.urls ?? [], certHash: r.certHash ?? "" };
+    },
+    onTransport: (t) => {
+      if (player === p) transport.value = t;
+    },
     muted: muted.value,
     onAudioBlocked: (blocked) => {
       if (player === p) audioBlocked.value = blocked;
     },
-    signal: async (offer, c) => (await api.connect(id.value, { codec: c, offer })).answer,
+    signal: async (offer, c) => (await api.connect(id.value, { codec: c, offer })).answer!,
     onState: (s, detail) => {
       if (player !== p) return;
       state.value = s;
@@ -110,7 +163,7 @@ async function connect() {
   }
 }
 
-function setCodec(c: Codec) {
+async function setCodec(c: Codec) {
   codec.value = c;
   try {
     localStorage.setItem(CODEC_KEY, c);
@@ -118,7 +171,14 @@ function setCodec(c: Codec) {
     // Private mode: just this session.
   }
   retries = 0;
-  void connect();
+  if (!player || state.value !== "connected") return connect();
+  // Over WebTransport the session switches in place; otherwise it reconnects.
+  problem.value = null;
+  try {
+    await player.switchCodec(c);
+  } catch (err) {
+    problem.value = err instanceof Error ? err.message : String(err);
+  }
 }
 
 // ---- Toolbar: shown near the top edge, or while not connected ----
@@ -217,7 +277,19 @@ const STATUS: Record<PlayerState, string> = {
         title="Video codec"
         @change="setCodec(($event.target as HTMLSelectElement).value as Codec)"
       >
-        <option v-for="c in codecs" :key="c" :value="c">{{ c.toUpperCase() }}</option>
+        <option v-for="c in codecs" :key="c" :value="c">{{ CODEC_LABEL[c] ?? c.toUpperCase() }}</option>
+      </select>
+      <select
+        v-if="wtSupported"
+        :disabled="isPyroWave(codec)"
+        class="rounded-lg border border-line bg-canvas px-2 py-1 text-xs text-ink-2"
+        :value="transportChoice"
+        :title="transport ? `Connected over ${transport === 'webtransport' ? 'WebTransport' : 'WebRTC'}` : 'Transport'"
+        @change="setTransport(($event.target as HTMLSelectElement).value as TransportChoice)"
+      >
+        <option value="auto">Auto{{ transport ? ` (${transport === "webtransport" ? "WT" : "RTC"})` : "" }}</option>
+        <option value="webtransport">WebTransport</option>
+        <option value="webrtc">WebRTC</option>
       </select>
       <button class="btn-ghost border-0 px-3 py-1.5 text-xs" title="Raw mouse for games; Esc releases it" @click="player?.lockPointer()">
         Capture mouse

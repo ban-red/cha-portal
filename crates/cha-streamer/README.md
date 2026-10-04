@@ -1,6 +1,6 @@
 # cha-streamer
 
-One environment's media engine (plan §2.2, [ADR 0004](../../docs/adr/0004-own-engine-no-wolf.md)). The app runs as a client of our own headless Wayland compositor. Composited frames go to NVENC zero-copy through our own binding ([`cha-nvenc`](../cha-nvenc)), then to the browser over WebRTC (str0m). Sound comes in through our own PulseAudio-protocol server and goes out as Opus. Keyboard and mouse come back into the compositor's seat; gamepads become virtual Xbox 360 controllers. There is no GStreamer, FFmpeg, PulseAudio, PipeWire or Wolf.
+One environment's media engine (plan §2.2, [ADR 0004](../../docs/adr/0004-own-engine-no-wolf.md)). The app runs as a client of our own headless Wayland compositor. Composited frames go to NVENC zero-copy through our own binding ([`cha-nvenc`](../cha-nvenc)), or to PyroWave on the LAN ([`cha-pyrowave`](../cha-pyrowave)), then to the browser over WebRTC (str0m) or WebTransport. Sound comes in through our own PulseAudio-protocol server and goes out as Opus. Keyboard and mouse come back into the compositor's seat; gamepads become virtual Xbox 360 controllers. There is no GStreamer, FFmpeg, PulseAudio, PipeWire or Wolf.
 
 ```
 app ─Wayland─▶ compositor (Smithay, GLES on the render node)
@@ -42,6 +42,51 @@ app ─Wayland─▶ compositor (Smithay, GLES on the render node)
   - viewporter, presentation-time, single-pixel-buffer, xdg-output.
 
   Xwayland comes with XFCE in P1.4.
+
+## WebTransport (P2.3)
+
+The Chromium fast path, `cha-stream/1` (plan §3.1), beside WebRTC on its own UDP port (`--wt-port`):
+
+- **Media:** each encoded frame goes out as datagrams with `cha-proto`'s 16-byte header (frame id, fragment index and count, keyframe flag, send time); Opus frames one datagram each. The player reassembles them in a worker and decodes with WebCodecs into track generators feeding `<video>` and `<audio>`, the fastest path to the screen in S1d.
+- **Control:** the session's first bidirectional stream, with the same JSON lines as WebRTC's DataChannel (input, pings, resize), plus `keyframe` requests.
+- **No silent eviction:** a frame QUIC's send buffer can't take whole isn't sent, and nothing after it is until a keyframe (asked for at once). The page also asks for one when a frame can't be completed or a gap shows.
+- **Congestion:** quinn's Cubic for now (S1: fine on a LAN; its BBR stalls). Our own media-aware controller is P2.5's.
+- **Certificate:** self-signed, 13 days, ECDSA P-256; browsers accept it by its SHA-256 (`serverCertificateHashes`), which the portal hands out with the URLs (one per node address, each carrying the media token).
+- **One viewer:** a WebTransport session takes over from a WebRTC one and the other way round.
+- **Codec switches in place** (`{"t":"codec","codec":…}` on the control stream). The session subscribes to the other encoder and keeps sending the current stream until that encoder's first frame. From there it sends the new codec under the next `stream` number (the header's stream byte), and the page starts that stream afresh. Answered with `{"t":"codec","codec":…,"stream":…}`, or an `error`. In the app's browser, every switch among H.264, HEVC, AV1 and both PyroWave modes left the picture without a gap over 35 ms, cold encoders included (a reconnect costs a new handshake and a blank picture).
+- **Stats** carry composited → encoded and encoded → sent percentiles per report window, so a codec's cost shows within half a second of switching to it.
+- **First numbers** (the app's browser, which wasn't painting, so no click → screen yet): H.264 at 1616×1256 decodes in 1.5–1.6 ms with nothing lost; click → sound 55 ms p50, against 85–90 over WebRTC (no NetEq buffer).
+
+## PyroWave (P2.4)
+
+The LAN tier (plan §3.2–3.3): Themaister's wavelet codec, intra-only, a few tenths of a millisecond of GPU work per frame, at hundreds of Mbit/s. WebTransport only. Offered as `pyrowave420` (games) and `pyrowave444` (desktops) when libpyrowave loads and the render node's PCI ids are known; the player offers it where WebGPU has subgroups.
+
+- **Encoder** ([`cha-pyrowave`](../cha-pyrowave), our binding to `libpyrowave-shared`, loaded at run time): its own Vulkan device on the same GPU, picked by PCI vendor and device id. One device per streamer, shared by both modes (their calls take turns), made in the background at start-up. Making one takes ~0.4–0.6 s and stalls the GPU's other work (NVENC, the compositor) for ~0.2 s, which a first switch to PyroWave mid-session would show as a freeze. The warm device costs ~57 MiB of VRAM (an idle streamer: 394 → 451 MiB); leave PyroWave out of `--codecs` to skip it. Each output buffer is imported once as a dma-buf with its DRM modifier. The encoder takes RGB and converts to YCbCr on the GPU, then splits the frame into packets of about 1100 bytes that each decode on their own.
+- **Modifiers.** NVIDIA's GL picks compressed modifiers that its Vulkan driver can't import, so the output pool leaves those out (they gain nothing for a buffer that is read once).
+- **Budget:** `--pyrowave-mbps` (default 290) for 4:2:0 at 1440p and `--fps`, scaled with the picture's area; 4:4:4 gets twice as much.
+- **No keyframes.** Every frame stands alone, so a lost datagram blurs its region of one frame and nothing waits for a resync. When the screen goes still, the last frame is sent once more after 250 ms (a heal), so a loss doesn't stay on screen.
+- **Wire.** One PyroWave packet per datagram. Its blocks are atomic, so a packet can come out larger than asked; it is then split across datagrams flagged `CONTINUES` (more follow) and `CONTINUED` (a tail). The player assembles whole packets, decodes everything that arrived by the 60 ms deadline, and drops older frames.
+- **Browser:** `@cha/pyrowave-webgpu` decodes into an offscreen WebGPU canvas; each frame becomes a VideoFrame for the same track generator and `<video>` as the hardware codecs, so presentation, stats and the probe work alike.
+- **Failures are visible.** If the encoder can't start, the session closes with the reason, and the next viewer gets a fresh try. `cha-node --doctor` makes the device the way a streamer does (`cha-streamer --probe-pyrowave`). NVIDIA's Vulkan driver (`libGLX_nvidia`) links libX11 and libXext, so the image carries both.
+
+**First numbers** (RTX 4090, 1 GbE, 2026-10-04):
+
+| | 4:2:0 | 4:4:4 |
+|---|---|---|
+| 2560×1440, raw WebTransport session from the app's browser | 267 Mbit/s, ~650 datagrams per frame, every frame complete | 574 Mbit/s at 58.5 fps, 702 of 703 frames complete |
+| 1920×1440 through the portal, decoded and shown in the app's browser | 218–221 Mbit/s at 60 fps; 12 frames lost at start (the resize), none after | 442 Mbit/s at 60 fps, none lost |
+
+- GPU work per frame: 0.14 ms at 1920×1440 4:2:0 (scale, DWT, quantize, analyze, resolve, pack), about 0.22 ms at 1440p.
+- Wall clock per encode: 2.5 ms p50, 2.7–3.0 ms p99, while a ComfyUI job held the GPU. Of that, recording and submitting take 0.14 ms and packetizing 0.05 ms. The other 2.3 ms is waiting for the GPU: one full timeslice of the other job's, every frame, since each encode is submitted just after the job gets the GPU back. NVENC under the same load waits 1.8–3.8 ms p50 and up to 5.4 ms p99, since its RGB input conversion runs on the same shaders. S1e's idle-GPU figure for the whole wait plus readback was 0.4 ms. See *Shared GPUs* below.
+- The decode call in the browser: 0.35–0.5 ms (CPU side; the GPU work isn't timed yet).
+- Send → shown and click → screen need a painted browser (the app's pane mostly wasn't).
+
+## Shared GPUs
+
+A homelab GPU often runs other work (image generation, LLMs). NVIDIA time-slices the GPU between processes, so whenever another process has work queued, the compositor's render and each encode wait for that process's timeslice to end: up to ~2.3 ms each on the RTX 4090 at the default timeslice. Fewer GPU contexts per frame mean fewer waits. Sharing one Vulkan device between the compositor and PyroWave (plan §3.3) would make it one.
+
+- **The owner's lever:** a shorter compute timeslice, `sudo nvidia-smi compute-policy --set-timeslice=1` (SHORT; 0 restores the default). It costs the other jobs some throughput, and it doesn't persist across reboots.
+- **Queue priority:** PyroWave can ask for a high-priority (async compute) queue, but on driver 595.71 the first encode on it never completes, so we stay at the default priority until that's understood.
 
 ## Sound (P1.6)
 

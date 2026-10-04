@@ -38,7 +38,7 @@
    CHA_PORTAL_URL=https://portal.example docker compose -f deploy/node/compose.yaml run --rm agent --doctor
    ```
 
-   It checks Docker, the images, the GPU through CDI, `/dev/uinput`, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
+   It checks Docker, the images, the GPU through CDI, PyroWave's Vulkan device, `/dev/uinput`, the Steam sandbox, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
 
 ## Reaching nodes
 
@@ -48,7 +48,7 @@ The stream goes straight from the node to the browser; the portal only brokers i
 |---|---|
 | Same LAN | Nothing |
 | A tailnet or WireGuard | Nothing: streamers offer the mesh address too ([guide](../docs/guides/tailscale.md)) |
-| Internet, with a port-forward | Forward UDP 47001, 47003, … (one per environment) to the node, and set `CHA_PUBLIC_ADDRESS` on it |
+| Internet, with a port-forward | Forward UDP 47000–47047 to the node (WebRTC and WebTransport, two ports per environment), and set `CHA_PUBLIC_ADDRESS` on it |
 | Internet, UDP to the node blocked | The portal's `turn` profile (coturn), with `CHA_TURN_SECRET`, `CHA_TURN_URLS` and `CHA_TURN_PEERS` |
 
 ## Node settings
@@ -60,7 +60,7 @@ The stream goes straight from the node to the browser; the portal only brokers i
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |
-| `CHA_PORT_BASE` | `47000` | Streamers use two ports each from here: TCP on localhost, UDP for WebRTC |
+| `CHA_PORT_BASE` | `47000` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
 | `CHA_MAX_ENVIRONMENTS` | `16` | |
 
 ## Portal settings

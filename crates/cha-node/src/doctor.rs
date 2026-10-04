@@ -63,6 +63,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
     if engine.is_ok() {
         checks.push(images(docker, config).await);
         checks.push(gpu(docker, config).await);
+        checks.push(pyrowave(docker, config).await);
         checks.push(gamepads(docker, config).await);
         checks.push(sandboxes(docker, config).await);
     }
@@ -171,6 +172,32 @@ async fn gpu(docker: &Docker, config: &DockerConfig) -> Check {
          sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml (device {})",
         config.gpu_device
     ))
+}
+
+/// PyroWave's Vulkan device, made the way a streamer makes it. Optional:
+/// without it sessions use the hardware codecs only.
+async fn pyrowave(docker: &Docker, config: &DockerConfig) -> Check {
+    let probe = json!({
+        "Image": config.streamer_image,
+        "Entrypoint": ["cha-streamer", "--probe-pyrowave", "--render-node", config.render_node],
+        "HostConfig": {
+            "DeviceRequests": [{ "Driver": "cdi", "DeviceIDs": [config.gpu_device] }],
+            "NetworkMode": "none",
+        },
+    });
+    match docker.run("cha-doctor-pyrowave", &probe, PROBE_TIMEOUT).await {
+        Ok((0, out)) => check(Level::Ok, "PyroWave", out.lines().last().unwrap_or("").to_string()),
+        Ok((code, out)) => check(
+            Level::Warn,
+            "PyroWave",
+            format!("off, the probe exited {code}: {}", out.trim().lines().last().unwrap_or("")),
+        ),
+        Err(err) => check(Level::Warn, "PyroWave", format!("{err:#}")),
+    }
+    .fix(
+        "rebuild the streamer image (it carries libpyrowave and the libraries NVIDIA's Vulkan driver \
+         needs); VK_LOADER_DEBUG=error,driver in the probe says what the driver is missing",
+    )
 }
 
 /// `/dev/uinput` as a streamer gets it.
@@ -325,12 +352,14 @@ fn ports(config: &DockerConfig) -> Check {
     let webrtc = http + 1;
     let tcp = std::net::TcpListener::bind(("0.0.0.0", http)).is_ok();
     let udp = std::net::UdpSocket::bind(("0.0.0.0", webrtc)).is_ok();
-    let last = config.port_base + 2 * config.max_environments - 1;
+    let last = config.port_base + 3 * config.max_environments - 1;
     if tcp && udp {
         check(
             Level::Ok,
             "Ports",
-            format!("{http}-{last} for streamers (TCP on localhost, UDP for WebRTC)"),
+            format!(
+                "{http}-{last} for streamers (TCP on localhost, UDP for WebRTC and WebTransport)"
+            ),
         )
     } else {
         check(

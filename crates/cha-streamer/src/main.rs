@@ -6,6 +6,8 @@
 //!   (`cha-nvenc`); there is no GStreamer or FFmpeg.
 //! - Apps play sound into our PulseAudio-protocol server; it is mixed and
 //!   Opus-encoded every 10 ms (libopus, our binding).
+//! - Chromium can take the same media as `cha-stream/1` datagrams over
+//!   WebTransport (wtransport/quinn), the fast path.
 //! - A browser gets WebRTC video (str0m, playout-delay 0) and audio tracks and
 //!   sends keyboard, mouse and gamepads back on the `control` DataChannel;
 //!   gamepads become virtual Xbox 360 controllers (uinput).
@@ -21,7 +23,11 @@ mod input;
 #[cfg(target_os = "linux")]
 mod audio;
 #[cfg(target_os = "linux")]
+mod codec;
+#[cfg(target_os = "linux")]
 mod compositor;
+#[cfg(target_os = "linux")]
+mod control;
 #[cfg(target_os = "linux")]
 mod gamepad;
 #[cfg(target_os = "linux")]
@@ -29,9 +35,13 @@ mod media;
 #[cfg(target_os = "linux")]
 mod net;
 #[cfg(target_os = "linux")]
+mod pyro;
+#[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
 mod signal;
+#[cfg(target_os = "linux")]
+mod wt;
 
 #[cfg(not(target_os = "linux"))]
 fn main() {

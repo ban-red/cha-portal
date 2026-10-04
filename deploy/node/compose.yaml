@@ -26,7 +26,7 @@ services:
       CHA_STREAMER_IMAGE: ${CHA_STREAMER_IMAGE:-cha/streamer:dev}
       # Virtual gamepads; set empty on hosts without the uinput module.
       CHA_UINPUT: ${CHA_UINPUT-/dev/uinput}
-      # WAN by port-forward: the router's public IP (forward UDP 47001-47031).
+      # WAN by port-forward: the router's public IP (forward UDP 47000-47047).
       CHA_PUBLIC_ADDRESS: ${CHA_PUBLIC_ADDRESS:-}
       RUST_LOG: ${RUST_LOG:-info}
     # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi

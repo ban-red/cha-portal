@@ -13,9 +13,10 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 |---|---|
 | `crates/cha-control` | The portal's server: accounts and sessions, audit log, nodes, the API, serving the SPA (SQLite) |
 | `crates/cha-node` | The node agent: enrolls with a join token, then keeps one WebSocket to the portal (inventory, heartbeats, requests) |
-| `crates/cha-streamer` | One environment's media engine: our headless Wayland compositor (Smithay), zero-copy NVENC, our PulseAudio-protocol server and Opus, virtual gamepads, WebRTC ([README](crates/cha-streamer/README.md)) |
+| `crates/cha-streamer` | One environment's media engine: our headless Wayland compositor (Smithay), zero-copy NVENC and PyroWave, our PulseAudio-protocol server and Opus, virtual gamepads, WebRTC and WebTransport ([README](crates/cha-streamer/README.md)) |
 | `crates/cha-testpattern` | The test-pattern environment: our own Wayland client (moving bar, frame counter, frame-ID strip, a flash and a tone on input, gamepad state) |
 | `crates/cha-nvenc` | Our NVENC + CUDA binding, loaded from the driver at runtime |
+| `crates/cha-pyrowave` | Our PyroWave binding (libpyrowave, loaded at runtime): dma-bufs in, network packets out |
 | `crates/cha-wire` | Node ⇄ portal messages and the node's Ed25519 identity ([ADR 0001](docs/adr/0001-node-channel-json-over-websocket.md)) |
 | `web/apps/portal` | The portal SPA (Vue 3, Tailwind) |
 | `web/packages/player` | `@cha/player`: the browser player: WebRTC, input, stats, click probe ([README](web/packages/player/README.md)) |
