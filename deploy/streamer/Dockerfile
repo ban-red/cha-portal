@@ -11,7 +11,7 @@
 FROM ubuntu:26.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates libglvnd0 libegl1 libgles2 libgbm1 libxkbcommon0 \
+      ca-certificates libglvnd0 libegl1 libgles2 libgbm1 libxkbcommon0 libopus0 \
     && rm -rf /var/lib/apt/lists/*
 ENV NVIDIA_DRIVER_CAPABILITIES=all \
     XDG_RUNTIME_DIR=/run/cha
@@ -19,7 +19,7 @@ ENV NVIDIA_DRIVER_CAPABILITIES=all \
 FROM base AS dev
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl gnupg git build-essential pkg-config clang libclang-dev cmake \
-      libgbm-dev libxkbcommon-dev libegl-dev libdrm-dev \
+      libgbm-dev libxkbcommon-dev libegl-dev libdrm-dev libopus-dev \
       fonts-dejavu-core procps \
     && rm -rf /var/lib/apt/lists/*
 # Google Chrome, the P1.3 bench client.

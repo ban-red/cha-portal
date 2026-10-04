@@ -2,6 +2,7 @@
 //! on every frame callback.
 
 use std::os::fd::{AsFd, OwnedFd};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
@@ -13,7 +14,11 @@ use wayland_client::protocol::{
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-use crate::draw::{BAR_WIDTH, Canvas, Rect, Scene, counter_rect, flash_rect, strip_rect};
+use crate::draw::{
+    BAR_WIDTH, Canvas, PadView, Rect, Scene, counter_rect, flash_rect, pad_rect, strip_rect,
+};
+use crate::pads;
+use crate::sound::{self, Beeper};
 
 /// Sweep speed, in pixels per second (independent of the frame rate).
 const BAR_SPEED: f64 = 900.0;
@@ -25,7 +30,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut queue = conn.new_event_queue();
     let qh = queue.handle();
     conn.display().get_registry(&qh, ());
-    let mut app = App::default();
+    let mut app = App {
+        beeper: Some(sound::start()),
+        pad: Some(pads::watch()),
+        ..App::default()
+    };
     queue.roundtrip(&mut app)?;
 
     let compositor = app.compositor.clone().ok_or("no wl_compositor")?;
@@ -90,6 +99,8 @@ struct App {
     frame: u64,
     started: Option<Instant>,
     flash_until: Option<Instant>,
+    beeper: Option<Beeper>,
+    pad: Option<Arc<Mutex<PadView>>>,
     fps_window: (u64, Option<Instant>),
     exit: bool,
 }
@@ -157,6 +168,11 @@ impl App {
             frame: self.frame,
             bar: Rect::new(x as i32 - BAR_WIDTH, 0, BAR_WIDTH, height),
             flash: self.flash_until.is_some_and(|until| now < until),
+            pad: self
+                .pad
+                .as_ref()
+                .map(|p| *p.lock().expect("pad lock"))
+                .unwrap_or_default(),
         }
     }
 
@@ -183,6 +199,9 @@ impl App {
             let mut rects = vec![prev.bar, now.bar, counter_rect(), strip_rect(height)];
             if prev.flash != now.flash {
                 rects.push(flash_rect(width, height));
+            }
+            if prev.pad != now.pad {
+                rects.push(pad_rect(width));
             }
             rects
         };
@@ -241,6 +260,9 @@ impl App {
 
     fn flash(&mut self) {
         self.flash_until = Some(Instant::now() + FLASH_FOR);
+        if let Some(beeper) = &self.beeper {
+            beeper.beep();
+        }
     }
 }
 

@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates locales tzdata \
       libglvnd0 libegl1 libgl1 libgles2 libvulkan1 libgbm1 \
       libwayland-client0 libwayland-cursor0 libwayland-egl1 libxkbcommon0 \
+      libpulse0 \
       fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji dmz-cursor-theme \
  && rm -rf /var/lib/apt/lists/* \
  && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
@@ -17,6 +18,8 @@ ENV LANG=en_US.UTF-8 \
     HOME=/home/cha \
     XDG_RUNTIME_DIR=/run/cha \
     WAYLAND_DISPLAY=wayland-0 \
+    PULSE_SERVER=unix:/run/cha/pulse/native \
+    SDL_JOYSTICK_DISABLE_UDEV=1 \
     XCURSOR_THEME=DMZ-White \
     NVIDIA_DRIVER_CAPABILITIES=all
 USER cha

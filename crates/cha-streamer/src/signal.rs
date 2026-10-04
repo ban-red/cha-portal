@@ -18,7 +18,9 @@ use str0m::change::{SdpAnswer, SdpOffer};
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
+use crate::audio::Audio;
 use crate::compositor::{self, fit_size};
+use crate::gamepad::Gamepads;
 use crate::media::{EncodeSettings, FrameHub, Media};
 use crate::session;
 
@@ -83,6 +85,19 @@ struct Args {
     /// the runtime dir and the Wayland socket are handed to it.
     #[arg(long)]
     app_uid: Option<u32>,
+    /// No sound: no PulseAudio server, no audio track.
+    #[arg(long)]
+    no_audio: bool,
+    /// Where gamepads' device nodes (`dev/`) and udev entries (`udev/`) go,
+    /// shared with the app as its `/dev/input` and `/run/udev`. Without it,
+    /// no gamepads.
+    #[arg(long)]
+    input_dir: Option<PathBuf>,
+    #[arg(long, default_value = "/dev/uinput")]
+    uinput: PathBuf,
+    /// Gamepads made at start, for apps that look for pads only once.
+    #[arg(long, default_value_t = 1)]
+    gamepads: usize,
 }
 
 /// Who may start a stream.
@@ -95,6 +110,8 @@ enum Auth {
 
 struct AppState {
     media: Arc<Media>,
+    audio: Option<Arc<Audio>>,
+    gamepads: Option<Arc<Gamepads>>,
     auth: Auth,
     /// The one session running: a new connection takes over (one viewer per
     /// environment until sharing, plan §3.4).
@@ -157,6 +174,26 @@ pub fn main() -> Result<()> {
         codecs,
         (width, height),
     ));
+    let runtime = tokio::runtime::Runtime::new()?;
+    // Before the app starts, so it finds the sound server.
+    let audio = if args.no_audio {
+        None
+    } else {
+        let _runtime = runtime.enter();
+        Some(Audio::start(
+            &runtime_dir.join("pulse/native"),
+            args.app_uid,
+        )?)
+    };
+    let gamepads = args.input_dir.as_ref().and_then(|dir| {
+        match Gamepads::new(&args.uinput, dir, args.app_uid, args.gamepads) {
+            Ok(pads) => Some(Arc::new(pads)),
+            Err(err) => {
+                warn!("no gamepads: {err:#}");
+                None
+            }
+        }
+    });
     if let Some(command) = args.run.clone() {
         keep_running(command, handle.socket_name.to_string_lossy().into_owned());
     }
@@ -181,6 +218,8 @@ pub fn main() -> Result<()> {
     let primary = primary_ipv4().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
     let state = Arc::new(AppState {
         media,
+        audio,
+        gamepads,
         auth,
         current: tokio::sync::Mutex::default(),
         mbps: args.mbps,
@@ -195,7 +234,6 @@ pub fn main() -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let listener =
             tokio::net::TcpListener::bind(SocketAddr::new(args.listen, args.http_port)).await?;
@@ -259,6 +297,8 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         // WebRTC only, like the S3 gateway; the page reads these for its other paths.
         "gateway": true,
         "input": true,
+        "audio": state.audio.is_some(),
+        "gamepads": state.gamepads.is_some(),
         "token": true,
         "width": width,
         "height": height,
@@ -348,6 +388,8 @@ async fn media_offer_handler(
             .unwrap_or(state.primary),
         port: state.webrtc_port,
         media: Arc::clone(&state.media),
+        audio: state.audio.clone(),
+        gamepads: state.gamepads.clone(),
     };
     // A new connection takes over: stop the running session first, so its UDP
     // port is free.

@@ -4,7 +4,12 @@
 //! - an **app** container from the template's image: uid 1000 plus the render
 //!   node's group, no capabilities, no privilege gain, Docker's seccomp profile
 //!   (or the `browser` one, which lets browser sandboxes create namespaces);
-//! - a volume both mount at `/run/cha`, holding the Wayland socket.
+//! - a volume both mount at `/run/cha`, holding the Wayland and sound
+//!   sockets;
+//! - with gamepads (`/dev/uinput` on the host): the streamer makes virtual
+//!   pads and shares their device nodes and udev entries through two more
+//!   volumes, the app's `/dev/input` and `/run/udev` (read-only); the app may
+//!   open input devices (major 13), and only these exist in its `/dev/input`.
 //!
 //! The agent is never in the media path: containers outlive agent restarts,
 //! and the agent finds them again by label.
@@ -31,6 +36,8 @@ const LABEL_ROLE: &str = "sh.cha.role";
 const LABEL_HTTP_PORT: &str = "sh.cha.http-port";
 const APP_UID: u32 = 1000;
 const RUNTIME_DIR: &str = "/run/cha";
+/// Where the streamer puts gamepad nodes (`dev/`) and udev entries (`udev/`).
+const INPUT_DIR: &str = "/run/cha-input";
 const BROWSER_SECCOMP: &str = include_str!("../profiles/seccomp-browser.json");
 
 /// An environment that stopped on its own.
@@ -76,6 +83,8 @@ pub struct DockerConfig {
     pub render_node: String,
     /// The CDI device that gives a container the GPU.
     pub gpu_device: String,
+    /// The host's uinput device, for gamepads; `None` goes without.
+    pub uinput: Option<String>,
     /// Streamers listen on `port_base + 2n` (HTTP) and `+ 1` (WebRTC).
     pub port_base: u16,
     pub max_environments: u16,
@@ -286,33 +295,74 @@ impl DockerRuntime {
         json!([{ "Driver": "cdi", "DeviceIDs": [self.config.gpu_device] }])
     }
 
-    fn runtime_mount(&self, id: &str) -> Value {
-        json!([{ "Type": "volume", "Source": volume_name(id), "Target": RUNTIME_DIR }])
+    /// The volumes, as the streamer or the app (`app`) mounts them.
+    fn mounts(&self, id: &str, app: bool) -> Value {
+        let mut mounts =
+            vec![json!({ "Type": "volume", "Source": volume_name(id), "Target": RUNTIME_DIR })];
+        if self.config.uinput.is_some() {
+            for (kind, app_target) in [("input", "/dev/input"), ("udev", "/run/udev")] {
+                let target = if app {
+                    app_target.to_string()
+                } else {
+                    format!("{INPUT_DIR}/{}", if kind == "input" { "dev" } else { kind })
+                };
+                mounts.push(json!({
+                    "Type": "volume",
+                    "Source": format!("{}-{kind}", volume_name(id)),
+                    "Target": target,
+                    "ReadOnly": app,
+                }));
+            }
+        }
+        json!(mounts)
     }
 
     fn streamer_config(&self, spec: &EnvironmentSpec, port: u16) -> Value {
+        let mut cmd: Vec<String> = [
+            "--render-node",
+            &self.config.render_node,
+            "--width",
+            &spec.width.to_string(),
+            "--height",
+            &spec.height.to_string(),
+            "--fps",
+            &spec.fps.to_string(),
+            "--app-uid",
+            &APP_UID.to_string(),
+            // Signalling only on localhost: browsers come through the portal
+            // and this agent, with a media token the portal signed.
+            "--listen",
+            "127.0.0.1",
+            "--http-port",
+            &port.to_string(),
+            "--webrtc-port",
+            &(port + 1).to_string(),
+            "--portal-key",
+            &spec.portal_key,
+            "--environment-id",
+            &spec.id,
+        ]
+        .map(String::from)
+        .to_vec();
+        let mut devices = Vec::new();
+        if let Some(uinput) = &self.config.uinput {
+            cmd.extend(["--input-dir", INPUT_DIR, "--uinput", "/dev/uinput"].map(String::from));
+            devices.push(json!({
+                "PathOnHost": uinput,
+                "PathInContainer": "/dev/uinput",
+                "CgroupPermissions": "rw",
+            }));
+        }
         json!({
             "Image": self.config.streamer_image,
-            "Cmd": [
-                "--render-node", self.config.render_node,
-                "--width", spec.width.to_string(),
-                "--height", spec.height.to_string(),
-                "--fps", spec.fps.to_string(),
-                "--app-uid", APP_UID.to_string(),
-                // Signalling only on localhost: browsers come through the portal
-                // and this agent, with a media token the portal signed.
-                "--listen", "127.0.0.1",
-                "--http-port", port.to_string(),
-                "--webrtc-port", (port + 1).to_string(),
-                "--portal-key", spec.portal_key,
-                "--environment-id", spec.id,
-            ],
+            "Cmd": cmd,
             "Env": [format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"), "RUST_LOG=info,smithay=warn,str0m=warn"],
             "Labels": self.labels(&spec.id, "streamer", port),
             "HostConfig": {
                 "NetworkMode": "host",
-                "Mounts": self.runtime_mount(&spec.id),
+                "Mounts": self.mounts(&spec.id, false),
                 "DeviceRequests": self.gpu(),
+                "Devices": devices,
                 "RestartPolicy": { "Name": "no" },
                 "Init": true,
             },
@@ -337,7 +387,9 @@ impl DockerRuntime {
             ],
             "Labels": self.labels(&spec.id, "app", port),
             "HostConfig": {
-                "Mounts": self.runtime_mount(&spec.id),
+                "Mounts": self.mounts(&spec.id, true),
+                // Input devices: the gamepads' nodes, the only ones it has.
+                "DeviceCgroupRules": if self.config.uinput.is_some() { json!(["c 13:* rw"]) } else { json!([]) },
                 "DeviceRequests": self.gpu(),
                 "GroupAdd": groups,
                 "CapDrop": ["ALL"],
@@ -369,6 +421,11 @@ impl DockerRuntime {
         ordered.sort_by_key(|c| c.labels.get(LABEL_ROLE).map(String::as_str) != Some("app"));
         for container in ordered {
             self.docker.remove(&container.id, 5).await?;
+        }
+        for kind in ["input", "udev"] {
+            self.docker
+                .remove_volume(&format!("{}-{kind}", volume_name(id)))
+                .await?;
         }
         self.docker.remove_volume(&volume_name(id)).await
     }
@@ -502,6 +559,7 @@ mod tests {
                 streamer_image: "cha/streamer:dev".into(),
                 render_node: "/dev/dri/renderD128".into(),
                 gpu_device: "nvidia.com/gpu=all".into(),
+                uinput: Some("/dev/uinput".into()),
                 port_base: 47000,
                 max_environments: 2,
             },
@@ -580,5 +638,35 @@ mod tests {
             "nvidia.com/gpu=all"
         );
         assert_eq!(s["Labels"]["sh.cha.http-port"], "47002");
+    }
+
+    #[test]
+    fn gamepads_reach_the_app_read_only() {
+        let rt = runtime();
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 47000);
+        assert_eq!(
+            s["HostConfig"]["Devices"][0]["PathInContainer"],
+            "/dev/uinput"
+        );
+        assert!(s["Cmd"].as_array().unwrap().contains(&json!("--input-dir")));
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000);
+        let mounts = app["HostConfig"]["Mounts"].as_array().unwrap();
+        let input = mounts.iter().find(|m| m["Target"] == "/dev/input").unwrap();
+        assert_eq!(input["Source"], "cha-env-e1-input");
+        assert_eq!(input["ReadOnly"], true);
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m["Target"] == "/run/udev" && m["ReadOnly"] == true)
+        );
+        assert_eq!(app["HostConfig"]["DeviceCgroupRules"], json!(["c 13:* rw"]));
+        assert!(app["HostConfig"].get("Devices").is_none());
+
+        let mut rt = runtime();
+        rt.config.uinput = None;
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 47000);
+        assert_eq!(s["HostConfig"]["Devices"], json!([]));
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000);
+        assert_eq!(app["HostConfig"]["Mounts"].as_array().unwrap().len(), 1);
     }
 }

@@ -2,7 +2,7 @@
 
 A self-hosted dashboard for "portaling" into remote environments (a Chrome instance, a KDE desktop, Steam Big Picture, or an external Moonlight-protocol host) with Moonlight-class latency, in the browser or in a thin native client. Environments run on **Cha Nodes**: docker compose stacks on your GPU servers that enroll with the portal.
 
-**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP on our own streaming engine ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)): the portal, nodes, and Chrome, Firefox and XFCE environments streamed to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work. The streamer core (P1.3: our compositor, NVENC binding and WebRTC) streams from the GPU node. Environments (P1.4) launch from the portal, each running its app beside a streamer on a node, and **Connect** opens them full screen in the browser (P1.5): the portal brokers the WebRTC session with a short-lived media token, and media flows straight from the node. Deployment (P1.7) and sound and gamepads (P1.6) come next.
+**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP on our own streaming engine ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)): the portal, nodes, and Chrome, Firefox and XFCE environments streamed to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work. The streamer core (P1.3: our compositor, NVENC binding and WebRTC) streams from the GPU node. Environments (P1.4) launch from the portal, each running its app beside a streamer on a node, and **Connect** opens them full screen in the browser (P1.5): the portal brokers the WebRTC session with a short-lived media token, and media flows straight from the node. Sound (our own PulseAudio-protocol server, Opus) and gamepads (virtual Xbox 360 pads) work (P1.6). Deployment (P1.7) comes next.
 
 - Plan: [`docs/PLAN.md`](docs/PLAN.md)
 - Research (October 2026 landscape): [`docs/research/`](docs/research/README.md)
@@ -13,8 +13,8 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 |---|---|
 | `crates/cha-control` | The portal's server: accounts and sessions, audit log, nodes, the API, serving the SPA (SQLite) |
 | `crates/cha-node` | The node agent: enrolls with a join token, then keeps one WebSocket to the portal (inventory, heartbeats, requests) |
-| `crates/cha-streamer` | One environment's media engine: our headless Wayland compositor (Smithay), zero-copy NVENC, WebRTC ([README](crates/cha-streamer/README.md)) |
-| `crates/cha-testpattern` | The test-pattern environment: our own Wayland client (moving bar, frame counter, frame-ID strip, input flash) |
+| `crates/cha-streamer` | One environment's media engine: our headless Wayland compositor (Smithay), zero-copy NVENC, our PulseAudio-protocol server and Opus, virtual gamepads, WebRTC ([README](crates/cha-streamer/README.md)) |
+| `crates/cha-testpattern` | The test-pattern environment: our own Wayland client (moving bar, frame counter, frame-ID strip, a flash and a tone on input, gamepad state) |
 | `crates/cha-nvenc` | Our NVENC + CUDA binding, loaded from the driver at runtime |
 | `crates/cha-wire` | Node ⇄ portal messages and the node's Ed25519 identity ([ADR 0001](docs/adr/0001-node-channel-json-over-websocket.md)) |
 | `web/apps/portal` | The portal SPA (Vue 3, Tailwind) |
@@ -77,7 +77,7 @@ docker compose -f images/compose.yaml build
 CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
 ```
 
-`cha-node --print-inventory` shows what the agent will report. Once the node is online, **Environments** launches anything in the catalog on it.
+Gamepads need the host's `uinput` module (`/dev/uinput`); without it, start the agent with `CHA_UINPUT=` and environments go without. `cha-node --print-inventory` shows what the agent will report. Once the node is online, **Environments** launches anything in the catalog on it.
 
 ## License
 

@@ -10,12 +10,14 @@ const player = new Player({
 await player.connect();
 ```
 
-- **Media.** A recvonly WebRTC video track; the streamer stamps playout-delay 0. The node streams straight to the browser, while the portal only brokers the offer and answer, with a 60 s media token.
+- **Media.** Recvonly WebRTC video and audio tracks; the streamer stamps playout-delay 0 on video. The node streams straight to the browser, while the portal only brokers the offer and answer, with a 60 s media token.
 - **Codec.** The best this browser can receive, in the order measured on the baseline (P1.3): HEVC, then H.264, then AV1.
 - **Input** (`input.ts`) goes up the `control` DataChannel.
   - **Pointer:** absolute positions on the picture. With `lockPointer()`, raw relative motion scaled to stream pixels, for games.
   - **Keyboard:** keys by `KeyboardEvent.code`. Held keys and buttons are released on blur, so nothing sticks.
   - **Fallback:** events with no physical key (on-screen keyboards) map unshifted US characters. Full text input comes with the text-input protocol.
+- **Sound.** Stereo Opus, 10 ms frames, NetEq kept at its minimum, in its own MediaStream so video is never held back for lip sync. Browsers play sound only after a click or key press; `onAudioBlocked` says when it's waiting, `setMuted()` turns it on or off.
+- **Gamepads** (`gamepad.ts`): the Gamepad API polled at 250 Hz, each pad's buttons and axes sent when they change (standard mapping). The streamer makes them virtual Xbox 360 controllers. Unfocused, pads are released.
 - **Size.** The picture follows the element: device pixels, capped at 2560×1440 by default, resized when the element settles.
 - **Stats** (`readStats()`): codec, size, fps, bitrate, RTT, decode and jitter-buffer time, losses, and **send → shown**. That last one comes from the server's per-frame send times, matched by RTP timestamp, with the clock synced by pings.
-- **Probe** (`runProbe()`): click → screen, using synthetic clicks and the test pattern's centre flash.
+- **Probe** (`runProbe()`): click → screen, using synthetic clicks and the test pattern's centre flash; with sound on, also click → speaker and the A/V offset, from the test pattern's tone (timed by an AudioWorklet, mapped to output time).

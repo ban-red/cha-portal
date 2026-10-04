@@ -8,6 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The PulseAudio wire format, for the tone.
+pulseaudio = "0.3"
 rustix = { version = "1", features = ["fs", "mm"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }

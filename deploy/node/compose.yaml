@@ -24,6 +24,8 @@ services:
       CHA_JOIN_TOKEN: ${CHA_JOIN_TOKEN:-}
       CHA_NODE_NAME: ${CHA_NODE_NAME:-}
       CHA_STREAMER_IMAGE: ${CHA_STREAMER_IMAGE:-cha/streamer:dev}
+      # Virtual gamepads; set empty on hosts without the uinput module.
+      CHA_UINPUT: ${CHA_UINPUT-/dev/uinput}
       RUST_LOG: ${RUST_LOG:-info}
     # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi
     # and the render node (whose group the apps get).

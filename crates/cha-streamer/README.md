@@ -1,6 +1,6 @@
 # cha-streamer
 
-One environment's media engine (plan §2.2, [ADR 0004](../../docs/adr/0004-own-engine-no-wolf.md)). The app runs as a client of our own headless Wayland compositor. Composited frames go to NVENC zero-copy through our own binding ([`cha-nvenc`](../cha-nvenc)), then to the browser over WebRTC (str0m). Keyboard and mouse come back into the compositor's seat. There is no GStreamer, FFmpeg or Wolf.
+One environment's media engine (plan §2.2, [ADR 0004](../../docs/adr/0004-own-engine-no-wolf.md)). The app runs as a client of our own headless Wayland compositor. Composited frames go to NVENC zero-copy through our own binding ([`cha-nvenc`](../cha-nvenc)), then to the browser over WebRTC (str0m). Sound comes in through our own PulseAudio-protocol server and goes out as Opus. Keyboard and mouse come back into the compositor's seat; gamepads become virtual Xbox 360 controllers. There is no GStreamer, FFmpeg, PulseAudio, PipeWire or Wolf.
 
 ```
 app ─Wayland─▶ compositor (Smithay, GLES on the render node)
@@ -42,6 +42,30 @@ app ─Wayland─▶ compositor (Smithay, GLES on the render node)
   - viewporter, presentation-time, single-pixel-buffer, xdg-output.
 
   Xwayland comes with XFCE in P1.4.
+
+## Sound (P1.6)
+
+```
+app ─libpulse─▶ our PulseAudio-protocol server ($XDG_RUNTIME_DIR/pulse/native, sink "cha")
+                 │ per stream: decode, downmix to stereo, resample to 48 kHz (polyphase sinc)
+                 ▼
+        mixer thread, 10 ms clock ── Opus (libopus, our binding; CELT-only, 128 kbit/s VBR)
+                 ▼
+        audio track (its own MediaStream: no lip-sync hold on video) ──▶ browser (NetEq at its minimum)
+```
+
+- **Why a server of our own.** Every Linux audio stack speaks the PulseAudio protocol: libpulse, PipeWire's and SDL's backends, Chrome, Firefox, Wine. One small server replaces PulseAudio or PipeWire in the container, and the samples go straight to our mixer. The `pulseaudio` crate (MIT) supplies the wire format; the server is ours (`src/audio/pulse.rs`).
+- **What it has.** One sink, playback streams, volumes and mutes, subscriptions (so mixers like pavucontrol work), exact latency and timing replies. No sources (microphones), sample cache or modules yet. Samples arrive over the socket; there is no shared memory.
+- **Flow control** follows PulseAudio's: a stream is kept `tlength` ahead (REQUEST), starts once `prebuf` is queued (STARTED) and stops again when it runs dry (UNDERFLOW). A stream that leaves `tlength` to the server gets 60 ms, not PulseAudio's 2 s. Nothing gets less than 20 ms (two mixer ticks).
+- **The clock runs with or without a viewer.** Apps, and media players that pace video by audio, need a sink that consumes. Encoding happens only while a session listens.
+- `--no-audio` turns it all off.
+
+## Gamepads (P1.6)
+
+- The page sends each pad's Gamepad API state (standard mapping) when it changes. The streamer turns each pad into a **virtual Xbox 360 controller** through `/dev/uinput` (045e:028e, the xpad driver's ranges), the pad SDL, Steam and Wine know best.
+- The kernel creates the devices on the host, so the app gets them through two volumes the streamer fills (`--input-dir`): the `eventN`/`jsN` nodes (the app's `/dev/input`) and udev database entries marking them joysticks (the app's `/run/udev`; Chrome, Firefox and Wine find pads through udev). The app's device cgroup allows input devices; these are the only ones in its `/dev/input`.
+- Hotplug events don't reach the app's network namespace, so `--gamepads` (default 1) are made at start and kept. SDL is told to skip udev (`SDL_JOYSTICK_DISABLE_UDEV=1` in the base image) and watches `/dev/input`, so it sees later pads too.
+- No rumble yet.
 
 ## Running it (node, dev loop)
 

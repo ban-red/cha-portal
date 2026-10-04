@@ -46,6 +46,10 @@ struct Args {
     port_base: u16,
     #[arg(long, env = "CHA_MAX_ENVIRONMENTS", default_value_t = 16)]
     max_environments: u16,
+    /// The host's uinput device: streamers make virtual gamepads with it.
+    /// Empty goes without gamepads (e.g. no `uinput` module).
+    #[arg(long, env = "CHA_UINPUT", default_value = "/dev/uinput")]
+    uinput: String,
 }
 
 #[tokio::main]
@@ -112,6 +116,7 @@ async fn main() -> Result<()> {
         streamer_image: args.streamer_image.clone(),
         render_node,
         gpu_device: args.gpu_device.clone(),
+        uinput: Some(args.uinput.trim().to_string()).filter(|u| !u.is_empty()),
         port_base: args.port_base,
         max_environments: args.max_environments,
     };

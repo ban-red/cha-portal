@@ -1,5 +1,7 @@
 //! One WebRTC session: the compositor's encoded frames out as an RTP video
-//! track with playout-delay 0, input back in on the `control` DataChannel.
+//! track with playout-delay 0, the mixer's Opus frames as an audio track (its
+//! own MediaStream, so the browser doesn't hold video back for lip sync), input
+//! back in on the `control` DataChannel.
 //! The control protocol is S1d's (pings, per-frame send times, stats), so the
 //! S1c/S1d page measures it, plus `{"t":"input",...}` messages from the page.
 //! Carried over from the S2 spike's streamer.
@@ -24,6 +26,8 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep_until;
 use tracing::{info, warn};
 
+use crate::audio::{Audio, AudioPacket};
+use crate::gamepad::{Gamepads, PadState};
 use crate::input::BrowserInput;
 use crate::media::{EncodedFrame, Media};
 
@@ -39,6 +43,9 @@ pub struct SessionParams {
     pub host: IpAddr,
     pub port: u16,
     pub media: Arc<Media>,
+    /// Sound, if the browser asks for it (an audio m-line in its offer).
+    pub audio: Option<Arc<Audio>>,
+    pub gamepads: Option<Arc<Gamepads>>,
 }
 
 /// A running session; dropping `stop` (or sending on it) ends it.
@@ -68,6 +75,7 @@ pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<(SdpAnswer,
         Codec::Hevc => (builder.enable_h265(true), RtpCodec::H265),
         Codec::Av1 => (builder.enable_av1(true), RtpCodec::Av1),
     };
+    let builder = builder.enable_opus(params.audio.is_some(), false);
     let mut rtc = builder.build(Instant::now());
     rtc.add_local_candidate(Candidate::host(local, "udp")?)
         .context("adding host candidate")?;
@@ -149,6 +157,8 @@ struct StreamerStats {
     inputs: u64,
     inputs_unmapped: u64,
     resizes: u64,
+    audio_packets: u64,
+    audio_bytes: u64,
 }
 
 struct Session {
@@ -159,9 +169,11 @@ struct Session {
     rtp_codec: RtpCodec,
     params: SessionParams,
     mid: Option<Mid>,
+    audio_mid: Option<Mid>,
     control: Option<ChannelId>,
     connected: bool,
     frames: Option<mpsc::Receiver<EncodedFrame>>,
+    audio: Option<mpsc::Receiver<AudioPacket>>,
     subscribed_at: Option<Instant>,
     sending_until: Option<Instant>,
     finished_at: Option<Instant>,
@@ -192,9 +204,11 @@ impl Session {
             rtp_codec,
             params,
             mid: None,
+            audio_mid: None,
             control: None,
             connected: false,
             frames: None,
+            audio: None,
             subscribed_at: None,
             sending_until: None,
             finished_at: None,
@@ -251,6 +265,10 @@ impl Session {
                     let (n, source) = received?;
                     self.receive(&buf[..n], source)?;
                 }
+                packet = next_packet(&mut self.audio) => match packet {
+                    Some(packet) => self.send_audio(packet)?,
+                    None => self.audio = None,
+                },
                 frame = next_frame(&mut self.frames) => match frame {
                     Some(frame) => self.send_frame(frame)?,
                     None => {
@@ -285,6 +303,35 @@ impl Session {
         }
         self.subscribed_at = Some(Instant::now());
         self.frames = Some(self.params.media.subscribe(self.params.codec)?);
+        if let (Some(audio), Some(_)) = (&self.params.audio, self.audio_mid) {
+            self.audio = Some(audio.subscribe());
+        }
+        Ok(())
+    }
+
+    fn send_audio(&mut self, packet: AudioPacket) -> Result<()> {
+        if self.finished_at.is_some() {
+            return Ok(());
+        }
+        let Some(mid) = self.audio_mid else {
+            return Ok(());
+        };
+        let Some(writer) = self.rtc.writer(mid) else {
+            bail!("audio media {mid:?} disappeared");
+        };
+        let Some(pt) = writer
+            .payload_params()
+            .find(|p| p.spec().codec == RtpCodec::Opus)
+            .map(|p| p.pt())
+        else {
+            // The browser offered audio without Opus: video only.
+            self.audio = None;
+            return Ok(());
+        };
+        let rtp_time = MediaTime::new(packet.samples, Frequency::FORTY_EIGHT_KHZ);
+        writer.write(pt, packet.at, rtp_time, &packet.data[..])?;
+        self.stats.audio_packets += 1;
+        self.stats.audio_bytes += packet.data.len() as u64;
         Ok(())
     }
 
@@ -367,6 +414,7 @@ impl Session {
     fn finish(&mut self, now: Instant) {
         self.finished_at = Some(now);
         self.frames = None;
+        self.audio = None;
         let stats = self.summary();
         info!(local = %self.local, ?stats, "stream complete");
         self.send_control(&ServerMsg::Done { stats });
@@ -415,6 +463,7 @@ impl Session {
             Event::IceConnectionStateChange(IceConnectionState::Disconnected) => return false,
             Event::Connected => self.connected = true,
             Event::MediaAdded(m) if m.kind == MediaKind::Video => self.mid = Some(m.mid),
+            Event::MediaAdded(m) if m.kind == MediaKind::Audio => self.audio_mid = Some(m.mid),
             Event::KeyframeRequest(_) => {
                 self.stats.keyframe_requests += 1;
                 self.params.media.request_keyframe(self.params.codec);
@@ -427,6 +476,8 @@ impl Session {
                     "width": media.size().0,
                     "height": media.size().1,
                     "input": true,
+                    "audio": self.audio_mid.is_some() && self.params.audio.is_some(),
+                    "gamepads": self.params.gamepads.is_some(),
                 });
                 self.send_control(&ServerMsg::Hello { stream });
             }
@@ -463,6 +514,16 @@ impl Session {
             Some("input") => {
                 let received_us = self.epoch.elapsed().as_micros() as u64;
                 self.stats.inputs += 1;
+                if msg.get("k").and_then(|k| k.as_str()) == Some("pad") {
+                    match (
+                        &self.params.gamepads,
+                        serde_json::from_value::<PadState>(msg),
+                    ) {
+                        (Some(pads), Ok(state)) => pads.update(&state),
+                        _ => self.stats.inputs_unmapped += 1,
+                    }
+                    return;
+                }
                 let probe = msg.get("probe").and_then(|p| p.as_u64());
                 let media = &self.params.media;
                 match serde_json::from_value::<BrowserInput>(msg)
@@ -510,6 +571,14 @@ impl Session {
         if !matches!(channel.write(false, line.as_bytes()), Ok(true)) {
             warn!("control channel refused a message");
         }
+    }
+}
+
+/// The next Opus frame, or never while not subscribed.
+async fn next_packet(audio: &mut Option<mpsc::Receiver<AudioPacket>>) -> Option<AudioPacket> {
+    match audio {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 

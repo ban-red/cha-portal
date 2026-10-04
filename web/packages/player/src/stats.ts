@@ -15,6 +15,8 @@ export interface StatsSnapshot {
   framesDropped: number;
   /** Server send → shown here, p50 over the last second (clock-synced). */
   latencyMs: number | null;
+  /** Average audio jitter-buffer wait over the last interval (NetEq). */
+  audioJitterMs: number | null;
 }
 
 interface Counters {
@@ -24,6 +26,8 @@ interface Counters {
   decodeTime: number;
   jitterDelay: number;
   emitted: number;
+  audioDelay: number;
+  audioEmitted: number;
 }
 
 export class StatsReader {
@@ -32,10 +36,12 @@ export class StatsReader {
   async read(pc: RTCPeerConnection, latencyMs: number | null): Promise<StatsSnapshot> {
     const report = await pc.getStats();
     let inbound: Record<string, unknown> | null = null;
+    let audio: Record<string, unknown> | null = null;
     let rttMs: number | null = null;
     const codecs = new Map<string, string>();
     report.forEach((s: Record<string, unknown>) => {
       if (s.type === "inbound-rtp" && s.kind === "video") inbound = s;
+      if (s.type === "inbound-rtp" && s.kind === "audio") audio = s;
       if (s.type === "codec") codecs.set(s.id as string, (s.mimeType as string).replace("video/", ""));
       if (s.type === "candidate-pair" && s.nominated && typeof s.currentRoundTripTime === "number") {
         rttMs = s.currentRoundTripTime * 1000;
@@ -50,6 +56,8 @@ export class StatsReader {
       decodeTime: num("totalDecodeTime"),
       jitterDelay: num("jitterBufferDelay"),
       emitted: num("jitterBufferEmittedCount"),
+      audioDelay: Number((audio as Record<string, unknown> | null)?.jitterBufferDelay ?? 0),
+      audioEmitted: Number((audio as Record<string, unknown> | null)?.jitterBufferEmittedCount ?? 0),
     };
     const prev = this.last;
     this.last = now;
@@ -66,6 +74,7 @@ export class StatsReader {
       packetsLost: num("packetsLost"),
       framesDropped: num("framesDropped"),
       latencyMs,
+      audioJitterMs: prev ? per(now.audioDelay - prev.audioDelay, now.audioEmitted - prev.audioEmitted) : null,
     };
   }
 }

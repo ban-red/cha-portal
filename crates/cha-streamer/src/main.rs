@@ -4,8 +4,11 @@
 //!   client.
 //! - Composited frames go zero-copy into NVENC through our own binding
 //!   (`cha-nvenc`); there is no GStreamer or FFmpeg.
-//! - A browser gets a WebRTC video track (str0m, playout-delay 0) and sends
-//!   keyboard and mouse back on the `control` DataChannel.
+//! - Apps play sound into our PulseAudio-protocol server; it is mixed and
+//!   Opus-encoded every 10 ms (libopus, our binding).
+//! - A browser gets WebRTC video (str0m, playout-delay 0) and audio tracks and
+//!   sends keyboard, mouse and gamepads back on the `control` DataChannel;
+//!   gamepads become virtual Xbox 360 controllers (uinput).
 //!
 //! Until the portal brokers sessions (P1.5), it speaks the S1/S2 signalling
 //! API so the S1c/S1d page can measure it:
@@ -16,7 +19,11 @@
 mod input;
 
 #[cfg(target_os = "linux")]
+mod audio;
+#[cfg(target_os = "linux")]
 mod compositor;
+#[cfg(target_os = "linux")]
+mod gamepad;
 #[cfg(target_os = "linux")]
 mod media;
 #[cfg(target_os = "linux")]

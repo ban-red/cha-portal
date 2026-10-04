@@ -4,8 +4,8 @@ Our own images for the catalog (`catalog.json`, which the portal embeds). Every 
 
 | Image | What runs | Profile |
 |---|---|---|
-| `base` | Ubuntu 26.04, user `cha` (uid 1000), fonts, cursor theme, the GPU libraries' dispatchers | — |
-| `test-pattern` | `cha-testpattern`, our own Wayland client: a sweeping bar, a frame counter, a frame-ID strip, a flash on input | `standard` |
+| `base` | Ubuntu 26.04, user `cha` (uid 1000), fonts, cursor theme, the GPU libraries' dispatchers, libpulse | — |
+| `test-pattern` | `cha-testpattern`, our own Wayland client: a sweeping bar, a frame counter, a frame-ID strip, a flash and a tone on input, the first gamepad's state | `standard` |
 | `chrome` | Google Chrome on Wayland, GPU-rendered, sandbox on | `browser` |
 | `firefox` | Firefox (Mozilla's .deb) on Wayland, GPU-rendered, sandbox on; first-run pages off by policy | `browser` |
 | `xfce` | XFCE inside one rootful, fullscreen Xwayland, so the compositor needs no X11 window manager | `standard` |
@@ -19,6 +19,8 @@ docker compose -f images/compose.yaml build
 ## The contract
 
 - **Wayland.** The streamer and the app share a volume at `/run/cha` (`XDG_RUNTIME_DIR`). The streamer creates `wayland-0` there and hands the directory and socket to uid 1000. `cha-run`, the images' entrypoint, waits for the socket and then starts the app.
+- **Sound.** The streamer's own PulseAudio-protocol server listens at `/run/cha/pulse/native` (`PULSE_SERVER` in the base image). Anything that speaks PulseAudio plays through it: libpulse (installed), and PipeWire's, SDL's or Wine's PulseAudio backends. There is no PulseAudio or PipeWire daemon in the image.
+- **Gamepads.** The streamer makes virtual Xbox 360 pads (uinput) and shares them through two read-only volumes: their device nodes at `/dev/input` (the only input devices the app has) and udev's entries for them at `/run/udev`, where Chrome, Firefox and Wine look. The app's device cgroup allows input devices (major 13). Hotplug events don't reach the container, so one pad exists from the start; SDL is told to skip udev (`SDL_JOYSTICK_DISABLE_UDEV=1`) and watches `/dev/input`, so it sees later ones.
 - **User.** The app runs as uid 1000, plus the render node's group (the agent reads it from the device), so EGL, GL and Vulkan reach the GPU. The NVIDIA driver comes from CDI at run time.
 - **Confinement.** No capabilities (`--cap-drop ALL`), no privilege gain (`no-new-privileges`), and a seccomp profile:
   - `standard`: Docker's default profile.

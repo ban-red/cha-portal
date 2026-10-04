@@ -1,8 +1,11 @@
-// One connection to an environment's streamer: a recvonly WebRTC video track
-// (playout-delay 0, set by the streamer) and a `control` DataChannel carrying
-// input, resize requests and clock pings up, and per-frame send times down.
-// The portal brokers the offer/answer; media flows straight from the node.
+// One connection to an environment's streamer: recvonly WebRTC video
+// (playout-delay 0, set by the streamer) and stereo Opus audio, each its own
+// MediaStream so the browser never delays video for lip sync, and a `control`
+// DataChannel carrying input, resize requests and clock pings up, and
+// per-frame send times down. The portal brokers the offer/answer; media flows
+// straight from the node.
 
+import { GamepadCapture } from "./gamepad";
 import { InputCapture } from "./input";
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { StatsReader, type StatsSnapshot } from "./stats";
@@ -32,6 +35,10 @@ export interface PlayerOptions {
   /** The largest picture to ask for (default 2560×1440, the baseline). */
   maxSize?: { width: number; height: number };
   onState?: (state: PlayerState, detail?: string) => void;
+  /** Start with the sound off. */
+  muted?: boolean;
+  /** Sound is waiting for a click or key press (the browser's autoplay rule). */
+  onAudioBlocked?: (blocked: boolean) => void;
 }
 
 interface ServerMessage {
@@ -48,6 +55,7 @@ export class Player {
   private pc: RTCPeerConnection | null = null;
   private control: RTCDataChannel | null = null;
   private input: InputCapture | null = null;
+  private gamepads: GamepadCapture | null = null;
   private probe: ClickProbe | null = null;
   private readonly stats = new StatsReader();
   private readonly cleanup: (() => void)[] = [];
@@ -58,9 +66,15 @@ export class Player {
   /** Server send → presented here (ms), recent frames. */
   private readonly latencies: number[] = [];
   private lastSize = "";
+  private readonly audio: HTMLAudioElement;
+  private audioTrack: MediaStreamTrack | null = null;
+  private muted: boolean;
 
   constructor(private readonly options: PlayerOptions) {
     this.codec = options.codec ?? supportedCodecs()[0] ?? "h264";
+    this.muted = options.muted ?? false;
+    this.audio = document.createElement("audio");
+    this.audio.muted = this.muted;
   }
 
   async connect(): Promise<void> {
@@ -69,13 +83,22 @@ export class Player {
     const { video } = this.options;
     const pc = new RTCPeerConnection();
     this.pc = pc;
-    const transceiver = pc.addTransceiver("video", { direction: "recvonly" });
-    // Render as soon as frames are decodable (the streamer also asks for it).
-    (transceiver.receiver as RTCRtpReceiver & { jitterBufferTarget?: number }).jitterBufferTarget = 0;
+    // Render as soon as frames are decodable (the streamer also asks for it),
+    // and keep NetEq's audio buffer at its minimum.
+    for (const kind of ["video", "audio"]) {
+      const transceiver = pc.addTransceiver(kind, { direction: "recvonly" });
+      (transceiver.receiver as RTCRtpReceiver & { jitterBufferTarget?: number }).jitterBufferTarget = 0;
+    }
     const control = pc.createDataChannel("control", { ordered: true });
     this.control = control;
 
     pc.ontrack = (e) => {
+      if (e.track.kind === "audio") {
+        this.audioTrack = e.track;
+        this.audio.srcObject = new MediaStream([e.track]);
+        void this.playAudio();
+        return;
+      }
       video.srcObject = new MediaStream([e.track]);
       video.muted = true;
       video.playsInline = true;
@@ -92,7 +115,12 @@ export class Player {
       for (const line of String(e.data).split("\n")) if (line) this.onServerMessage(line);
     };
 
-    await pc.setLocalDescription(await pc.createOffer());
+    const offer = await pc.createOffer();
+    try {
+      await pc.setLocalDescription({ type: "offer", sdp: stereoOpus(offer.sdp ?? "") });
+    } catch {
+      await pc.setLocalDescription(offer); // munging refused: mono
+    }
     try {
       const answer = await this.options.signal(pc.localDescription!.toJSON(), this.codec);
       if (this.pc !== pc) return; // closed meanwhile
@@ -108,13 +136,34 @@ export class Player {
     this.probe?.stop();
     this.input?.dispose();
     this.input = null;
+    this.gamepads?.dispose();
+    this.gamepads = null;
     this.control?.close();
     this.pc?.close();
     this.pc = this.control = null;
+    this.audio.srcObject = null;
+    this.audioTrack = null;
     this.sentAt.clear();
     this.latencies.length = 0;
     this.lastSize = "";
     if (this.state !== "idle") this.setState("idle");
+  }
+
+  /** Sound on or off. Turning it on from a click also satisfies autoplay. */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    this.audio.muted = muted;
+    if (!muted) void this.playAudio();
+  }
+
+  private async playAudio(): Promise<void> {
+    if (this.muted || !this.audio.srcObject || !this.audio.paused) return;
+    try {
+      await this.audio.play();
+      this.options.onAudioBlocked?.(false);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "NotAllowedError") this.options.onAudioBlocked?.(true);
+    }
   }
 
   /** Raw relative mouse (games). Esc releases it. */
@@ -130,7 +179,12 @@ export class Player {
 
   /** Click → screen, `count` synthetic clicks (use with the test pattern). */
   async runProbe(count = 25): Promise<ProbeResult> {
-    const probe = new ClickProbe(this.options.video, (m) => this.sendInput(m), (us) => this.toLocal(us));
+    const probe = new ClickProbe(
+      this.options.video,
+      (m) => this.sendInput(m),
+      (us) => this.toLocal(us),
+      this.muted ? null : this.audioTrack,
+    );
     this.probe = probe;
     try {
       return await probe.run(count);
@@ -155,7 +209,16 @@ export class Player {
   private onControlOpen(): void {
     const { video } = this.options;
     this.input = new InputCapture(video, (m) => this.sendInput(m));
+    this.gamepads = new GamepadCapture((m) => this.sendInput(m));
     video.focus();
+    // Any click or key in the picture is the gesture autoplay waits for.
+    const unblock = () => void this.playAudio();
+    video.addEventListener("pointerdown", unblock);
+    video.addEventListener("keydown", unblock);
+    this.cleanup.push(() => {
+      video.removeEventListener("pointerdown", unblock);
+      video.removeEventListener("keydown", unblock);
+    });
 
     // Clock sync: the lowest-RTT ping gives the best offset.
     const ping = () => this.send({ t: "ping", c: performance.timeOrigin + performance.now() });
@@ -242,4 +305,16 @@ export class Player {
       if (this.latencies.length > 240) this.latencies.splice(0, this.latencies.length - 240);
     }
   }
+}
+
+/**
+ * Asks for stereo Opus. Chrome decodes Opus as mono unless its own (local)
+ * description says `stereo=1`; the streamer sends stereo.
+ */
+export function stereoOpus(sdp: string): string {
+  const pt = /a=rtpmap:(\d+) opus\/48000\/2/i.exec(sdp)?.[1];
+  if (!pt) return sdp;
+  return sdp.replace(new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`), (line, params: string) =>
+    /(^|;)\s*stereo=/.test(params) ? line : `${line};stereo=1`,
+  );
 }

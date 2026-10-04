@@ -35,6 +35,33 @@ const saved = (() => {
 })();
 const codec = ref<Codec>(saved && codecs.includes(saved) ? saved : (codecs[0] ?? "h264"));
 
+const SOUND_KEY = "cha.player.muted";
+const muted = ref(
+  (() => {
+    try {
+      return localStorage.getItem(SOUND_KEY) === "1";
+    } catch {
+      return false;
+    }
+  })(),
+);
+/** The browser holds sound back until a click or key press. */
+const audioBlocked = ref(false);
+function toggleSound() {
+  muted.value = !muted.value;
+  try {
+    localStorage.setItem(SOUND_KEY, muted.value ? "1" : "0");
+  } catch {
+    // Private mode: just this session.
+  }
+  player?.setMuted(muted.value);
+}
+function onSoundButton() {
+  // Blocked: this click is the gesture the browser waits for.
+  if (audioBlocked.value && !muted.value) player?.setMuted(false);
+  else toggleSound();
+}
+
 let player: Player | null = null;
 let retries = 0;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -48,6 +75,10 @@ async function connect() {
   const p = new Player({
     video: video.value,
     codec: codec.value,
+    muted: muted.value,
+    onAudioBlocked: (blocked) => {
+      if (player === p) audioBlocked.value = blocked;
+    },
     signal: async (offer, c) => (await api.connect(id.value, { codec: c, offer })).answer,
     onState: (s, detail) => {
       if (player !== p) return;
@@ -181,6 +212,14 @@ const STATUS: Record<PlayerState, string> = {
       <button class="btn-ghost border-0 px-3 py-1.5 text-xs" title="Raw mouse for games; Esc releases it" @click="player?.lockPointer()">
         Capture mouse
       </button>
+      <button
+        class="btn-ghost border-0 px-3 py-1.5 text-xs"
+        :class="audioBlocked && !muted && 'text-accent'"
+        :title="audioBlocked && !muted ? 'Click to let the browser play sound' : 'Sound on or off'"
+        @click="onSoundButton"
+      >
+        {{ muted ? "Sound off" : audioBlocked ? "Enable sound" : "Sound on" }}
+      </button>
       <button class="btn-ghost border-0 px-3 py-1.5 text-xs" @click="toggleFullscreen">
         {{ fullscreen ? "Exit full screen" : "Full screen" }}
       </button>
@@ -207,10 +246,14 @@ const STATUS: Record<PlayerState, string> = {
       <div>{{ fmt(stats?.mbps ?? null, 1, " Mbit/s") }} · RTT {{ fmt(stats?.rttMs ?? null, 1, " ms") }}</div>
       <div class="text-ink">send → shown {{ fmt(stats?.latencyMs ?? null, 1, " ms") }}</div>
       <div>decode {{ fmt(stats?.decodeMs ?? null, 2, " ms") }} · jitter buf {{ fmt(stats?.jitterMs ?? null, 2, " ms") }}</div>
-      <div>lost {{ stats?.packetsLost ?? 0 }} · dropped {{ stats?.framesDropped ?? 0 }}</div>
+      <div>lost {{ stats?.packetsLost ?? 0 }} · dropped {{ stats?.framesDropped ?? 0 }} · audio buf {{ fmt(stats?.audioJitterMs ?? null, 0, " ms") }}</div>
       <div v-if="probe" class="mt-1 border-t border-line pt-1 text-accent">
         click → shown {{ fmt(probe.clickToPresentedMs.p50) }} / {{ fmt(probe.clickToPresentedMs.p95) }} ms
         ({{ probe.samples }}, {{ probe.missed }} missed)
+        <template v-if="probe.audioSamples">
+          <br />click → sound {{ fmt(probe.clickToAudioMs.p50) }} / {{ fmt(probe.clickToAudioMs.p95) }} ms · A/V
+          {{ fmt(probe.avOffsetMs.p50) }} ms
+        </template>
       </div>
     </div>
 
