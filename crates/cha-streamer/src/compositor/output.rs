@@ -113,6 +113,11 @@ impl OutputPool {
         self.cuda.name()
     }
 
+    /// The output's size, in pixels.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
     pub fn resize(&mut self, size: (u32, u32)) -> Result<()> {
         self.size = size;
         // Buffers still held by encoders live on until they're done.

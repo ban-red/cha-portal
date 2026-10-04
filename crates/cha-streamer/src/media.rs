@@ -17,7 +17,10 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::codec::VideoCodec;
-use crate::compositor::{Command, MAX_SIZE, Slot, fit_size};
+use crate::compositor::{
+    CLIPBOARD_MAX_BYTES, ClipboardWatch, Command, CursorWatch, Handle, MAX_SIZE, PointerWatch,
+    Slot, fit_size,
+};
 use crate::input::Input;
 use crate::pyro::{PyroSettings, PyroWorker};
 
@@ -158,12 +161,15 @@ pub struct Media {
     pyrowave: Option<PyroSettings>,
     encoders: Mutex<HashMap<VideoCodec, EncoderThread>>,
     size: Mutex<(u32, u32)>,
+    clipboard: ClipboardWatch,
+    cursor: CursorWatch,
+    pointer: PointerWatch,
 }
 
 impl Media {
     pub fn new(
         hub: Arc<FrameHub>,
-        compositor: channel::Sender<Command>,
+        compositor: &Handle,
         cuda: Arc<CudaContext>,
         settings: EncodeSettings,
         codecs: Vec<VideoCodec>,
@@ -172,13 +178,16 @@ impl Media {
     ) -> Self {
         Self {
             hub,
-            compositor,
+            compositor: compositor.commands.clone(),
             cuda,
             settings,
             codecs,
             pyrowave,
             encoders: Mutex::default(),
             size: Mutex::new(size),
+            clipboard: compositor.clipboard.clone(),
+            cursor: compositor.cursor.clone(),
+            pointer: compositor.pointer.clone(),
         }
     }
 
@@ -236,6 +245,41 @@ impl Media {
             height: size.1,
         });
         size
+    }
+
+    /// What apps copy from now on (the current text counts as seen).
+    pub fn clipboard(&self) -> ClipboardWatch {
+        let mut watch = self.clipboard.clone();
+        watch.mark_unchanged();
+        watch
+    }
+
+    /// The cursor's shape, from now on (the current one counts as new).
+    pub fn cursor(&self) -> CursorWatch {
+        let mut watch = self.cursor.clone();
+        watch.mark_changed();
+        watch
+    }
+
+    /// Where the pointer is, from now on (the current spot counts as new).
+    pub fn pointer(&self) -> PointerWatch {
+        let mut watch = self.pointer.clone();
+        watch.mark_changed();
+        watch
+    }
+
+    /// Whether the page draws the cursor (desktop mode) or the picture has it.
+    pub fn set_client_cursor(&self, on: bool) {
+        let _ = self.compositor.send(Command::ClientCursor(on));
+    }
+
+    /// The browser's clipboard, for apps to paste; false if it's too big.
+    pub fn set_clipboard(&self, text: &str) -> bool {
+        if text.len() > CLIPBOARD_MAX_BYTES {
+            return false;
+        }
+        let _ = self.compositor.send(Command::SetClipboard(text.into()));
+        true
     }
 
     pub fn input(&self, input: Input) {

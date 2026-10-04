@@ -557,15 +557,15 @@ async fn stop_on_node(state: AppState, node_id: String, id: String) {
 }
 
 /// A node reported what it runs (after every connect): environments it lost
-/// fail, and ones the portal no longer wants are stopped.
-pub async fn reconcile(state: AppState, node_id: String, running: Vec<String>) {
-    let expected = match db::node_environments(&state.db, &node_id).await {
-        Ok(rows) => rows,
-        Err(err) => {
-            warn!(%node_id, "reconciling: {err}");
-            return;
-        }
-    };
+/// fail, and ones the portal no longer wants are stopped. `expected` is what
+/// the portal had for the node when the report arrived: anything started
+/// since isn't in `running`, and mustn't count as lost.
+pub async fn reconcile(
+    state: AppState,
+    node_id: String,
+    expected: Vec<EnvironmentRow>,
+    running: Vec<String>,
+) {
     let wanted: Vec<&str> = expected
         .iter()
         .filter(|e| e.state == "starting" || e.state == "running")

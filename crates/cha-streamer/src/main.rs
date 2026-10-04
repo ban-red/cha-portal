@@ -41,6 +41,8 @@ mod session;
 #[cfg(target_os = "linux")]
 mod signal;
 #[cfg(target_os = "linux")]
+mod viewers;
+#[cfg(target_os = "linux")]
 mod wt;
 
 #[cfg(not(target_os = "linux"))]

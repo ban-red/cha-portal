@@ -136,8 +136,10 @@ impl State {
         );
         pointer.frame(self);
         self.maybe_activate_constraint();
-        // The cursor is part of the picture.
-        self.dirty = true;
+        // The cursor is part of the picture, unless the page draws it.
+        if !self.client_cursor {
+            self.dirty = true;
+        }
     }
 
     fn clamp_to_output(&self, location: Point<f64, Logical>) -> Point<f64, Logical> {

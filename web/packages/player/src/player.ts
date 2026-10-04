@@ -85,17 +85,47 @@ export interface PlayerOptions {
   transport?: "auto" | Transport;
   /** The transport in use, once connected. */
   onTransport?: (transport: Transport) => void;
+  /**
+   * An app copied text, already written to this device's clipboard when the
+   * browser allows (`written`); otherwise it's written on the next click.
+   */
+  onClipboard?: (text: string, written: boolean) => void;
+  /**
+   * Whether this page has the controls (only one of the sessions watching an
+   * environment does), and how many sessions watch. Without the controls the
+   * picture is view-only; `takeControl()` asks for them.
+   */
+  onFloor?: (control: boolean, viewers: number) => void;
 }
 
 interface ServerMessage {
   t: string;
-  id?: number;
+  /** A probe's id (number), or a cursor image's (string). */
+  id?: number | string;
   rtp?: number;
   s_us?: number;
   c?: number;
   codec?: string;
   stream?: number;
   error?: string;
+  text?: string;
+  kind?: "hidden" | "named" | "image";
+  control?: boolean;
+  viewers?: number;
+  drawn?: boolean;
+  name?: string;
+  w?: number;
+  h?: number;
+  x?: number;
+  y?: number;
+  rgba?: string;
+}
+
+/** A cursor image from the environment, ready for CSS. */
+interface CursorImage {
+  url: string;
+  x: number;
+  y: number;
 }
 
 /** How one video stream (one codec) is decoded on the WebTransport path. */
@@ -131,6 +161,14 @@ export class Player {
   /** Server send → presented here (ms), recent frames. */
   private readonly latencies: number[] = [];
   private lastSize = "";
+  /** This page has the controls (streamers before P2.6 don't say: assume so). */
+  private hasControl = true;
+  /** Where a viewer's page draws the controller's pointer. */
+  private pointerEl: HTMLElement | null = null;
+  private pointerSpot: { x: number; y: number; drawn: boolean } | null = null;
+  /** The environment's latest cursor, and the images seen so far by id. */
+  private cursor: ServerMessage | null = null;
+  private readonly cursorImages = new Map<string, CursorImage>();
   private readonly audio: HTMLAudioElement;
   private audioTrack: MediaStreamTrack | null = null;
   private muted: boolean;
@@ -355,14 +393,35 @@ export class Player {
   }
 
   private sendInput(msg: Record<string, unknown>): void {
-    this.send({ t: "input", ...msg });
+    if (this.hasControl) this.send({ t: "input", ...msg });
+  }
+
+  /** Asks for the controls (owners and admins get them). */
+  takeControl(): void {
+    this.send({ t: "take_control" });
   }
 
   private onControlOpen(): void {
     const { video } = this.options;
-    this.input = new InputCapture(video, (m) => this.sendInput(m));
+    this.input = new InputCapture(video, (m) => this.sendInput(m), {
+      onPaste: (text) => this.send({ t: "clipboard", text }),
+    });
     this.gamepads = new GamepadCapture((m) => this.sendInput(m));
     video.focus();
+    // Desktop mode draws the cursor here, with no stream delay; a locked
+    // pointer (games) leaves it to the picture.
+    const cursorMode = () => {
+      if (this.hasControl) this.send({ t: "cursor", client: !this.input?.locked });
+      this.applyCursor();
+      this.placePointer();
+    };
+    cursorMode();
+    document.addEventListener("pointerlockchange", cursorMode);
+    window.addEventListener("resize", cursorMode);
+    this.cleanup.push(() => {
+      document.removeEventListener("pointerlockchange", cursorMode);
+      window.removeEventListener("resize", cursorMode);
+    });
     // Any click or key in the picture is the gesture autoplay waits for.
     const unblock = () => void this.playAudio();
     video.addEventListener("pointerdown", unblock);
@@ -400,6 +459,8 @@ export class Player {
   /** Asks for a picture the element's size, after resizing settles. */
   private requestSize(): void {
     clearTimeout(this.resizeTimer);
+    // The controller's page sizes the picture; viewers scale it.
+    if (!this.hasControl) return;
     this.resizeTimer = setTimeout(() => {
       const r = this.options.video.getBoundingClientRect();
       const max = this.options.maxSize ?? { width: 2560, height: 1440 };
@@ -439,7 +500,33 @@ export class Player {
         }
         break;
       case "probe":
-        this.probe?.acknowledged(msg.id!, msg.s_us!);
+        this.probe?.acknowledged(msg.id as number, msg.s_us!);
+        break;
+      case "clipboard":
+        if (typeof msg.text === "string") void this.copied(msg.text);
+        break;
+      case "cursor":
+        this.cursor = msg;
+        this.applyCursor();
+        this.placePointer();
+        break;
+      case "floor": {
+        const gained = !!msg.control && !this.hasControl;
+        this.hasControl = !!msg.control;
+        if (gained) {
+          // Our turn: our size and cursor mode.
+          this.lastSize = "";
+          this.requestSize();
+          this.send({ t: "cursor", client: !this.input?.locked });
+        }
+        this.applyCursor();
+        this.placePointer();
+        this.options.onFloor?.(this.hasControl, msg.viewers ?? 1);
+        break;
+      }
+      case "pointer":
+        this.pointerSpot = { x: msg.x ?? 0, y: msg.y ?? 0, drawn: !!msg.drawn };
+        this.placePointer();
         break;
       case "codec": {
         // The answer to a switch: it completes with the new stream's first
@@ -454,6 +541,120 @@ export class Player {
         }
         break;
       }
+    }
+  }
+
+  /** The environment's cursor as the element's CSS cursor, at its on-screen size. */
+  private applyCursor(): void {
+    const msg = this.cursor;
+    const { video } = this.options;
+    if (!this.hasControl) {
+      // A viewer's own mouse is its own; the controller's pointer is drawn over the picture.
+      video.style.cursor = "";
+      return;
+    }
+    if (!msg || this.input?.locked) return;
+    if (msg.kind === "hidden") {
+      video.style.cursor = "none";
+    } else if (msg.kind === "named") {
+      video.style.cursor = msg.name && CSS.supports("cursor", msg.name) ? msg.name : "default";
+    } else {
+      const image = this.cursorImage(msg);
+      if (!image) {
+        video.style.cursor = "default";
+        return;
+      }
+      // Stream pixels per CSS pixel, so the cursor is as big as in the picture.
+      const r = video.getBoundingClientRect();
+      const k = 1 / Math.min(r.width / (video.videoWidth || r.width), r.height / (video.videoHeight || r.height));
+      const scaled = `image-set(url("${image.url}") ${k.toFixed(3)}x) ${Math.round(image.x / k)} ${Math.round(image.y / k)}, default`;
+      video.style.cursor = CSS.supports("cursor", scaled) ? scaled : `url("${image.url}") ${image.x} ${image.y}, default`;
+    }
+  }
+
+  /**
+   * A viewer's page draws the controller's pointer over the picture when the
+   * picture doesn't show it (the controller's page draws its own cursor).
+   */
+  private placePointer(): void {
+    const { video } = this.options;
+    const spot = this.pointerSpot;
+    const show = !this.hasControl && spot && !spot.drawn && this.cursor?.kind !== "hidden";
+    if (!show) {
+      if (this.pointerEl) this.pointerEl.style.display = "none";
+      return;
+    }
+    const parent = video.offsetParent as HTMLElement | null;
+    if (!parent) return;
+    if (!this.pointerEl) {
+      const el = document.createElement("div");
+      el.style.cssText = "position:absolute;pointer-events:none;z-index:5;line-height:0;";
+      parent.appendChild(el);
+      this.pointerEl = el;
+      this.cleanup.push(() => el.remove());
+    }
+    const el = this.pointerEl;
+    // Where the picture sits in the element (object-fit: contain).
+    const r = video.getBoundingClientRect();
+    const p = parent.getBoundingClientRect();
+    const vw = video.videoWidth || r.width;
+    const vh = video.videoHeight || r.height;
+    const scale = Math.min(r.width / vw, r.height / vh);
+    const left = r.left - p.left + (r.width - vw * scale) / 2 + spot.x * vw * scale;
+    const top = r.top - p.top + (r.height - vh * scale) / 2 + spot.y * vh * scale;
+    const image = this.cursor?.kind === "image" ? this.cursorImage(this.cursor) : null;
+    const key = image ? image.url : (this.cursor?.name ?? "default");
+    if (el.dataset.key !== key) {
+      el.dataset.key = key;
+      if (image) {
+        el.innerHTML = "";
+        const img = document.createElement("img");
+        img.src = image.url;
+        el.appendChild(img);
+      } else {
+        el.innerHTML = this.cursor?.name === "text" ? I_BEAM : ARROW;
+      }
+    }
+    const img = el.querySelector("img");
+    if (img && this.cursor?.w && this.cursor?.h) {
+      img.style.width = `${this.cursor.w * scale}px`;
+      img.style.height = `${this.cursor.h * scale}px`;
+    }
+    const hx = image ? image.x * scale : this.cursor?.name === "text" ? 6 : 1;
+    const hy = image ? image.y * scale : this.cursor?.name === "text" ? 9 : 1;
+    el.style.display = "block";
+    el.style.transform = `translate(${left - hx}px, ${top - hy}px)`;
+    el.style.left = "0";
+    el.style.top = "0";
+  }
+
+  private cursorImage(msg: ServerMessage): CursorImage | null {
+    const id = String(msg.id);
+    const cached = this.cursorImages.get(id);
+    if (cached) return cached;
+    if (!msg.rgba || !msg.w || !msg.h) return null;
+    const pixels = Uint8ClampedArray.from(atob(msg.rgba), (c) => c.charCodeAt(0));
+    if (pixels.length !== msg.w * msg.h * 4) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = msg.w;
+    canvas.height = msg.h;
+    canvas.getContext("2d")?.putImageData(new ImageData(pixels, msg.w, msg.h), 0, 0);
+    const image = { url: canvas.toDataURL("image/png"), x: msg.x ?? 0, y: msg.y ?? 0 };
+    if (this.cursorImages.size >= 64) this.cursorImages.delete(this.cursorImages.keys().next().value!);
+    this.cursorImages.set(id, image);
+    return image;
+  }
+
+  /** Text an app copied: onto this device's clipboard, now or on the next click. */
+  private async copied(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      this.options.onClipboard?.(text, true);
+    } catch {
+      // Not focused, or the browser wants a gesture: retry on the next one.
+      this.options.onClipboard?.(text, false);
+      const retry = () => void navigator.clipboard.writeText(text).catch(() => {});
+      this.options.video.addEventListener("pointerdown", retry, { once: true });
     }
   }
 
@@ -700,6 +901,12 @@ export class Player {
  * Asks for stereo Opus. Chrome decodes Opus as mono unless its own (local)
  * description says `stereo=1`; the streamer sends stereo.
  */
+/** The controller's pointer on a viewer's page, for named cursors. */
+const ARROW =
+  '<svg width="14" height="21" viewBox="0 0 14 21"><path d="M1 1v16l4-4 3 7 2.5-1-3-7h5.5z" fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+const I_BEAM =
+  '<svg width="12" height="18" viewBox="0 0 12 18"><path d="M3 1h6M6 1v16M3 17h6" stroke="#fff" stroke-width="3"/><path d="M3 1h6M6 1v16M3 17h6" stroke="#000" stroke-width="1.2"/></svg>';
+
 /** Stream b came after stream a (the streamer's 8-bit, wrapping counter). */
 function newerStream(a: number, b: number): boolean {
   const d = (b - a) & 0xff;

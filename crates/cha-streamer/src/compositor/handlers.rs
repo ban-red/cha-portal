@@ -2,6 +2,9 @@
 //! fills the output (maximized, or fullscreen when it asks), the newest one has
 //! the keyboard, and dialogs are centered at their own size.
 
+use std::os::fd::OwnedFd;
+use std::sync::Arc;
+
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::ImportDma;
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
@@ -11,6 +14,7 @@ use smithay::desktop::{
 };
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::{CursorImageStatus, Focus, PointerHandle};
+use smithay::input::tablet::TabletSeatHandler;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -25,7 +29,7 @@ use smithay::wayland::compositor::{
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint};
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
 };
@@ -41,7 +45,7 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use tracing::{debug, info};
 
-use super::{ClientState, State};
+use super::{ClientState, State, clipboard};
 
 impl CompositorHandler for State {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -58,7 +62,14 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         self.stats.commits += 1;
-        self.dirty = true;
+        let cursor = matches!(&self.cursor_status, CursorImageStatus::Surface(c) if c == surface);
+        if cursor {
+            self.cursor_changed = true;
+        }
+        // A cursor the page draws isn't part of the picture.
+        if !(cursor && self.client_cursor) {
+            self.dirty = true;
+        }
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -384,8 +395,16 @@ impl SeatHandler for State {
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.cursor_status = image;
-        self.dirty = true;
+        self.cursor_changed = true;
+        if !self.client_cursor {
+            self.dirty = true;
+        }
     }
+}
+
+// Needed for the cursor-shape protocol; we have no tablets.
+impl TabletSeatHandler for State {
+    type ToolFocus = WlSurface;
 }
 
 impl PointerConstraintsHandler for State {
@@ -401,7 +420,30 @@ impl PointerConstraintsHandler for State {
 }
 
 impl SelectionHandler for State {
-    type SelectionUserData = ();
+    /// The text of a selection the browser set.
+    type SelectionUserData = Arc<str>;
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        if ty == SelectionTarget::Clipboard {
+            self.clipboard.changed(source.as_ref());
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        _ty: SelectionTarget,
+        _mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        text: &Arc<str>,
+    ) {
+        clipboard::write(Arc::clone(text), fd);
+    }
 }
 
 impl DataDeviceHandler for State {

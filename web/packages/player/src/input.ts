@@ -3,18 +3,40 @@
 // - absolute (desktops): positions normalized to the picture;
 // - locked (games): raw relative motion, scaled to stream pixels.
 // Keys go by `KeyboardEvent.code` (the physical key); the streamer maps them.
+//
+// Pasting: on Ctrl/Cmd+V the V is held back and the browser's own paste
+// event (no permission prompt) supplies the local clipboard, which goes up
+// first, so the app pastes what was copied here.
 
 type Send = (msg: Record<string, unknown>) => void;
+
+export interface InputOptions {
+  /** The local clipboard's text, just before a paste shortcut reaches the app. */
+  onPaste?: (text: string) => void;
+  /** Send ⌘ as Ctrl, so the Mac's shortcuts work in Linux apps (default: on Macs). */
+  commandAsControl?: boolean;
+}
+
+/** How long a paste shortcut waits for the browser's paste event. */
+const PASTE_WAIT_MS = 150;
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 export class InputCapture {
   private readonly keys = new Set<string>();
   private readonly buttons = new Set<number>();
   private readonly cleanup: (() => void)[] = [];
+  private readonly commandAsControl: boolean;
+  /** Keys pressed while ⌘ was down: macOS never sends their keyups. */
+  private readonly commandChord = new Set<string>();
+  /** A paste shortcut's key, held until the paste event (or a timeout). */
+  private heldPaste: { code: string; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(
     private readonly video: HTMLVideoElement,
     private readonly send: Send,
+    private readonly options: InputOptions = {},
   ) {
+    this.commandAsControl = options.commandAsControl ?? IS_MAC;
     const on = <K extends keyof HTMLElementEventMap>(
       target: HTMLElement | Window | Document,
       type: K | string,
@@ -35,6 +57,7 @@ export class InputCapture {
     on(video, "contextmenu", (e: Event) => e.preventDefault());
     on(video, "keydown", (e: KeyboardEvent) => this.key(e, true));
     on(video, "keyup", (e: KeyboardEvent) => this.key(e, false));
+    on(document, "paste", (e: ClipboardEvent) => this.paste(e));
     // Losing focus mid-press would leave keys and buttons stuck down remotely.
     on(video, "blur", () => this.releaseAll());
     on(window, "blur", () => this.releaseAll());
@@ -106,16 +129,60 @@ export class InputCapture {
   }
 
   private key(e: KeyboardEvent, down: boolean): void {
-    e.preventDefault();
+    let code = e.code || codeForKey(e.key);
+    if (!code) {
+      e.preventDefault();
+      return;
+    }
+    const command = code === "MetaLeft" || code === "MetaRight";
+    if (command && !down) this.releaseChord();
+    else if (!command && down && e.metaKey && IS_MAC) this.commandChord.add(code);
+    if (this.commandAsControl && command) code = code === "MetaLeft" ? "ControlLeft" : "ControlRight";
+    const pasting = down && code === "KeyV" && (e.ctrlKey || e.metaKey) && !e.altKey && this.options.onPaste;
+    // Let the browser fire its paste event; everything else stays ours.
+    if (!pasting) e.preventDefault();
     if (e.repeat) return; // the app repeats held keys itself
-    const code = e.code || codeForKey(e.key);
-    if (!code) return;
+    if (pasting) {
+      if (this.heldPaste) return;
+      this.keys.add(code);
+      this.heldPaste = { code, timer: setTimeout(() => this.releasePaste(), PASTE_WAIT_MS) };
+      return;
+    }
+    if (!down && code === this.heldPaste?.code) this.releasePaste();
     if (down) this.keys.add(code);
     else this.keys.delete(code);
     this.send({ k: "key", code, down });
   }
 
+  /** The browser's paste: its text goes up before the held V. */
+  private paste(e: ClipboardEvent): void {
+    if (!this.heldPaste) return;
+    e.preventDefault();
+    const text = e.clipboardData?.getData("text/plain");
+    if (text) this.options.onPaste?.(text);
+    this.releasePaste();
+  }
+
+  /** ⌘ came up: so did the keys pressed with it, whatever macOS reported. */
+  private releaseChord(): void {
+    for (const code of this.commandChord) {
+      if (code === this.heldPaste?.code) this.releasePaste();
+      if (this.keys.delete(code)) this.send({ k: "key", code, down: false });
+    }
+    this.commandChord.clear();
+  }
+
+  private releasePaste(): void {
+    const held = this.heldPaste;
+    if (!held) return;
+    this.heldPaste = null;
+    clearTimeout(held.timer);
+    this.send({ k: "key", code: held.code, down: true });
+  }
+
   private releaseAll(): void {
+    this.releasePaste();
+    this.commandChord.clear();
     for (const code of this.keys) this.send({ k: "key", code, down: false });
     for (const b of this.buttons) this.send({ k: "button", b, down: false });
     this.keys.clear();

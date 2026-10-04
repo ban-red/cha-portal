@@ -338,13 +338,21 @@ async fn pump(
                         db::set_node_inventory(&state.db, node_id, &json).await?;
                     }
                     // These may ask the node things back, so they run apart from
-                    // this loop, which carries the answers.
+                    // this loop, which carries the answers. What the portal
+                    // expects is read first, though: no start the node answers
+                    // after its list can then be taken for one it lost.
                     ToPortal::Environments { running } => {
-                        tokio::spawn(crate::environments::reconcile(
-                            state.clone(),
-                            node_id.to_string(),
-                            running,
-                        ));
+                        match db::node_environments(&state.db, node_id).await {
+                            Ok(expected) => {
+                                tokio::spawn(crate::environments::reconcile(
+                                    state.clone(),
+                                    node_id.to_string(),
+                                    expected,
+                                    running,
+                                ));
+                            }
+                            Err(err) => warn!(%node_id, "reconciling: {err}"),
+                        }
                     }
                     ToPortal::EnvironmentExited { id, detail, failed } => {
                         tokio::spawn(crate::environments::exited(state.clone(), id, detail, failed));

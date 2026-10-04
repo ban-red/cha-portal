@@ -97,6 +97,17 @@ const muted = ref(
 );
 /** The browser holds sound back until a click or key press. */
 const audioBlocked = ref(false);
+/** Whether this page has the controls, and how many sessions watch (P2.6). */
+const hasControl = ref(true);
+const viewers = ref(1);
+/** A short note when an app's copy reaches (or waits for) this device's clipboard. */
+const clipboardNote = ref<string | null>(null);
+let clipboardNoteTimer: ReturnType<typeof setTimeout> | undefined;
+function noteClipboard(written: boolean) {
+  clipboardNote.value = written ? "Copied to this device" : "Copied in the environment: click the picture to copy it here";
+  clearTimeout(clipboardNoteTimer);
+  clipboardNoteTimer = setTimeout(() => (clipboardNote.value = null), written ? 1500 : 4000);
+}
 function toggleSound() {
   muted.value = !muted.value;
   try {
@@ -146,6 +157,14 @@ async function connect() {
     muted: muted.value,
     onAudioBlocked: (blocked) => {
       if (player === p) audioBlocked.value = blocked;
+    },
+    onClipboard: (_text, written) => {
+      if (player === p) noteClipboard(written);
+    },
+    onFloor: (control, count) => {
+      if (player !== p) return;
+      hasControl.value = control;
+      viewers.value = count;
     },
     signal: async (offer, c) => (await api.connect(id.value, { codec: c, offer })).answer!,
     onState: (s, detail) => {
@@ -296,6 +315,17 @@ const STATUS: Record<PlayerState, string> = {
         <option value="webtransport">WebTransport</option>
         <option value="webrtc">WebRTC</option>
       </select>
+      <span v-if="viewers > 1" class="px-2 text-xs text-ink-2" :title="`${viewers} sessions are watching this environment`">
+        {{ viewers }} watching
+      </span>
+      <button
+        v-if="!hasControl"
+        class="btn-ghost border-0 px-3 py-1.5 text-xs text-accent"
+        title="Someone else has the keyboard and mouse; take them"
+        @click="player?.takeControl()"
+      >
+        Viewing · Take control
+      </button>
       <button class="btn-ghost border-0 px-3 py-1.5 text-xs" title="Raw mouse for games; Esc releases it" @click="player?.lockPointer()">
         Capture mouse
       </button>
@@ -342,6 +372,13 @@ const STATUS: Record<PlayerState, string> = {
           {{ fmt(probe.avOffsetMs.p50) }} ms
         </template>
       </div>
+    </div>
+
+    <div
+      v-if="clipboardNote"
+      class="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg border border-line bg-panel/90 px-3 py-1.5 text-sm backdrop-blur"
+    >
+      {{ clipboardNote }}
     </div>
 
     <!-- Status -->

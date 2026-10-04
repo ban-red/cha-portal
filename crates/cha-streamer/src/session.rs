@@ -6,6 +6,7 @@
 //! S1c/S1d page measures it, plus `{"t":"input",...}` messages from the page.
 //! Carried over from the S2 spike's streamer.
 
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -27,9 +28,14 @@ use tracing::{info, warn};
 
 use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
-use crate::control::{Control, ServerMsg, StreamerStats, percentile};
+use crate::compositor::{ClipboardWatch, CursorWatch, PointerWatch};
+use crate::control::{
+    Control, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
+    next_pointer, percentile,
+};
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media};
+use crate::viewers::Seat;
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
 const DRAIN: Duration = Duration::from_secs(1);
@@ -57,7 +63,12 @@ pub struct Running {
     pub handle: JoinHandle<()>,
 }
 
-pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<(SdpAnswer, Running)> {
+/// Starts a session for `seat`'s viewer; it leaves when the session ends.
+pub async fn start(
+    params: SessionParams,
+    seat: Seat,
+    offer: SdpOffer,
+) -> Result<(SdpAnswer, Running)> {
     let mut sockets = Vec::new();
     for host in &params.hosts {
         let socket = match UdpSocket::bind(SocketAddr::new(*host, params.port)).await {
@@ -116,7 +127,7 @@ pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<(SdpAnswer,
     );
     let (stop, stopped) = oneshot::channel();
     let handle = tokio::spawn(async move {
-        if let Err(err) = Session::new(rtc, sockets, locals, rtp_codec, params, stopped)
+        if let Err(err) = Session::new(rtc, sockets, locals, rtp_codec, params, seat, stopped)
             .run()
             .await
         {
@@ -142,6 +153,14 @@ struct Session {
     connected: bool,
     frames: Option<mpsc::Receiver<EncodedFrame>>,
     audio: Option<mpsc::Receiver<AudioPacket>>,
+    /// What apps copy, for the page.
+    clipboard: Option<ClipboardWatch>,
+    /// The cursor's shape, once the control channel is open, and the image
+    /// ids sent so far.
+    cursor: Option<CursorWatch>,
+    cursor_ids: HashSet<u64>,
+    /// Where the pointer is, for this page when it only watches.
+    pointer: Option<PointerWatch>,
     subscribed_at: Option<Instant>,
     sending_until: Option<Instant>,
     finished_at: Option<Instant>,
@@ -162,14 +181,17 @@ impl Session {
         locals: Vec<SocketAddr>,
         rtp_codec: RtpCodec,
         params: SessionParams,
+        seat: Seat,
         stopped: oneshot::Receiver<()>,
     ) -> Self {
         let epoch = Instant::now();
+        let clipboard = Some(params.media.clipboard());
         let handler = Control {
             epoch,
             codec: VideoCodec::Hw(params.codec),
             media: Arc::clone(&params.media),
             gamepads: params.gamepads.clone(),
+            seat,
         };
         Self {
             rtc,
@@ -185,6 +207,10 @@ impl Session {
             connected: false,
             frames: None,
             audio: None,
+            clipboard,
+            cursor: None,
+            cursor_ids: HashSet::new(),
+            pointer: None,
             subscribed_at: None,
             sending_until: None,
             finished_at: None,
@@ -245,6 +271,27 @@ impl Session {
                     Some(packet) => self.send_audio(packet)?,
                     None => self.audio = None,
                 },
+                // The apps' clipboard is the controller's alone.
+                text = next_clipboard(&mut self.clipboard) => {
+                    if let Some(text) = text && self.handler.seat.has_control() {
+                        self.send_control(&ServerMsg::Clipboard { text: text.to_string() });
+                    }
+                }
+                spot = next_pointer(&mut self.pointer) => {
+                    if let Some(spot) = spot && !self.handler.seat.has_control() {
+                        self.send_control(&ServerMsg::Pointer { x: spot.x, y: spot.y, drawn: spot.drawn });
+                    }
+                }
+                () = self.handler.seat.changed() => {
+                    let msg = floor_msg(&self.handler.seat);
+                    self.send_control(&msg);
+                }
+                shape = next_cursor(&mut self.cursor) => {
+                    if let Some(shape) = shape {
+                        let msg = cursor_msg(&shape, &mut self.cursor_ids);
+                        self.send_control(&msg);
+                    }
+                }
                 frame = next_frame(&mut self.frames) => match frame {
                     Some(frame) => self.send_frame(frame)?,
                     None => {
@@ -454,6 +501,8 @@ impl Session {
             }
             Event::ChannelOpen(id, label) if label == "control" => {
                 self.control = Some(id);
+                self.cursor = Some(self.params.media.cursor());
+                self.pointer = Some(self.params.media.pointer());
                 let media = &self.params.media;
                 let stream = serde_json::json!({
                     "codec": self.params.codec.name(),
@@ -464,6 +513,8 @@ impl Session {
                     "gamepads": self.params.gamepads.is_some(),
                 });
                 self.send_control(&ServerMsg::Hello { stream });
+                let floor = floor_msg(&self.handler.seat);
+                self.send_control(&floor);
             }
             Event::ChannelData(data) if Some(data.id) == self.control => {
                 for line in String::from_utf8_lossy(&data.data).lines() {

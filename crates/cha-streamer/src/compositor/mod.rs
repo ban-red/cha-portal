@@ -10,6 +10,7 @@
 //! Output buffers are GBM dmabufs registered with CUDA once, so the encoders
 //! read them in place.
 
+mod clipboard;
 mod cursor;
 mod handlers;
 mod input;
@@ -47,12 +48,13 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::utils::{Clock, Logical, Monotonic, Point, Transform};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufState};
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::presentation::{PresentationState, Refresh};
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
-use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::data_device::{DataDeviceState, set_data_device_selection};
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
@@ -60,10 +62,21 @@ use smithay::wayland::shm::ShmState;
 use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::wayland::viewporter::ViewporterState;
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::input::Input;
 use crate::media::FrameHub;
+use clipboard::{Clipboard, TEXT_MIMES};
+pub use clipboard::{ClipboardWatch, MAX_BYTES as CLIPBOARD_MAX_BYTES};
+pub use cursor::{CursorShape, CursorWatch, PointerSpot, PointerWatch};
+
+/// What the compositor publishes to the sessions.
+struct Published {
+    clipboard: Clipboard,
+    cursor: watch::Sender<CursorShape>,
+    pointer: watch::Sender<PointerSpot>,
+}
 pub use output::Slot;
 use output::{OutputPool, Stats};
 
@@ -103,11 +116,21 @@ pub enum Command {
     /// Composite at the next encode tick even if nothing changed (a new
     /// encoder needs a first frame).
     ForceFrame,
+    /// The browser's clipboard text, for apps to paste.
+    SetClipboard(Arc<str>),
+    /// The page draws the cursor (desktop mode) or wants it in the picture.
+    ClientCursor(bool),
 }
 
 pub struct Handle {
     pub commands: channel::Sender<Command>,
     pub socket_name: OsString,
+    /// The text apps last copied.
+    pub clipboard: ClipboardWatch,
+    /// The cursor's shape, for a page that draws it.
+    pub cursor: CursorWatch,
+    /// Where the pointer is, for viewers.
+    pub pointer: PointerWatch,
 }
 
 /// Starts the compositor thread; returns once its socket is listening.
@@ -134,7 +157,15 @@ fn run(
 ) -> Result<()> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
-    let mut state = State::new(&config, cuda, hub, &mut event_loop, display)?;
+    let (clipboard, clipboard_watch) = Clipboard::new();
+    let (cursor, cursor_watch) = watch::channel(CursorShape::Named("default"));
+    let (pointer, pointer_watch) = watch::channel(PointerSpot::default());
+    let published = Published {
+        clipboard,
+        cursor,
+        pointer,
+    };
+    let mut state = State::new(&config, cuda, hub, published, &mut event_loop, display)?;
 
     let (commands, command_rx): (channel::Sender<Command>, Channel<Command>) = channel::channel();
     event_loop
@@ -171,6 +202,9 @@ fn run(
     let _ = ready.send(Ok(Handle {
         commands,
         socket_name: state.socket_name.clone(),
+        clipboard: clipboard_watch,
+        cursor: cursor_watch,
+        pointer: pointer_watch,
     }));
     event_loop.run(None, &mut state, |_| {})?;
     Ok(())
@@ -236,6 +270,7 @@ struct Globals {
     relative_pointer: RelativePointerManagerState,
     pointer_constraints: PointerConstraintsState,
     single_pixel_buffer: SinglePixelBufferState,
+    cursor_shape: CursorShapeManagerState,
 }
 
 pub struct State {
@@ -261,6 +296,13 @@ pub struct State {
     pub output: Output,
     pub pointer_location: Point<f64, Logical>,
     pub cursor_status: CursorImageStatus,
+    /// The page draws the cursor: leave it out of the picture.
+    pub client_cursor: bool,
+    /// The cursor's status or surface changed since the last publish.
+    pub cursor_changed: bool,
+    cursor: watch::Sender<CursorShape>,
+    pointer: watch::Sender<PointerSpot>,
+    pub clipboard: Clipboard,
     arrow: smithay::backend::renderer::element::memory::MemoryRenderBuffer,
     /// evdev codes currently held, so browser key repeats don't double-press.
     pub keys_down: Vec<u32>,
@@ -286,6 +328,7 @@ impl State {
         config: &Config,
         cuda: Arc<CudaContext>,
         hub: Arc<FrameHub>,
+        published: Published,
         event_loop: &mut EventLoop<State>,
         display: Display<State>,
     ) -> Result<Self> {
@@ -324,6 +367,7 @@ impl State {
         let relative_pointer_state = RelativePointerManagerState::new::<State>(&dh);
         let pointer_constraints_state = PointerConstraintsState::new::<State>(&dh);
         let single_pixel_buffer_state = SinglePixelBufferState::new::<State>(&dh);
+        let cursor_shape_state = CursorShapeManagerState::new::<State>(&dh);
 
         // Clients allocate on our GPU and hand us dmabufs (Chrome, Firefox,
         // Xwayland's glamor); the feedback names the render node.
@@ -418,6 +462,7 @@ impl State {
                 relative_pointer: relative_pointer_state,
                 pointer_constraints: pointer_constraints_state,
                 single_pixel_buffer: single_pixel_buffer_state,
+                cursor_shape: cursor_shape_state,
             },
             space,
             popups: PopupManager::default(),
@@ -425,6 +470,11 @@ impl State {
             output,
             pointer_location,
             cursor_status: CursorImageStatus::default_named(),
+            client_cursor: false,
+            cursor_changed: true,
+            cursor: published.cursor,
+            pointer: published.pointer,
+            clipboard: published.clipboard,
             arrow: cursor::arrow(),
             keys_down: Vec::new(),
             focus_on_map: Vec::new(),
@@ -446,12 +496,24 @@ impl State {
             Command::Input(input) => self.input(input),
             Command::Resize { width, height } => self.resize(width, height),
             Command::ForceFrame => self.force_frame = true,
+            Command::ClientCursor(on) => {
+                if self.client_cursor != on {
+                    self.client_cursor = on;
+                    self.dirty = true;
+                }
+            }
+            Command::SetClipboard(text) => {
+                let mimes = TEXT_MIMES.iter().map(ToString::to_string).collect();
+                set_data_device_selection(&self.display_handle, &self.seat, mimes, text);
+            }
         }
     }
 
     /// One compositor tick: maybe composite and publish a frame, then let every
     /// visible surface draw its next one.
     fn tick(&mut self) {
+        self.clipboard.poll(&self.seat);
+        self.publish_cursor();
         let now = Instant::now();
         if now + self.encode_period / 8 >= self.next_encode {
             self.next_encode += self.encode_period;
@@ -460,6 +522,7 @@ impl State {
                 self.next_encode = now + self.encode_period;
             }
             self.stats.encode_ticks += 1;
+            self.publish_pointer();
             let wanted = self.hub.has_listeners() && (self.dirty || self.force_frame);
             if !self.dirty && !self.force_frame {
                 self.stats.clean += 1;

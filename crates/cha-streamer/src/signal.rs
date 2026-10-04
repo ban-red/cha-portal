@@ -26,6 +26,7 @@ use crate::media::{EncodeSettings, FrameHub, Media};
 use crate::net;
 use crate::pyro::PyroSettings;
 use crate::session;
+use crate::viewers::{Role, Viewer, Viewers};
 use crate::wt;
 
 #[derive(Parser, Debug)]
@@ -144,9 +145,8 @@ struct AppState {
     audio: Option<Arc<Audio>>,
     gamepads: Option<Arc<Gamepads>>,
     auth: Auth,
-    /// The one session running: a new connection takes over (one viewer per
-    /// environment until sharing, plan §3.4).
-    current: tokio::sync::Mutex<Option<session::Running>>,
+    /// The sessions watching, and which one has the controls (plan §3.4).
+    viewers: Arc<Viewers>,
     mbps: u32,
     fps: u32,
     webrtc_port: u16,
@@ -226,7 +226,7 @@ pub fn main() -> Result<()> {
     }
     let media = Arc::new(Media::new(
         hub,
-        handle.commands,
+        &handle,
         cuda,
         EncodeSettings {
             fps: args.fps,
@@ -306,12 +306,16 @@ pub fn main() -> Result<()> {
             }
         }
     };
+    let viewers = {
+        let media = Arc::clone(&media);
+        Viewers::new(Box::new(move || media.set_client_cursor(false)))
+    };
     let state = Arc::new(AppState {
         media,
         audio,
         gamepads,
         auth,
-        current: tokio::sync::Mutex::default(),
+        viewers,
         mbps: args.mbps,
         fps: args.fps,
         webrtc_port: args.webrtc_port,
@@ -325,16 +329,12 @@ pub fn main() -> Result<()> {
     });
     if let Some((endpoint, _)) = wt {
         let authorizing = Arc::clone(&state);
-        let taking = Arc::clone(&state);
         let sessions = Arc::new(wt::Sessions {
             media: Arc::clone(&state.media),
             audio: state.audio.clone(),
             gamepads: state.gamepads.clone(),
             authorize: Box::new(move |token| authorize(&authorizing.auth, token)),
-            take_over: Box::new(move |running| {
-                let state = Arc::clone(&taking);
-                Box::pin(async move { take_over(&state.current, running).await })
-            }),
+            viewers: Arc::clone(&state.viewers),
         });
         runtime.spawn(wt::serve(endpoint, sessions));
     }
@@ -477,9 +477,7 @@ async fn media_offer_handler(
     // Check the token before touching the body.
     let query = query.unwrap_or_default();
     let presented = query_value(&query, "token").unwrap_or("");
-    if let Err(why) = authorize(&state.auth, presented) {
-        return Err((StatusCode::FORBIDDEN, why));
-    }
+    let viewer = authorize(&state.auth, presented).map_err(|why| (StatusCode::FORBIDDEN, why))?;
     let bad_request = |err: anyhow::Error| (StatusCode::BAD_REQUEST, format!("{err:#}"));
     let offer: SdpOffer = serde_json::from_str(&body).map_err(|e| bad_request(e.into()))?;
     let name = query_value(&query, "name").ok_or_else(|| bad_request(anyhow!("missing ?name=")))?;
@@ -489,6 +487,14 @@ async fn media_offer_handler(
         .and_then(Codec::from_name)
         .filter(|c| state.media.codecs().contains(&VideoCodec::Hw(*c)))
         .ok_or_else(|| bad_request(anyhow!("unknown stream {name}")))?;
+    // A new WebRTC session replaces the last (each binds the WebRTC port);
+    // WebTransport ones stay.
+    let seat = state
+        .viewers
+        .join(viewer, true)
+        .await
+        .map_err(|why| (StatusCode::SERVICE_UNAVAILABLE, why))?;
+    let id = seat.id;
     let params = session::SessionParams {
         codec,
         secs: query_value(&query, "secs")
@@ -507,20 +513,15 @@ async fn media_offer_handler(
         audio: state.audio.clone(),
         gamepads: state.gamepads.clone(),
     };
-    // A new connection takes over: stop the running session first, so its UDP
-    // port is free.
-    let mut current = state.current.lock().await;
-    if let Some(old) = current.take() {
-        let _ = old.stop.send(());
-        let _ = tokio::time::timeout(Duration::from_secs(2), old.handle).await;
-    }
-    let (answer, running) = session::start(params, offer).await.map_err(bad_request)?;
-    *current = Some(running);
+    let (answer, running) = session::start(params, seat, offer)
+        .await
+        .map_err(bad_request)?;
+    state.viewers.attach(id, running);
     Ok(Json(answer))
 }
 
-/// Whether `presented` may start a stream; the error says why not.
-fn authorize(auth: &Auth, presented: &str) -> std::result::Result<(), String> {
+/// Who `presented` lets in; the error says why not.
+fn authorize(auth: &Auth, presented: &str) -> std::result::Result<Viewer, String> {
     match auth {
         Auth::Token(token) => {
             if !constant_time_eq(presented.as_bytes(), token.as_bytes()) {
@@ -533,31 +534,28 @@ fn authorize(auth: &Auth, presented: &str) -> std::result::Result<(), String> {
                 );
                 return Err("missing or wrong token".into());
             }
+            // The shared token (benchmarks, the dev loop) is the owner's.
+            Ok(Viewer {
+                user: "token".into(),
+                role: Role::Owner,
+            })
         }
         Auth::Portal { key, environment } => {
             match cha_wire::verify_media_token(key, presented, environment, unix_now()) {
                 Ok(claims) => {
-                    info!(user = %claims.sub, role = %claims.role, "media token accepted")
+                    info!(user = %claims.sub, role = %claims.role, "media token accepted");
+                    Ok(Viewer {
+                        role: Role::from_claim(&claims.role),
+                        user: claims.sub,
+                    })
                 }
                 Err(err) => {
                     warn!("rejected a stream request: media token {err}");
-                    return Err(format!("media token {err}"));
+                    Err(format!("media token {err}"))
                 }
             }
         }
     }
-    Ok(())
-}
-
-/// Stops the running session, whatever its transport, so `next` can have
-/// the environment (one viewer until sharing, plan §3.4).
-async fn take_over(current: &tokio::sync::Mutex<Option<session::Running>>, next: session::Running) {
-    let mut current = current.lock().await;
-    if let Some(old) = current.take() {
-        let _ = old.stop.send(());
-        let _ = tokio::time::timeout(Duration::from_secs(2), old.handle).await;
-    }
-    *current = Some(next);
 }
 
 fn unix_now() -> i64 {

@@ -16,6 +16,7 @@
 //! The certificate is self-signed for 13 days (browsers accept such a one by
 //! its hash, `serverCertificateHashes`); the portal hands the hash out.
 
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,10 +35,14 @@ use wtransport::{Connection, Endpoint, Identity, ServerConfig, VarInt};
 
 use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
-use crate::control::{Control, ServerMsg, StreamerStats, percentile};
+use crate::control::{
+    Control, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
+    next_pointer, percentile,
+};
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media};
 use crate::session::Running;
+use crate::viewers::{Seat, Viewer, Viewers};
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
 /// What wtransport adds to each datagram (the session id), rounded up.
@@ -78,13 +83,7 @@ pub fn bind(port: u16, names: &[IpAddr]) -> Result<(Endpoint<Server>, String)> {
 }
 
 /// Checks a presented token; the error says why not.
-pub type Authorize = Box<dyn Fn(&str) -> std::result::Result<(), String> + Send + Sync>;
-/// Stops the running session (any transport) and records this one.
-pub type TakeOver = Box<
-    dyn Fn(Running) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-        + Send
-        + Sync,
->;
+pub type Authorize = Box<dyn Fn(&str) -> std::result::Result<Viewer, String> + Send + Sync>;
 
 /// What a session needs from the streamer.
 pub struct Sessions {
@@ -92,7 +91,7 @@ pub struct Sessions {
     pub audio: Option<Arc<Audio>>,
     pub gamepads: Option<Arc<Gamepads>>,
     pub authorize: Authorize,
-    pub take_over: TakeOver,
+    pub viewers: Arc<Viewers>,
 }
 
 pub async fn serve(endpoint: Endpoint<Server>, sessions: Arc<Sessions>) {
@@ -118,11 +117,14 @@ async fn accept(incoming: IncomingSession, sessions: Arc<Sessions>) -> Result<()
             .find(|(k, _)| *k == key)
             .map(|(_, v)| v.to_string())
     };
-    if let Err(why) = (sessions.authorize)(&value("token").unwrap_or_default()) {
-        warn!("rejected a WebTransport session: {why}");
-        request.forbidden().await;
-        return Ok(());
-    }
+    let viewer = match (sessions.authorize)(&value("token").unwrap_or_default()) {
+        Ok(viewer) => viewer,
+        Err(why) => {
+            warn!("rejected a WebTransport session: {why}");
+            request.forbidden().await;
+            return Ok(());
+        }
+    };
     let Some(codec) = value("codec")
         .as_deref()
         .and_then(VideoCodec::from_name)
@@ -131,23 +133,33 @@ async fn accept(incoming: IncomingSession, sessions: Arc<Sessions>) -> Result<()
         request.not_found().await;
         bail!("no ?codec=, or one this streamer doesn't offer");
     };
+    // WebTransport sessions coexist (one QUIC endpoint serves them all).
+    let seat = match sessions.viewers.join(viewer, false).await {
+        Ok(seat) => seat,
+        Err(why) => {
+            request.too_many_requests().await;
+            bail!(why);
+        }
+    };
+    let id = seat.id;
     let remote = request.remote_address();
     let conn = request.accept().await?;
-    info!(%remote, codec = codec.name(), "webtransport session");
+    info!(%remote, codec = codec.name(), id, "webtransport session");
     let (stop, stopped) = oneshot::channel();
     let session = Arc::clone(&sessions);
     let handle = tokio::spawn(async move {
-        if let Err(err) = run(conn, codec, session, stopped).await {
+        if let Err(err) = run(conn, codec, seat, session, stopped).await {
             info!(%remote, "webtransport session ended: {err:#}");
         }
     });
-    (sessions.take_over)(Running { stop, handle }).await;
+    sessions.viewers.attach(id, Running { stop, handle });
     Ok(())
 }
 
 async fn run(
     conn: Connection,
     codec: VideoCodec,
+    seat: Seat,
     sessions: Arc<Sessions>,
     mut stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
@@ -187,6 +199,7 @@ async fn run(
         codec,
         media: Arc::clone(&sessions.media),
         gamepads: sessions.gamepads.clone(),
+        seat,
     };
     let (w, h) = sessions.media.size();
     let _ = out.send(ServerMsg::Hello {
@@ -205,6 +218,11 @@ async fn run(
     let subscribed = Instant::now();
     let mut video = Video::new(codec, sessions.media.subscribe(codec)?, fragmenter);
     let mut audio = sessions.audio.as_ref().map(|a| a.subscribe());
+    let mut clipboard = Some(sessions.media.clipboard());
+    let mut cursor = Some(sessions.media.cursor());
+    let mut cursor_ids = HashSet::new();
+    let mut pointer = Some(sessions.media.pointer());
+    let _ = out.send(floor_msg(&handler.seat));
     let mut stats = StreamerStats::default();
     let mut report = interval_at(tokio::time::Instant::now() + STATS_INTERVAL, STATS_INTERVAL);
     report.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -242,6 +260,25 @@ async fn run(
                 Some(packet) => send_audio(&conn, &packet, epoch, &mut stats),
                 None => audio = None,
             },
+            // The apps' clipboard is the controller's alone.
+            text = next_clipboard(&mut clipboard) => {
+                if let Some(text) = text && handler.seat.has_control() {
+                    let _ = out.send(ServerMsg::Clipboard { text: text.to_string() });
+                }
+            }
+            shape = next_cursor(&mut cursor) => {
+                if let Some(shape) = shape {
+                    let _ = out.send(cursor_msg(&shape, &mut cursor_ids));
+                }
+            }
+            spot = next_pointer(&mut pointer) => {
+                if let Some(spot) = spot && !handler.seat.has_control() {
+                    let _ = out.send(ServerMsg::Pointer { x: spot.x, y: spot.y, drawn: spot.drawn });
+                }
+            }
+            () = handler.seat.changed() => {
+                let _ = out.send(floor_msg(&handler.seat));
+            }
             line = lines.recv() => {
                 let Some(line) = line else { break Ok(()) };
                 let Some(name) = codec_request(&line) else {

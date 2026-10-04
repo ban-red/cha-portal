@@ -52,7 +52,7 @@ The Chromium fast path, `cha-stream/1` (plan §3.1), beside WebRTC on its own UD
 - **No silent eviction:** a frame QUIC's send buffer can't take whole isn't sent, and nothing after it is until a keyframe (asked for at once). The page also asks for one when a frame can't be completed or a gap shows.
 - **Congestion:** quinn's Cubic for now (S1: fine on a LAN; its BBR stalls). Our own media-aware controller is P2.5's.
 - **Certificate:** self-signed, 13 days, ECDSA P-256; browsers accept it by its SHA-256 (`serverCertificateHashes`), which the portal hands out with the URLs (one per node address, each carrying the media token).
-- **One viewer:** a WebTransport session takes over from a WebRTC one and the other way round.
+- **Several viewers** (P2.6, below): WebTransport sessions coexist on the one endpoint.
 - **Codec switches in place** (`{"t":"codec","codec":…}` on the control stream). The session subscribes to the other encoder and keeps sending the current stream until that encoder's first frame. From there it sends the new codec under the next `stream` number (the header's stream byte), and the page starts that stream afresh. Answered with `{"t":"codec","codec":…,"stream":…}`, or an `error`. In the app's browser, every switch among H.264, HEVC, AV1 and both PyroWave modes left the picture without a gap over 35 ms, cold encoders included (a reconnect costs a new handshake and a blank picture).
 - **Stats** carry composited → encoded and encoded → sent percentiles per report window, so a codec's cost shows within half a second of switching to it.
 - **First numbers** (the app's browser, which wasn't painting, so no click → screen yet): H.264 at 1616×1256 decodes in 1.5–1.6 ms with nothing lost; click → sound 55 ms p50, against 85–90 over WebRTC (no NetEq buffer).
@@ -104,6 +104,32 @@ app ─libpulse─▶ our PulseAudio-protocol server ($XDG_RUNTIME_DIR/pulse/nat
 - **Flow control** follows PulseAudio's: a stream is kept `tlength` ahead (REQUEST), starts once `prebuf` is queued (STARTED) and stops again when it runs dry (UNDERFLOW). A stream that leaves `tlength` to the server gets 60 ms, not PulseAudio's 2 s. Nothing gets less than 20 ms (two mixer ticks).
 - **The clock runs with or without a viewer.** Apps, and media players that pace video by audio, need a sink that consumes. Encoding happens only while a session listens.
 - `--no-audio` turns it all off.
+
+## Viewers (P2.6)
+
+Up to four sessions watch an environment at once (`viewers.rs`, plan §3.4). Viewers with the same codec share its encoder. WebTransport sessions coexist; WebRTC ones go one at a time, since each binds the environment's WebRTC port.
+
+- **One has the controls (the floor):** its keyboard, mouse, gamepads, resizes, cursor mode and clipboard reach the environment, and only it gets the apps' clipboard. The others watch: what they send is ignored.
+- **Who:** the newest owner session takes the floor on joining; an admin's only when no owner is watching. When the controller leaves, the newest session of the highest role that may control gets it. Owners and admins can take it (`{"t":"take_control"}`); viewers can't. Share links and their roles are Phase 3.
+- **Pages hear** `{"t":"floor","control","viewers"}` on every change. A watching page gets `{"t":"pointer","x","y","drawn"}` at encode ticks, and draws the controller's pointer over the picture when the controller's page draws its own cursor (`drawn` false).
+- Tested with an owner and an admin on one Chrome environment: the admin joined watching ("2 watching", the owner's pointer drawn where it was), took the controls, the owner took them back, and the admin's leaving left the owner in control. Both shared one HEVC encoder.
+
+## Clipboard (P2.6)
+
+Text both ways, on the control channel (`{"t":"clipboard","text":…}`), up to 1 MiB:
+
+- **Environment → browser:** when an app sets the clipboard, the compositor asks it for the text (UTF-8 first) at the next tick. Smithay reports a selection before storing it. A thread reads the pipe, and the text is published to the sessions, which send it to the page. The player writes it to the device's clipboard, or on the next click if the browser wants a gesture.
+- **Browser → environment:** the page sends its clipboard just before a paste shortcut's keys, so the paste uses it. The text becomes the compositor's own selection, written on a thread to each app that pastes.
+- Wayland apps (Chrome, Firefox) take part directly. X11 apps under rootful Xwayland (XFCE) keep their clipboard inside the X server for now.
+- Tested in the Chrome environment: text with accents and emoji pasted into the omnibox from the page, then copied back, each exactly once.
+
+## Cursor (P2.6)
+
+In desktop mode the page draws the cursor (`{"t":"cursor","client":true}`), so it moves with no stream delay. The compositor then leaves it out of the picture, and pointer motion over still content no longer costs a frame: 60 moves across a static Chrome page gave 2 frames, where each move used to be composited and encoded. With a locked pointer (games) the page asks for it back in the picture; each session starts that way.
+
+- **Shapes** go out on change as `{"t":"cursor"}`. A named cursor is a CSS keyword: we implement the cursor-shape protocol, whose names are CSS's, and Chrome and GTK 4 use it, so `text` over a text field costs a few bytes. Apps that draw their own cursor surface (Xwayland, GTK 3, Qt) send the image as straight-alpha RGBA, base64, once per session per image (later only its `id`); larger than 256 px goes as `default`.
+- **The page** sets the element's CSS cursor. Images go through `image-set()` at the stream's scale, so a 30 px cursor in a 2× stream shows at 15 CSS px, crisp.
+- Tested: Chrome's cursor-shape names (`default`, `text` over the omnibox), and XFCE's arrow image through rootful Xwayland.
 
 ## Gamepads (P1.6)
 

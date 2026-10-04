@@ -13,7 +13,7 @@ use cha_node::{Agent, Identity, enroll, init_tls};
 use cha_wire::{EnvironmentSpec, Gpu, Inventory, SecurityProfile, StreamerEndpoint, close};
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 
 struct Portal {
     url: String,
@@ -138,6 +138,9 @@ struct FakeRuntime {
     stopped: Mutex<Vec<String>>,
     running: Mutex<Vec<String>>,
     exits: broadcast::Sender<Exit>,
+    /// Each start waits for a permit: a real one takes seconds, and an instant
+    /// one can finish before the launch even answers.
+    starts: Semaphore,
 }
 
 impl FakeRuntime {
@@ -148,13 +151,26 @@ impl FakeRuntime {
             stopped: Mutex::default(),
             running: Mutex::new(running.iter().map(|s| s.to_string()).collect()),
             exits: broadcast::channel(8).0,
+            starts: Semaphore::new(0),
         })
+    }
+
+    /// Polls until the portal has had `id` stopped.
+    async fn wait_for_stop(&self, id: &str) {
+        for _ in 0..100 {
+            if self.stopped.lock().unwrap().iter().any(|s| s == id) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("{id} was never stopped");
     }
 }
 
 impl Runtime for FakeRuntime {
     fn start(&self, spec: EnvironmentSpec) -> BoxFuture<'_, Result<StreamerEndpoint>> {
         Box::pin(async move {
+            self.starts.acquire().await?.forget();
             self.running.lock().unwrap().push(spec.id.clone());
             self.started.lock().unwrap().push(spec);
             Ok(StreamerEndpoint {
@@ -353,6 +369,7 @@ async fn environments_launch_stop_fail_and_reconcile() {
     assert_eq!(status, 200, "{env}");
     assert_eq!(env["state"], "starting");
     let id = env["id"].as_str().unwrap().to_string();
+    runtime.starts.add_permits(1);
     let env = p.wait_for_env(&id, |e| e["state"] == "running").await;
     assert_eq!(env["templateName"], "Google Chrome");
     assert_eq!(env["nodeName"], "gpu-box");
@@ -362,13 +379,9 @@ async fn environments_launch_stop_fail_and_reconcile() {
     assert_eq!(spec.id, id);
     assert_eq!(spec.image, "cha/env-chrome:dev");
     assert_eq!(spec.security, SecurityProfile::Browser);
-    assert!(
-        runtime
-            .stopped
-            .lock()
-            .unwrap()
-            .contains(&"leftover".to_string())
-    );
+    // Launched while reconciling may still be under way: it mustn't take the
+    // new environment, missing from what the node had, for one it lost.
+    runtime.wait_for_stop("leftover").await;
 
     // Connecting: the offer reaches the node with a media token the streamer
     // can check against the portal's key, for this environment and user.
@@ -428,6 +441,7 @@ async fn environments_launch_stop_fail_and_reconcile() {
         )
         .await;
     let id = env["id"].as_str().unwrap().to_string();
+    runtime.starts.add_permits(1);
     p.wait_for_env(&id, |e| e["state"] == "running").await;
     runtime
         .exits
