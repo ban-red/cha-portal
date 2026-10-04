@@ -26,6 +26,7 @@ pub fn routes() -> Router<AppState> {
         .route("/users", get(list_users).post(create_user))
         .route("/audit", get(audit))
         .merge(crate::nodes::routes())
+        .merge(crate::environments::routes())
         .fallback(|| async { ApiError::NotFound("no such API".into()) })
 }
 

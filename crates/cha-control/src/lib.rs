@@ -2,12 +2,13 @@
 //!
 //! P1.1 (foundation): accounts, browser sessions, first-run setup, audit log,
 //! and serving the portal SPA. P1.2: node enrollment and the node channel.
-//! Catalog, environments and session brokering follow (docs/PLAN.md, Phase 1
-//! delivery plan).
+//! P1.4: the catalog and environments. Session brokering follows (docs/PLAN.md,
+//! Phase 1 delivery plan).
 
 pub mod api;
 pub mod auth;
 pub mod db;
+pub mod environments;
 pub mod error;
 pub mod nodes;
 

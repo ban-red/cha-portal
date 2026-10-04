@@ -54,6 +54,38 @@ export interface NodeInfo {
   inventory: Inventory | null;
 }
 
+export type SecurityProfile = "standard" | "browser";
+
+/** Something users can launch (`images/catalog.json`). */
+export interface Template {
+  id: string;
+  name: string;
+  description: string;
+  image: string;
+  /** "browser", "desktop", "test", … */
+  class: string;
+  security: SecurityProfile;
+  shmMb: number;
+}
+
+export type EnvironmentState = "starting" | "running" | "stopping" | "destroyed" | "failed";
+
+export interface Environment {
+  id: string;
+  templateId: string;
+  templateName: string;
+  ownerId: string;
+  nodeId: string | null;
+  nodeName: string | null;
+  state: EnvironmentState;
+  /** Why it failed or ended. */
+  detail: string | null;
+  createdAt: number;
+  updatedAt: number;
+  /** Where its streamer listens while it runs. */
+  streamer: { host: string | null; httpPort: number; webrtcPort: number } | null;
+}
+
 /** An error the API returned: HTTP status, stable code, readable message. */
 export class ApiError extends Error {
   constructor(
@@ -102,4 +134,8 @@ export const api = {
     request<{ token: string; expiresAt: number }>("POST", "/nodes/join-tokens", body),
   removeNode: (id: string) => request<{ removed: string }>("DELETE", `/nodes/${encodeURIComponent(id)}`),
   pingNode: (id: string) => request<{ rttMs: number; nodeUnixMs: number }>("POST", `/nodes/${encodeURIComponent(id)}/ping`, {}),
+  catalog: () => request<Template[]>("GET", "/catalog"),
+  environments: () => request<Environment[]>("GET", "/environments"),
+  launch: (templateId: string) => request<Environment>("POST", "/environments", { templateId }),
+  stopEnvironment: (id: string) => request<Environment>("DELETE", `/environments/${encodeURIComponent(id)}`),
 };

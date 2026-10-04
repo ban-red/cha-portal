@@ -1,0 +1,32 @@
+# Builds every environment image on a node. From the repository root:
+#   docker compose -f images/compose.yaml build
+name: cha-images
+
+x-env: &env
+  build: &build
+    context: ..
+    additional_contexts:
+      base: service:base
+
+services:
+  base:
+    build:
+      context: ..
+      dockerfile: images/base/Dockerfile
+    image: cha/env-base:dev
+  test-pattern:
+    <<: *env
+    build: { <<: *build, dockerfile: images/test-pattern/Dockerfile }
+    image: cha/env-test-pattern:dev
+  chrome:
+    <<: *env
+    build: { <<: *build, dockerfile: images/chrome/Dockerfile }
+    image: cha/env-chrome:dev
+  firefox:
+    <<: *env
+    build: { <<: *build, dockerfile: images/firefox/Dockerfile }
+    image: cha/env-firefox:dev
+  xfce:
+    <<: *env
+    build: { <<: *build, dockerfile: images/xfce/Dockerfile }
+    image: cha/env-xfce:dev

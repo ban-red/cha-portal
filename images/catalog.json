@@ -1,0 +1,40 @@
+{
+  "templates": [
+    {
+      "id": "test-pattern",
+      "name": "Test pattern",
+      "description": "A moving bar, a frame counter and a frame-ID strip; flashes on input. For checking latency and smoothness.",
+      "image": "cha/env-test-pattern:dev",
+      "class": "test",
+      "security": "standard",
+      "shmMb": 64
+    },
+    {
+      "id": "chrome",
+      "name": "Google Chrome",
+      "description": "Chrome on the GPU, with its sandbox on.",
+      "image": "cha/env-chrome:dev",
+      "class": "browser",
+      "security": "browser",
+      "shmMb": 1024
+    },
+    {
+      "id": "firefox",
+      "name": "Firefox",
+      "description": "Firefox on the GPU, with its sandbox on.",
+      "image": "cha/env-firefox:dev",
+      "class": "browser",
+      "security": "browser",
+      "shmMb": 1024
+    },
+    {
+      "id": "xfce",
+      "name": "XFCE desktop",
+      "description": "A full XFCE desktop: panel, file manager, terminal.",
+      "image": "cha/env-xfce:dev",
+      "class": "desktop",
+      "security": "standard",
+      "shmMb": 1024
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Starts the environment's app once the streamer's compositor is listening.
+set -eu
+socket="${XDG_RUNTIME_DIR:?}/${WAYLAND_DISPLAY:-wayland-0}"
+tries=0
+until [ -S "$socket" ]; do
+  tries=$((tries + 1))
+  if [ "$tries" -gt 300 ]; then
+    echo "cha-run: no Wayland socket at $socket after 30 s" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+exec "$@"

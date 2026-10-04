@@ -1,7 +1,7 @@
 [package]
 name = "cha-node"
 version = "0.1.0"
-description = "Cha Node agent: enrolls with the portal and keeps the node channel open"
+description = "Cha Node agent: enrolls with the portal, keeps the node channel open, runs environments"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -10,10 +10,15 @@ publish = false
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+bytes = "1"
 cha-wire = { path = "../cha-wire" }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 getrandom = "0.3"
+# Our Docker Engine client speaks HTTP/1.1 over the socket with these.
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 if-addrs = "0.15"
 # TLS is rustls with the ring provider throughout, trusting the system's roots
 # (add a homelab CA to the system store).

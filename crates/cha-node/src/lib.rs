@@ -2,14 +2,18 @@
 //!
 //! It enrolls once with an admin's join token, keeping its Ed25519 identity in
 //! a state directory, then holds one WebSocket to the portal (ADR 0001):
-//! answering the portal's challenge, reporting inventory, sending heartbeats
-//! and serving requests. P1.3 adds the Wolf adapter behind those requests.
+//! answering the portal's challenge, reporting inventory and the environments
+//! it runs, sending heartbeats, and serving requests: starting and stopping
+//! environments ([`environments`]) through the Docker engine ([`docker`]).
 
+pub mod docker;
+pub mod environments;
 pub mod inventory;
 
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -21,8 +25,11 @@ use cha_wire::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
+
+use crate::environments::{Exit, Runtime};
 
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const IDENTITY_FILE: &str = "node.json";
@@ -156,6 +163,7 @@ pub struct Agent {
     identity: Identity,
     key: NodeKey,
     inventory: fn() -> Inventory,
+    runtime: Option<Arc<dyn Runtime>>,
 }
 
 impl Agent {
@@ -164,12 +172,19 @@ impl Agent {
             key: identity.key()?,
             identity,
             inventory: inventory::collect,
+            runtime: None,
         })
     }
 
     /// Replaces the inventory probe (tests).
     pub fn with_inventory(mut self, probe: fn() -> Inventory) -> Self {
         self.inventory = probe;
+        self
+    }
+
+    /// What runs environments; without one, the node refuses to start any.
+    pub fn with_runtime(mut self, runtime: Arc<dyn Runtime>) -> Self {
+        self.runtime = Some(runtime);
         self
     }
 
@@ -249,6 +264,20 @@ impl Agent {
             inventory: inventory.clone(),
         })?)
         .await?;
+        let running = match &self.runtime {
+            Some(runtime) => runtime.running().await.unwrap_or_else(|err| {
+                warn!("listing environments: {err:#}");
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+        sink.send(encode(&ToPortal::Environments { running })?)
+            .await?;
+
+        // Requests run as tasks (starting an environment takes seconds) and
+        // answer through this channel.
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ToPortal>();
+        let mut exits = self.runtime.as_ref().map(|r| r.exits());
 
         let start = tokio::time::Instant::now();
         let mut heartbeats = tokio::time::interval_at(start + heartbeat, heartbeat);
@@ -271,6 +300,14 @@ impl Agent {
                         sink.send(encode(&ToPortal::Inventory { inventory: inventory.clone() })?).await?;
                     }
                 }
+                Some(msg) = out_rx.recv() => {
+                    sink.send(encode(&msg)?).await?;
+                }
+                exit = next_exit(&mut exits) => {
+                    if let Some(Exit { id, detail, failed }) = exit {
+                        sink.send(encode(&ToPortal::EnvironmentExited { id, detail, failed })?).await?;
+                    }
+                }
                 incoming = stream.next() => {
                     let msg = match incoming {
                         None => return Ok(None),
@@ -280,8 +317,12 @@ impl Agent {
                     match msg {
                         Message::Text(text) => match serde_json::from_str::<ToNode>(&text)? {
                             ToNode::Request { id, request } => {
-                                let result = handle(request).await;
-                                sink.send(encode(&ToPortal::Response { id, result })?).await?;
+                                let runtime = self.runtime.clone();
+                                let out = out_tx.clone();
+                                tokio::spawn(async move {
+                                    let result = handle(runtime, request).await;
+                                    let _ = out.send(ToPortal::Response { id, result });
+                                });
                             }
                             // The agent doesn't ask the portal anything yet.
                             ToNode::Response { .. } => {}
@@ -296,9 +337,46 @@ impl Agent {
     }
 }
 
-async fn handle(request: NodeRequest) -> Result<NodeResponse, String> {
+async fn handle(
+    runtime: Option<Arc<dyn Runtime>>,
+    request: NodeRequest,
+) -> Result<NodeResponse, String> {
+    const NO_RUNTIME: &str =
+        "this node can't run environments: the agent has no access to a Docker engine";
     match request {
         NodeRequest::Ping => Ok(NodeResponse::Pong { unix_ms: unix_ms() }),
+        NodeRequest::StartEnvironment { environment } => {
+            let runtime = runtime.ok_or(NO_RUNTIME)?;
+            let id = environment.id.clone();
+            runtime
+                .start(environment)
+                .await
+                .map(|streamer| NodeResponse::EnvironmentStarted { id, streamer })
+                .map_err(|e| format!("{e:#}"))
+        }
+        NodeRequest::StopEnvironment { id } => {
+            let runtime = runtime.ok_or(NO_RUNTIME)?;
+            runtime
+                .stop(id.clone())
+                .await
+                .map(|()| NodeResponse::EnvironmentStopped { id })
+                .map_err(|e| format!("{e:#}"))
+        }
+    }
+}
+
+/// The next environment exit, or never without a runtime. A lagging receiver
+/// skips ahead: the portal reconciles on reconnect anyway.
+async fn next_exit(exits: &mut Option<broadcast::Receiver<Exit>>) -> Option<Exit> {
+    let Some(rx) = exits else {
+        return std::future::pending().await;
+    };
+    loop {
+        match rx.recv().await {
+            Ok(exit) => return Some(exit),
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return std::future::pending().await,
+        }
     }
 }
 

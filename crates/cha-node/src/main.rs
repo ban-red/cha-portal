@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use cha_node::docker::{DEFAULT_SOCKET, Docker};
+use cha_node::environments::{DockerConfig, DockerRuntime};
 use cha_node::{Agent, Identity, enroll, init_tls, inventory, normalize_portal_url};
 use clap::Parser;
 use tracing::{info, warn};
@@ -26,6 +28,24 @@ struct Args {
     /// Print this machine's inventory as JSON and exit.
     #[arg(long)]
     print_inventory: bool,
+    /// The Docker engine's socket; environments need it.
+    #[arg(long, env = "CHA_DOCKER_SOCKET", default_value = DEFAULT_SOCKET)]
+    docker_socket: String,
+    /// The streamer image each environment runs beside its app.
+    #[arg(long, env = "CHA_STREAMER_IMAGE", default_value = "cha/streamer:dev")]
+    streamer_image: String,
+    /// The CDI device that gives containers the GPU.
+    #[arg(long, env = "CHA_GPU_DEVICE", default_value = "nvidia.com/gpu=all")]
+    gpu_device: String,
+    /// The render node streamers composite on (default: the first GPU with an
+    /// encoder).
+    #[arg(long, env = "CHA_RENDER_NODE")]
+    render_node: Option<String>,
+    /// Streamers listen on this port and up (two each: HTTP, WebRTC).
+    #[arg(long, env = "CHA_PORT_BASE", default_value_t = 47000)]
+    port_base: u16,
+    #[arg(long, env = "CHA_MAX_ENVIRONMENTS", default_value_t = 16)]
+    max_environments: u16,
 }
 
 #[tokio::main]
@@ -78,5 +98,32 @@ async fn main() -> Result<()> {
         }
     };
 
-    Agent::new(identity)?.run().await
+    let mut agent = Agent::new(identity)?;
+    let docker = Docker::new(&args.docker_socket);
+    let render_node = args.render_node.clone().unwrap_or_else(|| {
+        inventory::collect()
+            .gpus
+            .into_iter()
+            .find(|g| !g.encoders.is_empty())
+            .and_then(|g| g.render_node)
+            .unwrap_or_else(|| "/dev/dri/renderD128".into())
+    });
+    let config = DockerConfig {
+        streamer_image: args.streamer_image.clone(),
+        render_node,
+        gpu_device: args.gpu_device.clone(),
+        port_base: args.port_base,
+        max_environments: args.max_environments,
+    };
+    match DockerRuntime::new(docker, config.clone()).await {
+        Ok(runtime) => {
+            info!(streamer = %config.streamer_image, render_node = %config.render_node, "running environments with Docker");
+            agent = agent.with_runtime(runtime);
+        }
+        Err(err) => warn!(
+            "can't run environments ({err:#}); mount {} into the agent's container",
+            args.docker_socket
+        ),
+    }
+    agent.run().await
 }

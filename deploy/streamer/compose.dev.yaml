@@ -13,7 +13,7 @@ services:
       context: ../..
       dockerfile: deploy/streamer/Dockerfile
       target: dev
-    image: cha-streamer:dev
+    image: cha/streamer-dev:latest
     command: ["sleep", "infinity"]
     network_mode: host
     devices:

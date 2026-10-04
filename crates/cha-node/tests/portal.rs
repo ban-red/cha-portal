@@ -1,13 +1,19 @@
 //! The agent against a real portal on a random port: enrollment, the signed
-//! handshake, inventory, a request through the node channel, and removal.
+//! handshake, inventory, a request through the node channel, removal, and the
+//! environment lifecycle (with a fake runtime standing in for Docker).
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use anyhow::Result;
 use cha_control::{AppState, Config, app, db};
+use cha_node::environments::{Exit, Runtime};
 use cha_node::{Agent, Identity, enroll, init_tls};
-use cha_wire::{Gpu, Inventory, close};
+use cha_wire::{EnvironmentSpec, Gpu, Inventory, SecurityProfile, StreamerEndpoint, close};
+use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
+use tokio::sync::broadcast;
 
 struct Portal {
     url: String,
@@ -90,6 +96,20 @@ impl Portal {
         body["token"].as_str().unwrap().to_string()
     }
 
+    /// Polls an environment until `check` passes.
+    async fn wait_for_env(&self, id: &str, check: impl Fn(&Value) -> bool) -> Value {
+        for _ in 0..100 {
+            let (_, env) = self
+                .admin("GET", &format!("/api/environments/{id}"), None)
+                .await;
+            if check(&env) {
+                return env;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("environment {id} never reached the expected state");
+    }
+
     /// Polls the node list until `check` passes for the node.
     async fn wait_for_node(&self, node_id: &str, check: impl Fn(&Value) -> bool) -> Value {
         for _ in 0..100 {
@@ -106,6 +126,54 @@ impl Portal {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("node {node_id} never reached the expected state");
+    }
+}
+
+/// Records what the portal asks for, as Docker would run it.
+struct FakeRuntime {
+    started: Mutex<Vec<EnvironmentSpec>>,
+    stopped: Mutex<Vec<String>>,
+    running: Mutex<Vec<String>>,
+    exits: broadcast::Sender<Exit>,
+}
+
+impl FakeRuntime {
+    fn new(running: &[&str]) -> Arc<Self> {
+        Arc::new(Self {
+            started: Mutex::default(),
+            stopped: Mutex::default(),
+            running: Mutex::new(running.iter().map(|s| s.to_string()).collect()),
+            exits: broadcast::channel(8).0,
+        })
+    }
+}
+
+impl Runtime for FakeRuntime {
+    fn start(&self, spec: EnvironmentSpec) -> BoxFuture<'_, Result<StreamerEndpoint>> {
+        Box::pin(async move {
+            self.running.lock().unwrap().push(spec.id.clone());
+            self.started.lock().unwrap().push(spec);
+            Ok(StreamerEndpoint {
+                http_port: 47000,
+                webrtc_port: 47001,
+            })
+        })
+    }
+
+    fn stop(&self, id: String) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            self.running.lock().unwrap().retain(|r| *r != id);
+            self.stopped.lock().unwrap().push(id);
+            Ok(())
+        })
+    }
+
+    fn running(&self) -> BoxFuture<'_, Result<Vec<String>>> {
+        Box::pin(async move { Ok(self.running.lock().unwrap().clone()) })
+    }
+
+    fn exits(&self) -> broadcast::Receiver<Exit> {
+        self.exits.subscribe()
     }
 }
 
@@ -233,4 +301,100 @@ async fn admin_endpoints_need_an_admin() {
         .await
         .unwrap();
     assert_eq!(res.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn environments_launch_stop_fail_and_reconcile() {
+    let p = portal().await;
+    let identity = enroll(&p.url, &p.join_token().await, "gpu-box")
+        .await
+        .unwrap();
+    // The node still runs one the portal never heard of: reconciling stops it.
+    let runtime = FakeRuntime::new(&["leftover"]);
+    let agent = Agent::new(identity.clone())
+        .unwrap()
+        .with_inventory(test_inventory)
+        .with_runtime(runtime.clone());
+    tokio::spawn(async move { agent.run().await });
+    p.wait_for_node(&identity.node_id, |n| {
+        n["online"] == true && !n["inventory"].is_null()
+    })
+    .await;
+
+    let (status, catalog) = p.admin("GET", "/api/catalog", None).await;
+    assert_eq!(status, 200);
+    assert!(
+        catalog
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == "chrome")
+    );
+
+    let (status, env) = p
+        .admin(
+            "POST",
+            "/api/environments",
+            Some(json!({ "templateId": "chrome" })),
+        )
+        .await;
+    assert_eq!(status, 200, "{env}");
+    assert_eq!(env["state"], "starting");
+    let id = env["id"].as_str().unwrap().to_string();
+    let env = p.wait_for_env(&id, |e| e["state"] == "running").await;
+    assert_eq!(env["templateName"], "Google Chrome");
+    assert_eq!(env["nodeName"], "gpu-box");
+    assert_eq!(env["streamer"]["host"], "192.168.1.20");
+    assert_eq!(env["streamer"]["httpPort"], 47000);
+    let spec = runtime.started.lock().unwrap()[0].clone();
+    assert_eq!(spec.id, id);
+    assert_eq!(spec.image, "cha/env-chrome:dev");
+    assert_eq!(spec.security, SecurityProfile::Browser);
+    assert!(
+        runtime
+            .stopped
+            .lock()
+            .unwrap()
+            .contains(&"leftover".to_string())
+    );
+
+    let (status, _) = p
+        .admin("DELETE", &format!("/api/environments/{id}"), None)
+        .await;
+    assert_eq!(status, 200);
+    p.wait_for_env(&id, |e| e["state"] == "destroyed").await;
+    assert!(runtime.stopped.lock().unwrap().contains(&id));
+
+    // An app that dies is reported, and the environment fails with the reason.
+    let (_, env) = p
+        .admin(
+            "POST",
+            "/api/environments",
+            Some(json!({ "templateId": "test-pattern" })),
+        )
+        .await;
+    let id = env["id"].as_str().unwrap().to_string();
+    p.wait_for_env(&id, |e| e["state"] == "running").await;
+    runtime
+        .exits
+        .send(Exit {
+            id: id.clone(),
+            detail: "the app exited with code 1".into(),
+            failed: true,
+        })
+        .unwrap();
+    let env = p.wait_for_env(&id, |e| e["state"] == "failed").await;
+    assert_eq!(env["detail"], "the app exited with code 1");
+
+    let (status, list) = p.admin("GET", "/api/environments", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    let (status, _) = p
+        .admin(
+            "POST",
+            "/api/environments",
+            Some(json!({ "templateId": "nope" })),
+        )
+        .await;
+    assert_eq!(status, 400);
 }

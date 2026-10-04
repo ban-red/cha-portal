@@ -2,7 +2,7 @@
 
 A self-hosted dashboard for "portaling" into remote environments (a Chrome instance, a KDE desktop, Steam Big Picture, or an external Moonlight-protocol host) with Moonlight-class latency, in the browser or in a thin native client. Environments run on **Cha Nodes**: docker compose stacks on your GPU servers that enroll with the portal.
 
-**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP on our own streaming engine ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)): the portal, nodes, and Chrome, Firefox and XFCE environments streamed to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work, and the streamer core (P1.3: our compositor, NVENC binding and WebRTC) streams Chrome from the GPU node; environments come next.
+**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP on our own streaming engine ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)): the portal, nodes, and Chrome, Firefox and XFCE environments streamed to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work. The streamer core (P1.3: our compositor, NVENC binding and WebRTC) streams from the GPU node. Environments (P1.4) launch from the portal: each runs its app beside a streamer on a node. Connecting to them from the portal (P1.5) comes next.
 
 - Plan: [`docs/PLAN.md`](docs/PLAN.md)
 - Research (October 2026 landscape): [`docs/research/`](docs/research/README.md)
@@ -14,11 +14,13 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 | `crates/cha-control` | The portal's server: accounts and sessions, audit log, nodes, the API, serving the SPA (SQLite) |
 | `crates/cha-node` | The node agent: enrolls with a join token, then keeps one WebSocket to the portal (inventory, heartbeats, requests) |
 | `crates/cha-streamer` | One environment's media engine: our headless Wayland compositor (Smithay), zero-copy NVENC, WebRTC ([README](crates/cha-streamer/README.md)) |
+| `crates/cha-testpattern` | The test-pattern environment: our own Wayland client (moving bar, frame counter, frame-ID strip, input flash) |
 | `crates/cha-nvenc` | Our NVENC + CUDA binding, loaded from the driver at runtime |
 | `crates/cha-wire` | Node ⇄ portal messages and the node's Ed25519 identity ([ADR 0001](docs/adr/0001-node-channel-json-over-websocket.md)) |
 | `web/apps/portal` | The portal SPA (Vue 3, Tailwind) |
 | `deploy/node` | The node's compose stack (the agent) |
 | `deploy/streamer` | The streamer's image and its dev loop on a node |
+| `images` | Our environment images (test pattern, Chrome, Firefox, XFCE) and the catalog ([README](images/README.md)) |
 | `crates/cha-proto` | `cha-stream/1` wire framing: Sans-IO datagram header, fragmentation, reassembly |
 | `web/packages/pyrowave-webgpu` | `@cha/pyrowave-webgpu`: PyroWave decode on WebGPU (TypeScript host for the WGSL port), draws straight to a canvas |
 | `spikes/s1-browser-pyrowave` | Spike S1: can a browser receive PyroWave-shaped traffic? ([README](spikes/s1-browser-pyrowave/README.md)) |
@@ -60,13 +62,21 @@ To add a node, open **Admin → Nodes → Add node** and run the command it show
 cargo run -p cha-node -- --portal-url http://127.0.0.1:8090 --join-token chajoin_… --state-dir data/node
 ```
 
-On a GPU server, use the compose stack instead (NVIDIA through CDI):
+On a GPU server, use the compose stack instead (NVIDIA through CDI). The agent runs environments as containers through the Docker socket, so first build the images it starts:
+
+```bash
+docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
+```
+
+```bash
+docker compose -f images/compose.yaml build
+```
 
 ```bash
 CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
 ```
 
-`cha-node --print-inventory` shows what the agent will report.
+`cha-node --print-inventory` shows what the agent will report. Once the node is online, **Environments** launches anything in the catalog on it.
 
 ## License
 

@@ -1,0 +1,29 @@
+#!/bin/sh
+# A stand-in for bubblewrap, ahead of /usr/bin/bwrap in PATH.
+#
+# GTK loads images through glycin, which runs each loader under bwrap. bwrap
+# can't build its sandbox in an unprivileged container: Docker's AppArmor
+# profile denies its mounts, and the host restricts user namespaces. Without a
+# loader, GTK aborts (Firefox at startup). So this skips bwrap's options, keeps
+# its environment settings, and runs the loader directly: the environment's
+# container (no capabilities, seccomp, AppArmor) is the sandbox.
+#
+# Goes away once `cha doctor` installs the cha-browser AppArmor profile (plan
+# §4.2). Images that need real bwrap (Steam's pressure-vessel) remove it.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --unshare-all | --die-with-parent | --clearenv | --new-session | --share-net | \
+    --unshare-user | --unshare-ipc | --unshare-pid | --unshare-net | --unshare-uts | --unshare-cgroup)
+      shift ;;
+    --setenv) export "$2=$3"; shift 3 ;;
+    --ro-bind | --ro-bind-try | --bind | --bind-try | --dev-bind | --dev-bind-try | --symlink | --chmod)
+      shift 3 ;;
+    --chdir | --dev | --proc | --tmpfs | --mqueue | --dir | --seccomp | --add-seccomp-fd | --remount-ro | \
+    --file | --bind-data | --ro-bind-data | --uid | --gid | --hostname | --unsetenv | --perms | --size | --info-fd | --json-status-fd | --block-fd | --userns-block-fd | --sync-fd | --lock-file)
+      shift 2 ;;
+    --) shift; break ;;
+    --*) echo "bwrap shim: unsupported option $1" >&2; exit 1 ;;
+    *) break ;;
+  esac
+done
+exec "$@"

@@ -85,6 +85,18 @@ impl NodeHub {
 
     /// Sends `request` to a connected node and waits for its reply.
     pub async fn request(&self, node_id: &str, request: NodeRequest) -> ApiResult<NodeResponse> {
+        self.request_timeout(node_id, request, REQUEST_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::request`] with its own deadline (starting an environment can take
+    /// a while).
+    pub async fn request_timeout(
+        &self,
+        node_id: &str,
+        request: NodeRequest,
+        timeout: Duration,
+    ) -> ApiResult<NodeResponse> {
         let offline = || ApiError::conflict("node_offline", "the node isn't connected");
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -97,7 +109,7 @@ impl NodeHub {
                 .map_err(|_| offline())?;
             Arc::clone(&conn.pending)
         };
-        let reply = tokio::time::timeout(REQUEST_TIMEOUT, reply_rx).await;
+        let reply = tokio::time::timeout(timeout, reply_rx).await;
         pending.lock().await.remove(&id);
         match reply {
             Ok(Ok(Ok(response))) => Ok(response),
@@ -325,6 +337,18 @@ async fn pump(
                         let json = serde_json::to_string(&inventory)?;
                         db::set_node_inventory(&state.db, node_id, &json).await?;
                     }
+                    // These may ask the node things back, so they run apart from
+                    // this loop, which carries the answers.
+                    ToPortal::Environments { running } => {
+                        tokio::spawn(crate::environments::reconcile(
+                            state.clone(),
+                            node_id.to_string(),
+                            running,
+                        ));
+                    }
+                    ToPortal::EnvironmentExited { id, detail, failed } => {
+                        tokio::spawn(crate::environments::exited(state.clone(), id, detail, failed));
+                    }
                     ToPortal::Response { id, result } => {
                         if let Some(waiter) = pending.lock().await.remove(&id) {
                             let _ = waiter.send(result);
@@ -431,6 +455,7 @@ async fn remove(
     client: ClientInfo,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    db::fail_node_environments(&state.db, &id, "its node was removed").await?;
     if !db::delete_node(&state.db, &id).await? {
         return Err(ApiError::NotFound("no such node".into()));
     }
@@ -456,7 +481,12 @@ async fn ping(
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let started = Instant::now();
-    let NodeResponse::Pong { unix_ms } = state.nodes.request(&id, NodeRequest::Ping).await?;
+    let NodeResponse::Pong { unix_ms } = state.nodes.request(&id, NodeRequest::Ping).await? else {
+        return Err(ApiError::conflict(
+            "node_error",
+            "the node answered something else",
+        ));
+    };
     Ok(Json(json!({
         "rttMs": started.elapsed().as_secs_f64() * 1000.0,
         "nodeUnixMs": unix_ms,

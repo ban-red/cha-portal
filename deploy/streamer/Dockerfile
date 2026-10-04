@@ -3,7 +3,8 @@
 # Targets:
 #   dev      Rust, build deps and Google Chrome; the repository is bind-mounted
 #            (compose.dev.yaml) to build and run the streamer in place.
-#   runtime  the streamer alone (P1.4: one container per environment).
+#   runtime  the streamer alone, one container per environment:
+#              docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
 #
 # The NVIDIA driver (EGL, GBM backend, CUDA, NVENC) comes from the CDI spec at
 # run time; nothing NVIDIA is installed in the image.

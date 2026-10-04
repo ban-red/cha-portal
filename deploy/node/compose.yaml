@@ -1,5 +1,9 @@
-# A Cha Node. P1.2: the agent alone; Wolf and the gateway join it in P1.3/P1.4.
+# A Cha Node: the agent. It starts each environment's streamer and app
+# containers itself, through the Docker engine.
 #
+# First build the images it runs (once, and after updates):
+#   docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
+#   docker compose -f images/compose.yaml build
 # First run, with a join token from the portal's Nodes page:
 #   CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… \
 #     docker compose -f deploy/node/compose.yaml up -d
@@ -19,14 +23,19 @@ services:
       CHA_PORTAL_URL: ${CHA_PORTAL_URL:?set CHA_PORTAL_URL to the portal's URL}
       CHA_JOIN_TOKEN: ${CHA_JOIN_TOKEN:-}
       CHA_NODE_NAME: ${CHA_NODE_NAME:-}
+      CHA_STREAMER_IMAGE: ${CHA_STREAMER_IMAGE:-cha/streamer:dev}
       RUST_LOG: ${RUST_LOG:-info}
-    # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi.
+    # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi
+    # and the render node (whose group the apps get).
     devices:
       - nvidia.com/gpu=all
     volumes:
       - state:/var/lib/cha-node
       # The host's OS name, not the image's.
       - /etc/os-release:/run/host/os-release:ro
+      # Environments are containers the agent creates. This makes the agent
+      # root-equivalent on the node (plan §4.2): keep it small and audited.
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   state:

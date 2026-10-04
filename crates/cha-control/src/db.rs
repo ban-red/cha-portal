@@ -363,3 +363,162 @@ pub async fn delete_node(db: &SqlitePool, id: &str) -> Result<bool, sqlx::Error>
         .rows_affected()
         > 0)
 }
+
+// ---- Environments ----
+
+#[derive(Clone, Debug, FromRow)]
+pub struct EnvironmentRow {
+    pub id: String,
+    pub owner_id: String,
+    pub template_id: String,
+    pub node_id: Option<String>,
+    pub state: String,
+    pub detail: Option<String>,
+    pub http_port: Option<i64>,
+    pub webrtc_port: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, http_port, webrtc_port, created_at, updated_at";
+
+pub async fn insert_environment(
+    db: &SqlitePool,
+    id: &str,
+    owner_id: &str,
+    template_id: &str,
+    node_id: &str,
+    state: &str,
+) -> Result<(), sqlx::Error> {
+    let now = now();
+    sqlx::query(
+        "INSERT INTO environments (id, owner_id, template_id, node_id, state, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(owner_id)
+    .bind(template_id)
+    .bind(node_id)
+    .bind(state)
+    .bind(now)
+    .bind(now)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+pub async fn environment_by_id(
+    db: &SqlitePool,
+    id: &str,
+) -> Result<Option<EnvironmentRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {ENVIRONMENT_COLUMNS} FROM environments WHERE id = ?"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Live environments first, then the most recent ended ones; `owner` limits
+/// the list to one user's.
+pub async fn list_environments(
+    db: &SqlitePool,
+    owner: Option<&str>,
+    limit: i64,
+) -> Result<Vec<EnvironmentRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {ENVIRONMENT_COLUMNS} FROM environments \
+         WHERE (?1 IS NULL OR owner_id = ?1) \
+         ORDER BY state IN ('destroyed', 'failed'), created_at DESC LIMIT ?2"
+    ))
+    .bind(owner)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+}
+
+/// Environments a node should be running (or starting, or stopping).
+pub async fn node_environments(
+    db: &SqlitePool,
+    node_id: &str,
+) -> Result<Vec<EnvironmentRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {ENVIRONMENT_COLUMNS} FROM environments \
+         WHERE node_id = ? AND state IN ('starting', 'running', 'stopping')"
+    ))
+    .bind(node_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn count_live_environments(db: &SqlitePool, owner_id: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM environments WHERE owner_id = ? AND state IN ('starting', 'running', 'stopping')",
+    )
+    .bind(owner_id)
+    .fetch_one(db)
+    .await
+}
+
+/// Moves an environment to `state`, but only from one of `from`; returns
+/// whether it moved (so concurrent updates can't resurrect a stopped one).
+pub async fn transition_environment(
+    db: &SqlitePool,
+    id: &str,
+    from: &[&str],
+    state: &str,
+    detail: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let placeholders = vec!["?"; from.len()].join(", ");
+    let sql = format!(
+        "UPDATE environments SET state = ?, detail = ?, updated_at = ? \
+         WHERE id = ? AND state IN ({placeholders})"
+    );
+    let mut query = sqlx::query(&sql)
+        .bind(state)
+        .bind(detail)
+        .bind(now())
+        .bind(id);
+    for f in from {
+        query = query.bind(*f);
+    }
+    Ok(query.execute(db).await?.rows_affected() > 0)
+}
+
+pub async fn set_environment_running(
+    db: &SqlitePool,
+    id: &str,
+    http_port: u16,
+    webrtc_port: u16,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE environments SET state = 'running', detail = NULL, http_port = ?, webrtc_port = ?, \
+         updated_at = ? WHERE id = ? AND state = 'starting'",
+    )
+    .bind(i64::from(http_port))
+    .bind(i64::from(webrtc_port))
+    .bind(now())
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Before a node is deleted: its live environments can't be reached any more.
+pub async fn fail_node_environments(
+    db: &SqlitePool,
+    node_id: &str,
+    detail: &str,
+) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE environments SET state = 'failed', detail = ?, updated_at = ? \
+         WHERE node_id = ? AND state IN ('starting', 'running', 'stopping')",
+    )
+    .bind(detail)
+    .bind(now())
+    .bind(node_id)
+    .execute(db)
+    .await?
+    .rows_affected())
+}

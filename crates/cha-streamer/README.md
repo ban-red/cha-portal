@@ -64,7 +64,22 @@ docker compose -f deploy/streamer/compose.dev.yaml exec dev /target/release/cha-
 - Until the portal brokers sessions (P1.5), starting a stream needs the token printed at startup. It is kept in `/state/token`.
 - Measure with the S1c/S1d page, as for S2: host `gpu-node.lan`, port 4495, the token, the WebRTC present path. The streams are `live-hevc`, `live-h264` and `live-av1`.
 
-## Results (RTX 4090, Chrome 154 in the compositor, 2026-10-03)
+## Results (RTX 4090, Chrome 154 in the compositor, 2026-10-03/04)
+
+**Browser side** (Chrome 154 on the M4 Pro, 1 GbE, the S1c/S1d page's WebRTC path with its click probe, 2026-10-04; raw data: [`docs/benchmarks/p13-2026-10-04-m4pro-chrome154-gpu-node.json`](../../docs/benchmarks/p13-2026-10-04-m4pro-chrome154-gpu-node.json)). All times are ms, p50 / p95; S2 M2 for comparison:
+
+| Stage | HEVC | H.264 | AV1 | S2 M2 (HEVC / H.264) |
+|---|---|---|---|---|
+| Composited → encoded (node, p50 / p99) | 1.77 / 4.49 | 2.01 / 5.25 | 2.08 / 2.54 | 1.85 / 1.89 |
+| Sent → browser compositor | 3.86 / 7.31 | 4.47 / 8.13 | 6.10 / 10.2 | 4.15 / 3.84 |
+| **Node compositor → Mac compositor** (sum of p50s) | **≈ 5.65** | ≈ 6.5 | ≈ 8.2 | ≈ 6.0 / ≈ 5.8 |
+| Browser decode only | 1.90 / 2.20 | 2.50 / 3.00 | 3.80 / 4.60 | |
+| **Click → browser compositor** | **24.6** / 40.4 | 27.4 / 44.1 | 24.2 / 40.6 | 34–35 (240/60) |
+| … of which Chrome reacting in our compositor | 17.9 / 33.9 | 20.3 / 37.0 | 19.4 / 36.4 | 29 |
+| Frames lost / dropped | 0 / 0 | 0 / 0 | 1 lost (NACK'd, 1 PLI) | |
+
+- **About 6 ms from the node's screen to the Mac's, and ~25 ms from click to screen.** Click → screen is 10 ms faster than S2 at the same 240 Hz / 60 fps. Chrome draws to presentation feedback sent every compositor tick, and each composite takes the newest buffer it committed.
+- **HEVC is the fastest on this client.** H.264 decodes ~0.6 ms slower in Chrome on the M4, and AV1 ~1.9 ms slower.
 
 **Node side, A/B against S2's GStreamer streamer (`gst-wayland-display` → `nvh265enc`).**
 - Both ran back to back with Chrome at 240 fps on S2's live page, at 2560×1440, 60 fps, 40 Mbit/s.

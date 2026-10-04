@@ -67,6 +67,10 @@ struct Args {
     token: Option<String>,
     #[arg(long, default_value = "/state/token")]
     token_file: PathBuf,
+    /// The app's user, when it runs in its own container as a different uid:
+    /// the runtime dir and the Wayland socket are handed to it.
+    #[arg(long)]
+    app_uid: Option<u32>,
 }
 
 struct AppState {
@@ -96,7 +100,7 @@ pub fn main() -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let runtime_dir =
         PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR must be set")?);
-    ensure_runtime_dir(&runtime_dir)?;
+    ensure_runtime_dir(&runtime_dir, args.app_uid)?;
     let (width, height) = fit_size(args.width, args.height);
 
     let cuda =
@@ -114,6 +118,11 @@ pub fn main() -> Result<()> {
         Arc::clone(&cuda),
         Arc::clone(&hub),
     )?;
+    if let Some(uid) = args.app_uid {
+        let socket = runtime_dir.join(&handle.socket_name);
+        std::os::unix::fs::chown(&socket, Some(uid), Some(uid))
+            .with_context(|| format!("handing {} to uid {uid}", socket.display()))?;
+    }
     let media = Arc::new(Media::new(
         hub,
         handle.commands,
@@ -165,10 +174,15 @@ pub fn main() -> Result<()> {
     })
 }
 
-/// The runtime dir must exist and be private (Wayland clients check).
-fn ensure_runtime_dir(dir: &Path) -> Result<()> {
+/// The runtime dir must exist and be private to the app's user (GLib, dbus and
+/// others check its owner and mode).
+fn ensure_runtime_dir(dir: &Path, app_uid: Option<u32>) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    if let Some(uid) = app_uid {
+        std::os::unix::fs::chown(dir, Some(uid), Some(uid))
+            .with_context(|| format!("handing {} to uid {uid}", dir.display()))?;
+    }
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     Ok(())
 }

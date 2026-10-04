@@ -10,8 +10,10 @@
 //! 1. Portal → [`ToNode::Challenge`].
 //! 2. Node → [`ToPortal::Hello`], signing the challenge with its key ([`hello_message`]).
 //! 3. Portal → [`ToNode::Welcome`].
-//! 4. Node → [`ToPortal::Inventory`], then [`ToPortal::Heartbeat`] every
-//!    `heartbeat_secs`. Requests flow both ways.
+//! 4. Node → [`ToPortal::Inventory`] and [`ToPortal::Environments`] (what it
+//!    is running, so both sides reconcile), then [`ToPortal::Heartbeat`] every
+//!    `heartbeat_secs`. Requests flow both ways; the node pushes
+//!    [`ToPortal::EnvironmentExited`] when an environment stops on its own.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -90,6 +92,19 @@ pub enum ToPortal {
     Inventory {
         inventory: Inventory,
     },
+    /// The environments this node is running (ids), sent after every welcome.
+    Environments {
+        running: Vec<String>,
+    },
+    /// An environment stopped without being asked (its app exited, or a
+    /// container died); the node has cleaned it up.
+    EnvironmentExited {
+        id: String,
+        detail: String,
+        /// It ended with an error (a non-zero exit, a crash) rather than the
+        /// app quitting normally.
+        failed: bool,
+    },
     Request {
         id: u64,
         request: PortalRequest,
@@ -105,12 +120,63 @@ pub enum ToPortal {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum NodeRequest {
     Ping,
+    /// Start an environment: its streamer, then its app. Idempotent by id.
+    StartEnvironment {
+        environment: EnvironmentSpec,
+    },
+    /// Stop and remove an environment. Idempotent: an unknown id is stopped.
+    StopEnvironment {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum NodeResponse {
-    Pong { unix_ms: u64 },
+    Pong {
+        unix_ms: u64,
+    },
+    EnvironmentStarted {
+        id: String,
+        streamer: StreamerEndpoint,
+    },
+    EnvironmentStopped {
+        id: String,
+    },
+}
+
+/// What to run, decided by the portal from a catalog template.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentSpec {
+    pub id: String,
+    /// The app's image, e.g. `cha/env-chrome:dev`.
+    pub image: String,
+    pub security: SecurityProfile,
+    /// `/dev/shm` for the app (browsers need more than Docker's 64 MB).
+    pub shm_mb: u32,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+/// The app container's confinement (plan §4.2). Every profile runs the app as
+/// an unprivileged user with no capabilities and no privilege gain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityProfile {
+    /// Docker's default seccomp profile.
+    Standard,
+    /// Also lets the app create namespaces, so browser sandboxes stay on.
+    Browser,
+}
+
+/// Where an environment's streamer listens on its node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamerEndpoint {
+    pub http_port: u16,
+    pub webrtc_port: u16,
 }
 
 /// What a node asks the portal.
@@ -258,5 +324,20 @@ mod tests {
         let back: ToPortal =
             serde_json::from_value(serde_json::json!({ "type": "heartbeat" })).unwrap();
         assert!(matches!(back, ToPortal::Heartbeat));
+        let start = serde_json::to_value(NodeRequest::StartEnvironment {
+            environment: EnvironmentSpec {
+                id: "e1".into(),
+                image: "cha/env-chrome:dev".into(),
+                security: SecurityProfile::Browser,
+                shm_mb: 1024,
+                width: 2560,
+                height: 1440,
+                fps: 60,
+            },
+        })
+        .unwrap();
+        assert_eq!(start["op"], "start_environment");
+        assert_eq!(start["environment"]["security"], "browser");
+        assert_eq!(start["environment"]["shmMb"], 1024);
     }
 }

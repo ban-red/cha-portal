@@ -1,0 +1,13 @@
+[package]
+name = "cha-testpattern"
+version = "0.1.0"
+description = "The test-pattern environment: a Wayland client drawing a moving bar, a frame counter, a frame-ID strip and an input flash"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["fs", "mm"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
