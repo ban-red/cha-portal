@@ -4,7 +4,7 @@
 |---|---|
 | [`portal/`](portal) | The portal's compose stack: `cha-control` (API, SPA, the nodes' WebSocket, SQLite), plus optional Caddy (HTTPS with public DNS) and coturn (TURN) profiles |
 | [`node/`](node) | A node's compose stack: the agent, which starts each environment's streamer and app containers through the Docker socket |
-| [`node/host/`](node/host) | Optional host files that need root, applied by the owner: the udev rule that keeps virtual gamepads out of a desktop host's own session |
+| [`node/host/`](node/host) | Host files that need root, applied by the owner: the `cha-sandbox` AppArmor profile (Steam environments need it), and the udev rule that keeps virtual gamepads out of a desktop host's own session |
 | [`streamer/`](streamer) | The streamer's image (`--target runtime`) and its dev loop on a node |
 
 ## A portal and one node
@@ -77,4 +77,5 @@ The stream goes straight from the node to the browser; the portal only brokers i
 ## Known gaps
 
 - Behind a proxy, the audit log records the proxy's address, not the client's.
-- TURN over TLS on 443, and an AppArmor profile that lets bubblewrap build its sandbox in environments, come later.
+- TURN over TLS on 443 comes later.
+- Steam environments need the `cha-sandbox` AppArmor profile on the node: `sudo install -m 644 deploy/node/host/apparmor/cha-sandbox /etc/apparmor.d/ && sudo apparmor_parser -r -W /etc/apparmor.d/cha-sandbox`. `--doctor` checks it.

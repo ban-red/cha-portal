@@ -35,6 +35,25 @@
       "class": "desktop",
       "security": "standard",
       "shmMb": 1024
+    },
+    {
+      "id": "kde",
+      "name": "KDE Plasma",
+      "description": "A full Plasma desktop: panel, Dolphin, Konsole, System Settings.",
+      "image": "cha/env-kde:dev",
+      "class": "desktop",
+      "security": "standard",
+      "shmMb": 512
+    },
+    {
+      "id": "steam",
+      "name": "Steam",
+      "description": "Steam's Big Picture in gamescope, for a controller. Your library and login stay between launches.",
+      "image": "cha/env-steam:dev",
+      "class": "gaming",
+      "security": "steam",
+      "shmMb": 2048,
+      "persistent": true
     }
   ]
 }

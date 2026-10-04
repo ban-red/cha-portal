@@ -629,6 +629,21 @@ Delivers **features 4, 6 and 7**, and KDE for feature 3.
   - PyroWave 1440p120 4:4:4 on wired LAN in Chrome (if S1 passed).
   - Adaptive AV1 on a lossy or throttled WAN with no stalls longer than 1 s (netem test suite).
 
+#### Phase 2 delivery plan (2026-10-04)
+
+| # | Milestone | Delivers | Verified by |
+|---|---|---|---|
+| **P2.1** *(in progress 2026-10-04: waits for the owner to load `cha-sandbox`)* | Steam | Our `steam` image: the Steam client and gamescope nested in our compositor (`gamescope -e`, Big Picture), 32-bit GPU libraries from CDI. The `steam` security profile: the browser seccomp profile plus a `cha-steam` AppArmor profile that lets pressure-vessel's bubblewrap mount inside its user namespace, loaded on the host by the owner (`deploy/node/host`). Steam's library and login survive a relaunch: a per-(user, template) home volume for templates marked persistent (the first slice of Phase 3's persistence) | A Steam game installed and played with a controller and sound; relaunching keeps the login and the library. **So far:**
+- The image, the profile, persistent homes and a `--doctor` check are built.
+- gamescope runs nested in our compositor: Vulkan on the RTX 4090, its own Xwayland, its window in ours. Steam bootstraps (2.4 GB) and starts its client.
+- Then pressure-vessel stops it under Docker's AppArmor profile: `bwrap: Failed to make / slave: Permission denied`, "Steam now requires user namespaces". The `cha-sandbox` profile allows exactly those mounts; loading it on a node needs the owner's root.
+- Fixed on the way: Ubuntu's `/usr/games` on `PATH`; the launcher's interactive `steamdeps`; the base image's bubblewrap stand-in, which pressure-vessel picked up; GTK 4 dialogs crashing under gamescope's Vulkan WSI (GL renderer). |
+| **P2.2** *(done 2026-10-04)* | KDE Plasma | Nested `kwin_wayland --xwayland` under `dbus-run-session`, no systemd, sound through our server | A Plasma desktop in the browser with keyboard, mouse and sound. **Done:** `startplasma-wayland` in our `kde` image; KWin opens one window in our compositor and follows its size (1616×1256 in the test), with its own Xwayland; plasmashell, ksmserver and kded run, and Plasma's volume applet talks to our sound server. Alt+Space then "konsole" and Enter, sent from the browser, starts Konsole. Fixed on the way: `kwin_wayland` carries a file capability (`CAP_SYS_NICE`), which a container without capabilities refuses to exec; the image drops it. |
+| **P2.3** | WebTransport | `cha-stream/1` over WebTransport (quinn) beside WebRTC, with the §3.1 congestion rules; the player's Chromium fast path (track generator → `<video>`), WebRTC elsewhere, and switching between them | Send → shown below WebRTC's on the baseline (S1d: 2.7–3.4 ms vs 5.4–6.4) |
+| **P2.4** | PyroWave tier | The node encoder (libpyrowave, Vulkan, damage-aware), `@cha/pyrowave-webgpu` in the player, tier negotiation from a bandwidth probe, live switching | 1440p120 4:4:4 PyroWave on wired LAN in Chrome |
+| **P2.5** | WAN tier | Delay-based ABR for AV1/HEVC/H.264, intra-refresh, RFI/LTR where NVENC supports it, FEC; a netem test suite | Adaptive AV1 on a lossy or throttled WAN with no stall over 1 s |
+| **P2.6** | Desktop polish | Client-side cursor in desktop mode, text clipboard both ways, multi-viewer encoders | Copy and paste between the Mac and an environment; two viewers on one environment |
+
 ### Phase 3: persistence, WAN hardening, sharing, external hosts (L)
 
 Delivers **features 5 and 8**.

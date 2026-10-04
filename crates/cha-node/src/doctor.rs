@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::Identity;
 use crate::docker::Docker;
-use crate::environments::{DockerConfig, catalog_images};
+use crate::environments::{DockerConfig, SANDBOX_APPARMOR, browser_seccomp, catalog_images};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Media tokens live 60 s: a clock this far off breaks connecting.
@@ -64,6 +64,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
         checks.push(images(docker, config).await);
         checks.push(gpu(docker, config).await);
         checks.push(gamepads(docker, config).await);
+        checks.push(sandboxes(docker, config).await);
     }
     checks.push(render_node(&config.render_node));
     checks.push(user_namespaces());
@@ -194,6 +195,51 @@ async fn gamepads(docker: &Docker, config: &DockerConfig) -> Check {
         "load the module: sudo modprobe uinput && echo uinput | sudo tee /etc/modules-load.d/uinput.conf \
          (or run the agent with CHA_UINPUT= to go without gamepads)",
     )
+}
+
+/// What Steam's pressure-vessel does: mount inside its own user namespace,
+/// under the `steam` profile's seccomp and AppArmor profiles.
+async fn sandboxes(docker: &Docker, config: &DockerConfig) -> Check {
+    let probe = json!({
+        "Image": config.streamer_image,
+        "User": "1000:1000",
+        "Entrypoint": ["unshare", "--user", "--map-root-user", "--mount", "sh", "-c",
+                       "mount -t tmpfs none /mnt && echo mounted"],
+        "HostConfig": {
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges", browser_seccomp(), format!("apparmor={SANDBOX_APPARMOR}")],
+            "NetworkMode": "none",
+        },
+    });
+    let fix = format!(
+        "load the profile on the node: sudo install -m 644 deploy/node/host/apparmor/{SANDBOX_APPARMOR} \
+         /etc/apparmor.d/ && sudo apparmor_parser -r -W /etc/apparmor.d/{SANDBOX_APPARMOR}"
+    );
+    match docker
+        .run("cha-doctor-sandbox", &probe, PROBE_TIMEOUT)
+        .await
+    {
+        Ok((0, out)) if out.contains("mounted") => check(
+            Level::Ok,
+            "Sandboxes",
+            "apps can build their own (bubblewrap, pressure-vessel)",
+        ),
+        Ok((code, out)) => check(
+            Level::Warn,
+            "Sandboxes",
+            format!(
+                "Steam environments won't work: a sandbox mount failed ({code}: {})",
+                out.trim()
+            ),
+        )
+        .fix(fix),
+        Err(err) => check(
+            Level::Warn,
+            "Sandboxes",
+            format!("Steam environments won't start: {err:#}"),
+        )
+        .fix(fix),
+    }
 }
 
 fn render_node(path: &str) -> Check {

@@ -63,6 +63,10 @@ pub struct Template {
     pub class: String,
     pub security: SecurityProfile,
     pub shm_mb: u32,
+    /// The user's home in it survives stopping (a volume per user and
+    /// template), so there is at most one of it per user at a time.
+    #[serde(default)]
+    pub persistent: bool,
 }
 
 #[derive(Deserialize)]
@@ -207,6 +211,19 @@ async fn launch(
             format!("you can have {MAX_LIVE_PER_USER} environments at once; stop one first"),
         ));
     }
+    if template.persistent
+        && db::live_environment_of(&state.db, &user.id, &template.id)
+            .await?
+            .is_some()
+    {
+        return Err(ApiError::conflict(
+            "already_running",
+            format!(
+                "your {} is already running; it keeps one home, so connect to that one",
+                template.name
+            ),
+        ));
+    }
     let node = place(&state).await?;
     let id = db::new_id();
     db::insert_environment(&state.db, &id, &user.id, &template.id, &node.id, "starting").await?;
@@ -229,6 +246,10 @@ async fn launch(
         height: HEIGHT,
         fps: FPS,
         portal_key: state.media_key.public_b64(),
+        // Node-local: placement keeps a user on one node while there is one.
+        home: template
+            .persistent
+            .then(|| format!("cha-home-{}-{}", user.id, template.id)),
     };
     tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
     let row = db::environment_by_id(&state.db, &id)

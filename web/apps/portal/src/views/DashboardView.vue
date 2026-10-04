@@ -44,7 +44,7 @@ const stop = useMutation({
   onError: (err) => (error.value = message(err, "Couldn't stop it.")),
 });
 
-const GLYPHS: Record<string, string> = { browser: "◎", desktop: "▦", test: "▤" };
+const GLYPHS: Record<string, string> = { browser: "◎", desktop: "▦", test: "▤", gaming: "◈" };
 const glyph = (t: Template) => GLYPHS[t.class] ?? "⧉";
 
 const STATES: Record<EnvironmentState, { text: string; dot: string }> = {

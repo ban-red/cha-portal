@@ -460,6 +460,22 @@ pub async fn count_live_environments(db: &SqlitePool, owner_id: &str) -> Result<
     .await
 }
 
+/// The user's live environment of `template_id`, if any.
+pub async fn live_environment_of(
+    db: &SqlitePool,
+    owner_id: &str,
+    template_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT id FROM environments WHERE owner_id = ? AND template_id = ? \
+         AND state IN ('starting', 'running', 'stopping') LIMIT 1",
+    )
+    .bind(owner_id)
+    .bind(template_id)
+    .fetch_optional(db)
+    .await
+}
+
 /// Moves an environment to `state`, but only from one of `from`; returns
 /// whether it moved (so concurrent updates can't resurrect a stopped one).
 pub async fn transition_environment(

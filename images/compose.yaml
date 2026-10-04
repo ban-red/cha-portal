@@ -30,3 +30,11 @@ services:
     <<: *env
     build: { <<: *build, dockerfile: images/xfce/Dockerfile }
     image: cha/env-xfce:dev
+  kde:
+    <<: *env
+    build: { <<: *build, dockerfile: images/kde/Dockerfile }
+    image: cha/env-kde:dev
+  steam:
+    <<: *env
+    build: { <<: *build, dockerfile: images/steam/Dockerfile }
+    image: cha/env-steam:dev

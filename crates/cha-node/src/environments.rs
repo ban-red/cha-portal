@@ -39,6 +39,10 @@ const RUNTIME_DIR: &str = "/run/cha";
 /// Where the streamer puts gamepad nodes (`dev/`) and udev entries (`udev/`).
 const INPUT_DIR: &str = "/run/cha-input";
 const BROWSER_SECCOMP: &str = include_str!("../profiles/seccomp-browser.json");
+/// The AppArmor profile for the `steam` security profile, which the owner
+/// loads on the node (`deploy/node/host/apparmor/cha-sandbox`).
+pub const SANDBOX_APPARMOR: &str = "cha-sandbox";
+const APP_HOME: &str = "/home/cha";
 
 /// An environment that stopped on its own.
 #[derive(Debug, Clone)]
@@ -240,6 +244,15 @@ impl DockerRuntime {
                     .ports
                     .remove(&spec.id);
                 let _ = self.remove(&spec.id).await;
+                warn!(id = %spec.id, image = %spec.image, "environment failed to start: {err:#}");
+                if spec.security == SecurityProfile::Steam
+                    && format!("{err:#}").contains("apparmor")
+                {
+                    bail!(
+                        "this node hasn't loaded the {SANDBOX_APPARMOR} AppArmor profile that \
+                         Steam's sandbox needs (`cha-node --doctor` says how)"
+                    );
+                }
                 Err(err)
             }
         }
@@ -377,10 +390,29 @@ impl DockerRuntime {
 
     fn app_config(&self, spec: &EnvironmentSpec, port: u16) -> Value {
         let mut security = vec!["no-new-privileges".to_string()];
-        if spec.security == SecurityProfile::Browser {
+        if matches!(
+            spec.security,
+            SecurityProfile::Browser | SecurityProfile::Steam
+        ) {
             security.push(format!("seccomp={}", compact(BROWSER_SECCOMP)));
         }
+        if spec.security == SecurityProfile::Steam {
+            security.push(format!("apparmor={SANDBOX_APPARMOR}"));
+        }
         let groups: Vec<String> = self.render_gid.iter().map(|g| g.to_string()).collect();
+        let mut mounts = self.mounts(&spec.id, true);
+        if let Some(home) = &spec.home {
+            mounts
+                .as_array_mut()
+                .expect("mounts are a list")
+                .push(json!({ "Type": "volume", "Source": home, "Target": APP_HOME }));
+        }
+        // Proton's esync wants many descriptors.
+        let ulimits = if spec.security == SecurityProfile::Steam {
+            json!([{ "Name": "nofile", "Soft": 524288, "Hard": 524288 }])
+        } else {
+            json!([])
+        };
         json!({
             "Image": spec.image,
             "User": format!("{APP_UID}:{APP_UID}"),
@@ -393,7 +425,8 @@ impl DockerRuntime {
             ],
             "Labels": self.labels(&spec.id, "app", port),
             "HostConfig": {
-                "Mounts": self.mounts(&spec.id, true),
+                "Mounts": mounts,
+                "Ulimits": ulimits,
                 // Input devices: the gamepads' nodes, the only ones it has.
                 "DeviceCgroupRules": if self.config.uinput.is_some() { json!(["c 13:* rw"]) } else { json!([]) },
                 "DeviceRequests": self.gpu(),
@@ -529,6 +562,11 @@ fn render_gid(render_node: &str) -> Option<u32> {
     std::fs::metadata(render_node).ok().map(|m| m.gid())
 }
 
+/// The `browser` seccomp profile, as `SecurityOpt` takes it.
+pub fn browser_seccomp() -> String {
+    format!("seccomp={}", compact(BROWSER_SECCOMP))
+}
+
 /// The profile as one line: Docker takes it inline in `SecurityOpt`.
 fn compact(json: &str) -> String {
     serde_json::from_str::<Value>(json)
@@ -598,7 +636,40 @@ mod tests {
             height: 1440,
             fps: 60,
             portal_key: "cG9ydGFs".into(),
+            home: None,
         }
+    }
+
+    #[test]
+    fn steam_gets_the_sandbox_profile_and_its_home() {
+        let rt = runtime();
+        let app = rt.app_config(
+            &EnvironmentSpec {
+                home: Some("cha-home-u1-steam".into()),
+                ..spec(SecurityProfile::Steam)
+            },
+            47000,
+        );
+        let opts = app["HostConfig"]["SecurityOpt"].as_array().unwrap();
+        assert!(opts.iter().any(|o| o == "apparmor=cha-sandbox"));
+        assert!(
+            opts.iter()
+                .any(|o| o.as_str().unwrap().starts_with("seccomp="))
+        );
+        let mounts = app["HostConfig"]["Mounts"].as_array().unwrap();
+        let home = mounts.iter().find(|m| m["Target"] == "/home/cha").unwrap();
+        assert_eq!(home["Source"], "cha-home-u1-steam");
+        assert_eq!(app["HostConfig"]["Ulimits"][0]["Name"], "nofile");
+        // Others keep Docker's AppArmor profile and no home volume.
+        let chrome = rt.app_config(&spec(SecurityProfile::Browser), 47000);
+        let opts = chrome["HostConfig"]["SecurityOpt"].as_array().unwrap();
+        assert!(
+            !opts
+                .iter()
+                .any(|o| o.as_str().unwrap().starts_with("apparmor="))
+        );
+        let mounts = chrome["HostConfig"]["Mounts"].as_array().unwrap();
+        assert!(!mounts.iter().any(|m| m["Target"] == "/home/cha"));
     }
 
     #[test]

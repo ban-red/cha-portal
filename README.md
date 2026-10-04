@@ -22,7 +22,7 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 | `deploy/portal` | The portal's compose stack, with optional Caddy (HTTPS) and coturn (TURN) ([README](deploy/README.md)) |
 | `deploy/node` | The node's compose stack (the agent), and host files for the owner |
 | `deploy/streamer` | The streamer's image and its dev loop on a node |
-| `images` | Our environment images (test pattern, Chrome, Firefox, XFCE) and the catalog ([README](images/README.md)) |
+| `images` | Our environment images (test pattern, Chrome, Firefox, XFCE, KDE Plasma, Steam) and the catalog ([README](images/README.md)) |
 | `crates/cha-proto` | `cha-stream/1` wire framing: Sans-IO datagram header, fragmentation, reassembly |
 | `web/packages/pyrowave-webgpu` | `@cha/pyrowave-webgpu`: PyroWave decode on WebGPU (TypeScript host for the WGSL port), draws straight to a canvas |
 | `spikes/s1-browser-pyrowave` | Spike S1: can a browser receive PyroWave-shaped traffic? ([README](spikes/s1-browser-pyrowave/README.md)) |

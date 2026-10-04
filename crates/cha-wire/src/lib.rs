@@ -175,6 +175,10 @@ pub struct EnvironmentSpec {
     /// The portal's public key (base64 Ed25519): the streamer accepts only
     /// connections that carry a media token it signed.
     pub portal_key: String,
+    /// A volume kept across launches, mounted as the app's home (templates
+    /// marked persistent: one per user and template, on this node).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
 }
 
 /// The app container's confinement (plan §4.2). Every profile runs the app as
@@ -186,6 +190,10 @@ pub enum SecurityProfile {
     Standard,
     /// Also lets the app create namespaces, so browser sandboxes stay on.
     Browser,
+    /// `browser`, plus mounts inside the app's own user namespaces (the
+    /// `cha-sandbox` AppArmor profile, which the owner loads on the node):
+    /// Steam's pressure-vessel builds a container for every game.
+    Steam,
 }
 
 /// Where an environment's streamer listens on its node.
@@ -421,6 +429,7 @@ mod tests {
                 height: 1440,
                 fps: 60,
                 portal_key: "k".into(),
+                home: None,
             },
         })
         .unwrap();

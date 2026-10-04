@@ -9,6 +9,8 @@ Our own images for the catalog (`catalog.json`, which the portal embeds). Every 
 | `chrome` | Google Chrome on Wayland, GPU-rendered, sandbox on | `browser` |
 | `firefox` | Firefox (Mozilla's .deb) on Wayland, GPU-rendered, sandbox on; first-run pages off by policy | `browser` |
 | `xfce` | XFCE inside one rootful, fullscreen Xwayland, so the compositor needs no X11 window manager | `standard` |
+| `kde` | KDE Plasma 6: KWin runs as a Wayland client of our compositor (one window, the whole picture) with its own Xwayland, and Plasma inside it; no systemd | `standard` |
+| `steam` | Steam's Big Picture (gamepad UI) inside gamescope, which runs as a Wayland client of our compositor and gives Steam its own Xwayland. The home persists per user | `steam` |
 
 Build them on a node, from the repository root:
 
@@ -25,7 +27,9 @@ docker compose -f images/compose.yaml build
 - **Confinement.** No capabilities (`--cap-drop ALL`), no privilege gain (`no-new-privileges`), and a seccomp profile:
   - `standard`: Docker's default profile.
   - `browser`: Docker's default plus `clone`, `unshare`, `setns`, `chroot`, `mount`, `umount2` and `pivot_root` ([`crates/cha-node/profiles/seccomp-browser.json`](../crates/cha-node/profiles/seccomp-browser.json)). Chrome's and Firefox's sandboxes create user, PID and network namespaces. The kernel still requires capabilities inside a new namespace, and the container has none in its own.
+  - `steam`: `browser`, plus the `cha-sandbox` AppArmor profile ([`deploy/node/host/apparmor/cha-sandbox`](../deploy/node/host/apparmor/cha-sandbox)), which the owner loads on the node. Steam's pressure-vessel runs every game, and Steam's web helper, in a bubblewrap container: it mounts inside its own user namespace, which Docker's AppArmor profile denies (`bwrap: Failed to make / slave: Permission denied`). Also a high open-files limit, for Proton's esync.
 - **`/dev/shm`** is sized per template; browsers need more than Docker's default 64 MB.
+- **Persistent homes.** A template marked `persistent` (Steam) gets a volume per user, `cha-home-<user>-<template>`, as `/home/cha`. It survives stopping, so the user has one such environment at a time. Volumes are node-local; Phase 3 makes placement follow them.
 
 ## Known gaps
 
