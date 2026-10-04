@@ -531,6 +531,23 @@ Delivers **features 1, 2, 4 and part of 3**.
   - The XFCE desktop and Firefox from GoW work.
   - Glass-to-glass latency is measured and published in `docs/benchmarks/`.
 
+#### Phase 1 delivery plan (2026-10-03)
+
+Five milestones, each shippable and verified on its own:
+
+| # | Milestone | Delivers | Verified by |
+|---|---|---|---|
+| **P1.1** *(done 2026-10-03)* | Foundation | **`crates/cha-control`:** axum + SQLite (sqlx, migrations), config, first-run admin bootstrap (one-time setup token in the log), local accounts (Argon2id) with session cookies, audit log, `/api/*` + serving the SPA. **`web/apps/portal`:** Vue 3 + Router + Pinia + TanStack Query; setup and login, the shell, an empty dashboard. **Checks:** fmt, clippy, tests, typecheck in one script | API integration tests against in-memory SQLite; the SPA in a browser |
+| **P1.2** *(done 2026-10-03)* | Nodes | Join tokens (hashed, 60 min TTL). **`crates/cha-node`:** generates an Ed25519 key, redeems the token, then holds one outbound WSS: a signed hello, 30 s heartbeats, request/response RPC both ways. Inventory: GPUs, encoders, addresses. Node admin page | Agent ↔ control tests; enrolling the RTX 4090 node from the SPA. **Done:** an end-to-end test runs a real portal and agent (enroll, one-time tokens, signed hello, inventory, RPC, removal, a forged key refused); the RTX 4090 node enrolled from the SPA via `deploy/node` (CDI) and answers pings in ~1 ms |
+| **P1.3** | Wolf adapter + catalog | Agent ↔ Wolf unix-socket API: apps, pairing, sessions; Wolf's encoder config (P-frame H.264). Catalog seeded from Wolf's apps. **Environments:** `requested → … → running → stopped/destroyed`, ephemeral, placement v0 (first node with a GPU). The node compose ships Wolf beside the agent | Launch and stop Test ball, Firefox and XFCE from the SPA |
+| **P1.4** | Connect + player | **`crates/cha-gateway`:** S3's gateway as a service beside Wolf, driven by the agent over a local socket. The environment outlives the browser connection, and a reconnect gets a fresh keyframe. **Brokering:** the portal relays SDP over the browser WS and the node WSS, and issues 60 s Ed25519 media tokens. **`web/packages/player`:** WebRTC, pointer and keyboard lock, Gamepad API, stats HUD; the S2 probe built in. **Audio:** Opus | Playing from the SPA with keyboard, mouse and controller; click → screen probe published |
+| **P1.5** | Deploy + exit | `deploy/` compose for the portal and a node; `cha doctor` v0; the Tailscale guide; an optional coturn profile | Phase 1 exit criteria above |
+
+**Decisions, recorded as ADRs in `docs/adr/`:**
+- **Node channel for the MVP: JSON messages over one WebSocket**, with request/response correlation and server push. The plan's yamux + protobuf framing comes when streams need it (logs, file transfer). The messages already live in a shared crate.
+- **Auth for P1.1: local accounts with Argon2id passwords. Passkeys (webauthn-rs) are next**, with the same session model.
+- **The gateway runs as its own service beside Wolf** (as in S3), and the agent drives it over a local unix socket: start and stop environment streams, relay SDP. Restarting the agent doesn't drop sessions (§5.1).
+
 ### Phase 2: own engine + PyroWave (XL)
 
 Delivers **features 3, 6 and 7**.

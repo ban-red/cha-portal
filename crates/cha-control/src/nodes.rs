@@ -1,0 +1,464 @@
+//! Nodes: enrollment, the one WebSocket each node keeps open (ADR 0001), and
+//! the admin API.
+//!
+//! A node proves its identity on every connection by signing the portal's
+//! random challenge with the Ed25519 key it enrolled with, so no shared secret
+//! crosses the wire after enrollment, and any reverse proxy can sit in between.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use axum::Json;
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, State};
+use axum::response::Response;
+use axum::routing::{delete, get, post};
+use cha_wire::{
+    EnrollRequest, EnrollResponse, Inventory, NodeRequest, NodeResponse, PROTOCOL_VERSION,
+    PortalRequest, PortalResponse, ToNode, ToPortal, close,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tracing::{info, warn};
+
+use crate::AppState;
+use crate::auth::{AdminUser, ClientInfo, random_token, token_hash};
+use crate::db::{self, NodeRow};
+use crate::error::{ApiError, ApiResult};
+
+pub const HEARTBEAT_SECS: u64 = 30;
+/// A node counts as gone after this many missed heartbeats.
+const MISSED_HEARTBEATS: u64 = 3;
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Node messages are small; this bounds what an unauthenticated peer can send.
+const MAX_MESSAGE_BYTES: usize = 1 << 20;
+/// Join tokens carry a prefix so they're recognisable in a shell history or a
+/// secret scanner.
+pub const JOIN_TOKEN_PREFIX: &str = "chajoin_";
+
+/// `/api/node/*` for agents, `/api/nodes/*` for admins.
+pub fn routes() -> axum::Router<AppState> {
+    axum::Router::new()
+        .route("/node/enroll", post(enroll))
+        .route("/node/connect", get(connect))
+        .route("/nodes", get(list))
+        .route("/nodes/join-tokens", post(create_join_token))
+        .route("/nodes/{id}", delete(remove))
+        .route("/nodes/{id}/ping", post(ping))
+}
+
+type Reply = Result<NodeResponse, String>;
+type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Reply>>>>;
+
+enum Outgoing {
+    Message(ToNode),
+    Close(u16, &'static str),
+}
+
+struct Connection {
+    /// Tells this connection apart from the same node's later ones.
+    serial: u64,
+    tx: mpsc::UnboundedSender<Outgoing>,
+    pending: Pending,
+    connected_at: i64,
+}
+
+/// Live node connections, and request/response correlation over them.
+#[derive(Default)]
+pub struct NodeHub {
+    connections: Mutex<HashMap<String, Connection>>,
+    next_id: AtomicU64,
+}
+
+impl NodeHub {
+    pub async fn connected_since(&self, node_id: &str) -> Option<i64> {
+        self.connections
+            .lock()
+            .await
+            .get(node_id)
+            .map(|c| c.connected_at)
+    }
+
+    /// Sends `request` to a connected node and waits for its reply.
+    pub async fn request(&self, node_id: &str, request: NodeRequest) -> ApiResult<NodeResponse> {
+        let offline = || ApiError::conflict("node_offline", "the node isn't connected");
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let pending = {
+            let conns = self.connections.lock().await;
+            let conn = conns.get(node_id).ok_or_else(offline)?;
+            conn.pending.lock().await.insert(id, reply_tx);
+            conn.tx
+                .send(Outgoing::Message(ToNode::Request { id, request }))
+                .map_err(|_| offline())?;
+            Arc::clone(&conn.pending)
+        };
+        let reply = tokio::time::timeout(REQUEST_TIMEOUT, reply_rx).await;
+        pending.lock().await.remove(&id);
+        match reply {
+            Ok(Ok(Ok(response))) => Ok(response),
+            Ok(Ok(Err(message))) => Err(ApiError::conflict("node_error", message)),
+            Ok(Err(_)) => Err(ApiError::conflict("node_offline", "the node disconnected")),
+            Err(_) => Err(ApiError::conflict(
+                "node_timeout",
+                "the node didn't answer in time",
+            )),
+        }
+    }
+
+    /// Hangs up on a node, telling it why.
+    async fn kick(&self, node_id: &str, code: u16, reason: &'static str) {
+        if let Some(conn) = self.connections.lock().await.remove(node_id) {
+            let _ = conn.tx.send(Outgoing::Close(code, reason));
+        }
+    }
+
+    /// Registers a verified connection, replacing (and closing) an older one.
+    async fn register(&self, node_id: &str, conn: Connection) {
+        let old = self
+            .connections
+            .lock()
+            .await
+            .insert(node_id.to_string(), conn);
+        if let Some(old) = old {
+            let _ = old.tx.send(Outgoing::Close(
+                close::REPLACED,
+                "a newer connection took over",
+            ));
+        }
+    }
+
+    /// Forgets a connection that ended, unless a newer one already replaced it.
+    async fn unregister(&self, node_id: &str, serial: u64) {
+        let mut conns = self.connections.lock().await;
+        if conns.get(node_id).is_some_and(|c| c.serial == serial) {
+            conns.remove(node_id);
+        }
+    }
+}
+
+// ---- Enrollment and the node connection ----
+
+async fn enroll(
+    State(state): State<AppState>,
+    client: ClientInfo,
+    Json(req): Json<EnrollRequest>,
+) -> ApiResult<Json<EnrollResponse>> {
+    cha_wire::parse_public_key(&req.public_key)
+        .map_err(|e| ApiError::bad_request("bad_public_key", format!("public key: {e}")))?;
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err(ApiError::bad_request(
+            "bad_name",
+            "node names are 1–64 characters",
+        ));
+    }
+    let agent_version: String = req.agent_version.trim().chars().take(64).collect();
+    let node_id = db::new_id();
+    let redeemed = match db::redeem_join_token(
+        &state.db,
+        &token_hash(req.token.trim()),
+        &node_id,
+        name,
+        &req.public_key,
+        &agent_version,
+    )
+    .await
+    {
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(ApiError::conflict(
+                "already_enrolled",
+                "a node with this key is already enrolled",
+            ));
+        }
+        other => other?,
+    };
+    if !redeemed {
+        db::audit(
+            &state.db,
+            None,
+            "node.enroll_failed",
+            None,
+            Some(json!({ "name": name })),
+            client.ip.as_deref(),
+        )
+        .await?;
+        return Err(ApiError::forbidden(
+            "bad_join_token",
+            "the join token is unknown, used or expired",
+        ));
+    }
+    db::audit(
+        &state.db,
+        None,
+        "node.enrolled",
+        Some(&node_id),
+        Some(json!({ "name": name, "agentVersion": agent_version })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    info!(%node_id, name, "node enrolled");
+    Ok(Json(EnrollResponse { node_id }))
+}
+
+async fn connect(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    ws.max_message_size(MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(err) = serve_node(state, socket).await {
+                warn!("node connection: {err:#}");
+            }
+        })
+}
+
+async fn send(socket: &mut WebSocket, msg: &ToNode) -> anyhow::Result<()> {
+    socket
+        .send(Message::Text(serde_json::to_string(msg)?.into()))
+        .await?;
+    Ok(())
+}
+
+async fn close_with(socket: &mut WebSocket, code: u16, reason: &'static str) {
+    let frame = CloseFrame {
+        code,
+        reason: reason.into(),
+    };
+    let _ = socket.send(Message::Close(Some(frame))).await;
+}
+
+/// One node connection: challenge → signed hello → welcome → messages.
+async fn serve_node(state: AppState, mut socket: WebSocket) -> anyhow::Result<()> {
+    let nonce = random_token()?;
+    let challenge = ToNode::Challenge {
+        nonce: nonce.clone(),
+        protocol: PROTOCOL_VERSION,
+    };
+    send(&mut socket, &challenge).await?;
+
+    let Ok(Some(Ok(Message::Text(text)))) =
+        tokio::time::timeout(HELLO_TIMEOUT, socket.recv()).await
+    else {
+        anyhow::bail!("no hello");
+    };
+    let ToPortal::Hello {
+        node_id,
+        signature,
+        agent_version,
+        protocol,
+    } = serde_json::from_str(&text)?
+    else {
+        anyhow::bail!("the first message wasn't a hello");
+    };
+    let Some(node) = db::node_by_id(&state.db, &node_id).await? else {
+        close_with(&mut socket, close::UNKNOWN_NODE, "this node isn't enrolled").await;
+        anyhow::bail!("unknown or removed node {node_id}");
+    };
+    let message = cha_wire::hello_message(&nonce, &node_id);
+    if let Err(err) = cha_wire::verify_b64(&node.public_key, &message, &signature) {
+        close_with(&mut socket, close::BAD_SIGNATURE, "the hello didn't verify").await;
+        anyhow::bail!("node {node_id} failed the challenge: {err}");
+    }
+    if protocol != PROTOCOL_VERSION {
+        warn!(%node_id, protocol, "node speaks a different protocol version");
+    }
+    let agent_version: String = agent_version.chars().take(64).collect();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let pending = Pending::default();
+    let serial = state.nodes.next_id.fetch_add(1, Ordering::Relaxed);
+    let conn = Connection {
+        serial,
+        tx,
+        pending: Arc::clone(&pending),
+        connected_at: db::now(),
+    };
+    state.nodes.register(&node_id, conn).await;
+    db::touch_node(&state.db, &node_id, Some(&agent_version)).await?;
+    let welcome = ToNode::Welcome {
+        node_id: node_id.clone(),
+        heartbeat_secs: HEARTBEAT_SECS,
+    };
+    send(&mut socket, &welcome).await?;
+    info!(%node_id, name = %node.name, %agent_version, "node connected");
+
+    let result = pump(&state, &node_id, &mut socket, &mut rx, &pending).await;
+    state.nodes.unregister(&node_id, serial).await;
+    info!(%node_id, "node disconnected");
+    result
+}
+
+async fn pump(
+    state: &AppState,
+    node_id: &str,
+    socket: &mut WebSocket,
+    rx: &mut mpsc::UnboundedReceiver<Outgoing>,
+    pending: &Pending,
+) -> anyhow::Result<()> {
+    let deadline = Duration::from_secs(HEARTBEAT_SECS * MISSED_HEARTBEATS);
+    let mut last_heard = Instant::now();
+    let mut watchdog = tokio::time::interval(Duration::from_secs(5));
+    loop {
+        tokio::select! {
+            outgoing = rx.recv() => match outgoing {
+                Some(Outgoing::Message(msg)) => send(socket, &msg).await?,
+                Some(Outgoing::Close(code, reason)) => {
+                    close_with(socket, code, reason).await;
+                    return Ok(());
+                }
+                None => return Ok(()),
+            },
+            incoming = socket.recv() => {
+                let text = match incoming {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(_))) | None => return Ok(()),
+                    // Pings are answered by the WebSocket layer.
+                    Some(Ok(_)) => continue,
+                    Some(Err(err)) => return Err(err.into()),
+                };
+                last_heard = Instant::now();
+                match serde_json::from_str::<ToPortal>(&text)? {
+                    ToPortal::Heartbeat => db::touch_node(&state.db, node_id, None).await?,
+                    ToPortal::Inventory { inventory } => {
+                        let json = serde_json::to_string(&inventory)?;
+                        db::set_node_inventory(&state.db, node_id, &json).await?;
+                    }
+                    ToPortal::Response { id, result } => {
+                        if let Some(waiter) = pending.lock().await.remove(&id) {
+                            let _ = waiter.send(result);
+                        }
+                    }
+                    ToPortal::Request { id, request } => {
+                        let result = match request {
+                            PortalRequest::Ping => Ok(PortalResponse::Pong { unix_ms: unix_ms() }),
+                        };
+                        send(socket, &ToNode::Response { id, result }).await?;
+                    }
+                    ToPortal::Hello { .. } => anyhow::bail!("a second hello"),
+                }
+            }
+            _ = watchdog.tick() => {
+                if last_heard.elapsed() > deadline {
+                    anyhow::bail!("{MISSED_HEARTBEATS} heartbeats missed");
+                }
+            }
+        }
+    }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+// ---- Admin API ----
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NodeView {
+    #[serde(flatten)]
+    node: NodeRow,
+    online: bool,
+    connected_at: Option<i64>,
+    inventory: Option<Inventory>,
+}
+
+async fn list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<Vec<NodeView>>> {
+    let mut out = Vec::new();
+    for node in db::list_nodes(&state.db).await? {
+        let connected_at = state.nodes.connected_since(&node.id).await;
+        let inventory = node
+            .inventory
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok());
+        out.push(NodeView {
+            online: connected_at.is_some(),
+            connected_at,
+            inventory,
+            node,
+        });
+    }
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct JoinTokenRequest {
+    label: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JoinTokenResponse {
+    /// Shown once; only its hash is stored.
+    token: String,
+    expires_at: i64,
+}
+
+async fn create_join_token(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    client: ClientInfo,
+    Json(req): Json<JoinTokenRequest>,
+) -> ApiResult<Json<JoinTokenResponse>> {
+    let token = format!("{JOIN_TOKEN_PREFIX}{}", random_token()?);
+    let label: Option<String> = req
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.chars().take(64).collect());
+    let expires_at =
+        db::insert_join_token(&state.db, &token_hash(&token), label.as_deref(), &admin.id).await?;
+    db::audit(
+        &state.db,
+        Some(&admin.id),
+        "node.join_token_created",
+        None,
+        label.map(|l| json!({ "label": l })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok(Json(JoinTokenResponse { token, expires_at }))
+}
+
+async fn remove(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    client: ClientInfo,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !db::delete_node(&state.db, &id).await? {
+        return Err(ApiError::NotFound("no such node".into()));
+    }
+    state
+        .nodes
+        .kick(&id, close::UNKNOWN_NODE, "this node was removed")
+        .await;
+    db::audit(
+        &state.db,
+        Some(&admin.id),
+        "node.removed",
+        Some(&id),
+        None,
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok(Json(json!({ "removed": id })))
+}
+
+async fn ping(
+    State(state): State<AppState>,
+    _: AdminUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let started = Instant::now();
+    let NodeResponse::Pong { unix_ms } = state.nodes.request(&id, NodeRequest::Ping).await?;
+    Ok(Json(json!({
+        "rttMs": started.elapsed().as_secs_f64() * 1000.0,
+        "nodeUnixMs": unix_ms,
+    })))
+}

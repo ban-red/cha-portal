@@ -50,6 +50,35 @@
       ],
       "port": 5182,
       "autoPort": true
+    },
+    {
+      "name": "cha-control",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": [
+        "run",
+        "-p",
+        "cha-control",
+        "--",
+        "--listen",
+        "127.0.0.1:8090",
+        "--database",
+        "data/dev.db",
+        "--web-dir",
+        "web/apps/portal/dist"
+      ],
+      "port": 8090
+    },
+    {
+      "name": "portal",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "run",
+        "--cwd",
+        "web/apps/portal",
+        "dev"
+      ],
+      "port": 5190,
+      "autoPort": true
     }
   ]
 }

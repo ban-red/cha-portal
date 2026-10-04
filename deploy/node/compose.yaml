@@ -1,0 +1,32 @@
+# A Cha Node. P1.2: the agent alone; Wolf and the gateway join it in P1.3/P1.4.
+#
+# First run, with a join token from the portal's Nodes page:
+#   CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… \
+#     docker compose -f deploy/node/compose.yaml up -d
+# Later runs only need CHA_PORTAL_URL; the identity lives in the `state` volume.
+name: cha-node
+
+services:
+  agent:
+    build:
+      context: ../..
+      dockerfile: deploy/node/Dockerfile
+    image: cha-node:dev
+    restart: unless-stopped
+    # Host networking, so the inventory reports the machine's own addresses.
+    network_mode: host
+    environment:
+      CHA_PORTAL_URL: ${CHA_PORTAL_URL:?set CHA_PORTAL_URL to the portal's URL}
+      CHA_JOIN_TOKEN: ${CHA_JOIN_TOKEN:-}
+      CHA_NODE_NAME: ${CHA_NODE_NAME:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi.
+    devices:
+      - nvidia.com/gpu=all
+    volumes:
+      - state:/var/lib/cha-node
+      # The host's OS name, not the image's.
+      - /etc/os-release:/run/host/os-release:ro
+
+volumes:
+  state:
