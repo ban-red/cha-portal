@@ -40,7 +40,10 @@ pub struct SessionParams {
     /// Stop sending after this long (benchmarks); 0 runs until the browser
     /// leaves or another connection takes over.
     pub secs: u32,
-    pub host: IpAddr,
+    /// Where the browser may reach us: a host candidate on `port` for each.
+    pub hosts: Vec<IpAddr>,
+    /// Port-forwarded public addresses, announced on the first socket's port.
+    pub public: Vec<IpAddr>,
     pub port: u16,
     pub media: Arc<Media>,
     /// Sound, if the browser asks for it (an audio m-line in its offer).
@@ -55,13 +58,27 @@ pub struct Running {
 }
 
 pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<(SdpAnswer, Running)> {
-    let socket = match UdpSocket::bind(SocketAddr::new(params.host, params.port)).await {
-        Ok(socket) => socket,
-        Err(_) => UdpSocket::bind(SocketAddr::new(params.host, 0))
-            .await
-            .with_context(|| format!("binding a UDP socket on {}", params.host))?,
-    };
-    let local = socket.local_addr()?;
+    let mut sockets = Vec::new();
+    for host in &params.hosts {
+        let socket = match UdpSocket::bind(SocketAddr::new(*host, params.port)).await {
+            Ok(socket) => socket,
+            Err(_) => match UdpSocket::bind(SocketAddr::new(*host, 0)).await {
+                Ok(socket) => socket,
+                Err(err) => {
+                    warn!(%host, "no UDP socket: {err}");
+                    continue;
+                }
+            },
+        };
+        sockets.push(socket);
+    }
+    if sockets.is_empty() {
+        bail!("no address to receive WebRTC on");
+    }
+    let locals = sockets
+        .iter()
+        .map(UdpSocket::local_addr)
+        .collect::<std::io::Result<Vec<_>>>()?;
 
     let mut exts = ExtensionMap::standard();
     exts.set(5, Extension::PlayoutDelay);
@@ -77,14 +94,29 @@ pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<(SdpAnswer,
     };
     let builder = builder.enable_opus(params.audio.is_some(), false);
     let mut rtc = builder.build(Instant::now());
-    rtc.add_local_candidate(Candidate::host(local, "udp")?)
-        .context("adding host candidate")?;
+    for local in &locals {
+        rtc.add_local_candidate(Candidate::host(*local, "udp")?)
+            .context("adding host candidate")?;
+    }
+    // A port-forward's public address: announced as a host candidate on the
+    // first socket's port (ICE-lite takes host candidates only). The
+    // browser's checks arrive, NAT-translated, on that socket.
+    for ip in &params.public {
+        let announced = SocketAddr::new(*ip, locals[0].port());
+        rtc.add_local_candidate(Candidate::host(announced, "udp")?)
+            .context("adding the public address")?;
+    }
     let answer = rtc.sdp_api().accept_offer(offer)?;
 
-    info!(%local, codec = params.codec.name(), secs = params.secs, "webrtc session");
+    info!(
+        ?locals,
+        codec = params.codec.name(),
+        secs = params.secs,
+        "webrtc session"
+    );
     let (stop, stopped) = oneshot::channel();
     let handle = tokio::spawn(async move {
-        if let Err(err) = Session::new(rtc, socket, rtp_codec, params, stopped)
+        if let Err(err) = Session::new(rtc, sockets, locals, rtp_codec, params, stopped)
             .run()
             .await
         {
@@ -163,8 +195,9 @@ struct StreamerStats {
 
 struct Session {
     rtc: Rtc,
-    socket: UdpSocket,
-    local: SocketAddr,
+    /// One per host candidate, all on the same port where possible.
+    sockets: Vec<UdpSocket>,
+    locals: Vec<SocketAddr>,
     epoch: Instant,
     rtp_codec: RtpCodec,
     params: SessionParams,
@@ -190,7 +223,8 @@ struct Session {
 impl Session {
     fn new(
         rtc: Rtc,
-        socket: UdpSocket,
+        sockets: Vec<UdpSocket>,
+        locals: Vec<SocketAddr>,
         rtp_codec: RtpCodec,
         params: SessionParams,
         stopped: oneshot::Receiver<()>,
@@ -198,8 +232,8 @@ impl Session {
         let epoch = Instant::now();
         Self {
             rtc,
-            local: socket.local_addr().expect("bound socket has an address"),
-            socket,
+            sockets,
+            locals,
             epoch,
             rtp_codec,
             params,
@@ -261,9 +295,9 @@ impl Session {
             }
 
             tokio::select! {
-                received = self.socket.recv_from(&mut buf) => {
-                    let (n, source) = received?;
-                    self.receive(&buf[..n], source)?;
+                received = recv_any(&self.sockets, &mut buf) => {
+                    let (n, source, socket) = received?;
+                    self.receive(&buf[..n], source, self.locals[socket])?;
                 }
                 packet = next_packet(&mut self.audio) => match packet {
                     Some(packet) => self.send_audio(packet)?,
@@ -284,7 +318,7 @@ impl Session {
                 }
                 _ = &mut self.stopped => {
                     // Taken over by a newer connection: free the port now.
-                    info!(local = %self.local, "session replaced");
+                    info!(locals = ?self.locals, "session replaced");
                     self.rtc.disconnect();
                     return Ok(());
                 }
@@ -416,7 +450,7 @@ impl Session {
         self.frames = None;
         self.audio = None;
         let stats = self.summary();
-        info!(local = %self.local, ?stats, "stream complete");
+        info!(locals = ?self.locals, ?stats, "stream complete");
         self.send_control(&ServerMsg::Done { stats });
     }
 
@@ -443,7 +477,9 @@ impl Session {
             match self.rtc.poll_output()? {
                 Output::Timeout(at) => return Ok(Some(at)),
                 Output::Transmit(t) => {
-                    if let Err(err) = self.socket.try_send_to(&t.contents, t.destination)
+                    // From the candidate str0m chose.
+                    let socket = self.locals.iter().position(|l| *l == t.source).unwrap_or(0);
+                    if let Err(err) = self.sockets[socket].try_send_to(&t.contents, t.destination)
                         && err.kind() != std::io::ErrorKind::WouldBlock
                     {
                         return Err(err.into());
@@ -547,13 +583,18 @@ impl Session {
         }
     }
 
-    fn receive(&mut self, contents: &[u8], source: SocketAddr) -> Result<()> {
+    fn receive(
+        &mut self,
+        contents: &[u8],
+        source: SocketAddr,
+        destination: SocketAddr,
+    ) -> Result<()> {
         let input = Input::Receive(
             Instant::now(),
             Receive {
                 proto: Protocol::Udp,
                 source,
-                destination: self.local,
+                destination,
                 contents: contents.try_into()?,
             },
         );
@@ -572,6 +613,23 @@ impl Session {
             warn!("control channel refused a message");
         }
     }
+}
+
+/// The next datagram on any of `sockets`: its length, sender and socket.
+async fn recv_any(
+    sockets: &[UdpSocket],
+    buf: &mut [u8],
+) -> std::io::Result<(usize, SocketAddr, usize)> {
+    std::future::poll_fn(|cx| {
+        for (i, socket) in sockets.iter().enumerate() {
+            let mut read = tokio::io::ReadBuf::new(buf);
+            if let std::task::Poll::Ready(result) = socket.poll_recv_from(cx, &mut read) {
+                return std::task::Poll::Ready(result.map(|from| (read.filled().len(), from, i)));
+            }
+        }
+        std::task::Poll::Pending
+    })
+    .await
 }
 
 /// The next Opus frame, or never while not subscribed.

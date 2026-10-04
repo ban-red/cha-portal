@@ -32,6 +32,7 @@ async fn portal() -> Portal {
         web_dir: None,
         secure_cookies: false,
         session_days: 1,
+        ice: Default::default(),
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool).await.unwrap();

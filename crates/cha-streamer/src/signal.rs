@@ -22,6 +22,7 @@ use crate::audio::Audio;
 use crate::compositor::{self, fit_size};
 use crate::gamepad::Gamepads;
 use crate::media::{EncodeSettings, FrameHub, Media};
+use crate::net;
 use crate::session;
 
 #[derive(Parser, Debug)]
@@ -67,6 +68,16 @@ struct Args {
     /// WebRTC UDP port (ICE-lite).
     #[arg(long, default_value_t = 4496)]
     webrtc_port: u16,
+    /// Addresses browsers may reach WebRTC on (host candidates). Default:
+    /// every IPv4 address of this machine except loopback and container
+    /// bridges, so LAN and mesh (Tailscale, WireGuard) clients connect directly.
+    #[arg(long, value_delimiter = ',')]
+    advertise: Vec<IpAddr>,
+    /// The router's public address when it forwards the WebRTC ports here:
+    /// announced as a candidate on the same ports, for WAN clients without a
+    /// mesh or TURN.
+    #[arg(long, value_delimiter = ',')]
+    public_address: Vec<IpAddr>,
     /// The portal's public key (base64 Ed25519). With it, a stream needs a
     /// media token the portal signed for `--environment-id`; without it, the
     /// shared token below (benchmarks, the dev loop).
@@ -119,7 +130,8 @@ struct AppState {
     mbps: u32,
     fps: u32,
     webrtc_port: u16,
-    primary: IpAddr,
+    hosts: Vec<IpAddr>,
+    public: Vec<IpAddr>,
 }
 
 pub fn main() -> Result<()> {
@@ -216,6 +228,21 @@ pub fn main() -> Result<()> {
         Auth::Portal { environment, .. } => format!("media tokens for environment {environment}"),
     };
     let primary = primary_ipv4().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let mut hosts = if args.advertise.is_empty() {
+        net::host_addresses()
+    } else {
+        args.advertise.clone()
+    };
+    // The routed address first.
+    hosts.sort_by_key(|h| *h != primary);
+    if hosts.is_empty() {
+        hosts.push(primary);
+    }
+    let advertised = hosts
+        .iter()
+        .map(IpAddr::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     let state = Arc::new(AppState {
         media,
         audio,
@@ -225,7 +252,8 @@ pub fn main() -> Result<()> {
         mbps: args.mbps,
         fps: args.fps,
         webrtc_port: args.webrtc_port,
-        primary,
+        hosts,
+        public: args.public_address.clone(),
     });
     let app = Router::new()
         .route("/info", get(info_handler))
@@ -238,7 +266,7 @@ pub fn main() -> Result<()> {
         let listener =
             tokio::net::TcpListener::bind(SocketAddr::new(args.listen, args.http_port)).await?;
         info!(
-            "cha-streamer up: http://{}:{} (signalling), WebRTC {primary}:{}/udp; {access}",
+            "cha-streamer up: http://{}:{} (signalling), WebRTC {advertised} port {}/udp; {access}",
             args.listen, args.http_port, args.webrtc_port
         );
         axum::serve(listener, app).await?;
@@ -382,10 +410,14 @@ async fn media_offer_handler(
         secs: query_value(&query, "secs")
             .and_then(|v| v.parse::<f64>().ok())
             .map_or(15, |v| v as u32),
-        host: query_value(&query, "host")
+        hosts: match query_value(&query, "host")
             .map(|h| if h == "localhost" { "127.0.0.1" } else { h })
             .and_then(|h| h.parse().ok())
-            .unwrap_or(state.primary),
+        {
+            Some(host) => vec![host],
+            None => state.hosts.clone(),
+        },
+        public: state.public.clone(),
         port: state.webrtc_port,
         media: Arc::clone(&state.media),
         audio: state.audio.clone(),

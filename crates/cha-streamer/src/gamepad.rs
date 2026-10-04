@@ -77,6 +77,7 @@ const UI_ABS_SETUP: libc::c_ulong = 0x401c_5504;
 const UI_SET_EVBIT: libc::c_ulong = 0x4004_5564;
 const UI_SET_KEYBIT: libc::c_ulong = 0x4004_5565;
 const UI_SET_ABSBIT: libc::c_ulong = 0x4004_5567;
+const UI_SET_PHYS: libc::c_ulong = 0x4008_556c;
 const fn ui_get_sysname(len: usize) -> libc::c_ulong {
     (2 << 30) | ((len as libc::c_ulong) << 16) | 0x552c
 }
@@ -264,6 +265,12 @@ impl Gamepads {
             name: [0; 80],
             ff_effects_max: 0,
         };
+        // Where the host's udev rule (deploy/node/host) recognizes our pads.
+        let phys = std::ffi::CString::new(format!("cha/pad{index}")).expect("no NUL");
+        // SAFETY: a valid uinput fd and a NUL-terminated string.
+        if unsafe { libc::ioctl(raw, UI_SET_PHYS, phys.as_ptr()) } < 0 {
+            return Err(std::io::Error::last_os_error()).context("UI_SET_PHYS");
+        }
         let name = b"Microsoft X-Box 360 pad";
         setup.name[..name.len()].copy_from_slice(name);
         // SAFETY: a valid uinput fd and a uinput_setup.

@@ -1,0 +1,83 @@
+# The portal: cha-control (the API, the SPA and the nodes' WebSocket), with
+# its SQLite database in the `data` volume. From the repository root:
+#   docker compose -f deploy/portal/compose.yaml up -d --build
+# The first start logs a one-time setup token (`... logs portal`): open the
+# portal and create the first admin with it.
+#
+# Serve it over HTTPS. Browsers give gamepads, keyboard lock and audio
+# worklets only to secure pages, and the session cookie is marked Secure:
+# - Tailscale (homelab): keep the portal on localhost and run
+#   `tailscale serve --bg 8080` (docs/guides/tailscale.md);
+# - Caddy with public DNS: CHA_DOMAIN=portal.example.com and the `tls` profile
+#   (ports 80 and 443): `... --profile tls up -d`.
+#
+# TURN (the `turn` profile: coturn on the host network) is for browsers that
+# reach a node neither directly nor through a mesh. Set CHA_TURN_SECRET (long
+# and random), CHA_TURN_URLS (how browsers reach coturn, e.g.
+# turn:turn.example.com:3478?transport=udp) and CHA_TURN_PEERS (the nodes'
+# addresses, e.g. 192.168.1.10-192.168.1.20: the only ones it relays to).
+name: cha-portal
+
+services:
+  portal:
+    build:
+      context: ../..
+      dockerfile: deploy/portal/Dockerfile
+    image: cha-portal:dev
+    restart: unless-stopped
+    ports:
+      # Localhost by default: for tailscale serve or a proxy on this host.
+      - ${CHA_BIND:-127.0.0.1:8080}:8080
+    environment:
+      CHA_SECURE_COOKIES: ${CHA_SECURE_COOKIES:-true}
+      CHA_STUN_URLS: ${CHA_STUN_URLS:-}
+      CHA_TURN_URLS: ${CHA_TURN_URLS:-}
+      CHA_TURN_SECRET: ${CHA_TURN_SECRET:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - data:/var/lib/cha
+
+  caddy:
+    profiles: [tls]
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    environment:
+      CHA_DOMAIN: ${CHA_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  coturn:
+    profiles: [turn]
+    image: coturn/coturn:4.7
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --listening-port=${CHA_TURN_PORT:-3478}
+      # Credentials come from the portal, minted per connection with this.
+      - --use-auth-secret
+      - --static-auth-secret=${CHA_TURN_SECRET:-}
+      - --realm=${CHA_DOMAIN:-cha}
+      - --fingerprint
+      - --no-cli
+      # Plain TURN over UDP and TCP; TURN over TLS on 443 is Phase 3's.
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      - --min-port=${CHA_TURN_MIN_PORT:-49160}
+      - --max-port=${CHA_TURN_MAX_PORT:-49200}
+      # Relay to the nodes only, never anywhere else on the network.
+      - --denied-peer-ip=0.0.0.0-255.255.255.255
+      - --denied-peer-ip=::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --allowed-peer-ip=${CHA_TURN_PEERS:-127.0.0.1}
+      - --log-file=stdout
+
+volumes:
+  data:
+  caddy-data:
+  caddy-config:

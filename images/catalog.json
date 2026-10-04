@@ -3,7 +3,7 @@
     {
       "id": "test-pattern",
       "name": "Test pattern",
-      "description": "A moving bar, a frame counter and a frame-ID strip; flashes on input. For checking latency and smoothness.",
+      "description": "A moving bar, a frame counter and a frame-ID strip; flashes and beeps on input, and shows a gamepad. For checking latency, sound and controllers.",
       "image": "cha/env-test-pattern:dev",
       "class": "test",
       "security": "standard",

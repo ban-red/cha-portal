@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/audit", get(audit))
         .merge(crate::nodes::routes())
         .merge(crate::environments::routes())
+        .merge(crate::ice::routes())
         .fallback(|| async { ApiError::NotFound("no such API".into()) })
 }
 

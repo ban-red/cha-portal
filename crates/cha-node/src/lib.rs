@@ -7,6 +7,7 @@
 //! environments ([`environments`]) through the Docker engine ([`docker`]).
 
 pub mod docker;
+pub mod doctor;
 pub mod environments;
 pub mod inventory;
 

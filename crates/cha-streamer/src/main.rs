@@ -27,6 +27,8 @@ mod gamepad;
 #[cfg(target_os = "linux")]
 mod media;
 #[cfg(target_os = "linux")]
+mod net;
+#[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
 mod signal;

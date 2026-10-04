@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime};
-use cha_node::{Agent, Identity, enroll, init_tls, inventory, normalize_portal_url};
+use cha_node::{Agent, Identity, doctor, enroll, init_tls, inventory, normalize_portal_url};
 use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -28,6 +28,10 @@ struct Args {
     /// Print this machine's inventory as JSON and exit.
     #[arg(long)]
     print_inventory: bool,
+    /// Check that this machine can run environments, say how to fix what it
+    /// can't, and exit (non-zero if something must be fixed).
+    #[arg(long)]
+    doctor: bool,
     /// The Docker engine's socket; environments need it.
     #[arg(long, env = "CHA_DOCKER_SOCKET", default_value = DEFAULT_SOCKET)]
     docker_socket: String,
@@ -50,6 +54,10 @@ struct Args {
     /// Empty goes without gamepads (e.g. no `uinput` module).
     #[arg(long, env = "CHA_UINPUT", default_value = "/dev/uinput")]
     uinput: String,
+    /// The router's public IP, if it forwards the streamers' UDP ports here
+    /// (WAN without a mesh or TURN).
+    #[arg(long, env = "CHA_PUBLIC_ADDRESS")]
+    public_address: Option<String>,
 }
 
 #[tokio::main]
@@ -71,6 +79,13 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     init_tls();
+    let docker = Docker::new(&args.docker_socket);
+    let config = docker_config(&args);
+    if args.doctor {
+        let identity = Identity::load(&args.state_dir).ok().flatten();
+        let ok = doctor::run(&docker, &config, identity.as_ref()).await;
+        std::process::exit(if ok { 0 } else { 1 });
+    }
 
     let identity = match Identity::load(&args.state_dir)? {
         Some(mut identity) => {
@@ -103,23 +118,6 @@ async fn main() -> Result<()> {
     };
 
     let mut agent = Agent::new(identity)?;
-    let docker = Docker::new(&args.docker_socket);
-    let render_node = args.render_node.clone().unwrap_or_else(|| {
-        inventory::collect()
-            .gpus
-            .into_iter()
-            .find(|g| !g.encoders.is_empty())
-            .and_then(|g| g.render_node)
-            .unwrap_or_else(|| "/dev/dri/renderD128".into())
-    });
-    let config = DockerConfig {
-        streamer_image: args.streamer_image.clone(),
-        render_node,
-        gpu_device: args.gpu_device.clone(),
-        uinput: Some(args.uinput.trim().to_string()).filter(|u| !u.is_empty()),
-        port_base: args.port_base,
-        max_environments: args.max_environments,
-    };
     match DockerRuntime::new(docker, config.clone()).await {
         Ok(runtime) => {
             info!(streamer = %config.streamer_image, render_node = %config.render_node, "running environments with Docker");
@@ -131,4 +129,29 @@ async fn main() -> Result<()> {
         ),
     }
     agent.run().await
+}
+
+/// How environments run here, from the arguments.
+fn docker_config(args: &Args) -> DockerConfig {
+    let render_node = args.render_node.clone().unwrap_or_else(|| {
+        inventory::collect()
+            .gpus
+            .into_iter()
+            .find(|g| !g.encoders.is_empty())
+            .and_then(|g| g.render_node)
+            .unwrap_or_else(|| "/dev/dri/renderD128".into())
+    });
+    DockerConfig {
+        streamer_image: args.streamer_image.clone(),
+        render_node,
+        gpu_device: args.gpu_device.clone(),
+        uinput: Some(args.uinput.trim().to_string()).filter(|u| !u.is_empty()),
+        public_address: args
+            .public_address
+            .clone()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty()),
+        port_base: args.port_base,
+        max_environments: args.max_environments,
+    }
 }

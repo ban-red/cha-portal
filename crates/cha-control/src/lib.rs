@@ -10,6 +10,7 @@ pub mod auth;
 pub mod db;
 pub mod environments;
 pub mod error;
+pub mod ice;
 pub mod nodes;
 
 use std::net::SocketAddr;
@@ -35,6 +36,8 @@ pub struct Config {
     /// Mark the session cookie `Secure` (set when the portal is served over HTTPS).
     pub secure_cookies: bool,
     pub session_days: i64,
+    /// STUN and TURN for players.
+    pub ice: ice::IceConfig,
 }
 
 #[derive(Clone)]

@@ -66,15 +66,25 @@ let player: Player | null = null;
 let retries = 0;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let leaving = false;
+/** The latest connect() call: an older one still awaiting gives way. */
+let attempt = 0;
 
 async function connect() {
   clearTimeout(retryTimer);
   player?.close();
   if (!video.value) return;
   problem.value = null;
+  const mine = ++attempt;
+  // Fresh TURN credentials each time; a portal without TURN returns none.
+  const iceServers = await api
+    .iceServers()
+    .then((r) => r.iceServers)
+    .catch(() => []);
+  if (leaving || mine !== attempt || !video.value) return;
   const p = new Player({
     video: video.value,
     codec: codec.value,
+    iceServers,
     muted: muted.value,
     onAudioBlocked: (blocked) => {
       if (player === p) audioBlocked.value = blocked;

@@ -139,6 +139,8 @@ export const api = {
   launch: (templateId: string) => request<Environment>("POST", "/environments", { templateId }),
   stopEnvironment: (id: string) => request<Environment>("DELETE", `/environments/${encodeURIComponent(id)}`),
   environment: (id: string) => request<Environment>("GET", `/environments/${encodeURIComponent(id)}`),
+  /** STUN and TURN for the next connection (TURN credentials last a day). */
+  iceServers: () => request<{ iceServers: RTCIceServer[] }>("GET", "/ice"),
   /** Brokers a WebRTC connection to the environment's streamer. */
   connect: (id: string, body: { codec: string; offer: RTCSessionDescriptionInit }) =>
     request<{ answer: RTCSessionDescriptionInit; codec: string }>(

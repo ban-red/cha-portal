@@ -21,6 +21,17 @@ struct Args {
     secure_cookies: bool,
     #[arg(long, env = "CHA_SESSION_DAYS", default_value_t = 14)]
     session_days: i64,
+    /// STUN URLs for players, comma-separated (`stun:host:3478`).
+    #[arg(long, env = "CHA_STUN_URLS", value_delimiter = ',')]
+    stun: Vec<String>,
+    /// TURN URLs for players, comma-separated
+    /// (`turn:host:3478?transport=udp,turns:host:443?transport=tcp`).
+    #[arg(long, env = "CHA_TURN_URLS", value_delimiter = ',')]
+    turn: Vec<String>,
+    /// The TURN server's shared secret (coturn `static-auth-secret`); the
+    /// portal mints a day's credentials per connection with it.
+    #[arg(long, env = "CHA_TURN_SECRET", hide_env_values = true)]
+    turn_secret: Option<String>,
 }
 
 #[tokio::main]
@@ -38,6 +49,19 @@ async fn main() -> Result<()> {
         web_dir: Some(args.web_dir),
         secure_cookies: args.secure_cookies,
         session_days: args.session_days,
+        ice: cha_control::ice::IceConfig {
+            stun: args
+                .stun
+                .into_iter()
+                .filter(|u| !u.trim().is_empty())
+                .collect(),
+            turn: args
+                .turn
+                .into_iter()
+                .filter(|u| !u.trim().is_empty())
+                .collect(),
+            turn_secret: args.turn_secret.filter(|s| !s.is_empty()),
+        },
     })
     .await
 }

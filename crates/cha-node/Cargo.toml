@@ -17,6 +17,8 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 getrandom = "0.3"
 # Our Docker Engine client speaks HTTP/1.1 over the socket with these.
 http-body-util = "0.1"
+# The portal's Date header, for --doctor's clock check.
+httpdate = "1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 if-addrs = "0.15"

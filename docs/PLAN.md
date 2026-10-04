@@ -581,7 +581,26 @@ Seven milestones, each shippable and verified on its own:
 - **Click → sound** (the test pattern's tone at the speakers, timed by an AudioWorklet): 85–90 ms p50 in the app's browser. About 15–20 ms of that is the test pattern's own 20 ms buffer, 12 ms the mixer and Opus, and ~30 ms NetEq.
 - **Gamepads:** in the environment, Chrome sees "Xbox 360 pad (STANDARD GAMEPAD 045e:028e)" with its buttons and both sticks, and SDL2 sees an "X360 Controller" (A, sticks, triggers). Both find it in the app's own `/dev/input` and udev data.
 - **Open:** the A/V offset and the pad panel on the baseline Chrome (the app's browser wasn't painting); a game, with Steam (Phase 2); rumble; a host udev rule so the host's own desktop ignores the virtual pads; microphones. |
-| **P1.7** | Deploy + exit | `deploy/` compose for the portal and a node; `cha doctor` v0; the Tailscale guide; an optional coturn profile | Phase 1 exit criteria above |
+| **P1.7** *(built 2026-10-04; the exit runs are the owner's)* | Deploy + exit | `deploy/` compose for the portal and a node; `cha doctor` v0; the Tailscale guide; an optional coturn profile | Phase 1 exit criteria above. **So far** ([`deploy/README.md`](../deploy/README.md)):
+- **The portal's image and compose file** (`deploy/portal`): SPA and API in one container, SQLite in a volume only its user can enter, on localhost by default. HTTPS through `tailscale serve`, or Caddy with public DNS (profile `tls`).
+- **TURN** (profile `turn`): coturn relaying to the nodes only; the portal mints a day's credentials per connection (`GET /api/ice`, coturn's shared-secret scheme).
+- **Reaching nodes:** streamers offer every node address (LAN and mesh: Tailscale, WireGuard) as candidates, and a port-forward's public address when the agent has `CHA_PUBLIC_ADDRESS`.
+- **`cha-node --doctor`:** Docker, the images, the GPU through CDI and `/dev/uinput` (in probe containers), the render node, user namespaces, the clock against the portal's, the ports. It prints fixes and changes nothing. On the RTX 4090 node: all OK, with warnings for AppArmor's user-namespace restriction and a 2.3 s clock difference from the Mac running the dev portal.
+- **Host files** for the owner (`deploy/node/host`): a udev rule that keeps the virtual pads (phys `cha/padN`) out of a desktop host's own session.
+- **Guides:** [Tailscale](guides/tailscale.md), with port-forward and TURN as the alternatives.
+
+**Phase 1 exit checklist** (2026-10-04):
+
+| Criterion | Status |
+|---|---|
+| Chrome, Firefox and XFCE environments with keyboard and mouse | Done (P1.5), from Chrome on the Mac |
+| … with a controller | Done (P1.6): Chrome and SDL2 in an environment see the pad; a game waits for Steam (Phase 2) |
+| … with sound | Done (P1.6): stereo Opus in Chrome; the A/V offset needs the owner's run |
+| … from Firefox and Safari as clients | The owner's run. Firefox takes H.264 (no HEVC over WebRTC); Safari HEVC or H.264 |
+| … over WAN (port-forward or mesh) | Built (candidates on every address, `CHA_PUBLIC_ADDRESS`, TURN); the owner's run from outside the LAN |
+| `cha-streamer` matches or beats S2 on the same node | Done (P1.3): ≈ 5.65 ms node → Mac compositor (S2: 6.0), click → browser compositor 24.6 ms (S2: 34–35) |
+| Glass-to-glass latency measured and published | Click → screen 15.8 ms (P1.5, `docs/benchmarks/`); a camera-based run is the owner's |
+
 
 **Decisions, recorded as ADRs in `docs/adr/`:**
 - **Node channel for the MVP: JSON messages over one WebSocket**, with request/response correlation and server push. The plan's yamux + protobuf framing comes when streams need it (logs, file transfer). The messages already live in a shared crate.

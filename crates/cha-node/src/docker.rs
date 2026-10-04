@@ -111,6 +111,41 @@ impl Docker {
         self.call(Method::GET, "/_ping", None).await.map(drop)
     }
 
+    /// The engine's version (`GET /version`).
+    pub async fn version(&self) -> Result<String> {
+        let v: Value = serde_json::from_slice(&self.call(Method::GET, "/version", None).await?)?;
+        Ok(v["Version"].as_str().unwrap_or("?").to_string())
+    }
+
+    /// Runs a short-lived container to its end and removes it: the exit code
+    /// and its output (stdout and stderr). For checks (`--doctor`).
+    pub async fn run(
+        &self,
+        name: &str,
+        config: &Value,
+        timeout: std::time::Duration,
+    ) -> Result<(i64, String)> {
+        // A leftover from an interrupted run.
+        let _ = self.remove(name, 0).await;
+        let id = self.create(name, config).await?;
+        let result = async {
+            self.start(&id).await?;
+            let path = format!("/containers/{}/wait", encode(&id));
+            let waited = tokio::time::timeout(timeout, self.call(Method::POST, &path, None))
+                .await
+                .context("timed out")??;
+            let code = serde_json::from_slice::<Value>(&waited)?["StatusCode"]
+                .as_i64()
+                .unwrap_or(-1);
+            let path = format!("/containers/{}/logs?stdout=1&stderr=1", encode(&id));
+            let logs = self.call(Method::GET, &path, None).await?;
+            Ok((code, demux(&logs)))
+        }
+        .await;
+        let _ = self.remove(&id, 0).await;
+        result
+    }
+
     pub async fn image_exists(&self, image: &str) -> Result<bool> {
         let (status, bytes) = self
             .send(
@@ -297,6 +332,20 @@ fn parse_event(line: &[u8]) -> Option<ContainerEvent> {
 }
 
 /// The engine's error message from a JSON error body.
+/// A container's log stream as text: without a TTY, the engine frames each
+/// chunk with an 8-byte header (stream, 0, 0, 0, big-endian length).
+fn demux(raw: &[u8]) -> String {
+    let mut text = Vec::new();
+    let mut rest = raw;
+    while rest.len() >= 8 {
+        let len = u32::from_be_bytes([rest[4], rest[5], rest[6], rest[7]]) as usize;
+        let end = (8 + len).min(rest.len());
+        text.extend_from_slice(&rest[8..end]);
+        rest = &rest[end..];
+    }
+    String::from_utf8_lossy(&text).into_owned()
+}
+
 fn engine_message(body: &[u8]) -> String {
     serde_json::from_slice::<Value>(body)
         .ok()
@@ -320,6 +369,15 @@ pub(crate) fn encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demuxes_logs() {
+        let mut raw = vec![1, 0, 0, 0, 0, 0, 0, 3];
+        raw.extend(b"ok\n");
+        raw.extend([2, 0, 0, 0, 0, 0, 0, 4]);
+        raw.extend(b"err\n");
+        assert_eq!(demux(&raw), "ok\nerr\n");
+    }
 
     #[test]
     fn encodes_names_and_filters() {

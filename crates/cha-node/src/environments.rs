@@ -85,6 +85,9 @@ pub struct DockerConfig {
     pub gpu_device: String,
     /// The host's uinput device, for gamepads; `None` goes without.
     pub uinput: Option<String>,
+    /// The router's public address, when it forwards the streamers' UDP ports
+    /// (`port_base + 1`, `+ 3`, …) to this node.
+    pub public_address: Option<String>,
     /// Streamers listen on `port_base + 2n` (HTTP) and `+ 1` (WebRTC).
     pub port_base: u16,
     pub max_environments: u16,
@@ -344,6 +347,9 @@ impl DockerRuntime {
         ]
         .map(String::from)
         .to_vec();
+        if let Some(public) = &self.config.public_address {
+            cmd.extend(["--public-address".to_string(), public.clone()]);
+        }
         let mut devices = Vec::new();
         if let Some(uinput) = &self.config.uinput {
             cmd.extend(["--input-dir", INPUT_DIR, "--uinput", "/dev/uinput"].map(String::from));
@@ -500,6 +506,18 @@ fn container_name(id: &str, role: &str) -> String {
     format!("cha-env-{id}-{role}")
 }
 
+/// The catalog's images (`images/catalog.json`, as the portal has it).
+pub fn catalog_images() -> Vec<String> {
+    let catalog: Value =
+        serde_json::from_str(include_str!("../../../images/catalog.json")).unwrap_or_default();
+    catalog["templates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["image"].as_str().map(str::to_string))
+        .collect()
+}
+
 fn volume_name(id: &str) -> String {
     format!("cha-env-{id}")
 }
@@ -560,6 +578,7 @@ mod tests {
                 render_node: "/dev/dri/renderD128".into(),
                 gpu_device: "nvidia.com/gpu=all".into(),
                 uinput: Some("/dev/uinput".into()),
+                public_address: None,
                 port_base: 47000,
                 max_environments: 2,
             },
@@ -638,6 +657,11 @@ mod tests {
             "nvidia.com/gpu=all"
         );
         assert_eq!(s["Labels"]["sh.cha.http-port"], "47002");
+    }
+
+    #[test]
+    fn knows_the_catalog_images() {
+        assert!(catalog_images().contains(&"cha/env-chrome:dev".to_string()));
     }
 
     #[test]

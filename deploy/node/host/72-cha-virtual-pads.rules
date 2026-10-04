@@ -1,0 +1,15 @@
+# Cha's virtual gamepads belong to environments, not to this machine.
+#
+# cha-streamer creates them through /dev/uinput with phys "cha/padN", so they
+# appear on the host's input stack too. On a desktop host, this keeps them out
+# of the local session: no seat, no ACL for the logged-in user (uaccess), root
+# only, and libinput ignores them. Environments reach them through their own
+# device nodes, which this doesn't touch.
+#
+# Install (root):
+#   sudo install -m 644 deploy/node/host/72-cha-virtual-pads.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#
+# 72: after 70-uaccess and 71-seat tag the device, before 73-seat-late applies
+# the tags.
+SUBSYSTEM=="input", ATTRS{phys}=="cha/pad*", TAG-="uaccess", TAG-="seat", ENV{ID_SEAT}="seat-cha", ENV{LIBINPUT_IGNORE_DEVICE}="1", MODE="0600"

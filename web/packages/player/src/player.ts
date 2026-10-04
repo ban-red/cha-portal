@@ -32,6 +32,9 @@ export interface PlayerOptions {
   /** Carries the offer to the environment (through the portal); returns the answer. */
   signal: (offer: RTCSessionDescriptionInit, codec: Codec) => Promise<RTCSessionDescriptionInit>;
   codec?: Codec;
+  /** STUN/TURN servers (the portal mints TURN credentials). Without them,
+   *  only direct paths: LAN, mesh, or a port-forwarded node. */
+  iceServers?: RTCIceServer[];
   /** The largest picture to ask for (default 2560×1440, the baseline). */
   maxSize?: { width: number; height: number };
   onState?: (state: PlayerState, detail?: string) => void;
@@ -81,7 +84,7 @@ export class Player {
     this.close();
     this.setState("connecting");
     const { video } = this.options;
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection({ iceServers: this.options.iceServers ?? [] });
     this.pc = pc;
     // Render as soon as frames are decodable (the streamer also asks for it),
     // and keep NetEq's audio buffer at its minimum.
