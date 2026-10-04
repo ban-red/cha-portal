@@ -14,6 +14,7 @@
       "MoreFromMozilla": false,
       "FirefoxLabs": false,
       "Locked": false
-    }
+    },
+    "SkipTermsOfUse": true
   }
 }

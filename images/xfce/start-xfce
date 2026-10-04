@@ -1,8 +1,10 @@
 #!/bin/sh
-# XFCE is an X11 desktop: run it in one rootful, fullscreen Xwayland window, so
-# the compositor needs no X11 window manager of its own.
+# XFCE is an X11 desktop: run it in one rootful Xwayland window, so the
+# compositor needs no X11 window manager of its own. The compositor maximizes
+# the window and Xwayland follows its size, including later resizes. (With
+# -fullscreen, Xwayland 24.1 keeps a 640x480 screen and stretches it.)
 set -eu
-Xwayland :1 -fullscreen -noreset -nolisten tcp &
+Xwayland :1 -geometry "${CHA_WIDTH:-2560}x${CHA_HEIGHT:-1440}" -noreset -nolisten tcp &
 until [ -S /tmp/.X11-unix/X1 ]; do sleep 0.1; done
 export DISPLAY=:1 XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
 # Toolkits fall back to wayland-0 when WAYLAND_DISPLAY is unset; the backends

@@ -305,7 +305,7 @@ fn engine_message(body: &[u8]) -> String {
 }
 
 /// Percent-encodes a path segment or query value.
-fn encode(s: &str) -> String {
+pub(crate) fn encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {

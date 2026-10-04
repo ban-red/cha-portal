@@ -19,7 +19,8 @@ use str0m::net::{Protocol, Receive};
 use str0m::rtp::{AbsCaptureTime, Extension, ExtensionMap};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio::time::sleep_until;
 use tracing::{info, warn};
 
@@ -32,13 +33,21 @@ const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct SessionParams {
     pub codec: Codec,
+    /// Stop sending after this long (benchmarks); 0 runs until the browser
+    /// leaves or another connection takes over.
     pub secs: u32,
     pub host: IpAddr,
     pub port: u16,
     pub media: Arc<Media>,
 }
 
-pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<SdpAnswer> {
+/// A running session; dropping `stop` (or sending on it) ends it.
+pub struct Running {
+    pub stop: oneshot::Sender<()>,
+    pub handle: JoinHandle<()>,
+}
+
+pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<(SdpAnswer, Running)> {
     let socket = match UdpSocket::bind(SocketAddr::new(params.host, params.port)).await {
         Ok(socket) => socket,
         Err(_) => UdpSocket::bind(SocketAddr::new(params.host, 0))
@@ -65,12 +74,16 @@ pub async fn start(params: SessionParams, offer: SdpOffer) -> Result<SdpAnswer> 
     let answer = rtc.sdp_api().accept_offer(offer)?;
 
     info!(%local, codec = params.codec.name(), secs = params.secs, "webrtc session");
-    tokio::spawn(async move {
-        if let Err(err) = Session::new(rtc, socket, rtp_codec, params).run().await {
+    let (stop, stopped) = oneshot::channel();
+    let handle = tokio::spawn(async move {
+        if let Err(err) = Session::new(rtc, socket, rtp_codec, params, stopped)
+            .run()
+            .await
+        {
             warn!("webrtc session ended: {err:#}");
         }
     });
-    Ok(answer)
+    Ok((answer, Running { stop, handle }))
 }
 
 #[derive(Debug, Serialize)]
@@ -152,6 +165,7 @@ struct Session {
     subscribed_at: Option<Instant>,
     sending_until: Option<Instant>,
     finished_at: Option<Instant>,
+    stopped: oneshot::Receiver<()>,
     next_stats_at: Instant,
     frame_id: u32,
     stats: StreamerStats,
@@ -162,7 +176,13 @@ struct Session {
 }
 
 impl Session {
-    fn new(rtc: Rtc, socket: UdpSocket, rtp_codec: RtpCodec, params: SessionParams) -> Self {
+    fn new(
+        rtc: Rtc,
+        socket: UdpSocket,
+        rtp_codec: RtpCodec,
+        params: SessionParams,
+        stopped: oneshot::Receiver<()>,
+    ) -> Self {
         let epoch = Instant::now();
         Self {
             rtc,
@@ -178,6 +198,7 @@ impl Session {
             subscribed_at: None,
             sending_until: None,
             finished_at: None,
+            stopped,
             next_stats_at: epoch + STATS_INTERVAL,
             frame_id: 0,
             stats: StreamerStats::default(),
@@ -243,6 +264,12 @@ impl Session {
                 _ = sleep_until(deadline.into()) => {
                     self.rtc.handle_input(Input::Timeout(Instant::now()))?;
                 }
+                _ = &mut self.stopped => {
+                    // Taken over by a newer connection: free the port now.
+                    info!(local = %self.local, "session replaced");
+                    self.rtc.disconnect();
+                    return Ok(());
+                }
             }
         }
     }
@@ -277,7 +304,9 @@ impl Session {
                 .map(|t| now.duration_since(t).as_millis() as u64);
             self.stats.first_frame_ms = first;
             info!(first_frame_ms = ?first, bytes = frame.data.len(), "first frame to the browser");
-            self.sending_until = Some(now + Duration::from_secs(self.params.secs.into()));
+            if self.params.secs > 0 {
+                self.sending_until = Some(now + Duration::from_secs(self.params.secs.into()));
+            }
         }
         self.stats.frames_generated += 1;
         let Some(writer) = self.rtc.writer(mid) else {

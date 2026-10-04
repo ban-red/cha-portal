@@ -100,12 +100,15 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             <p class="truncate font-medium">{{ e.templateName }}</p>
             <p class="truncate text-xs text-ink-3" :title="dateTime(e.createdAt)">
               {{ STATES[e.state].text }} on {{ e.nodeName ?? "a removed node" }} · started {{ ago(e.createdAt) }}
-              <template v-if="e.streamer">
-                · streamer
-                <span class="font-mono">{{ e.streamer.host ?? "?" }}:{{ e.streamer.httpPort }}</span>
-              </template>
             </p>
           </div>
+          <RouterLink
+            v-if="e.state === 'running'"
+            :to="{ name: 'session', params: { id: e.id } }"
+            class="btn-primary shrink-0 px-3 py-1 text-xs"
+          >
+            Connect
+          </RouterLink>
           <button
             class="btn-ghost shrink-0 px-3 py-1 text-xs hover:border-danger/60 hover:text-danger"
             :disabled="e.state === 'stopping' || (stop.isPending.value && stop.variables.value?.id === e.id)"

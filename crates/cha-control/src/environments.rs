@@ -11,9 +11,12 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use axum::extract::{Path, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use cha_wire::{EnvironmentSpec, Inventory, NodeRequest, NodeResponse, SecurityProfile};
+use cha_wire::{
+    EnvironmentSpec, Inventory, MediaClaims, NodeRequest, NodeResponse, SecurityProfile,
+    sign_media_token,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{info, warn};
@@ -30,6 +33,10 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_LIVE_PER_USER: i64 = 4;
 const LIST_LIMIT: i64 = 50;
 /// What every environment starts at until clients ask for their own size.
+/// How long a media token stays good: long enough to carry an offer to the
+/// streamer, no longer.
+const MEDIA_TOKEN_SECS: i64 = 60;
+const CODECS: [&str; 3] = ["h264", "hevc", "av1"];
 const WIDTH: u32 = 2560;
 const HEIGHT: u32 = 1440;
 const FPS: u32 = 60;
@@ -39,6 +46,7 @@ pub fn routes() -> Router<AppState> {
         .route("/catalog", get(list_catalog))
         .route("/environments", get(list).post(launch))
         .route("/environments/{id}", get(show).delete(stop))
+        .route("/environments/{id}/connect", post(connect))
 }
 
 // ---- The catalog ----
@@ -220,6 +228,7 @@ async fn launch(
         width: WIDTH,
         height: HEIGHT,
         fps: FPS,
+        portal_key: state.media_key.public_b64(),
     };
     tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
     let row = db::environment_by_id(&state.db, &id)
@@ -255,6 +264,93 @@ async fn stop(
     }
     let row = visible(&state, &user, &id).await?;
     Ok(Json(view(row, &nodes_by_id(&state).await?)))
+}
+
+#[derive(Deserialize)]
+struct ConnectRequest {
+    /// `h264`, `hevc` or `av1`: what this browser decodes best.
+    codec: String,
+    /// The browser's WebRTC offer (`{"type": "offer", "sdp": …}`).
+    offer: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct ConnectResponse {
+    answer: serde_json::Value,
+    codec: String,
+}
+
+/// Brokers a WebRTC connection: the offer goes to the environment's streamer
+/// through its node, with a short-lived media token only this portal can sign;
+/// the answer comes back the same way. Media then flows node → browser.
+async fn connect(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    client: ClientInfo,
+    Path(id): Path<String>,
+    Json(req): Json<ConnectRequest>,
+) -> ApiResult<Json<ConnectResponse>> {
+    let row = visible(&state, &user, &id).await?;
+    if row.state != "running" {
+        return Err(ApiError::conflict(
+            "not_running",
+            format!("the environment is {}", row.state),
+        ));
+    }
+    if !CODECS.contains(&req.codec.as_str()) {
+        return Err(ApiError::bad_request(
+            "bad_codec",
+            "codec must be h264, hevc or av1",
+        ));
+    }
+    if req.offer.get("sdp").and_then(|s| s.as_str()).is_none() {
+        return Err(ApiError::bad_request("bad_offer", "the offer has no SDP"));
+    }
+    let node_id = row
+        .node_id
+        .ok_or_else(|| ApiError::conflict("no_node", "the environment's node was removed"))?;
+    let claims = MediaClaims {
+        env: id.clone(),
+        sub: user.id.clone(),
+        role: if row.owner_id == user.id {
+            "owner"
+        } else {
+            "admin"
+        }
+        .into(),
+        exp: db::now() + MEDIA_TOKEN_SECS,
+    };
+    let reply = state
+        .nodes
+        .request(
+            &node_id,
+            NodeRequest::Connect {
+                environment_id: id.clone(),
+                codec: req.codec.clone(),
+                offer: req.offer,
+                media_token: sign_media_token(&state.media_key, &claims),
+            },
+        )
+        .await?;
+    let NodeResponse::Answer { answer } = reply else {
+        return Err(ApiError::conflict(
+            "node_error",
+            "the node answered something else",
+        ));
+    };
+    db::audit(
+        &state.db,
+        Some(&user.id),
+        "environment.connected",
+        Some(&id),
+        Some(json!({ "codec": req.codec })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok(Json(ConnectResponse {
+        answer,
+        codec: req.codec,
+    }))
 }
 
 /// Placement v0: the first connected node with an NVIDIA GPU that can encode.

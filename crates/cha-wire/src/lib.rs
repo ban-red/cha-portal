@@ -16,7 +16,7 @@
 //!    [`ToPortal::EnvironmentExited`] when an environment stops on its own.
 
 use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -128,6 +128,16 @@ pub enum NodeRequest {
     StopEnvironment {
         id: String,
     },
+    /// A browser wants to watch (and drive) an environment: hand its WebRTC
+    /// offer to the environment's streamer, with the portal's media token.
+    Connect {
+        environment_id: String,
+        /// `h264`, `hevc` or `av1`.
+        codec: String,
+        /// The browser's SDP offer (`{"type": "offer", "sdp": …}`).
+        offer: serde_json::Value,
+        media_token: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +152,10 @@ pub enum NodeResponse {
     },
     EnvironmentStopped {
         id: String,
+    },
+    /// The streamer's SDP answer.
+    Answer {
+        answer: serde_json::Value,
     },
 }
 
@@ -158,6 +172,9 @@ pub struct EnvironmentSpec {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    /// The portal's public key (base64 Ed25519): the streamer accepts only
+    /// connections that carry a media token it signed.
+    pub portal_key: String,
 }
 
 /// The app container's confinement (plan §4.2). Every profile runs the app as
@@ -238,7 +255,7 @@ pub enum KeyError {
     Signature,
 }
 
-/// A node's identity key.
+/// An Ed25519 key pair: a node's identity, or the portal's signing key.
 pub struct NodeKey(SigningKey);
 
 impl NodeKey {
@@ -283,6 +300,76 @@ pub fn verify_b64(
         .map_err(|_| KeyError::Length)?;
     key.verify(message, &Signature::from_bytes(&sig))
         .map_err(|_| KeyError::Signature)
+}
+
+/// What a media token lets its bearer do: connect to one environment, briefly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaClaims {
+    /// The environment.
+    pub env: String,
+    /// The user it was issued to.
+    pub sub: String,
+    /// `owner` (the only role until sharing, plan §3.4).
+    pub role: String,
+    /// Expiry, Unix seconds.
+    pub exp: i64,
+}
+
+const MEDIA_TOKEN_CONTEXT: &str = "cha-media/v1.";
+
+/// Signs `claims` as `<base64url claims>.<base64url signature>`.
+pub fn sign_media_token(key: &NodeKey, claims: &MediaClaims) -> String {
+    let body = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).expect("claims serialize"));
+    let signature = key
+        .0
+        .sign(format!("{MEDIA_TOKEN_CONTEXT}{body}").as_bytes());
+    format!("{body}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum MediaTokenError {
+    #[error("malformed token")]
+    Malformed,
+    #[error("bad signature")]
+    Signature,
+    #[error("expired")]
+    Expired,
+    #[error("for another environment")]
+    WrongEnvironment,
+}
+
+/// Checks a media token against the portal's public key, its expiry (at
+/// `now`, Unix seconds) and the environment it must be for.
+pub fn verify_media_token(
+    portal_key_b64: &str,
+    token: &str,
+    environment: &str,
+    now: i64,
+) -> Result<MediaClaims, MediaTokenError> {
+    let (body, signature) = token.split_once('.').ok_or(MediaTokenError::Malformed)?;
+    let key = parse_public_key(portal_key_b64).map_err(|_| MediaTokenError::Signature)?;
+    let signature: [u8; 64] = URL_SAFE_NO_PAD
+        .decode(signature)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or(MediaTokenError::Malformed)?;
+    key.verify(
+        format!("{MEDIA_TOKEN_CONTEXT}{body}").as_bytes(),
+        &Signature::from_bytes(&signature),
+    )
+    .map_err(|_| MediaTokenError::Signature)?;
+    let claims: MediaClaims = URL_SAFE_NO_PAD
+        .decode(body)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or(MediaTokenError::Malformed)?;
+    if claims.exp < now {
+        return Err(MediaTokenError::Expired);
+    }
+    if claims.env != environment {
+        return Err(MediaTokenError::WrongEnvironment);
+    }
+    Ok(claims)
 }
 
 #[cfg(test)]
@@ -333,11 +420,44 @@ mod tests {
                 width: 2560,
                 height: 1440,
                 fps: 60,
+                portal_key: "k".into(),
             },
         })
         .unwrap();
         assert_eq!(start["op"], "start_environment");
         assert_eq!(start["environment"]["security"], "browser");
         assert_eq!(start["environment"]["shmMb"], 1024);
+    }
+
+    #[test]
+    fn media_tokens_verify_only_as_issued() {
+        let portal = NodeKey::from_secret([3u8; 32]);
+        let claims = MediaClaims {
+            env: "e1".into(),
+            sub: "u1".into(),
+            role: "owner".into(),
+            exp: 1_000,
+        };
+        let token = sign_media_token(&portal, &claims);
+        let key = portal.public_b64();
+        assert_eq!(verify_media_token(&key, &token, "e1", 999), Ok(claims));
+        assert_eq!(
+            verify_media_token(&key, &token, "e1", 1_001),
+            Err(MediaTokenError::Expired)
+        );
+        assert_eq!(
+            verify_media_token(&key, &token, "e2", 999),
+            Err(MediaTokenError::WrongEnvironment)
+        );
+        let other = NodeKey::from_secret([4u8; 32]).public_b64();
+        assert_eq!(
+            verify_media_token(&other, &token, "e1", 999),
+            Err(MediaTokenError::Signature)
+        );
+        // A tampered body breaks the signature.
+        let (body, sig) = token.split_once('.').unwrap();
+        let forged = format!("{}x.{sig}", &body[..body.len() - 1]);
+        assert!(verify_media_token(&key, &forged, "e1", 999).is_err());
+        assert!(!token.contains(['+', '/', '=']), "URL-safe");
     }
 }

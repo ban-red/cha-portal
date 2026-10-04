@@ -55,12 +55,24 @@ struct Args {
     /// when it exits.
     #[arg(long)]
     run: Option<String>,
+    /// Where signalling (HTTP) listens. The agent runs streamers on
+    /// 127.0.0.1: browsers reach them through the portal, not directly.
+    #[arg(long, default_value = "0.0.0.0")]
+    listen: IpAddr,
     /// Signalling (HTTP) port.
     #[arg(long, default_value_t = 4495)]
     http_port: u16,
     /// WebRTC UDP port (ICE-lite).
     #[arg(long, default_value_t = 4496)]
     webrtc_port: u16,
+    /// The portal's public key (base64 Ed25519). With it, a stream needs a
+    /// media token the portal signed for `--environment-id`; without it, the
+    /// shared token below (benchmarks, the dev loop).
+    #[arg(long, requires = "environment_id")]
+    portal_key: Option<String>,
+    /// The environment this streamer serves (checked in media tokens).
+    #[arg(long)]
+    environment_id: Option<String>,
     /// Token a browser must present to start a stream. Without it, the one in
     /// `--token-file` is used, or a random one is generated and saved there.
     #[arg(long, env = "CHA_STREAMER_TOKEN")]
@@ -73,9 +85,20 @@ struct Args {
     app_uid: Option<u32>,
 }
 
+/// Who may start a stream.
+enum Auth {
+    /// Whoever presents this shared token (benchmarks, the dev loop).
+    Token(String),
+    /// Whoever presents a media token the portal signed for this environment.
+    Portal { key: String, environment: String },
+}
+
 struct AppState {
     media: Arc<Media>,
-    token: String,
+    auth: Auth,
+    /// The one session running: a new connection takes over (one viewer per
+    /// environment until sharing, plan §3.4).
+    current: tokio::sync::Mutex<Option<session::Running>>,
     mbps: u32,
     fps: u32,
     webrtc_port: u16,
@@ -138,14 +161,28 @@ pub fn main() -> Result<()> {
         keep_running(command, handle.socket_name.to_string_lossy().into_owned());
     }
 
-    let token = match args.token.clone() {
-        Some(token) => token,
-        None => saved_or_new_token(&args.token_file)?,
+    let auth = match (&args.portal_key, &args.environment_id) {
+        (Some(key), Some(environment)) => {
+            cha_wire::parse_public_key(key).map_err(|e| anyhow!("--portal-key: {e}"))?;
+            Auth::Portal {
+                key: key.clone(),
+                environment: environment.clone(),
+            }
+        }
+        _ => Auth::Token(match args.token.clone() {
+            Some(token) => token,
+            None => saved_or_new_token(&args.token_file)?,
+        }),
+    };
+    let access = match &auth {
+        Auth::Token(token) => format!("token {token}"),
+        Auth::Portal { environment, .. } => format!("media tokens for environment {environment}"),
     };
     let primary = primary_ipv4().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
     let state = Arc::new(AppState {
         media,
-        token: token.clone(),
+        auth,
+        current: tokio::sync::Mutex::default(),
         mbps: args.mbps,
         fps: args.fps,
         webrtc_port: args.webrtc_port,
@@ -160,14 +197,11 @@ pub fn main() -> Result<()> {
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            args.http_port,
-        ))
-        .await?;
+        let listener =
+            tokio::net::TcpListener::bind(SocketAddr::new(args.listen, args.http_port)).await?;
         info!(
-            "cha-streamer up: http://{primary}:{} (signalling), WebRTC udp/{}; token {token}",
-            args.http_port, args.webrtc_port
+            "cha-streamer up: http://{}:{} (signalling), WebRTC {primary}:{}/udp; {access}",
+            args.listen, args.http_port, args.webrtc_port
         );
         axum::serve(listener, app).await?;
         Ok(())
@@ -271,15 +305,30 @@ async fn media_offer_handler(
     // Check the token before touching the body.
     let query = query.unwrap_or_default();
     let presented = query_value(&query, "token").unwrap_or("");
-    if !constant_time_eq(presented.as_bytes(), state.token.as_bytes()) {
-        // The length (never the value) tells a mistyped token from a truncated
-        // or padded one.
-        warn!(
-            presented_chars = presented.len(),
-            expected_chars = state.token.len(),
-            "rejected a stream request: missing or wrong token"
-        );
-        return Err((StatusCode::FORBIDDEN, "missing or wrong token".into()));
+    match &state.auth {
+        Auth::Token(token) => {
+            if !constant_time_eq(presented.as_bytes(), token.as_bytes()) {
+                // The length (never the value) tells a mistyped token from a
+                // truncated or padded one.
+                warn!(
+                    presented_chars = presented.len(),
+                    expected_chars = token.len(),
+                    "rejected a stream request: missing or wrong token"
+                );
+                return Err((StatusCode::FORBIDDEN, "missing or wrong token".into()));
+            }
+        }
+        Auth::Portal { key, environment } => {
+            match cha_wire::verify_media_token(key, presented, environment, unix_now()) {
+                Ok(claims) => {
+                    info!(user = %claims.sub, role = %claims.role, "media token accepted")
+                }
+                Err(err) => {
+                    warn!("rejected a stream request: media token {err}");
+                    return Err((StatusCode::FORBIDDEN, format!("media token {err}")));
+                }
+            }
+        }
     }
     let bad_request = |err: anyhow::Error| (StatusCode::BAD_REQUEST, format!("{err:#}"));
     let offer: SdpOffer = serde_json::from_str(&body).map_err(|e| bad_request(e.into()))?;
@@ -300,8 +349,22 @@ async fn media_offer_handler(
         port: state.webrtc_port,
         media: Arc::clone(&state.media),
     };
-    let answer = session::start(params, offer).await.map_err(bad_request)?;
+    // A new connection takes over: stop the running session first, so its UDP
+    // port is free.
+    let mut current = state.current.lock().await;
+    if let Some(old) = current.take() {
+        let _ = old.stop.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), old.handle).await;
+    }
+    let (answer, running) = session::start(params, offer).await.map_err(bad_request)?;
+    *current = Some(running);
     Ok(Json(answer))
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// The token saved by an earlier run, or a new one (saved, owner-only).

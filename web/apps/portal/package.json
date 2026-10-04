@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@cha/player": "workspace:*",
     "@tanstack/vue-query": "^5.104.1",
     "pinia": "^4.0.3",
     "vue": "^3.5.43",

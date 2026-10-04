@@ -4,7 +4,7 @@
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::ImportDma;
-use smithay::backend::renderer::utils::on_commit_buffer_handler;
+use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::desktop::{
     PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window,
     find_popup_root_surface, get_popup_toplevel_coords,
@@ -39,6 +39,8 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
+use tracing::{debug, info};
+
 use super::{ClientState, State};
 
 impl CompositorHandler for State {
@@ -66,6 +68,7 @@ impl CompositorHandler for State {
                 window.on_commit();
                 if &root == surface {
                     self.place_dialog(&window);
+                    self.focus_when_mapped(&window, surface);
                 }
             }
         }
@@ -144,6 +147,21 @@ impl State {
         }
     }
 
+    /// A new window gets the keyboard once it shows something: apps (Chrome)
+    /// ignore a keyboard `enter` for a surface they haven't drawn yet, and
+    /// focusing the same surface again later sends nothing.
+    fn focus_when_mapped(&mut self, window: &Window, surface: &WlSurface) {
+        if !self.focus_on_map.contains(surface) {
+            return;
+        }
+        let mapped =
+            with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
+        if mapped {
+            self.focus_on_map.retain(|s| s != surface);
+            self.focus_window(window, SERIAL_COUNTER.next_serial());
+        }
+    }
+
     /// Gives the keyboard to `window` and marks it the active one.
     fn focus_window(&mut self, window: &Window, serial: Serial) {
         for other in self.space.elements() {
@@ -215,13 +233,15 @@ impl XdgShellHandler for State {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        info!(dialog = surface.parent().is_some(), "new window");
         self.configure_toplevel(&surface);
+        self.focus_on_map.push(surface.wl_surface().clone());
         let window = Window::new_wayland_window(surface);
         self.space.map_element(window.clone(), (0, 0), true);
-        self.focus_window(&window, SERIAL_COUNTER.next_serial());
     }
 
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        debug!(geometry = ?positioner.get_geometry(), "new popup");
         self.unconstrain_popup(&surface);
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
@@ -289,6 +309,7 @@ impl XdgShellHandler for State {
         surface: ToplevelSurface,
         _output: Option<wl_output::WlOutput>,
     ) {
+        info!("a window went fullscreen");
         let (w, h) = self.output_size();
         surface.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Fullscreen);
@@ -310,6 +331,7 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        info!("a window closed");
         // Hand the keyboard to the window now on top.
         let next = self
             .space

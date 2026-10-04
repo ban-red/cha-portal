@@ -61,8 +61,16 @@ docker compose -f deploy/streamer/compose.dev.yaml exec dev /target/release/cha-
 
 - Chrome runs with `--no-sandbox` only because the dev container runs as root. The environment images in P1.4 run apps unprivileged.
 - Signalling is on TCP 4495 and WebRTC on UDP 4496.
-- Until the portal brokers sessions (P1.5), starting a stream needs the token printed at startup. It is kept in `/state/token`.
-- Measure with the S1c/S1d page, as for S2: host `gpu-node.lan`, port 4495, the token, the WebRTC present path. The streams are `live-hevc`, `live-h264` and `live-av1`.
+- On its own like this, starting a stream needs the token printed at startup, kept in `/state/token`. Measure with the S1c/S1d page, as for S2: host `gpu-node.lan`, port 4495, the token, the WebRTC present path. The streams are `live-hevc`, `live-h264` and `live-av1`.
+
+## Run by the agent (P1.5)
+
+The agent starts one streamer container per environment, with signalling on `127.0.0.1` only: `--listen 127.0.0.1 --portal-key <key> --environment-id <id>`.
+
+- **Brokering.** A browser's offer reaches the streamer through the portal and the agent. It carries a **media token**: Ed25519, signed by the portal, valid for 60 s, for this environment only. The streamer checks it offline against the portal's key.
+- **Reconnects.** One viewer at a time. A new connection takes over: the old session stops first, which frees its UDP port. A reconnect gets a fresh keyframe, and the environment keeps running in between.
+- **Interactive sessions** have no time limit (`secs=0`). They end when the browser leaves or another connection takes over.
+- **Keyboard focus.** A new window gets the keyboard once it first shows a buffer. Chrome ignores a keyboard `enter` for a surface it hasn't drawn, and focusing the same surface again later sends nothing.
 
 ## Results (RTX 4090, Chrome 154 in the compositor, 2026-10-03/04)
 

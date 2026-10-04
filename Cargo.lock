@@ -566,6 +566,7 @@ dependencies = [
  "axum",
  "bytes",
  "cha-nvenc",
+ "cha-wire",
  "clap",
  "serde",
  "serde_json",

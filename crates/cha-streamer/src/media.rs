@@ -278,12 +278,12 @@ impl EncoderWorker {
         let mut stats = EncodeStats::default();
         let mut keyframe_pending = true;
         loop {
-            let (frame, key) = match self.mailbox.wait(Duration::from_millis(100)) {
+            let (frame, key, reencode) = match self.mailbox.wait(Duration::from_millis(100)) {
                 Wake::Closed => return,
-                Wake::Frame(frame, key) => (frame, key || keyframe_pending),
+                Wake::Frame(frame, key) => (frame, key || keyframe_pending, false),
                 // Nothing changed on screen: re-encode the last frame as a keyframe.
                 Wake::Keyframe => match last.clone() {
-                    Some(frame) => (frame, true),
+                    Some(frame) => (frame, true, true),
                     None => {
                         keyframe_pending = true;
                         continue;
@@ -320,9 +320,11 @@ impl EncoderWorker {
             };
             stats.frames += 1;
             stats.bytes += out.len() as u64;
+            // A re-encoded frame was composited long ago; it isn't queueing.
+            let composited = if reencode { started } else { frame.rendered };
             stats
                 .queue_us
-                .push(started.duration_since(frame.rendered).as_micros() as u64);
+                .push(started.duration_since(composited).as_micros() as u64);
             stats
                 .encode_us
                 .push(encoded.duration_since(started).as_micros() as u64);
@@ -335,7 +337,7 @@ impl EncoderWorker {
             self.deliver(EncodedFrame {
                 data: Bytes::copy_from_slice(&out),
                 key,
-                composited: frame.rendered,
+                composited,
                 encoded,
             });
             self.log(&mut stats);

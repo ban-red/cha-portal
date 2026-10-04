@@ -13,14 +13,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
+use bytes::Bytes;
 use cha_wire::{EnvironmentSpec, SecurityProfile, StreamerEndpoint};
 use futures_util::future::BoxFuture;
+use http_body_util::{BodyExt, Full};
+use hyper::{Method, Request};
+use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
-use crate::docker::{ContainerEvent, Docker};
+use crate::docker::{ContainerEvent, Docker, encode};
 
 const LABEL_ENV: &str = "sh.cha.env";
 const LABEL_ROLE: &str = "sh.cha.role";
@@ -37,6 +41,20 @@ pub struct Exit {
     pub failed: bool,
 }
 
+/// A browser's request to connect, as the portal relayed it.
+#[derive(Debug, Clone)]
+pub struct Connect {
+    pub environment_id: String,
+    pub codec: String,
+    /// The SDP offer.
+    pub offer: Value,
+    /// The portal's media token, which the streamer checks.
+    pub media_token: String,
+}
+
+/// The codecs a streamer offers.
+const CODECS: [&str; 3] = ["h264", "hevc", "av1"];
+
 /// What the agent needs from whatever runs environments.
 pub trait Runtime: Send + Sync + 'static {
     /// Starts (or finds running) an environment.
@@ -45,6 +63,8 @@ pub trait Runtime: Send + Sync + 'static {
     fn stop(&self, id: String) -> BoxFuture<'_, Result<()>>;
     /// Ids of the environments running now.
     fn running(&self) -> BoxFuture<'_, Result<Vec<String>>>;
+    /// Hands a browser's offer to the environment's streamer; returns its answer.
+    fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Value>>;
     /// Environments that stop on their own from now on.
     fn exits(&self) -> broadcast::Receiver<Exit>;
 }
@@ -244,7 +264,7 @@ impl DockerRuntime {
             .docker
             .create(
                 &container_name(&spec.id, "streamer"),
-                &self.streamer_config(spec, port)?,
+                &self.streamer_config(spec, port),
             )
             .await?;
         self.docker.start(&streamer).await?;
@@ -270,9 +290,8 @@ impl DockerRuntime {
         json!([{ "Type": "volume", "Source": volume_name(id), "Target": RUNTIME_DIR }])
     }
 
-    fn streamer_config(&self, spec: &EnvironmentSpec, port: u16) -> Result<Value> {
-        let token = random_token()?;
-        Ok(json!({
+    fn streamer_config(&self, spec: &EnvironmentSpec, port: u16) -> Value {
+        json!({
             "Image": self.config.streamer_image,
             "Cmd": [
                 "--render-node", self.config.render_node,
@@ -280,9 +299,13 @@ impl DockerRuntime {
                 "--height", spec.height.to_string(),
                 "--fps", spec.fps.to_string(),
                 "--app-uid", APP_UID.to_string(),
+                // Signalling only on localhost: browsers come through the portal
+                // and this agent, with a media token the portal signed.
+                "--listen", "127.0.0.1",
                 "--http-port", port.to_string(),
                 "--webrtc-port", (port + 1).to_string(),
-                "--token", token,
+                "--portal-key", spec.portal_key,
+                "--environment-id", spec.id,
             ],
             "Env": [format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"), "RUST_LOG=info,smithay=warn,str0m=warn"],
             "Labels": self.labels(&spec.id, "streamer", port),
@@ -293,7 +316,7 @@ impl DockerRuntime {
                 "RestartPolicy": { "Name": "no" },
                 "Init": true,
             },
-        }))
+        })
     }
 
     fn app_config(&self, spec: &EnvironmentSpec, port: u16) -> Value {
@@ -305,7 +328,13 @@ impl DockerRuntime {
         json!({
             "Image": spec.image,
             "User": format!("{APP_UID}:{APP_UID}"),
-            "Env": [format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"), "WAYLAND_DISPLAY=wayland-0"],
+            "Env": [
+                format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"),
+                "WAYLAND_DISPLAY=wayland-0",
+                format!("CHA_WIDTH={}", spec.width),
+                format!("CHA_HEIGHT={}", spec.height),
+                format!("CHA_REFRESH={}", spec.fps),
+            ],
             "Labels": self.labels(&spec.id, "app", port),
             "HostConfig": {
                 "Mounts": self.runtime_mount(&spec.id),
@@ -344,6 +373,26 @@ impl DockerRuntime {
         self.docker.remove_volume(&volume_name(id)).await
     }
 
+    async fn connect_environment(&self, request: Connect) -> Result<Value> {
+        if !CODECS.contains(&request.codec.as_str()) {
+            bail!("unknown codec {:?}", request.codec);
+        }
+        let port = self
+            .state
+            .lock()
+            .expect("state lock")
+            .ports
+            .get(&request.environment_id)
+            .copied()
+            .ok_or_else(|| anyhow!("environment {} isn't running here", request.environment_id))?;
+        let path = format!(
+            "/webrtc/media?name=live-{}&secs=0&token={}",
+            request.codec,
+            encode(&request.media_token)
+        );
+        post_local(port, &path, &request.offer).await
+    }
+
     async fn running_ids(&self) -> Result<Vec<String>> {
         let mut ids: HashMap<String, bool> = HashMap::new();
         for c in self.docker.list(LABEL_ENV).await? {
@@ -372,6 +421,10 @@ impl Runtime for DockerRuntime {
 
     fn running(&self) -> BoxFuture<'_, Result<Vec<String>>> {
         Box::pin(self.running_ids())
+    }
+
+    fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Value>> {
+        Box::pin(self.connect_environment(request))
     }
 
     fn exits(&self) -> broadcast::Receiver<Exit> {
@@ -408,10 +461,33 @@ fn compact(json: &str) -> String {
         .unwrap_or_else(|_| json.to_string())
 }
 
-fn random_token() -> Result<String> {
-    let mut bytes = [0u8; 12];
-    getrandom::fill(&mut bytes).map_err(|e| anyhow!("random source: {e}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+/// POSTs JSON to a streamer's signalling port on this host.
+async fn post_local(port: u16, path: &str, body: &Value) -> Result<Value> {
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .context("reaching the environment's streamer")?;
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(serde_json::to_vec(body)?)))?;
+    let response = tokio::time::timeout(Duration::from_secs(10), sender.send_request(request))
+        .await
+        .context("the streamer didn't answer")??;
+    let status = response.status();
+    let bytes = response.into_body().collect().await?.to_bytes();
+    if !status.is_success() {
+        bail!(
+            "the streamer refused ({status}): {}",
+            String::from_utf8_lossy(&bytes).trim()
+        );
+    }
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 #[cfg(test)]
@@ -444,6 +520,7 @@ mod tests {
             width: 2560,
             height: 1440,
             fps: 60,
+            portal_key: "cG9ydGFs".into(),
         }
     }
 
@@ -482,9 +559,7 @@ mod tests {
     #[test]
     fn streamers_get_their_ports_and_the_gpu() {
         let rt = runtime();
-        let s = rt
-            .streamer_config(&spec(SecurityProfile::Standard), 47002)
-            .unwrap();
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 47002);
         let cmd: Vec<&str> = s["Cmd"]
             .as_array()
             .unwrap()
@@ -495,7 +570,10 @@ mod tests {
         assert_eq!(arg("--http-port"), "47002");
         assert_eq!(arg("--webrtc-port"), "47003");
         assert_eq!(arg("--app-uid"), "1000");
-        assert_eq!(arg("--token").len(), 24);
+        assert_eq!(arg("--listen"), "127.0.0.1");
+        assert_eq!(arg("--portal-key"), "cG9ydGFs");
+        assert_eq!(arg("--environment-id"), "e1");
+        assert!(!cmd.contains(&"--token"));
         assert_eq!(s["HostConfig"]["NetworkMode"], "host");
         assert_eq!(
             s["HostConfig"]["DeviceRequests"][0]["DeviceIDs"][0],

@@ -264,6 +264,8 @@ pub struct State {
     arrow: smithay::backend::renderer::element::memory::MemoryRenderBuffer,
     /// evdev codes currently held, so browser key repeats don't double-press.
     pub keys_down: Vec<u32>,
+    /// New windows to give the keyboard once they first show a buffer.
+    pub focus_on_map: Vec<WlSurface>,
 
     // Rendering.
     pub renderer: GlesRenderer,
@@ -425,6 +427,7 @@ impl State {
             cursor_status: CursorImageStatus::default_named(),
             arrow: cursor::arrow(),
             keys_down: Vec::new(),
+            focus_on_map: Vec::new(),
             renderer,
             pool,
             hub,
@@ -456,7 +459,11 @@ impl State {
                 // Fell behind (e.g. a stall): realign instead of bursting.
                 self.next_encode = now + self.encode_period;
             }
+            self.stats.encode_ticks += 1;
             let wanted = self.hub.has_listeners() && (self.dirty || self.force_frame);
+            if !self.dirty && !self.force_frame {
+                self.stats.clean += 1;
+            }
             if wanted {
                 self.force_frame = false;
                 self.dirty = false;
@@ -505,7 +512,8 @@ impl State {
         self.space.refresh();
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
-        self.stats.maybe_log(&self.pool);
+        let windows = self.space.elements().count();
+        self.stats.maybe_log(&self.pool, windows);
     }
 
     fn resize(&mut self, width: u32, height: u32) {

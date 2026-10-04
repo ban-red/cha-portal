@@ -26,6 +26,13 @@ export const router = createRouter({
         { path: "admin/audit", name: "audit", component: () => import("./views/AuditView.vue"), meta: { admin: true, title: "Audit log" } },
       ],
     },
+    // Full screen, outside the shell.
+    {
+      path: "/environments/:id/session",
+      name: "session",
+      component: () => import("./views/SessionView.vue"),
+      meta: { title: "Session" },
+    },
     { path: "/:rest(.*)*", redirect: "/" },
   ],
 });

@@ -1,0 +1,11 @@
+{
+  "benchmark": "P1.5 player in the portal: the session view's stats and click probe",
+  "capturedAt": "2026-10-04T06:48:00Z",
+  "client": "The Claude desktop app's built-in browser (Chromium 152) on the M4 Pro MacBook, 1 GbE (not the Chrome 154 baseline)",
+  "node": "gpu-node.lan, RTX 4090; the test-pattern environment (cha-testpattern drawing at 240 fps) launched from the portal",
+  "path": "Portal-brokered WebRTC (media token), node -> browser",
+  "stream": { "codec": "H265", "width": 1280, "height": 1256, "fps": 60, "mbps": 2.8, "note": "the picture followed the window; the test pattern only repaints what changes" },
+  "stats": { "rttMs": 1.0, "sendToShownMs": 2.0, "decodeMs": 1.31, "jitterBufferMs": 0.62, "packetsLost": 0, "framesDropped": 0 },
+  "probe": { "samples": 25, "missed": 0, "clickToShownMs": { "p50": 15.8, "p95": 16.9 } },
+  "note": "Read off the player's stats overlay. The test pattern draws its flash on the next frame callback, so this is close to the pipeline's floor: input → our compositor → app → composite → NVENC → WebRTC → browser compositor."
+}

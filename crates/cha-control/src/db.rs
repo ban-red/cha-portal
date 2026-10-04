@@ -522,3 +522,27 @@ pub async fn fail_node_environments(
     .await?
     .rows_affected())
 }
+
+// ---- Settings (the table is from 0001) ----
+
+pub async fn setting(db: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(db)
+        .await
+}
+
+/// Stores `value` unless the key already has one; returns the value that won
+/// (so two portals starting at once agree).
+pub async fn setting_or_insert(
+    db: &SqlitePool,
+    key: &str,
+    value: &str,
+) -> Result<String, sqlx::Error> {
+    sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
+        .bind(key)
+        .bind(value)
+        .execute(db)
+        .await?;
+    Ok(setting(db, key).await?.unwrap_or_else(|| value.to_string()))
+}

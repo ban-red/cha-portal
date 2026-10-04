@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use cha_control::{AppState, Config, app, db};
-use cha_node::environments::{Exit, Runtime};
+use cha_node::environments::{Connect, Exit, Runtime};
 use cha_node::{Agent, Identity, enroll, init_tls};
 use cha_wire::{EnvironmentSpec, Gpu, Inventory, SecurityProfile, StreamerEndpoint, close};
 use futures_util::future::BoxFuture;
@@ -132,6 +132,7 @@ impl Portal {
 /// Records what the portal asks for, as Docker would run it.
 struct FakeRuntime {
     started: Mutex<Vec<EnvironmentSpec>>,
+    connects: Mutex<Vec<Connect>>,
     stopped: Mutex<Vec<String>>,
     running: Mutex<Vec<String>>,
     exits: broadcast::Sender<Exit>,
@@ -141,6 +142,7 @@ impl FakeRuntime {
     fn new(running: &[&str]) -> Arc<Self> {
         Arc::new(Self {
             started: Mutex::default(),
+            connects: Mutex::default(),
             stopped: Mutex::default(),
             running: Mutex::new(running.iter().map(|s| s.to_string()).collect()),
             exits: broadcast::channel(8).0,
@@ -174,6 +176,13 @@ impl Runtime for FakeRuntime {
 
     fn exits(&self) -> broadcast::Receiver<Exit> {
         self.exits.subscribe()
+    }
+
+    fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Value>> {
+        Box::pin(async move {
+            self.connects.lock().unwrap().push(request);
+            Ok(json!({ "type": "answer", "sdp": "v=0 fake" }))
+        })
     }
 }
 
@@ -358,12 +367,54 @@ async fn environments_launch_stop_fail_and_reconcile() {
             .contains(&"leftover".to_string())
     );
 
+    // Connecting: the offer reaches the node with a media token the streamer
+    // can check against the portal's key, for this environment and user.
+    let offer = json!({ "type": "offer", "sdp": "v=0 browser" });
+    let connect_path = format!("/api/environments/{id}/connect");
+    let (status, reply) = p
+        .admin(
+            "POST",
+            &connect_path,
+            Some(json!({ "codec": "hevc", "offer": offer })),
+        )
+        .await;
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["answer"]["sdp"], "v=0 fake");
+    let connect = runtime.connects.lock().unwrap()[0].clone();
+    assert_eq!(connect.environment_id, id);
+    assert_eq!(connect.codec, "hevc");
+    assert_eq!(connect.offer, offer);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let claims =
+        cha_wire::verify_media_token(&spec.portal_key, &connect.media_token, &id, now).unwrap();
+    assert_eq!(claims.role, "owner");
+    assert!(claims.exp <= now + 60);
+    let (status, _) = p
+        .admin(
+            "POST",
+            &connect_path,
+            Some(json!({ "codec": "vp9", "offer": offer })),
+        )
+        .await;
+    assert_eq!(status, 400);
+
     let (status, _) = p
         .admin("DELETE", &format!("/api/environments/{id}"), None)
         .await;
     assert_eq!(status, 200);
     p.wait_for_env(&id, |e| e["state"] == "destroyed").await;
     assert!(runtime.stopped.lock().unwrap().contains(&id));
+    let (status, _) = p
+        .admin(
+            "POST",
+            &connect_path,
+            Some(json!({ "codec": "hevc", "offer": offer })),
+        )
+        .await;
+    assert_eq!(status, 409, "can't connect to a destroyed environment");
 
     // An app that dies is reported, and the environment fails with the reason.
     let (_, env) = p

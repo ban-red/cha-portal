@@ -354,6 +354,24 @@ async fn handle(
                 .map(|streamer| NodeResponse::EnvironmentStarted { id, streamer })
                 .map_err(|e| format!("{e:#}"))
         }
+        NodeRequest::Connect {
+            environment_id,
+            codec,
+            offer,
+            media_token,
+        } => {
+            let runtime = runtime.ok_or(NO_RUNTIME)?;
+            runtime
+                .connect(environments::Connect {
+                    environment_id,
+                    codec,
+                    offer,
+                    media_token,
+                })
+                .await
+                .map(|answer| NodeResponse::Answer { answer })
+                .map_err(|e| format!("{e:#}"))
+        }
         NodeRequest::StopEnvironment { id } => {
             let runtime = runtime.ok_or(NO_RUNTIME)?;
             runtime

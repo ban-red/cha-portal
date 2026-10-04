@@ -44,6 +44,8 @@ pub struct AppState {
     /// One-time token that lets the first admin be created; `None` once set up.
     pub setup_token: Arc<Mutex<Option<String>>>,
     pub nodes: Arc<nodes::NodeHub>,
+    /// Signs media tokens; nodes' streamers check them with its public half.
+    pub media_key: Arc<cha_wire::NodeKey>,
 }
 
 impl AppState {
@@ -55,13 +57,31 @@ impl AppState {
         } else {
             None
         };
+        let media_key = Arc::new(media_key(&db).await?);
         Ok(Self {
             db,
             config: Arc::new(config),
             setup_token: Arc::new(Mutex::new(setup_token)),
             nodes: Arc::default(),
+            media_key,
         })
     }
+}
+
+/// The portal's media-token signing key, created on first start and kept in
+/// the database (its public half reaches every streamer it starts).
+async fn media_key(db: &SqlitePool) -> Result<cha_wire::NodeKey> {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    let mut fresh = [0u8; 32];
+    getrandom::fill(&mut fresh).map_err(|e| anyhow::anyhow!("random source: {e}"))?;
+    let stored = db::setting_or_insert(db, "media_signing_key", &STANDARD.encode(fresh)).await?;
+    let secret: [u8; 32] = STANDARD
+        .decode(stored)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .context("the stored media signing key is corrupt")?;
+    Ok(cha_wire::NodeKey::from_secret(secret))
 }
 
 /// The whole HTTP surface: `/api/*` plus the SPA (any other path serves

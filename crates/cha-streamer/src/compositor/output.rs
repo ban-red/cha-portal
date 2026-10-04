@@ -284,6 +284,9 @@ impl State {
 /// Compositor counters, logged every few seconds.
 #[derive(Default)]
 pub struct Stats {
+    /// Encode ticks, and those with nothing new to composite.
+    pub encode_ticks: u64,
+    pub clean: u64,
     pub composited: u64,
     pub starved: u64,
     pub commits: u64,
@@ -294,7 +297,7 @@ pub struct Stats {
 impl Stats {
     const INTERVAL: Duration = Duration::from_secs(10);
 
-    pub fn maybe_log(&mut self, pool: &OutputPool) {
+    pub fn maybe_log(&mut self, pool: &OutputPool, windows: usize) {
         let now = Instant::now();
         let last = *self.last_log.get_or_insert(now);
         if now.duration_since(last) < Self::INTERVAL {
@@ -319,10 +322,15 @@ impl Stats {
                 render_us_p50 = pct(0.5),
                 render_us_p99 = pct(0.99),
                 generation = pool.generation,
+                windows,
+                encode_ticks = self.encode_ticks,
+                clean = self.clean,
                 "compositor"
             );
         }
         self.composited = 0;
+        self.encode_ticks = 0;
+        self.clean = 0;
         self.starved = 0;
         self.commits = 0;
         self.render_us.clear();

@@ -2,7 +2,7 @@
 
 A self-hosted dashboard for "portaling" into remote environments (a Chrome instance, a KDE desktop, Steam Big Picture, or an external Moonlight-protocol host) with Moonlight-class latency, in the browser or in a thin native client. Environments run on **Cha Nodes**: docker compose stacks on your GPU servers that enroll with the portal.
 
-**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP on our own streaming engine ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)): the portal, nodes, and Chrome, Firefox and XFCE environments streamed to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work. The streamer core (P1.3: our compositor, NVENC binding and WebRTC) streams from the GPU node. Environments (P1.4) launch from the portal: each runs its app beside a streamer on a node. Connecting to them from the portal (P1.5) comes next.
+**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP on our own streaming engine ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)): the portal, nodes, and Chrome, Firefox and XFCE environments streamed to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work. The streamer core (P1.3: our compositor, NVENC binding and WebRTC) streams from the GPU node. Environments (P1.4) launch from the portal, each running its app beside a streamer on a node, and **Connect** opens them full screen in the browser (P1.5): the portal brokers the WebRTC session with a short-lived media token, and media flows straight from the node. Deployment (P1.7) and sound and gamepads (P1.6) come next.
 
 - Plan: [`docs/PLAN.md`](docs/PLAN.md)
 - Research (October 2026 landscape): [`docs/research/`](docs/research/README.md)
@@ -18,6 +18,7 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 | `crates/cha-nvenc` | Our NVENC + CUDA binding, loaded from the driver at runtime |
 | `crates/cha-wire` | Node ⇄ portal messages and the node's Ed25519 identity ([ADR 0001](docs/adr/0001-node-channel-json-over-websocket.md)) |
 | `web/apps/portal` | The portal SPA (Vue 3, Tailwind) |
+| `web/packages/player` | `@cha/player`: the browser player: WebRTC, input, stats, click probe ([README](web/packages/player/README.md)) |
 | `deploy/node` | The node's compose stack (the agent) |
 | `deploy/streamer` | The streamer's image and its dev loop on a node |
 | `images` | Our environment images (test pattern, Chrome, Firefox, XFCE) and the catalog ([README](images/README.md)) |
@@ -54,7 +55,7 @@ bun run --cwd web/apps/portal build
 cargo run -p cha-control -- --listen 127.0.0.1:8090 --database data/dev.db
 ```
 
-On first start, the log prints a one-time setup token: open http://localhost:8090 and create the first admin with it. For live UI work, also run `bun run --cwd web/apps/portal dev`. It serves the SPA on port 5190 and proxies `/api` to port 8090.
+On first start, the log prints a one-time setup token: open http://localhost:8090 and create the first admin with it. Or add `--dev-login` to the command: the sign-in page then shows **Login as Local Dev**, which creates a `dev` admin and signs you in. It only answers requests from this machine, and is not for a real portal. For live UI work, also run `bun run --cwd web/apps/portal dev`. It serves the SPA on port 5190 and proxies `/api` to port 8090.
 
 To add a node, open **Admin → Nodes → Add node** and run the command it shows on the node. Locally, keep the agent's identity in `data/`:
 
