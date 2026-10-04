@@ -5,7 +5,10 @@
 //!   viewer can spot drops, repeats and reorders;
 //! - a white square for 100 ms after any click or key press (input → screen),
 //!   with a 60 ms tone through the sound server (input → speaker, A/V);
-//! - the first gamepad's buttons, triggers, d-pad and sticks.
+//! - the first gamepad's buttons, triggers, d-pad and sticks;
+//! - with `CHA_TESTPATTERN_NOISE=<percent>`, a centred rectangle of fresh
+//!   noise covering that much of the screen, so the stream fills whatever
+//!   bitrate it's given (rate-control benches).
 //!
 //! Only what changed is repainted and reported as damage, in shared memory.
 

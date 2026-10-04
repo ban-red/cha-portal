@@ -88,6 +88,31 @@
         "dev"
       ],
       "port": 5190
+    },
+    {
+      "name": "s7-web",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "run",
+        "--cwd",
+        "spikes/s7-wan/web",
+        "dev"
+      ],
+      "port": 5191
+    },
+    {
+      "name": "s8-rfi",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "5192",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "spikes/s8-rfi"
+      ],
+      "port": 5192
     }
   ]
 }

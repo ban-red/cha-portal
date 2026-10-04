@@ -1,0 +1,6 @@
+# Random loss on a fast link: 1 %, then 3 %, then none (20 ms one way).
+0 - delay 20ms
+15 - delay 20ms loss 1%
+35 - delay 20ms loss 3%
+55 - delay 20ms
+70 end

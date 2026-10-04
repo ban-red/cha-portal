@@ -2,6 +2,11 @@
 //! tuning, CBR with a one-frame VBV, no B-frames, an infinite GOP (keyframes
 //! only on request) and zero reorder delay, so decoders output every frame as
 //! soon as it arrives.
+//!
+//! Reference frame invalidation (RFI): each frame predicts from one
+//! reference, but the last [`DPB_FRAMES`] stay in the DPB, so when frames
+//! are lost on the way, [`Encoder::invalidate_from`] has the next frame
+//! refer to one from before them instead of starting over from a keyframe.
 
 use std::ffi::{CStr, c_void};
 use std::sync::{Arc, OnceLock};
@@ -46,6 +51,12 @@ const PRESET_P1: GUID = guid(
     0x4cf8,
     [0x80, 0xc7, 0x29, 0x88, 0x71, 0x59, 0x0e, 0xbf],
 );
+
+/// Reference frames kept: after a loss, the next frame can refer to one up to
+/// this many frames back (less one). A page notices a loss about a frame
+/// late and its report takes half a round trip, so at 60 fps this covers
+/// round trips up to ~100 ms (AV1 has eight reference slots).
+pub const DPB_FRAMES: u32 = 8;
 
 /// The SDK these bindings come from (13.0); the driver must support it.
 const SDK_VERSION: (u32, u32) = (13, 0);
@@ -207,7 +218,11 @@ pub struct Encoder {
     bitstream: NV_ENC_OUTPUT_PTR,
     /// NVENC registrations of input surfaces, by `Surface::key`.
     registered: Vec<(u64, NV_ENC_REGISTERED_PTR)>,
+    /// The next frame's index (its `inputTimeStamp`), and the last keyframe's.
     frame_index: u64,
+    last_key: u64,
+    /// Reference frame invalidation works with this codec here.
+    rfi: bool,
     timings: Timings,
 }
 
@@ -242,11 +257,81 @@ impl Encoder {
             bitstream: std::ptr::null_mut(),
             registered: Vec::new(),
             frame_index: 0,
+            last_key: 0,
+            rfi: false,
             timings: Timings::default(),
         };
         // On error, `Drop` closes the session.
         encoder.initialize()?;
+        encoder.rfi = encoder.cap(NV_ENC_CAPS::NV_ENC_CAPS_SUPPORT_REF_PIC_INVALIDATION) != 0;
         Ok(encoder)
+    }
+
+    /// One of the session's codec capabilities (0 if the query fails).
+    fn cap(&self, cap: NV_ENC_CAPS) -> i32 {
+        let mut param = NV_ENC_CAPS_PARAM {
+            version: NV_ENC_CAPS_PARAM_VER,
+            capsToQuery: cap,
+            ..Default::default()
+        };
+        let mut value = 0;
+        // SAFETY: a live session and valid parameters.
+        let status = unsafe {
+            call!(
+                self.api,
+                nvEncGetEncodeCaps(
+                    self.session,
+                    self.config.codec.guid(),
+                    &mut param,
+                    &mut value
+                )
+            )
+        };
+        if status == NVENCSTATUS::NV_ENC_SUCCESS {
+            value
+        } else {
+            0
+        }
+    }
+
+    /// Whether [`Self::invalidate_from`] can work at all.
+    pub fn supports_rfi(&self) -> bool {
+        self.rfi
+    }
+
+    /// The index of the last frame encoded.
+    pub fn last_index(&self) -> u64 {
+        self.frame_index.saturating_sub(1)
+    }
+
+    /// The index the next frame gets.
+    pub fn next_index(&self) -> u64 {
+        self.frame_index
+    }
+
+    /// Reference frame invalidation: frames from `from` on (by
+    /// [`Self::last_index`]) were lost on the way, so none of them is a
+    /// reference any more, and the next frame refers to one from before them.
+    /// False when that can't be (no support, a keyframe since, or `from` too
+    /// far back for the DPB): send a keyframe instead.
+    pub fn invalidate_from(&mut self, from: u64) -> Result<bool> {
+        let next = self.frame_index;
+        if !self.rfi
+            || from <= self.last_key
+            || from >= next
+            || next - from >= u64::from(DPB_FRAMES)
+        {
+            return Ok(false);
+        }
+        let _current = self.ctx.push()?;
+        for index in from..next {
+            // SAFETY: a live session; `index` is a frame it encoded.
+            self.status(
+                unsafe { call!(self.api, nvEncInvalidateRefFrames(self.session, index)) },
+                "nvEncInvalidateRefFrames",
+            )?;
+        }
+        Ok(true)
     }
 
     pub fn config(&self) -> &EncoderConfig {
@@ -414,6 +499,9 @@ impl Encoder {
             lock.pictureType,
             NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_IDR | NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_I
         );
+        if key {
+            self.last_key = self.frame_index - 1;
+        }
         // SAFETY: locked above.
         self.status(
             unsafe { call!(self.api, nvEncUnlockBitstream(self.session, self.bitstream)) },
@@ -488,16 +576,25 @@ impl Encoder {
         self.forget_surfaces();
         self.config.width = width;
         self.config.height = height;
-        self.reconfigure()
+        self.reconfigure(true)
     }
 
-    /// Changes the target bitrate in place (CBR, one-frame VBV).
+    /// Changes the target bitrate in place (CBR, one-frame VBV), from the next
+    /// frame on: no reset and no keyframe, so rate control can use it often.
     pub fn set_bitrate(&mut self, bitrate_bps: u32) -> Result<()> {
+        if bitrate_bps == self.config.bitrate_bps {
+            return Ok(());
+        }
         self.config.bitrate_bps = bitrate_bps;
-        self.reconfigure()
+        self.reconfigure(false)
     }
 
-    fn reconfigure(&mut self) -> Result<()> {
+    pub fn bitrate(&self) -> u32 {
+        self.config.bitrate_bps
+    }
+
+    /// Applies the config; `reset` (a new size) restarts from a keyframe.
+    fn reconfigure(&mut self, reset: bool) -> Result<()> {
         let _current = self.ctx.push()?;
         tune(&mut self.nv_config, &self.config);
         *self.init = init_params(&self.config, &mut self.nv_config);
@@ -506,8 +603,8 @@ impl Encoder {
             reInitEncodeParams: *self.init,
             ..Default::default()
         };
-        params.set_resetEncoder(1);
-        params.set_forceIDR(1);
+        params.set_resetEncoder(u32::from(reset));
+        params.set_forceIDR(u32::from(reset));
         // SAFETY: valid parameters for a live session.
         self.status(
             unsafe { call!(self.api, nvEncReconfigureEncoder(self.session, &mut params)) },
@@ -597,6 +694,8 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
             Codec::H264 => {
                 let h264 = &mut config.encodeCodecConfig.h264Config;
                 h264.idrPeriod = NVENC_INFINITE_GOPLENGTH;
+                h264.maxNumRefFrames = DPB_FRAMES;
+                h264.numRefL0 = NV_ENC_NUM_REF_FRAMES::NV_ENC_NUM_REF_FRAMES_1;
                 h264.set_repeatSPSPPS(1);
                 h264.set_outputAUD(0);
                 vui(&mut h264.h264VUIParameters);
@@ -604,6 +703,8 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
             Codec::Hevc => {
                 let hevc = &mut config.encodeCodecConfig.hevcConfig;
                 hevc.idrPeriod = NVENC_INFINITE_GOPLENGTH;
+                hevc.maxNumRefFramesInDPB = DPB_FRAMES;
+                hevc.numRefL0 = NV_ENC_NUM_REF_FRAMES::NV_ENC_NUM_REF_FRAMES_1;
                 hevc.set_repeatSPSPPS(1);
                 hevc.set_outputAUD(0);
                 vui(&mut hevc.hevcVUIParameters);
@@ -611,6 +712,8 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
             Codec::Av1 => {
                 let av1 = &mut config.encodeCodecConfig.av1Config;
                 av1.idrPeriod = NVENC_INFINITE_GOPLENGTH;
+                av1.maxNumRefFramesInDPB = DPB_FRAMES;
+                av1.numFwdRefs = NV_ENC_NUM_REF_FRAMES::NV_ENC_NUM_REF_FRAMES_1;
                 av1.set_repeatSeqHdr(1);
                 // Low-overhead OBUs (what WebRTC's AV1 packetizer expects).
                 av1.set_outputAnnexBFormat(0);

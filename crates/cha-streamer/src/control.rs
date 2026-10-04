@@ -110,6 +110,12 @@ pub struct StreamerStats {
     pub encoded_to_sent_us_p99: Option<u64>,
     pub frame_interval_ms_p50: Option<f64>,
     pub frame_interval_ms_p99: Option<f64>,
+    /// Rate control (WebTransport): the rate it aims at, and the path's
+    /// RTT growth over its minimum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_mbps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_ms: Option<f64>,
     pub inputs: u64,
     pub inputs_unmapped: u64,
     pub resizes: u64,
@@ -185,7 +191,8 @@ impl Control {
                     self.media.set_clipboard(text);
                 }
             }
-            // The page lost a frame (WebTransport): start over from a keyframe.
+            // The page lost a frame (WebTransport), or its WebRTC decoder
+            // stalled waiting on retransmissions: start over from a keyframe.
             Some("keyframe") => {
                 stats.keyframe_requests += 1;
                 self.media.request_keyframe(self.codec);

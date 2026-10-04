@@ -1,0 +1,688 @@
+{
+  "spike": "S7",
+  "date": "2026-10-04",
+  "what": "P2.5 rate control and FEC over WebTransport under netem (spikes/s7-wan): the streamer in a container on gpu-node (RTX 4090) with the link shaped in its own network namespace, the bench page in the Claude desktop app's built-in browser (Chromium 152) on the M4 Pro (1 GbE). Test pattern at the bench page's size (about 1792×1008: the picture follows the page's element), 60 fps with 20 % of the picture noise (CHA_TESTPATTERN_NOISE=20), session ceiling 40 Mbit/s.",
+  "notes": [
+    "mbps: what the page received (video, parity and audio). fps: frames decoded per second. framesLost: frames dropped (unrecoverable, or waiting for the keyframe after one). framesRebuilt: frames FEC completed. maxGapMs: the longest wait between two frames in the phase.",
+    "delivery: server send → frame complete in the page's worker, clock-synced by pings that assume symmetric paths; netem delays only the server → page direction, so the absolute values are off by about half the added delay. Differences within a run are exact.",
+    "NVENC's low-latency CBR (one-frame VBV) makes about two thirds of its target on this picture: 24.5 Mbit/s at the 40 Mbit/s ceiling.",
+    "Before P2.5 (same bench, fixed 40 Mbit/s, QUIC's congestion control): 3 % loss gave 10 fps and then 1 fps; a drop to 10 Mbit/s froze the picture for good.",
+    "netem's jitter reordered packets in all runs but wan_hevc_in_order (each packet its own delay: at ~1 packet/ms with ±5 ms, nearly every packet out of order); netem.sh now keeps them in order unless S7_REORDER=1.",
+    "WebRTC (Chrome's receiver, fixed 40 Mbit/s target before rate control) on wan with reordering: 29 fps, 15,788 NACKs for 284 packets lost, 48 freezes totalling 38 s in 75 s. With in-order jitter: 29 NACKs for 29 losses in 10 s, no freezes. str0m's GCC was tried and rejected: it paces media at 1.1x its estimate and its estimate stalled at 8-12 Mbit/s on unshaped 1 GbE."
+  ],
+  "wan_hevc": [
+    {
+      "seconds": [
+        0,
+        3
+      ],
+      "link": "onset: 25 Mbit/s, 30 ± 5 ms, 0.5 % loss",
+      "fps": 58.3,
+      "mbps": 7.0,
+      "framesLost": 3,
+      "framesRebuilt": 119,
+      "maxGapMs": 105,
+      "deliveryP50Ms": 35,
+      "deliveryP95Ms": 36
+    },
+    {
+      "seconds": [
+        3,
+        60
+      ],
+      "link": "25 Mbit/s, 30 ± 5 ms, 0.5 % loss",
+      "fps": 60.8,
+      "mbps": 21.7,
+      "framesLost": 3,
+      "framesRebuilt": 3441,
+      "maxGapMs": 51,
+      "deliveryP50Ms": 41,
+      "deliveryP95Ms": 65
+    }
+  ],
+  "wan_av1": [
+    {
+      "seconds": [
+        0,
+        62
+      ],
+      "link": "25 Mbit/s, 30 ± 5 ms, 0.5 % loss",
+      "fps": 60.3,
+      "mbps": 21.5,
+      "framesLost": 16,
+      "framesRebuilt": 3573,
+      "maxGapMs": 233,
+      "maxGapMsAfterOnset": 25,
+      "deliveryP50Ms": 28,
+      "deliveryP95Ms": 77,
+      "note": "all frames lost in the first 2 s (loss starting before parity); one cut every ~13 s as the climb probes the link"
+    }
+  ],
+  "wan_hevc_in_order": [
+    {
+      "seconds": [
+        0,
+        3
+      ],
+      "link": "onset: 25 Mbit/s, 30 ± 5 ms in order, 0.5 % loss",
+      "fps": 56.3,
+      "mbps": 20.0,
+      "framesLost": 7,
+      "framesRebuilt": 20,
+      "maxGapMs": 131,
+      "deliveryP50Ms": 33,
+      "deliveryP95Ms": 48
+    },
+    {
+      "seconds": [
+        3,
+        60
+      ],
+      "link": "25 Mbit/s, 30 ± 5 ms in order, 0.5 % loss",
+      "fps": 60.5,
+      "mbps": 22.0,
+      "framesLost": 0,
+      "framesRebuilt": 486,
+      "maxGapMs": 26,
+      "deliveryP50Ms": 33,
+      "deliveryP95Ms": 61
+    }
+  ],
+  "loss_hevc": [
+    {
+      "seconds": [
+        0,
+        15
+      ],
+      "link": "20 ms",
+      "fps": 60.0,
+      "mbps": 24.5,
+      "framesLost": 0,
+      "framesRebuilt": 0,
+      "maxGapMs": 21,
+      "deliveryP50Ms": 22,
+      "deliveryP95Ms": 24
+    },
+    {
+      "seconds": [
+        15,
+        35
+      ],
+      "link": "20 ms, 1 % loss",
+      "fps": 62.0,
+      "mbps": 25.5,
+      "framesLost": 8,
+      "framesRebuilt": 364,
+      "maxGapMs": 234,
+      "deliveryP50Ms": 22,
+      "deliveryP95Ms": 23,
+      "note": "the 8 frames and the gap at the onset, before parity"
+    },
+    {
+      "seconds": [
+        35,
+        55
+      ],
+      "link": "20 ms, 3 % loss",
+      "fps": 60.0,
+      "mbps": 24.6,
+      "framesLost": 0,
+      "framesRebuilt": 693,
+      "maxGapMs": 18,
+      "deliveryP50Ms": 22,
+      "deliveryP95Ms": 23
+    },
+    {
+      "seconds": [
+        55,
+        72
+      ],
+      "link": "20 ms",
+      "fps": 60.1,
+      "mbps": 24.6,
+      "framesLost": 0,
+      "framesRebuilt": 0,
+      "maxGapMs": 25,
+      "deliveryP50Ms": 21,
+      "deliveryP95Ms": 23
+    }
+  ],
+  "drop_hevc": [
+    {
+      "seconds": [
+        0,
+        20
+      ],
+      "link": "60 Mbit/s, 20 ms",
+      "fps": 60.0,
+      "mbps": 24.3,
+      "framesLost": 0,
+      "framesRebuilt": 0,
+      "maxGapMs": 31,
+      "deliveryP50Ms": 27,
+      "deliveryP95Ms": 32
+    },
+    {
+      "seconds": [
+        20,
+        40
+      ],
+      "link": "10 Mbit/s, 20 ms",
+      "fps": 59.4,
+      "mbps": 8.5,
+      "framesLost": 15,
+      "framesRebuilt": 0,
+      "maxGapMs": 255,
+      "deliveryP50Ms": 33,
+      "deliveryP95Ms": 136,
+      "note": "the 15 frames and the gap as the drop overflows the 150 ms buffer"
+    },
+    {
+      "seconds": [
+        40,
+        60
+      ],
+      "link": "60 Mbit/s, 20 ms",
+      "fps": 60.1,
+      "mbps": 21.5,
+      "framesLost": 0,
+      "framesRebuilt": 0,
+      "maxGapMs": 20,
+      "deliveryP50Ms": 27,
+      "deliveryP95Ms": 61,
+      "note": "back over 20 Mbit/s 6 s after the link"
+    }
+  ],
+  "drop_hevc_per_second": {
+    "columns": [
+      "second",
+      "fps",
+      "mbps",
+      "framesLost",
+      "maxGapMs",
+      "deliveryP50Ms"
+    ],
+    "rows": [
+      [
+        1,
+        60,
+        22.7,
+        0,
+        18,
+        27
+      ],
+      [
+        2,
+        60,
+        23.6,
+        0,
+        21,
+        27
+      ],
+      [
+        3,
+        60,
+        24.6,
+        0,
+        18,
+        28
+      ],
+      [
+        4,
+        60,
+        24,
+        0,
+        18,
+        27
+      ],
+      [
+        5,
+        60,
+        24.5,
+        0,
+        18,
+        27
+      ],
+      [
+        6,
+        60,
+        24.2,
+        0,
+        18,
+        27
+      ],
+      [
+        7,
+        60,
+        24.6,
+        0,
+        19,
+        28
+      ],
+      [
+        8,
+        60,
+        23.8,
+        0,
+        19,
+        28
+      ],
+      [
+        9,
+        60,
+        24.6,
+        0,
+        18,
+        27
+      ],
+      [
+        10,
+        60,
+        24.1,
+        0,
+        17,
+        27
+      ],
+      [
+        11,
+        60,
+        24.5,
+        0,
+        18,
+        27
+      ],
+      [
+        12,
+        60,
+        24.4,
+        0,
+        18,
+        27
+      ],
+      [
+        13,
+        60,
+        24.4,
+        0,
+        18,
+        27
+      ],
+      [
+        14,
+        60,
+        24.5,
+        0,
+        18,
+        27
+      ],
+      [
+        15,
+        60,
+        24.5,
+        0,
+        17,
+        27
+      ],
+      [
+        16,
+        60,
+        24.7,
+        0,
+        17,
+        27
+      ],
+      [
+        17,
+        60,
+        24.5,
+        0,
+        18,
+        27
+      ],
+      [
+        18,
+        60,
+        24.4,
+        0,
+        18,
+        27
+      ],
+      [
+        19,
+        60,
+        24.6,
+        0,
+        31,
+        27
+      ],
+      [
+        20,
+        60,
+        24,
+        0,
+        18,
+        27
+      ],
+      [
+        21,
+        40,
+        15.7,
+        15,
+        255,
+        29
+      ],
+      [
+        22,
+        60,
+        7.4,
+        0,
+        20,
+        30
+      ],
+      [
+        23,
+        60,
+        5.8,
+        0,
+        18,
+        28
+      ],
+      [
+        24,
+        60,
+        6.2,
+        0,
+        19,
+        28
+      ],
+      [
+        25,
+        60,
+        6.6,
+        0,
+        20,
+        30
+      ],
+      [
+        26,
+        60,
+        7.5,
+        0,
+        19,
+        31
+      ],
+      [
+        27,
+        60,
+        8,
+        0,
+        19,
+        32
+      ],
+      [
+        28,
+        60,
+        8.6,
+        0,
+        20,
+        33
+      ],
+      [
+        29,
+        60,
+        8.7,
+        0,
+        20,
+        33
+      ],
+      [
+        30,
+        67,
+        9.3,
+        0,
+        18,
+        35
+      ],
+      [
+        31,
+        59,
+        9.5,
+        0,
+        21,
+        55
+      ],
+      [
+        32,
+        61,
+        8.3,
+        0,
+        25,
+        33
+      ],
+      [
+        33,
+        58,
+        9.5,
+        0,
+        20,
+        36
+      ],
+      [
+        34,
+        63,
+        7,
+        0,
+        21,
+        38
+      ],
+      [
+        35,
+        59,
+        7.5,
+        0,
+        20,
+        31
+      ],
+      [
+        36,
+        60,
+        7.8,
+        0,
+        20,
+        32
+      ],
+      [
+        37,
+        60,
+        8.5,
+        0,
+        19,
+        32
+      ],
+      [
+        38,
+        60,
+        8.8,
+        0,
+        20,
+        34
+      ],
+      [
+        39,
+        60,
+        9.3,
+        0,
+        19,
+        34
+      ],
+      [
+        40,
+        60,
+        9.5,
+        0,
+        19,
+        37
+      ],
+      [
+        41,
+        61,
+        10.1,
+        0,
+        20,
+        23
+      ],
+      [
+        42,
+        60,
+        9.8,
+        0,
+        17,
+        23
+      ],
+      [
+        43,
+        60,
+        10.6,
+        0,
+        18,
+        23
+      ],
+      [
+        44,
+        60,
+        12.2,
+        0,
+        17,
+        23
+      ],
+      [
+        45,
+        60,
+        18.9,
+        0,
+        17,
+        25
+      ],
+      [
+        46,
+        60,
+        24.5,
+        0,
+        18,
+        27
+      ],
+      [
+        47,
+        60,
+        24.6,
+        0,
+        19,
+        27
+      ],
+      [
+        48,
+        60,
+        24.6,
+        0,
+        18,
+        27
+      ],
+      [
+        49,
+        60,
+        24.6,
+        0,
+        18,
+        27
+      ],
+      [
+        50,
+        60,
+        24.8,
+        0,
+        18,
+        27
+      ],
+      [
+        51,
+        60,
+        24.7,
+        0,
+        18,
+        27
+      ],
+      [
+        52,
+        60,
+        24.6,
+        0,
+        18,
+        27
+      ],
+      [
+        53,
+        60,
+        24.7,
+        0,
+        18,
+        27
+      ],
+      [
+        54,
+        60,
+        24.8,
+        0,
+        18,
+        27
+      ],
+      [
+        55,
+        60,
+        24.5,
+        0,
+        18,
+        27
+      ],
+      [
+        56,
+        60,
+        24.8,
+        0,
+        20,
+        27
+      ],
+      [
+        57,
+        60,
+        24.2,
+        0,
+        19,
+        27
+      ],
+      [
+        58,
+        60,
+        24.8,
+        0,
+        18,
+        27
+      ],
+      [
+        59,
+        60,
+        24.3,
+        0,
+        17,
+        27
+      ],
+      [
+        60,
+        60,
+        24.6,
+        0,
+        18,
+        27
+      ]
+    ]
+  }
+}

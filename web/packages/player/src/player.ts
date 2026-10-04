@@ -160,6 +160,8 @@ export class Player {
   private readonly sentAt = new Map<number, number>();
   /** Server send → presented here (ms), recent frames. */
   private readonly latencies: number[] = [];
+  /** WebRTC: frames' send → complete (their last packet in), for the streamer's rate control. */
+  private readonly rtcDelivery: { at: number; ms: number }[] = [];
   private lastSize = "";
   /** This page has the controls (streamers before P2.6 don't say: assume so). */
   private hasControl = true;
@@ -189,7 +191,12 @@ export class Player {
     bytesAt: number;
     mbps: number | null;
     lost: number;
+    recovered: number;
     shown: number[];
+    /** Server send → decoded per frame, the last second's. */
+    delivery: { at: number; ms: number }[];
+    /** When frames arrived (the worker's clock), the last second's and one before. */
+    arrivals: number[];
   } | null = null;
 
   constructor(private readonly options: PlayerOptions) {
@@ -333,6 +340,7 @@ export class Player {
     this.audioTrack = null;
     this.sentAt.clear();
     this.latencies.length = 0;
+    this.rtcDelivery.length = 0;
     this.lastSize = "";
     if (this.state !== "idle") this.setState("idle");
   }
@@ -436,6 +444,7 @@ export class Player {
     ping();
     const pinger = setInterval(ping, 1000);
     this.cleanup.push(() => clearInterval(pinger));
+    if (!this.wt) this.reportRates();
 
     // The picture follows the element's size (in device pixels, capped).
     const observer = new ResizeObserver(() => this.requestSize());
@@ -452,6 +461,69 @@ export class Player {
     };
     video.requestVideoFrameCallback(onFrame);
     this.cleanup.push(() => (watching = false));
+  }
+
+  /**
+   * WebRTC: every 100 ms, the report the WebTransport worker sends for the
+   * streamer's rate control (plan §3.1 rule 1): send → complete (from
+   * presented frames, the last 150 ms), what arrived (200 ms) and the share
+   * of packets lost (1 s). The delay is the lower quartile, not the median:
+   * a frame that needed a retransmission completes a round trip late, and
+   * at a few percent loss most frames do, while a queue delays them all. A page that presents no frames
+   * (hidden) reports no delay, and the streamer holds its rate.
+   *
+   * Also the bound on a resync (plan §3.1 rule 4): when frames stop
+   * decoding for 300 ms while data still arrives, Chrome is waiting on
+   * retransmissions a congested path may not deliver for seconds; a
+   * keyframe is asked for (at most once a second).
+   */
+  private reportRates(): void {
+    const arrived: { at: number; bytes: number }[] = [];
+    const counts: { at: number; received: number; lost: number }[] = [];
+    let decoded = { frames: 0, at: performance.now() };
+    let askedAt = 0;
+    let busy = false;
+    const report = async () => {
+      const pc = this.pc;
+      if (!pc || busy) return;
+      busy = true;
+      let video: RTCInboundRtpStreamStats | undefined;
+      try {
+        (await pc.getStats()).forEach((s: RTCStats) => {
+          if (s.type === "inbound-rtp" && (s as RTCInboundRtpStreamStats).kind === "video") video = s as RTCInboundRtpStreamStats;
+        });
+      } finally {
+        busy = false;
+      }
+      if (!video) return;
+      const t = performance.now();
+      arrived.push({ at: t, bytes: video.bytesReceived ?? 0 });
+      counts.push({ at: t, received: video.packetsReceived ?? 0, lost: video.packetsLost ?? 0 });
+      while (arrived.length > 2 && t - arrived[0]!.at > 250) arrived.shift();
+      while (counts.length > 2 && t - counts[0]!.at > 1000) counts.shift();
+      const first = arrived[0]!;
+      const mbps = t > first.at ? ((arrived[arrived.length - 1]!.bytes - first.bytes) * 8) / ((t - first.at) * 1000) : 0;
+      if ((video.framesDecoded ?? 0) !== decoded.frames) decoded = { frames: video.framesDecoded ?? 0, at: t };
+      else if (t - decoded.at > 300 && mbps > 0.2 && t - askedAt > 1000) {
+        askedAt = t;
+        this.send({ t: "keyframe" });
+      }
+      const [a, b] = [counts[0]!, counts[counts.length - 1]!];
+      const lost = Math.max(0, b.lost - a.lost);
+      const expected = b.received - a.received + lost;
+      const now = performance.timeOrigin + t;
+      while (this.rtcDelivery.length && now - this.rtcDelivery[0]!.at > 150) this.rtcDelivery.shift();
+      const delays = this.rtcDelivery.map((d) => d.ms).sort((x, y) => x - y);
+      const d = delays.length ? delays[Math.floor(delays.length / 4)]! : null;
+      this.send({
+        t: "report",
+        r: Math.round(mbps * 100) / 100,
+        ...(d !== null && { d: Math.round(d * 10) / 10 }),
+        ...(expected > 0 && { l: Math.round((lost / expected) * 10_000) / 10_000 }),
+      });
+    };
+    const reporter = setInterval(() => void report(), 100);
+    this.cleanup.push(() => clearInterval(reporter));
   }
 
   private resizeTimer?: ReturnType<typeof setTimeout>;
@@ -489,6 +561,7 @@ export class Player {
         const rtt = now - msg.c!;
         if (!this.offset || rtt < this.offset.rtt) {
           this.offset = { rtt, ms: msg.c! + rtt / 2 - msg.s_us! / 1000 };
+          this.wt?.worker.postMessage({ type: "clock", offsetMs: this.offset.ms } satisfies ToWorker);
         }
         break;
       }
@@ -662,12 +735,30 @@ export class Player {
     return this.offset ? serverUs / 1000 + this.offset.ms : null;
   }
 
-  /** A 32-bit server timestamp (µs, wraps every ~71 min) near the server's now. */
+  /**
+   * A 32-bit server timestamp (µs, wraps every ~71 min) near the server's
+   * now: just behind it, or just ahead (the clock estimate assumes symmetric
+   * paths, so a stamp can look a little early).
+   */
   private unwrap(ts: number): number {
     if (!this.offset) return ts;
     const nowUs = (performance.timeOrigin + performance.now() - this.offset.ms) * 1000;
     const span = 2 ** 32;
-    return nowUs - (((nowUs % span) - ts + span) % span);
+    const behind = ((nowUs % span) - ts + span) % span;
+    return behind > span / 2 ? nowUs + (span - behind) : nowUs - behind;
+  }
+
+  /**
+   * The server time (µs) of a frame's RTP timestamp: the streamer stamps
+   * each frame's encode time on the session clock at 90 kHz, wrapping every
+   * ~13 h; the nearest wrap to the server's now.
+   */
+  private unwrapRtp(rtp: number): number {
+    const us = (rtp * 100) / 9;
+    if (!this.offset) return us;
+    const nowUs = (performance.timeOrigin + performance.now() - this.offset.ms) * 1000;
+    const span = (2 ** 32 * 100) / 9;
+    return us + Math.round((nowUs - us) / span) * span;
   }
 
   private async connectWebTransport(): Promise<void> {
@@ -693,7 +784,10 @@ export class Player {
       bytesAt: performance.now(),
       mbps: null,
       lost: 0,
+      recovered: 0,
       shown: [],
+      delivery: [],
+      arrivals: [],
     };
     try {
       // PyroWave decodes on WebGPU; set it up first, it can fail.
@@ -716,13 +810,14 @@ export class Player {
       worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const msg = e.data;
         switch (msg.type) {
-          case "ready":
+          case "ready": {
             this.transport = "webtransport";
             this.options.onTransport?.("webtransport");
             this.onControlOpen();
             this.setState("connected");
             resolve();
             break;
+          }
           case "line":
             this.onServerMessage(msg.line);
             break;
@@ -743,6 +838,9 @@ export class Player {
           case "lost":
             wt.lost += msg.frames;
             break;
+          case "recovered":
+            wt.recovered += msg.frames;
+            break;
           case "bytes": {
             const t = performance.now();
             wt.mbps = (msg.bytes * 8) / ((t - wt.bytesAt) * 1000);
@@ -758,6 +856,7 @@ export class Player {
       };
     });
     worker.postMessage({ type: "start", urls: offer.urls, certHash: offer.certHash } satisfies ToWorker);
+    if (this.offset) worker.postMessage({ type: "clock", offsetMs: this.offset.ms } satisfies ToWorker);
     await ready;
   }
 
@@ -773,7 +872,10 @@ export class Player {
     const decoder = new VideoDecoder({
       output: (frame) => {
         const sent = wt.sent.get(frame.timestamp);
-        if (sent) this.pushDecodeMs(wt, performance.now() - sent.decodeAt);
+        if (sent) {
+          this.pushDecodeMs(wt, performance.now() - sent.decodeAt);
+          this.noteDelivery(wt, sent.ts);
+        }
         void wt.frames.write(frame); // the sink closes it
       },
       error: () => {
@@ -808,6 +910,8 @@ export class Player {
   }
 
   private decodeVideo(wt: NonNullable<Player["wt"]>, msg: Extract<FromWorker, { type: "video" }>): void {
+    wt.arrivals.push(msg.lastAt);
+    while (wt.arrivals.length > 2 && msg.lastAt - wt.arrivals[1]! > 1000) wt.arrivals.shift();
     const p = wt.pipeline;
     if (p.pyro) {
       const started = performance.now();
@@ -815,6 +919,7 @@ export class Player {
       const frame = p.pyro.decode(new Uint8Array(msg.data), msg.id, msg.partial ?? false);
       if (frame) {
         this.pushDecodeMs(wt, performance.now() - started);
+        this.noteDelivery(wt, msg.sendTs);
         void wt.frames.write(frame);
       }
       return;
@@ -829,6 +934,15 @@ export class Player {
   private noteSent(wt: NonNullable<Player["wt"]>, id: number, ts: number, decodeAt: number): void {
     wt.sent.set(id, { ts, decodeAt });
     if (wt.sent.size > 600) wt.sent.delete(wt.sent.keys().next().value!);
+  }
+
+  /** A frame sent at server time `ts` (µs, 32 bits) is decoded now. */
+  private noteDelivery(wt: NonNullable<Player["wt"]>, ts: number): void {
+    const sentAt = this.toLocal(this.unwrap(ts));
+    if (sentAt === null) return;
+    const now = performance.timeOrigin + performance.now();
+    wt.delivery.push({ at: now, ms: now - sentAt });
+    while (wt.delivery.length && now - wt.delivery[0]!.at > 1000) wt.delivery.shift();
   }
 
   private pushDecodeMs(wt: NonNullable<Player["wt"]>, ms: number): void {
@@ -855,6 +969,24 @@ export class Player {
     }
   }
 
+  private frameGap(wt: NonNullable<Player["wt"]>): number | null {
+    const now = performance.timeOrigin + performance.now();
+    const a = wt.arrivals;
+    if (!a.length) return null;
+    let gap = now - a[a.length - 1]!;
+    for (let i = 1; i < a.length; i++) if (now - a[i]! <= 1000) gap = Math.max(gap, a[i]! - a[i - 1]!);
+    return gap;
+  }
+
+  private deliveryStats(wt: NonNullable<Player["wt"]>): { deliveryMs: number | null; deliveryP95Ms: number | null } {
+    const now = performance.timeOrigin + performance.now();
+    const ms = wt.delivery
+      .filter((d) => now - d.at <= 1000)
+      .map((d) => d.ms)
+      .sort((a, b) => a - b);
+    return { deliveryMs: percentile(ms, 0.5), deliveryP95Ms: percentile(ms, 0.95) };
+  }
+
   private webTransportStats(latencyMs: number | null): StatsSnapshot {
     const wt = this.wt!;
     const t = performance.now();
@@ -872,8 +1004,11 @@ export class Player {
       jitterMs: null,
       rttMs: this.offset?.rtt ?? null,
       packetsLost: wt.lost,
+      framesRecovered: wt.recovered,
       framesDropped: quality?.droppedVideoFrames ?? 0,
       latencyMs,
+      ...this.deliveryStats(wt),
+      frameGapMs: this.frameGap(wt),
       audioJitterMs: null,
     };
   }
@@ -889,6 +1024,15 @@ export class Player {
     } else {
       const sent = md.rtpTimestamp === undefined ? undefined : this.sentAt.get(md.rtpTimestamp);
       at = sent === undefined ? null : this.toLocal(sent);
+      // For rate control, the send time from the RTP timestamp itself: the
+      // `sent` messages share the congested path on the DataChannel, whose
+      // retransmissions hold them back just when the delay matters.
+      const encoded = md.rtpTimestamp === undefined ? null : this.toLocal(this.unwrapRtp(md.rtpTimestamp));
+      if (encoded !== null && md.receiveTime !== undefined) {
+        const now = performance.timeOrigin + performance.now();
+        this.rtcDelivery.push({ at: now, ms: performance.timeOrigin + md.receiveTime - encoded });
+        if (this.rtcDelivery.length > 60) this.rtcDelivery.splice(0, this.rtcDelivery.length - 60);
+      }
     }
     if (at !== null) {
       this.latencies.push(performance.timeOrigin + md.presentationTime - at);

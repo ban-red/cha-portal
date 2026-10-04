@@ -16,7 +16,7 @@ use cha_pyrowave::{Chroma, Device, Dmabuf, Encoder, Image, Packet};
 use smithay::backend::allocator::Buffer;
 use tracing::{info, warn};
 
-use crate::media::{EncodedFrame, Frame, Mailbox, Subscribers, Wake};
+use crate::media::{EncodedFrame, Frame, Mailbox, Subscribers, Wake, deliver, pace_of};
 
 /// Bytes of bitstream per packet: one datagram each, with room for our
 /// header within QUIC's smallest datagram. A multiple of 4 (the bitstream's
@@ -138,7 +138,7 @@ impl PyroWorker {
                     (frame, false)
                 }
                 // A session asked (it lost something, or just subscribed).
-                Wake::Keyframe => match last.clone() {
+                Wake::Keyframe | Wake::Refresh(_) => match last.clone() {
                     Some(frame) => (frame, true),
                     None => continue,
                 },
@@ -150,8 +150,11 @@ impl PyroWorker {
                     _ => continue,
                 },
             };
-            if !self.has_subscribers() {
-                continue;
+            // A backed-up subscriber's queue: skip this frame (every frame
+            // stands alone, so nothing waits on it).
+            match pace_of(&self.subscribers) {
+                None | Some((true, _)) => continue,
+                Some((false, _)) => {}
             }
             let started = Instant::now();
             let result = self.encode(
@@ -184,13 +187,18 @@ impl PyroWorker {
             stats
                 .encode_us
                 .push(encoded.duration_since(started).as_micros() as u64);
-            self.deliver(EncodedFrame {
-                data: Bytes::copy_from_slice(&bytes),
-                key: true,
-                composited: if heal { started } else { frame.rendered },
-                encoded,
-                packets: packets.clone(),
-            });
+            deliver(
+                &self.subscribers,
+                EncodedFrame {
+                    data: Bytes::copy_from_slice(&bytes),
+                    key: true,
+                    index: 0,
+                    recovery: None,
+                    composited: if heal { started } else { frame.rendered },
+                    encoded,
+                    packets: packets.clone(),
+                },
+            );
             self.log(&mut stats, &device);
         }
     }
@@ -270,23 +278,6 @@ impl PyroWorker {
         encoder
             .encode(&images[index].image, budget, PACKET_BYTES, bytes, packets)
             .map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    fn has_subscribers(&self) -> bool {
-        let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        subscribers.retain(|s| !s.is_closed());
-        !subscribers.is_empty()
-    }
-
-    fn deliver(&self, frame: EncodedFrame) {
-        let subscribers = self.subscribers.lock().expect("subscribers lock");
-        for subscriber in subscribers.iter() {
-            let _ = subscriber.try_send(EncodedFrame {
-                data: frame.data.clone(),
-                packets: frame.packets.clone(),
-                ..frame
-            });
-        }
     }
 
     fn log(&self, stats: &mut Stats, device: &Device) {

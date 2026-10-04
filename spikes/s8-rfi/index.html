@@ -1,0 +1,144 @@
+<!doctype html>
+<!--
+  Spike S8: does Chrome's WebCodecs decoder carry on after reference frame
+  invalidation (RFI)? The streamer's CHA_DUMP_RFI writes each codec's first
+  frames to results/<codec>/ as if frames 120-122 were lost: NVENC
+  invalidated them, and frame 123 refers only to frames before them. This page
+  decodes every codec twice, with all frames and without the lost ones, and
+  compares the pictures from frame 123 on. Identical means RFI works there.
+-->
+<meta charset="utf-8" />
+<title>S8 RFI decode</title>
+<style>
+  body { font: 13px ui-monospace, monospace; margin: 16px; background: #fff; color: #111; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } }
+</style>
+<pre id="log">running…</pre>
+<script type="module">
+  const CODECS = { h264: "avc1.640033", hevc: "hev1.1.6.L153.B0", av1: "av01.0.13M.08" };
+  const out = document.getElementById("log");
+  const log = (line) => (out.textContent += `\n${line}`);
+
+  async function load(codec) {
+    const index = await (await fetch(`results/${codec}/index.jsonl`)).text();
+    const lines = index.trim().split("\n").map((l) => JSON.parse(l));
+    return Promise.all(
+      lines.map(async (l) => {
+        const file = `results/${codec}/${String(l.index).padStart(5, "0")}.bin`;
+        return { ...l, data: new Uint8Array(await (await fetch(file)).arrayBuffer()) };
+      }),
+    );
+  }
+
+  /** Decodes `frames`, keeping the luma of those whose index is in `keep`. */
+  async function decode(codec, frames, keep, hardwareAcceleration) {
+    const config = { codec: CODECS[codec], hardwareAcceleration, optimizeForLatency: true };
+    if (!(await VideoDecoder.isConfigSupported(config)).supported) return { error: "unsupported" };
+    const pictures = new Map();
+    const copies = [];
+    let error = null;
+    const decoded = [];
+    const decoder = new VideoDecoder({
+      output: (frame) => {
+        decoded.push(frame.timestamp);
+        if (!keep.has(frame.timestamp)) return frame.close();
+        const buf = new Uint8Array(frame.allocationSize());
+        const rect = frame.visibleRect;
+        copies.push(
+          frame.copyTo(buf).then((layout) => {
+            pictures.set(frame.timestamp, { buf, plane: layout[0], width: rect.width, height: rect.height, format: frame.format });
+            frame.close();
+          }),
+        );
+      },
+      error: (e) => (error = e),
+    });
+    decoder.configure(config);
+    for (const f of frames) {
+      if (error) break;
+      decoder.decode(new EncodedVideoChunk({ type: f.key ? "key" : "delta", timestamp: f.index, data: f.data }));
+    }
+    try {
+      await decoder.flush();
+    } catch (e) {
+      error ??= e;
+    }
+    await Promise.all(copies);
+    if (decoder.state !== "closed") decoder.close();
+    return { pictures, decoded, error: error ? String(error.message ?? error) : null };
+  }
+
+  /** Luma PSNR of b against a (Infinity when identical). */
+  function psnr(a, b) {
+    const w = Math.min(a.width, b.width);
+    const h = Math.min(a.height, b.height);
+    let se = 0;
+    for (let y = 0; y < h; y++) {
+      const ra = a.plane.offset + y * a.plane.stride;
+      const rb = b.plane.offset + y * b.plane.stride;
+      for (let x = 0; x < w; x++) {
+        const d = a.buf[ra + x] - b.buf[rb + x];
+        se += d * d;
+      }
+    }
+    return se === 0 ? Infinity : 10 * Math.log10((255 * 255 * w * h) / se);
+  }
+
+  const results = [];
+  for (const codec of Object.keys(CODECS)) {
+    const frames = await load(codec);
+    const lost = frames.filter((f) => f.lost).map((f) => f.index);
+    const recovery = frames.find((f) => f.recovery)?.index;
+    const keep = new Set(frames.filter((f) => f.index >= recovery - 8 && f.index <= recovery + 15).map((f) => f.index));
+    // The control: three frames nothing was invalidated for, skipped all the same.
+    const control = [lost[0] - 4, lost[0] - 3, lost[0] - 2];
+    for (const acceleration of ["prefer-hardware", "prefer-software"]) {
+      const all = await decode(codec, frames, keep, acceleration);
+      if (all.error === "unsupported") {
+        results.push({ codec, acceleration, supported: false });
+        log(`${codec} ${acceleration}: not supported`);
+        continue;
+      }
+      const skipped = await decode(codec, frames.filter((f) => !f.lost), keep, acceleration);
+      const compared = [...keep]
+        .filter((i) => i >= recovery && all.pictures.has(i))
+        .map((i) => ({ index: i, psnr: skipped.pictures.has(i) ? psnr(all.pictures.get(i), skipped.pictures.get(i)) : null }));
+      const identical = compared.every((c) => c.psnr === Infinity);
+      const broken = await decode(codec, frames.filter((f) => !control.includes(f.index)), keep, acceleration);
+      const controlPsnr = Math.min(
+        ...[...keep]
+          .filter((i) => i > control[2] && i < lost[0] && all.pictures.has(i) && broken.pictures.has(i))
+          .map((i) => psnr(all.pictures.get(i), broken.pictures.get(i))),
+      );
+      const missing = compared.filter((c) => c.psnr === null).map((c) => c.index);
+      const worst = Math.min(...compared.filter((c) => c.psnr !== null).map((c) => c.psnr));
+      const r = {
+        codec,
+        acceleration,
+        supported: true,
+        lost,
+        recovery,
+        format: all.pictures.get(recovery)?.format ?? null,
+        allDecoded: all.decoded.length,
+        allError: all.error,
+        skippedDecoded: skipped.decoded.length,
+        skippedError: skipped.error,
+        identical,
+        worstPsnr: worst,
+        missing,
+        control,
+        controlPsnr,
+        controlError: broken.error,
+      };
+      results.push(r);
+      log(
+        `${codec} ${acceleration}: all ${r.allDecoded}${r.allError ? ` (error ${r.allError})` : ""}, ` +
+          `without ${lost.join("-")} ${r.skippedDecoded}${r.skippedError ? ` (error ${r.skippedError})` : ""}; ` +
+          `from ${recovery}: ${identical ? "identical" : `worst ${worst.toFixed(1)} dB`}${missing.length ? `, missing ${missing.join(",")}` : ""}; ` +
+          `control (without ${control.join("-")}, not invalidated): ${broken.error ? `error ${broken.error}` : `${controlPsnr.toFixed(1)} dB`}`,
+      );
+    }
+  }
+  window.s8 = results;
+  log("done");
+</script>

@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use crate::fec;
 use crate::header::{DatagramHeader, Flags, HEADER_LEN};
 
 /// Splits frames into header-prefixed datagrams of at most `max_datagram` bytes.
@@ -27,6 +28,11 @@ impl Fragmenter {
         }
     }
 
+    /// The largest datagram it makes, header included.
+    pub fn max_datagram(&self) -> usize {
+        self.max_datagram
+    }
+
     pub fn payload_capacity(&self) -> usize {
         self.max_datagram - HEADER_LEN
     }
@@ -34,6 +40,84 @@ impl Fragmenter {
     /// Number of datagrams a frame of `frame_len` bytes needs (at least one).
     pub fn fragment_count(&self, frame_len: usize) -> usize {
         frame_len.div_ceil(self.payload_capacity()).max(1)
+    }
+
+    /// How many datagrams a frame needs with `fec` parity fragments per block.
+    pub fn datagram_count(&self, frame_len: usize, fec: u8) -> usize {
+        if fec == 0 {
+            return self.fragment_count(frame_len);
+        }
+        let k = frame_len.div_ceil(self.shard_len()).max(1);
+        k + k.div_ceil(fec::BLOCK) * usize::from(fec)
+    }
+
+    /// With FEC, a data fragment carries this much (a parity fragment also
+    /// carries the frame's length).
+    pub fn shard_len(&self) -> usize {
+        self.payload_capacity() - 4
+    }
+
+    /// Emits `frame`'s data fragments, then for each block of them `fec`
+    /// parity fragments (flagged `PARITY`, payload: the frame's length, u32
+    /// LE, then the parity shard). Data fragments are a little shorter than
+    /// without FEC, so a parity fragment fits the same datagram. Returns the
+    /// number of datagrams emitted.
+    pub fn fragment_fec(
+        &mut self,
+        base: DatagramHeader,
+        frame: &[u8],
+        fec: u8,
+        mut emit: impl FnMut(&[u8]),
+    ) -> Result<u16, FrameTooLarge> {
+        if fec == 0 {
+            return self.fragment(DatagramHeader { fec: 0, ..base }, frame, emit);
+        }
+        let shard = self.shard_len();
+        let too_large = FrameTooLarge {
+            frame_len: frame.len(),
+            max_len: shard * (u16::MAX as usize / 2),
+        };
+        let k = frame.len().div_ceil(shard).max(1);
+        let total = self.datagram_count(frame.len(), fec);
+        let k16: u16 = k.try_into().map_err(|_| too_large)?;
+        let _: u16 = total.try_into().map_err(|_| too_large)?;
+        let data =
+            |i: usize| &frame[(i * shard).min(frame.len())..((i + 1) * shard).min(frame.len())];
+        let mut head = [0u8; HEADER_LEN];
+        let mut send = |header: DatagramHeader, parts: &[&[u8]], scratch: &mut Vec<u8>| {
+            header.encode(&mut head);
+            scratch.clear();
+            scratch.extend_from_slice(&head);
+            for part in parts {
+                scratch.extend_from_slice(part);
+            }
+            emit(scratch);
+        };
+        for i in 0..k {
+            let header = DatagramHeader {
+                fec,
+                frag_index: i as u16,
+                frag_count: k16,
+                ..base
+            };
+            send(header, &[data(i)], &mut self.scratch);
+        }
+        let length = (frame.len() as u32).to_le_bytes();
+        let m = usize::from(fec);
+        for (b, (first, n)) in fec::blocks(k).enumerate() {
+            let shards: Vec<&[u8]> = (first..first + n).map(data).collect();
+            for (r, parity) in fec::encode(&shards, m, shard).iter().enumerate() {
+                let header = DatagramHeader {
+                    flags: Flags(base.flags.0 | Flags::PARITY),
+                    fec,
+                    frag_index: (k + b * m + r) as u16,
+                    frag_count: k16,
+                    ..base
+                };
+                send(header, &[&length, parity], &mut self.scratch);
+            }
+        }
+        Ok(total as u16)
     }
 
     /// Emits every datagram of `frame` in order. `base.frag_index` and
@@ -281,6 +365,7 @@ mod tests {
             kind: Kind::Video,
             flags: Flags::default(),
             stream: 0,
+            fec: 0,
             frame_id,
             frag_index: 0,
             frag_count: 0,
@@ -385,5 +470,42 @@ mod tests {
                 ..
             })]
         ));
+    }
+
+    /// Fragments with FEC, loses some, and rebuilds the frame from what's
+    /// left, as the browser's worker does.
+    #[test]
+    fn fec_fragments_rebuild_a_frame() {
+        let frame: Vec<u8> = (0..50_000u32).map(|i| (i * 7 + i / 300) as u8).collect();
+        let mut fragmenter = Fragmenter::new(1200);
+        let mut datagrams = Vec::new();
+        let total = fragmenter
+            .fragment_fec(base(9), &frame, 3, |d| datagrams.push(d.to_vec()))
+            .unwrap();
+        assert_eq!(total as usize, datagrams.len());
+        assert_eq!(fragmenter.datagram_count(frame.len(), 3), datagrams.len());
+        // Lose three data fragments.
+        let mut data: Vec<Option<Vec<u8>>> = Vec::new();
+        let mut parity: Vec<Option<Vec<u8>>> = Vec::new();
+        let mut length = 0;
+        for (n, d) in datagrams.iter().enumerate() {
+            let (h, payload) = DatagramHeader::decode(d).unwrap();
+            data.resize(h.frag_count as usize, None);
+            if h.flags.has(Flags::PARITY) {
+                length = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
+                parity.push(Some(payload[4..].to_vec()));
+            } else if ![2, 20, 41].contains(&n) {
+                data[h.frag_index as usize] = Some(payload.to_vec());
+            }
+        }
+        assert_eq!(parity.len(), 3);
+        let shard = 1200 - HEADER_LEN - 4;
+        assert!(fec::recover(&mut data, &parity, shard));
+        let rebuilt: Vec<u8> = data
+            .into_iter()
+            .flat_map(Option::unwrap)
+            .take(length)
+            .collect();
+        assert_eq!(rebuilt, frame);
     }
 }

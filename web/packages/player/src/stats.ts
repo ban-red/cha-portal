@@ -12,9 +12,23 @@ export interface StatsSnapshot {
   jitterMs: number | null;
   rttMs: number | null;
   packetsLost: number;
+  /** Frames rebuilt from FEC parity instead of lost (WebTransport). */
+  framesRecovered: number;
   framesDropped: number;
   /** Server send → shown here, p50 over the last second (clock-synced). */
   latencyMs: number | null;
+  /**
+   * Server send → decoded, p50 and p95 over the last second (clock-synced;
+   * WebTransport only): the network's queueing shows here first.
+   */
+  deliveryMs: number | null;
+  deliveryP95Ms: number | null;
+  /**
+   * The longest wait between two frames' arrivals over the last second, by
+   * the worker's clock (true even when a hidden page handles them late; up
+   * to now if none came). WebTransport only.
+   */
+  frameGapMs: number | null;
   /** Average audio jitter-buffer wait over the last interval (NetEq). */
   audioJitterMs: number | null;
 }
@@ -74,6 +88,10 @@ export class StatsReader {
       packetsLost: num("packetsLost"),
       framesDropped: num("framesDropped"),
       latencyMs,
+      deliveryMs: null,
+      deliveryP95Ms: null,
+      frameGapMs: null,
+      framesRecovered: 0,
       audioJitterMs: prev ? per(now.audioDelay - prev.audioDelay, now.audioEmitted - prev.audioEmitted) : null,
     };
   }

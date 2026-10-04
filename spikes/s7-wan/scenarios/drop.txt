@@ -1,0 +1,5 @@
+# The link's rate drops to a sixth for 20 s, then recovers (20 ms one way).
+0 60mbit delay 20ms
+20 10mbit delay 20ms
+40 60mbit delay 20ms
+60 end

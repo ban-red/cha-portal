@@ -48,14 +48,77 @@ app ─Wayland─▶ compositor (Smithay, GLES on the render node)
 The Chromium fast path, `cha-stream/1` (plan §3.1), beside WebRTC on its own UDP port (`--wt-port`):
 
 - **Media:** each encoded frame goes out as datagrams with `cha-proto`'s 16-byte header (frame id, fragment index and count, keyframe flag, send time); Opus frames one datagram each. The player reassembles them in a worker and decodes with WebCodecs into track generators feeding `<video>` and `<audio>`, the fastest path to the screen in S1d.
-- **Control:** the session's first bidirectional stream, with the same JSON lines as WebRTC's DataChannel (input, pings, resize), plus `keyframe` requests.
-- **No silent eviction:** a frame QUIC's send buffer can't take whole isn't sent, and nothing after it is until a keyframe (asked for at once). The page also asks for one when a frame can't be completed or a gap shows.
-- **Congestion:** quinn's Cubic for now (S1: fine on a LAN; its BBR stalls). Our own media-aware controller is P2.5's.
+- **Control:** the session's first bidirectional stream, with the same JSON lines as WebRTC's DataChannel (input, pings, resize), plus `keyframe` and `rfi` requests.
+- **No silent eviction:** a frame QUIC's send buffer can't take whole isn't sent, and nothing after it is until a keyframe or a recovery frame (asked for at once, as under RFI below). The page also asks when a frame can't be completed or a gap shows.
+- **Congestion:** our own rate control and FEC (P2.5, below).
 - **Certificate:** self-signed, 13 days, ECDSA P-256; browsers accept it by its SHA-256 (`serverCertificateHashes`), which the portal hands out with the URLs (one per node address, each carrying the media token).
 - **Several viewers** (P2.6, below): WebTransport sessions coexist on the one endpoint.
 - **Codec switches in place** (`{"t":"codec","codec":…}` on the control stream). The session subscribes to the other encoder and keeps sending the current stream until that encoder's first frame. From there it sends the new codec under the next `stream` number (the header's stream byte), and the page starts that stream afresh. Answered with `{"t":"codec","codec":…,"stream":…}`, or an `error`. In the app's browser, every switch among H.264, HEVC, AV1 and both PyroWave modes left the picture without a gap over 35 ms, cold encoders included (a reconnect costs a new handshake and a blank picture).
 - **Stats** carry composited → encoded and encoded → sent percentiles per report window, so a codec's cost shows within half a second of switching to it.
 - **First numbers** (the app's browser, which wasn't painting, so no click → screen yet): H.264 at 1616×1256 decodes in 1.5–1.6 ms with nothing lost; click → sound 55 ms p50, against 85–90 over WebRTC (no NetEq buffer).
+
+## Rate control and FEC (P2.5)
+
+The WAN tier over WebTransport (plan §3.1 rules 1, 2 and 6). Spike S7 ([`spikes/s7-wan`](../../spikes/s7-wan/README.md)) drives it through netem.
+
+- **Receiver truth.** Every 100 ms the page's worker reports:
+  - how long frames took from send to complete there (the median of the last 150 ms, clock-synced);
+  - what arrived (the last 200 ms);
+  - the share of datagrams, data and parity, that never did (the last second).
+
+  QUIC's RTT and loss count stand in only until the first report. Its RTT lags by seconds on a draining queue, and it counts reordered packets as lost.
+- **Rate control** (`rate.rs`), every 50 ms, delay first and loss last:
+  - **Cut:** a queue over 40 ms (delay growth over its 10 s minimum, or our own send queue) cuts the rate to 0.85 of what arrived. No second cut until frames sent after the first can have reported: the queue plus 300 ms, or 1.2 s for loss alone (the page counts an overflow's loss that long).
+  - **Back off:** over 15 ms, 10 % down.
+  - **Hold:** at 2–10 % loss. Random loss isn't congestion; FEC covers it.
+  - **Climb:** after a calm second, 50 % a second, or 10 % near where the path last pushed back. Never past twice what goes out: NVENC's low-latency CBR makes about two thirds of its target, and a target far above what's sent would let the next busy picture burst into the bottleneck.
+  - **Longer path:** a "queue" that holds while the rate falls by a third for 2 s is a longer path, and the delay floor moves up to it.
+  - **Stall:** next to nothing arriving, or the reports stopping, is mostly a busy browser, so it's waited out for up to 400 ms. What arrives after it is a burst whose delays show the queue, and a cut goes to what arrives then.
+- **Encoder.** The target goes to NVENC in place, without an IDR (`nvEncReconfigureEncoder`), when it moves by more than 1/32. Video gets 92 % of the rate, less what parity takes.
+  - **Hold:** while more than 1.5 frames wait in QUIC's send buffer, the encoder holds, skipping frames rather than queueing them. A subscriber held for over a second (a stuck page) stops holding the shared encoder.
+  - **Keyframes:** a keyframe re-encode happens at most once per frame interval.
+- **Congestion window** (`congestion.rs`): our own quinn controller, a fixed 8 MB window that ignores loss, since rate control paces the media. Cubic halved its window at every random loss and starved the stream at 1 % loss.
+- **FEC** (`cha-proto::fec`): systematic Reed-Solomon over GF(2⁸) with a Cauchy matrix, in blocks of up to 128 data fragments.
+  - **How much:** per block (header byte 3), the least parity that keeps a frame's odds of being lost under 10⁻⁴ (10⁻⁶ for keyframes and recovery frames, the binomial tail), and never more than half its data.
+  - **For what loss:** 1.5× the loss measured while the path was calm, at least 0.3 %, held for 5 s after the last loss. A queue's overflow is rate control's to fix; parity would only add to it.
+  - **Keyframes and recovery frames** always have parity for at least 0.3 % loss: one is mostly asked for because something was lost, and a resync point has to arrive. Before recovery frames had it, one sent at the onset of loss was often lost itself.
+  - **Wire:** parity datagrams, flagged `PARITY` with indices after the data, carry the frame's length and a shard. The page rebuilds a frame as soon as any k of a block's k + m shards are in.
+- **Resync (RFI).** A lost frame costs a P-frame instead of a keyframe: the next frame refers around it.
+  - **Request:** the page's worker sends `{"t":"rfi","id":N}` on the control stream, N being the first lost frame's id. The session maps it to the encoder's frame index (a ring of the last 256 frames it sent), records it as the page's loss point, and asks the encoder to invalidate from there (`Media::request_invalidate`).
+  - **Encoder:** `nvEncInvalidateRefFrames` for each frame from the loss on; the DPB holds 8 frames (`cha-nvenc`'s `DPB_FRAMES`). A loss more than 7 frames back, or before the last keyframe, gets a keyframe instead. With nothing new on screen, the last frame is encoded again around the loss. Frames the sender drops itself (QUIC's buffer full) take the same path rather than always a keyframe.
+  - **Flag:** the next frame is `RECOVERY` for every session whose loss point is at or after the invalidation point; the others get it as a normal frame. It has keyframe-grade parity.
+  - **Page:** the worker drops frames until a keyframe or a `RECOVERY` frame that answers its loss. It asks again at once if that frame is itself lost (overtaken by later frames, or silent for 250 ms), and asks for a keyframe if nothing came 250 ms after asking.
+  - **Log:** the encoder's 10 s line has `recoveries=` and `rfi_keyframes=` (the fallbacks).
+  - **Checked** in S8 ([`spikes/s8-rfi`](../../spikes/s8-rfi/README.md)): H.264, HEVC and AV1 decode bit-exactly from a recovery frame, in hardware and software. A recovery frame costs what a P-frame does, a keyframe 2–3 times as much.
+  - **S7, HEVC** (in-order jitter): the gap at a 1 % loss onset is ~120 ms (234 ms with keyframes), 117–120 ms at the WAN scenario's onset (131), with no keyframe fallbacks. The drop is still a keyframe (294 ms, against 255): the overflow loses more frames than the DPB reaches back by the time the request arrives. A first version, with no parity on recovery frames and no immediate re-ask, did worse than keyframes at the onset (340–380 ms): the unprotected recovery frames were lost, and the page fell back to keyframes 250 ms later.
+  - **WebRTC** keeps PLI and keyframes: Chrome's receiver has no RFI message, and NACK recovers most losses.
+- **Path MTU.** When QUIC lowers its datagram size (a black-hole fallback), the next frame is cut to the new size.
+
+**S7 results** (HEVC unless noted; test pattern with 20 % noise, 60 fps at the bench page's size, about 1792×1008; [JSON](../../docs/benchmarks/s7-2026-10-04-electron152-gpu-node-wan.json)):
+
+| Scenario | Link | Result |
+|---|---|---|
+| WAN | 25 Mbit/s, 30 ± 5 ms, 0.5 % loss | 60.8 fps at 21.7 Mbit/s; after the first 3 s, 3 frames lost and the longest gap 51 ms. AV1: 60.3 fps at 21.5 Mbit/s, longest gap 25 ms after the onset |
+| Loss | 20 ms; 1 %, then 3 % | 3 %: nothing lost, 693 frames rebuilt, longest gap 18 ms. 1 %: 8 frames lost at the onset, none after |
+| Drop | 60 → 10 → 60 Mbit/s, 20 ms | 8.5 Mbit/s on the 10; one 255 ms gap at the drop; back over 20 Mbit/s 6 s after the link |
+
+Before P2.5, 3 % loss brought the stream down to 10 fps and then 1, and a drop to 10 Mbit/s froze it for good.
+
+**WebRTC** uses the same rate control, with the page's reports coming over the control DataChannel. No FEC; Chrome's NACKs and retransmissions recover losses.
+- **Send times** come from each frame's RTP timestamp, the encode time on the session clock. The `sent` messages share the DataChannel, whose retransmissions hold them back under loss, just when the delay matters.
+- **Delay:** the page reports the lower quartile of presented frames' send → complete (`receiveTime`), not the median. A frame that needed a retransmission completes a round trip late, and at a few percent loss most frames do; a queue delays them all.
+- **Updates:** only a report with a delay updates the rate. A page that presents no frames (hidden) holds it.
+- **Resync bound:** when frames stop decoding for 300 ms while data still arrives, the page asks for a keyframe. Otherwise Chrome waits seconds on retransmissions a congested path doesn't deliver.
+- **Not str0m's GCC** (S7): it paces media at 1.1× its estimate (~14 ms per frame on a LAN), and its estimate stalls at 1.5× what NVENC's undershooting CBR sends.
+- **S7, WebRTC, HEVC:**
+  - unshaped: 24 Mbit/s at 60 fps, as before;
+  - WAN (in-order jitter): 59.4 fps at 17 Mbit/s, no freezes;
+  - 3 % loss: 58 fps at 14.6 Mbit/s, no freezes;
+  - the drop: one 0.5 s freeze, back to full rate 5 s after the link.
+
+**Open:**
+- A loss further back than the DPB (a queue's overflow, as at the drop) still costs a keyframe. Intra-refresh isn't pursued: it feeds frames past a loss, which H.264 and AV1 decoders show as garbage until it heals, and RFI recovers exactly (S8).
+- Loss starting before parity: the first ~300 ms of it costs frames.
 
 ## PyroWave (P2.4)
 

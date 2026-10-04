@@ -1,0 +1,164 @@
+{
+  "spike": "S8",
+  "date": "2026-10-04",
+  "what": "Reference frame invalidation (RFI) against the browser's WebCodecs decoders (spikes/s8-rfi): the S7 bench streamer on gpu-node (RTX 4090; test pattern at the bench page's size (about 1792×1008: the picture follows the page's element), 60 fps with 20 % noise, ~40 Mbit/s target) dumps each codec's first frames with CHA_DUMP_RFI=/tmp/rfi,120,3, as if frames 120-122 were lost: before encoding frame 123 it invalidates 120-122, so 123 is a recovery frame. The page, in the Claude desktop app's built-in browser (Chromium 152) on the M4 Pro, decodes each codec with all frames and without 120-122, with prefer-hardware and prefer-software, and compares the luma plane of frames 123-138.",
+  "notes": [
+    "identical: every compared luma plane was bit-exact against the decode with all frames. worstPsnrDb: the lowest luma PSNR over the compared frames (null when identical).",
+    "Control: three frames nothing was invalidated for (116-118) are skipped and frame 119 is compared. controlPsnrDb: its luma PSNR against the full decode. controlError: the decoder raised an error instead.",
+    "HEVC software decode is not offered by Chromium (VideoDecoder.isConfigSupported is false for prefer-software), so identical is null there.",
+    "First run, with a 5-frame DPB (cha-nvenc's DPB_FRAMES is now 8); the three lost frames fit in either.",
+    "NVENC (driver 595.71.05) reports NV_ENC_CAPS_SUPPORT_REF_PIC_INVALIDATION for H.264, HEVC and AV1 and produced a P-frame for 123 in each.",
+    "frameBytes: encoded sizes in bytes. key: the first (key) frame; p119: the P-frame before the loss; recovery123: the recovery frame; p124: the P-frame after it. A recovery frame costs what a P-frame does; a keyframe costs 2.4-3.3 times as much (here with a one-frame VBV).",
+    "H.264 and AV1 decoders raise no error on a missing reference and show a different picture instead (the control's 17.9 and 14.5 dB), so the page must never feed a frame past a loss except a keyframe or a recovery frame."
+  ],
+  "results": [
+    {
+      "codec": "h264",
+      "decoder": "hardware",
+      "identical": true,
+      "worstPsnrDb": null,
+      "controlPsnrDb": 17.9
+    },
+    {
+      "codec": "h264",
+      "decoder": "software",
+      "identical": true,
+      "worstPsnrDb": null,
+      "controlPsnrDb": 17.9
+    },
+    {
+      "codec": "hevc",
+      "decoder": "hardware",
+      "identical": true,
+      "worstPsnrDb": null,
+      "controlError": "decode error"
+    },
+    {
+      "codec": "hevc",
+      "decoder": "software",
+      "identical": null,
+      "worstPsnrDb": null,
+      "note": "not offered by Chromium"
+    },
+    {
+      "codec": "av1",
+      "decoder": "hardware",
+      "identical": true,
+      "worstPsnrDb": null,
+      "controlPsnrDb": 14.5
+    },
+    {
+      "codec": "av1",
+      "decoder": "software",
+      "identical": true,
+      "worstPsnrDb": null,
+      "controlPsnrDb": 14.5
+    }
+  ],
+  "frameBytes": {
+    "h264": {
+      "key": 116347,
+      "p119": 49651,
+      "recovery123": 48117,
+      "p124": 48474
+    },
+    "hevc": {
+      "key": 149630,
+      "p119": 47876,
+      "recovery123": 48658,
+      "p124": 48075
+    },
+    "av1": {
+      "key": 251114,
+      "p119": 76464,
+      "recovery123": 76579,
+      "p124": 75359
+    }
+  },
+  "laterRuns": [
+    {
+      "dpbFrames": 8,
+      "size": "1792x1008 (the bench page's)",
+      "result": "identical on every decoder (H.264 and AV1 hardware and software, HEVC hardware)",
+      "controls": {
+        "h264PsnrDb": 16.2,
+        "hevc": "decode error",
+        "av1PsnrDb": 15.6
+      },
+      "frameBytes": {
+        "h264": {
+          "key": 116868,
+          "p119": 49289,
+          "recovery123": 52040,
+          "p124": 52281
+        },
+        "hevc": {
+          "key": 158252,
+          "p119": 47565,
+          "recovery123": 46291,
+          "p124": 48798
+        },
+        "av1": {
+          "key": 240809,
+          "p119": 76243,
+          "recovery123": 76616,
+          "p124": 76826
+        }
+      },
+      "levels": {
+        "h264": "5.0",
+        "hevc": "5.0"
+      }
+    },
+    {
+      "dpbFrames": 8,
+      "size": "3840x2160 (H.264, HEVC); AV1 2560x1440",
+      "result": "identical on every decoder; the live page played 4K at 59-60 fps with nothing lost",
+      "controls": {
+        "h264PsnrDb": 19.7,
+        "hevc": "decode error",
+        "av1PsnrDb": 15.3
+      },
+      "frameBytes": {
+        "h264": {
+          "key": 161555,
+          "p119": 57840,
+          "recovery123": 57414,
+          "p124": 57520
+        },
+        "hevc": {
+          "key": 251525,
+          "p119": 65226,
+          "recovery123": 72959,
+          "p124": 76220
+        },
+        "av1": {
+          "key": 261870,
+          "p119": 74786,
+          "recovery123": 74855,
+          "p124": 74821
+        }
+      },
+      "levels": {
+        "h264": "6.0 (eight references exceed 5.x at 4K)",
+        "hevc": "6.0"
+      }
+    }
+  ],
+  "live": {
+    "bench": "S7, HEVC over WebTransport, in-order jitter, two runs each",
+    "loss1PercentOnset": {
+      "withRfi": "one event, ~120 ms gap, 12-14 frames lost",
+      "keyframeResync": "234 ms, 8 lost"
+    },
+    "wanOnset": {
+      "withRfi": "117-120 ms, 8 lost",
+      "keyframeResync": "131 ms, 7 lost"
+    },
+    "drop": {
+      "withRfi": "294 ms, 17 lost (keyframe fallback: the overflow is further back than the DPB)",
+      "keyframeResync": "255 ms, 15 lost"
+    },
+    "rfiKeyframeFallbacks": "0 in every loss and wan run"
+  }
+}

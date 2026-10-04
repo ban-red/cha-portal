@@ -6,8 +6,9 @@
 //!
 //! Every media datagram starts with a fixed 16-byte [`DatagramHeader`]. Frames
 //! larger than one datagram are split by [`Fragmenter`] and rebuilt by
-//! [`Reassembler`].
+//! [`Reassembler`]; [`fec`] protects them against lost fragments.
 
+pub mod fec;
 mod header;
 mod reassembly;
 

@@ -15,7 +15,8 @@ use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 use crate::draw::{
-    BAR_WIDTH, Canvas, PadView, Rect, Scene, counter_rect, flash_rect, pad_rect, strip_rect,
+    BAR_WIDTH, Canvas, PadView, Rect, Scene, counter_rect, flash_rect, noise_rect, pad_rect,
+    strip_rect,
 };
 use crate::pads;
 use crate::sound::{self, Beeper};
@@ -164,8 +165,12 @@ impl App {
         let span = f64::from(width + BAR_WIDTH);
         let x = (now.duration_since(started).as_secs_f64() * BAR_SPEED) % span;
         let height = self.pool.as_ref().map_or(0, |p| p.height);
+        let noise = noise_percent()
+            .map(|p| noise_rect(width, height, p))
+            .unwrap_or(Rect::new(0, 0, 0, 0));
         Scene {
             frame: self.frame,
+            noise,
             bar: Rect::new(x as i32 - BAR_WIDTH, 0, BAR_WIDTH, height),
             flash: self.flash_until.is_some_and(|until| now < until),
             pad: self
@@ -197,6 +202,9 @@ impl App {
         let full = Rect::new(0, 0, width, height);
         let changing = |prev: &Scene, now: &Scene| {
             let mut rects = vec![prev.bar, now.bar, counter_rect(), strip_rect(height)];
+            if !now.noise.is_empty() {
+                rects.push(now.noise);
+            }
             if prev.flash != now.flash {
                 rects.push(flash_rect(width, height));
             }
@@ -467,3 +475,14 @@ delegate_noop!(App: ignore wl_compositor::WlCompositor);
 delegate_noop!(App: ignore wl_shm::WlShm);
 delegate_noop!(App: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(App: ignore wl_surface::WlSurface);
+
+/// `CHA_TESTPATTERN_NOISE`: how much of the screen is noise, in percent.
+fn noise_percent() -> Option<u32> {
+    static PERCENT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *PERCENT.get_or_init(|| {
+        std::env::var("CHA_TESTPATTERN_NOISE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|p| *p > 0)
+    })
+}

@@ -50,6 +50,10 @@ impl Flags {
     /// The stream's frames stand alone and their units decode on their own
     /// (PyroWave): use what arrives, never wait for a keyframe.
     pub const INTRA: u8 = 1 << 5;
+    /// A frame encoded after reference invalidation, referring only to
+    /// frames from before the one this page reported lost: a page waiting
+    /// to resync may start from it as from a keyframe.
+    pub const RECOVERY: u8 = 1 << 6;
 
     pub fn has(self, bit: u8) -> bool {
         self.0 & bit != 0
@@ -61,17 +65,23 @@ impl Flags {
 /// ```text
 ///  0        1       2         3         4..8       8..10       10..12      12..16
 /// +--------+-------+---------+---------+----------+-----------+-----------+------------+
-/// |ver|kind| flags | stream  | reserved| frame_id | frag_index| frag_count| send_ts_us |
+/// |ver|kind| flags | stream  |   fec   | frame_id | frag_index| frag_count| send_ts_us |
 /// +--------+-------+---------+---------+----------+-----------+-----------+------------+
 /// ```
 ///
 /// `send_ts_us` is microseconds since the sender's session epoch and wraps
 /// every ~71 minutes; receivers compare it with wrapping arithmetic.
+///
+/// `fec` is how many parity fragments each block of the frame's
+/// `frag_count` data fragments has (0: none; see [`crate::fec`]). Parity
+/// fragments are flagged [`Flags::PARITY`] and numbered from `frag_count` on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DatagramHeader {
     pub kind: Kind,
     pub flags: Flags,
     pub stream: u8,
+    /// Parity fragments per block of this frame (0: no FEC).
+    pub fec: u8,
     pub frame_id: u32,
     pub frag_index: u16,
     pub frag_count: u16,
@@ -106,7 +116,7 @@ impl DatagramHeader {
         out[0] = (WIRE_VERSION << 4) | (self.kind as u8 & 0x0f);
         out[1] = self.flags.0;
         out[2] = self.stream;
-        out[3] = 0;
+        out[3] = self.fec;
         out[4..8].copy_from_slice(&self.frame_id.to_le_bytes());
         out[8..10].copy_from_slice(&self.frag_index.to_le_bytes());
         out[10..12].copy_from_slice(&self.frag_count.to_le_bytes());
@@ -137,12 +147,14 @@ impl DatagramHeader {
             kind,
             flags: Flags(datagram[1]),
             stream: datagram[2],
+            fec: datagram[3],
             frame_id: u32_at(4),
             frag_index: u16_at(8),
             frag_count: u16_at(10),
             send_ts_us: u32_at(12),
         };
-        if header.frag_count == 0 || header.frag_index >= header.frag_count {
+        let parity = header.flags.has(Flags::PARITY) && header.fec > 0;
+        if header.frag_count == 0 || (header.frag_index >= header.frag_count && !parity) {
             return Err(DecodeError::BadFragment {
                 index: header.frag_index,
                 count: header.frag_count,
@@ -161,6 +173,7 @@ mod tests {
             kind: Kind::Video,
             flags: Flags(Flags::KEYFRAME | Flags::CRITICAL),
             stream: 3,
+            fec: 4,
             frame_id: 0xdead_beef,
             frag_index: 7,
             frag_count: 900,

@@ -1,0 +1,4 @@
+# A middling WAN for a minute: 25 Mbit/s, 30 ms one way with 5 ms of
+# jitter, 0.5 % loss.
+0 25mbit delay 30ms 5ms loss 0.5%
+60 end

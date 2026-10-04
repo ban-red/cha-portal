@@ -1,0 +1,40 @@
+# Spike S7 on the node: a streamer with the test pattern behind a link that
+# netem shapes. From the repository root, after building the dev binaries
+# (deploy/streamer/compose.dev.yaml):
+#   ADVERTISE=<node LAN address> docker compose -f spikes/s7-wan/compose.yaml up -d --build
+#   spikes/s7-wan/netem.sh spikes/s7-wan/scenarios/drop.txt
+name: cha-s7
+
+services:
+  wan:
+    build:
+      context: ../..
+      dockerfile: spikes/s7-wan/Dockerfile
+    image: cha/s7-wan
+    # netem on this container's own interface; nothing on the host changes.
+    cap_add:
+      - NET_ADMIN
+    # The same numbers inside and out: ICE and the WebTransport URL carry them.
+    ports:
+      - "4515:4515/tcp"
+      - "4516:4516/udp"
+      - "4517:4517/udp"
+    devices:
+      - nvidia.com/gpu=all
+    shm_size: 2gb
+    environment:
+      ADVERTISE: ${ADVERTISE:?set ADVERTISE to the node's LAN address}
+      # How much of the test pattern is noise (percent): enough to fill the
+      # encoder's rate, so rate control has something to control.
+      CHA_TESTPATTERN_NOISE: ${NOISE:-20}
+      # Spike S8: dump frames around a simulated loss (`<dir>,<at>,<lost>`).
+      CHA_DUMP_RFI: ${DUMP_RFI:-}
+    volumes:
+      - target:/target:ro
+      - ../..:/src:ro
+    command: ["bash", "/src/spikes/s7-wan/start.sh"]
+
+volumes:
+  target:
+    name: cha-streamer-dev_target
+    external: true

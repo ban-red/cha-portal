@@ -27,6 +27,8 @@ mod codec;
 #[cfg(target_os = "linux")]
 mod compositor;
 #[cfg(target_os = "linux")]
+mod congestion;
+#[cfg(target_os = "linux")]
 mod control;
 #[cfg(target_os = "linux")]
 mod gamepad;
@@ -36,6 +38,8 @@ mod media;
 mod net;
 #[cfg(target_os = "linux")]
 mod pyro;
+#[cfg(target_os = "linux")]
+mod rate;
 #[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]

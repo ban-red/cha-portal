@@ -3,9 +3,16 @@
 //! The compositor publishes each frame to a [`FrameHub`]; every active codec has
 //! an encoder thread with a one-frame mailbox (newest frame wins, so a slow
 //! encoder skips frames instead of queueing them). Encoded frames go to that
-//! codec's subscribers, the WebRTC sessions.
+//! codec's subscribers, the sessions.
+//!
+//! Each subscriber paces its codec (P2.5, plan §3.1 rules 1 and 2): the
+//! encoder runs at the lowest bitrate its subscribers' links take, changed in
+//! place, and skips a frame while any subscriber's send queue is backed up.
+//! A frame that isn't encoded never has to be dropped, so nothing that later
+//! frames depend on goes missing.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -45,6 +52,11 @@ pub struct EncodedFrame {
     /// for the hardware codecs (any fragmentation does).
     pub packets: Vec<cha_pyrowave::Packet>,
     pub key: bool,
+    /// The encoder's index for it (what reference invalidation names).
+    pub index: u64,
+    /// Encoded after a reference invalidation: it refers only to frames
+    /// before this index, so a page that lost none of those resumes here.
+    pub recovery: Option<u64>,
     /// When the composited frame was ready.
     pub composited: Instant,
     /// When encoding finished.
@@ -55,6 +67,8 @@ pub struct EncodedFrame {
 struct MailboxState {
     frame: Option<Frame>,
     keyframe: bool,
+    /// Frames from this index on were lost (reference invalidation asked).
+    invalidate: Option<u64>,
     closed: bool,
     /// Frames replaced before the encoder took them.
     skipped: u64,
@@ -69,6 +83,9 @@ pub struct Mailbox {
 pub enum Wake {
     Frame(Frame, bool),
     Keyframe,
+    /// Nothing new on screen, but frames from this index on were lost:
+    /// encode the last one again, referring to what came before them.
+    Refresh(u64),
     Idle,
     Closed,
 }
@@ -87,12 +104,23 @@ impl Mailbox {
         self.ready.notify_one();
     }
 
+    fn request_invalidate(&self, from: u64) {
+        let mut state = self.state.lock().expect("mailbox lock");
+        state.invalidate = Some(state.invalidate.map_or(from, |at| at.min(from)));
+        self.ready.notify_one();
+    }
+
+    /// Frames lost since the last look (with a `Frame` or `Keyframe` wake).
+    fn take_invalidate(&self) -> Option<u64> {
+        self.state.lock().expect("mailbox lock").invalidate.take()
+    }
+
     pub fn wait(&self, timeout: Duration) -> Wake {
         let state = self.state.lock().expect("mailbox lock");
         let (mut state, _) = self
             .ready
             .wait_timeout_while(state, timeout, |s| {
-                s.frame.is_none() && !s.keyframe && !s.closed
+                s.frame.is_none() && !s.keyframe && s.invalidate.is_none() && !s.closed
             })
             .expect("mailbox lock");
         if state.closed {
@@ -102,7 +130,10 @@ impl Mailbox {
         match state.frame.take() {
             Some(frame) => Wake::Frame(frame, key),
             None if key => Wake::Keyframe,
-            None => Wake::Idle,
+            None => match state.invalidate.take() {
+                Some(from) => Wake::Refresh(from),
+                None => Wake::Idle,
+            },
         }
     }
 }
@@ -137,7 +168,107 @@ impl FrameHub {
     }
 }
 
-pub type Subscribers = Arc<Mutex<Vec<mpsc::Sender<EncodedFrame>>>>;
+/// How a subscriber wants its codec's frames.
+#[derive(Debug)]
+pub struct Pace {
+    /// The bitrate its link takes now.
+    target_bps: AtomicU32,
+    /// Its send queue is backed up: skip encoding until it drains.
+    hold: AtomicBool,
+    /// Since when it has held, if it does (ms after `epoch`).
+    hold_since_ms: AtomicU64,
+    epoch: Instant,
+}
+
+/// A subscriber holding longer than this is stuck (a viewer that left
+/// without closing, a dead link): the others don't wait for it, nor run at
+/// its rate; it drops frames and resyncs on its own.
+const STUCK: Duration = Duration::from_secs(1);
+
+impl Pace {
+    pub fn new(target_bps: u32) -> Arc<Self> {
+        Arc::new(Self {
+            target_bps: AtomicU32::new(target_bps),
+            hold: AtomicBool::new(false),
+            hold_since_ms: AtomicU64::new(0),
+            epoch: Instant::now(),
+        })
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    /// Holding for longer than `STUCK`.
+    fn stuck(&self) -> bool {
+        self.held()
+            && self.now_ms() - self.hold_since_ms.load(Ordering::Relaxed) > STUCK.as_millis() as u64
+    }
+
+    pub fn set_target(&self, bps: u32) {
+        self.target_bps.store(bps, Ordering::Relaxed);
+    }
+
+    pub fn target(&self) -> u32 {
+        self.target_bps.load(Ordering::Relaxed)
+    }
+
+    pub fn set_hold(&self, hold: bool) {
+        if hold && !self.hold.swap(true, Ordering::Relaxed) {
+            self.hold_since_ms.store(self.now_ms(), Ordering::Relaxed);
+        } else if !hold {
+            self.hold.store(false, Ordering::Relaxed);
+        }
+    }
+
+    fn held(&self) -> bool {
+        self.hold.load(Ordering::Relaxed)
+    }
+}
+
+pub struct Subscriber {
+    tx: mpsc::Sender<EncodedFrame>,
+    pace: Arc<Pace>,
+}
+
+pub type Subscribers = Arc<Mutex<Vec<Subscriber>>>;
+
+/// A codec's frames for one session, and how it paces them.
+pub struct Subscription {
+    pub frames: mpsc::Receiver<EncodedFrame>,
+    pub pace: Arc<Pace>,
+}
+
+/// The pace an encoder keeps for its subscribers: hold if any is backed up,
+/// at the lowest rate any takes; stuck ones don't count. `None` with no
+/// subscribers left.
+pub fn pace_of(subscribers: &Subscribers) -> Option<(bool, u32)> {
+    let mut subscribers = subscribers.lock().expect("subscribers lock");
+    subscribers.retain(|s| !s.tx.is_closed());
+    if subscribers.is_empty() {
+        return None;
+    }
+    let live = || subscribers.iter().filter(|s| !s.pace.stuck());
+    let held = live().any(|s| s.pace.held());
+    let target = live()
+        .map(|s| s.pace.target())
+        .min()
+        .or_else(|| subscribers.iter().map(|s| s.pace.target()).max())?;
+    Some((held, target))
+}
+
+/// Hands `frame` to every subscriber that's still there.
+pub fn deliver(subscribers: &Subscribers, frame: EncodedFrame) {
+    let mut subscribers = subscribers.lock().expect("subscribers lock");
+    for subscriber in subscribers.iter() {
+        let _ = subscriber.tx.try_send(EncodedFrame {
+            data: frame.data.clone(),
+            packets: frame.packets.clone(),
+            ..frame
+        });
+    }
+    subscribers.retain(|s| !s.tx.is_closed());
+}
 
 struct EncoderThread {
     mailbox: Arc<Mailbox>,
@@ -195,19 +326,26 @@ impl Media {
         &self.codecs
     }
 
+    /// The session's ceiling: what rate control starts from and climbs to.
+    pub fn bitrate_bps(&self) -> u32 {
+        self.settings.bitrate_bps
+    }
+
     /// The output's current size.
     pub fn size(&self) -> (u32, u32) {
         *self.size.lock().expect("size lock")
     }
 
-    /// Frames of `codec` from now on, starting with a keyframe.
-    pub fn subscribe(&self, codec: VideoCodec) -> Result<mpsc::Receiver<EncodedFrame>> {
+    /// Frames of `codec` from now on, starting with a keyframe, at the
+    /// configured bitrate until the session paces them.
+    pub fn subscribe(&self, codec: VideoCodec) -> Result<Subscription> {
         anyhow::ensure!(
             self.codecs.contains(&codec),
             "{} isn't offered here",
             codec.name()
         );
         let (tx, rx) = mpsc::channel(8);
+        let pace = Pace::new(self.settings.bitrate_bps);
         let mut encoders = self.encoders.lock().expect("encoders lock");
         // An encoder that gave up (it logged why) gets another go.
         if let Some(dead) = encoders.remove(&codec) {
@@ -224,15 +362,27 @@ impl Media {
             .subscribers
             .lock()
             .expect("subscribers lock")
-            .push(tx);
+            .push(Subscriber {
+                tx,
+                pace: Arc::clone(&pace),
+            });
         encoder.mailbox.request_keyframe();
         let _ = self.compositor.send(Command::ForceFrame);
-        Ok(rx)
+        Ok(Subscription { frames: rx, pace })
     }
 
     pub fn request_keyframe(&self, codec: VideoCodec) {
         if let Some(encoder) = self.encoders.lock().expect("encoders lock").get(&codec) {
             encoder.mailbox.request_keyframe();
+        }
+    }
+
+    /// Frames from encoder index `from` on were lost on the way: the next
+    /// frame refers only to older ones (flagged `recovery`), or is a
+    /// keyframe where that can't be.
+    pub fn request_invalidate(&self, codec: VideoCodec, from: u64) {
+        if let Some(encoder) = self.encoders.lock().expect("encoders lock").get(&codec) {
+            encoder.mailbox.request_invalidate(from);
         }
     }
 
@@ -336,6 +486,13 @@ struct EncoderWorker {
 struct EncodeStats {
     frames: u64,
     bytes: u64,
+    /// Frames not encoded while a subscriber's queue drained.
+    held: u64,
+    rate_changes: u64,
+    /// Frames encoded around lost ones (reference invalidation), and the
+    /// keyframes sent where that couldn't be.
+    recoveries: u64,
+    rfi_keyframes: u64,
     /// Composited → the encoder picked the frame up.
     queue_us: Vec<u64>,
     /// The CUDA view of the buffer.
@@ -347,6 +504,63 @@ struct EncodeStats {
     last_log: Option<Instant>,
 }
 
+/// What the next encode is asked to be.
+#[derive(Clone, Copy)]
+struct Want {
+    key: bool,
+    /// Frames from this encoder index on were lost: refer around them.
+    invalidate: Option<u64>,
+}
+
+/// Spike S8: `CHA_DUMP_RFI=<dir>,<at>,<lost>` writes the first frames each
+/// encoder makes to `<dir>/<codec>/` (`NNNNN.bin`, and `index.jsonl`), as
+/// if frames `at` to `at + lost - 1` were lost: the frame after them refers
+/// around them. A page then decodes the frames with and without the lost
+/// ones and compares.
+struct RfiDump {
+    dir: std::path::PathBuf,
+    at: u64,
+    lost: u64,
+    index: std::fs::File,
+}
+
+impl RfiDump {
+    fn from_env(codec: Codec) -> Option<Self> {
+        let spec = std::env::var("CHA_DUMP_RFI").ok()?;
+        let mut parts = spec.split(',');
+        let dir = std::path::Path::new(parts.next()?).join(codec.name());
+        let at = parts.next()?.parse().ok()?;
+        let lost = parts.next()?.parse().ok()?;
+        std::fs::create_dir_all(&dir).ok()?;
+        let index = std::fs::File::create(dir.join("index.jsonl")).ok()?;
+        info!(dir = %dir.display(), at, lost, "dumping frames (spike S8)");
+        Some(Self {
+            dir,
+            at,
+            lost,
+            index,
+        })
+    }
+
+    /// The loss to refer around before encoding frame `next`.
+    fn loss_before(&self, next: u64) -> Option<u64> {
+        (next == self.at + self.lost).then_some(self.at)
+    }
+
+    fn write(&mut self, index: u64, key: bool, recovery: bool, data: &[u8]) {
+        use std::io::Write;
+        if index >= self.at + self.lost + 60 {
+            return;
+        }
+        let lost = (self.at..self.at + self.lost).contains(&index);
+        let _ = std::fs::write(self.dir.join(format!("{index:05}.bin")), data);
+        let _ = writeln!(
+            self.index,
+            r#"{{"index":{index},"key":{key},"recovery":{recovery},"lost":{lost}}}"#
+        );
+    }
+}
+
 fn percentile(values: &mut [u64], q: f64) -> Option<u64> {
     values.sort_unstable();
     values
@@ -356,46 +570,78 @@ fn percentile(values: &mut [u64], q: f64) -> Option<u64> {
 
 impl EncoderWorker {
     fn run(self) {
-        let mut encoder: Option<Encoder> = None;
-        let mut generation = None;
+        // The encoder, and the output buffers' generation it registered.
+        let mut encoder: Option<(Encoder, u64)> = None;
         let mut last: Option<Frame> = None;
         let mut out = Vec::with_capacity(1 << 20);
         let mut stats = EncodeStats::default();
         let mut keyframe_pending = true;
+        // Lost frames to refer around at the next encode (from this index on).
+        let mut invalidate: Option<u64> = None;
+        let mut dump = RfiDump::from_env(self.codec);
+        let interval = Duration::from_secs(1) / self.settings.fps.max(1);
+        let mut last_encode: Option<Instant> = None;
         loop {
             let (frame, key, reencode) = match self.mailbox.wait(Duration::from_millis(100)) {
                 Wake::Closed => return,
                 Wake::Frame(frame, key) => (frame, key || keyframe_pending, false),
-                // Nothing changed on screen: re-encode the last frame as a keyframe.
+                // Nothing new on screen, but frames were lost: encode the
+                // last one again around them (at most once a frame interval).
+                Wake::Refresh(from) => {
+                    invalidate = Some(invalidate.map_or(from, |at| at.min(from)));
+                    match last.clone() {
+                        Some(frame) if last_encode.is_none_or(|at| at.elapsed() >= interval) => {
+                            (frame, keyframe_pending, true)
+                        }
+                        _ => continue,
+                    }
+                }
+                // Nothing changed on screen: re-encode the last frame as a
+                // keyframe, at most once a frame interval (requests can come
+                // from every dropped frame of a congested session).
                 Wake::Keyframe => match last.clone() {
-                    Some(frame) => (frame, true, true),
-                    None => {
+                    Some(frame) if last_encode.is_none_or(|at| at.elapsed() >= interval) => {
+                        (frame, true, true)
+                    }
+                    _ => {
                         keyframe_pending = true;
                         continue;
                     }
                 },
                 Wake::Idle => continue,
             };
+            if let Some(from) = self.mailbox.take_invalidate() {
+                invalidate = Some(invalidate.map_or(from, |at| at.min(from)));
+            }
             last = Some(frame.clone());
-            if !self.has_subscribers() {
+            let Some((held, target_bps)) = pace_of(&self.subscribers) else {
                 // Keep the latest frame for whoever subscribes next.
                 keyframe_pending = true;
                 continue;
+            };
+            if held {
+                // A subscriber's queue is backed up: this frame isn't encoded,
+                // so the next one depends only on frames that went out.
+                keyframe_pending |= key;
+                stats.held += 1;
+                continue;
             }
             keyframe_pending = false;
+            last_encode = Some(Instant::now());
 
+            if let Some(d) = &dump {
+                let next = encoder.as_ref().map_or(0, |(e, _)| e.next_index());
+                invalidate = d.loss_before(next).or(invalidate);
+            }
             let started = Instant::now();
-            let result = self.encode(
-                &mut encoder,
-                &mut generation,
-                &frame,
+            let want = Want {
                 key,
-                &mut out,
-                &mut stats,
-            );
+                invalidate: invalidate.take(),
+            };
+            let result = self.encode(&mut encoder, &frame, want, target_bps, &mut out, &mut stats);
             let encoded = Instant::now();
-            let key = match result {
-                Ok(key) => key,
+            let (key, recovery): (bool, Option<u64>) = match result {
+                Ok(done) => done,
                 Err(err) => {
                     warn!(codec = self.codec.name(), "encoding failed: {err:#}");
                     encoder = None;
@@ -413,34 +659,43 @@ impl EncoderWorker {
             stats
                 .encode_us
                 .push(encoded.duration_since(started).as_micros() as u64);
-            if let Some(encoder) = &encoder {
+            if let Some((encoder, _)) = &encoder {
                 let t = encoder.last_timings();
                 stats.map_us.push(t.map.as_micros() as u64);
                 stats.submit_us.push(t.submit.as_micros() as u64);
                 stats.wait_us.push(t.wait.as_micros() as u64);
             }
-            self.deliver(EncodedFrame {
-                data: Bytes::copy_from_slice(&out),
-                packets: Vec::new(),
-                key,
-                composited,
-                encoded,
-            });
+            let index = encoder.as_ref().map_or(0, |(e, _)| e.last_index());
+            if let Some(d) = &mut dump {
+                d.write(index, key, recovery.is_some(), &out);
+            }
+            deliver(
+                &self.subscribers,
+                EncodedFrame {
+                    data: Bytes::copy_from_slice(&out),
+                    packets: Vec::new(),
+                    key,
+                    index,
+                    recovery,
+                    composited,
+                    encoded,
+                },
+            );
             self.log(&mut stats);
         }
     }
 
     fn encode(
         &self,
-        encoder: &mut Option<Encoder>,
-        generation: &mut Option<u64>,
+        encoder: &mut Option<(Encoder, u64)>,
         frame: &Frame,
-        key: bool,
+        want: Want,
+        target_bps: u32,
         out: &mut Vec<u8>,
         stats: &mut EncodeStats,
-    ) -> Result<bool> {
-        let encoder = match encoder {
-            Some(encoder) => encoder,
+    ) -> Result<(bool, Option<u64>)> {
+        let (encoder, generation) = match encoder {
+            Some((encoder, generation)) => (encoder, generation),
             None => {
                 let started = Instant::now();
                 let created = Encoder::new(
@@ -453,7 +708,7 @@ impl EncoderWorker {
                         max_width: MAX_SIZE.0,
                         max_height: MAX_SIZE.1,
                         fps: self.settings.fps,
-                        bitrate_bps: self.settings.bitrate_bps,
+                        bitrate_bps: target_bps,
                     },
                 )
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -464,16 +719,24 @@ impl EncoderWorker {
                     init_ms = started.elapsed().as_millis() as u64,
                     "encoder ready"
                 );
-                *generation = Some(frame.generation);
-                encoder.insert(created)
+                let (encoder, generation) = encoder.insert((created, frame.generation));
+                (encoder, generation)
             }
         };
-        if *generation != Some(frame.generation) {
+        if *generation != frame.generation {
             // New output buffers: drop registrations of the old ones.
             encoder.forget_surfaces();
-            *generation = Some(frame.generation);
+            *generation = frame.generation;
         }
-        let mut key = key;
+        let mut key = want.key;
+        // Follow the subscribers' rate; small wobbles aren't worth a change.
+        let current = encoder.bitrate();
+        if target_bps.abs_diff(current) > current / 32 {
+            encoder
+                .set_bitrate(target_bps)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            stats.rate_changes += 1;
+        }
         if (encoder.config().width, encoder.config().height) != (frame.width, frame.height) {
             encoder
                 .resize(frame.width, frame.height)
@@ -489,31 +752,27 @@ impl EncoderWorker {
         stats
             .surface_us
             .push(surface_started.elapsed().as_micros() as u64);
-        encoder
-            .encode(surface, key, out)
-            .map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    fn has_subscribers(&self) -> bool {
-        let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        subscribers.retain(|s| !s.is_closed());
-        !subscribers.is_empty()
-    }
-
-    fn deliver(&self, frame: EncodedFrame) {
-        let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        let Some((last, rest)) = subscribers.split_last() else {
-            return;
-        };
-        for subscriber in rest {
-            let _ = subscriber.try_send(EncodedFrame {
-                data: frame.data.clone(),
-                packets: Vec::new(),
-                ..frame
-            });
+        // Frames were lost: refer around them, or start over where that
+        // can't be.
+        let mut recovery = None;
+        if let Some(from) = want.invalidate
+            && !key
+        {
+            if encoder
+                .invalidate_from(from)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+            {
+                recovery = Some(from);
+                stats.recoveries += 1;
+            } else {
+                key = true;
+                stats.rfi_keyframes += 1;
+            }
         }
-        let _ = last.try_send(frame);
-        subscribers.retain(|s| !s.is_closed());
+        let key = encoder
+            .encode(surface, key, out)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok((key, recovery.filter(|_| !key)))
     }
 
     fn log(&self, stats: &mut EncodeStats) {
@@ -536,6 +795,10 @@ impl EncoderWorker {
             fps = format!("{:.1}", stats.frames as f64 / secs),
             mbps = format!("{:.1}", stats.bytes as f64 * 8.0 / secs / 1e6),
             skipped,
+            held = stats.held,
+            rate_changes = stats.rate_changes,
+            recoveries = stats.recoveries,
+            rfi_keyframes = stats.rfi_keyframes,
             "encoder µs p50/p99: queue {} surface {} map {} submit {} wait {} total {}",
             p(&mut stats.queue_us),
             p(&mut stats.surface_us),

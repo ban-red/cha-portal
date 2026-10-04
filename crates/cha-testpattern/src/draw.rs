@@ -37,6 +37,18 @@ pub struct Scene {
     pub bar: Rect,
     pub flash: bool,
     pub pad: PadView,
+    /// Repainted with fresh noise every frame (empty: none).
+    pub noise: Rect,
+}
+
+/// A centred rectangle covering `percent` of a `width`×`height` screen.
+pub fn noise_rect(width: i32, height: i32, percent: u32) -> Rect {
+    let side = (f64::from(percent.min(100)) / 100.0).sqrt();
+    let (w, h) = (
+        (f64::from(width) * side) as i32,
+        (f64::from(height) * side) as i32,
+    );
+    Rect::new((width - w) / 2, (height - h) / 2, w, h)
 }
 
 /// A gamepad as the panel shows it (Xbox layout and ranges).
@@ -161,7 +173,24 @@ impl Canvas<'_> {
         if scene.flash {
             self.fill(area, flash_rect(self.width, self.height), 0x00ff_ffff);
         }
+        self.noise(area, scene.noise, scene.frame);
         self.fill(area, scene.bar, 0x00c8_d0d8);
+    }
+
+    /// Pseudo-random pixels, different every frame: incompressible.
+    fn noise(&mut self, clip: Rect, rect: Rect, frame: u64) {
+        let r = rect.intersect(&clip);
+        for y in r.y..r.y + r.h {
+            // xorshift64, seeded per row and frame.
+            let mut s = (frame << 20 ^ y as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            let row = (y * self.width) as usize;
+            for x in r.x..r.x + r.w {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                self.pixels[row + x as usize] = s as u32 & 0x00ff_ffff;
+            }
+        }
     }
 
     fn pad(&mut self, clip: Rect, pad: &PadView) {
@@ -297,6 +326,7 @@ mod tests {
             height: h,
         };
         let scene = Scene {
+            noise: Rect::new(0, 0, 0, 0),
             frame: 0b101,
             ..Scene::default()
         };
@@ -321,6 +351,7 @@ mod tests {
             height: h,
         };
         let scene = Scene {
+            noise: Rect::new(0, 0, 0, 0),
             pad: PadView {
                 connected: true,
                 buttons: 0b10, // B

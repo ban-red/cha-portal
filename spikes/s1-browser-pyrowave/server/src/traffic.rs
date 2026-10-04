@@ -211,6 +211,7 @@ impl FrameSource {
             kind: self.kind,
             flags: Flags(if frame.key { Flags::KEYFRAME } else { 0 }),
             stream: 0,
+            fec: 0,
             frame_id: self.next_frame_id,
             frag_index: 0,
             frag_count: 0,

@@ -34,7 +34,8 @@ use crate::control::{
     next_pointer, percentile,
 };
 use crate::gamepad::Gamepads;
-use crate::media::{EncodedFrame, Media};
+use crate::media::{EncodedFrame, Media, Pace};
+use crate::rate::{MIN_BPS, RateControl, Report, Sample, VIDEO_SHARE, Verdict, parse_report};
 use crate::viewers::Seat;
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
@@ -152,6 +153,12 @@ struct Session {
     handler: Control,
     connected: bool,
     frames: Option<mpsc::Receiver<EncodedFrame>>,
+    /// Rate control (P2.5) from the page's reports, as over WebTransport,
+    /// and the encoder's rate it sets; bytes sent at the last report.
+    rate: RateControl,
+    pace: Option<Arc<Pace>>,
+    rate_mark: Option<(Instant, u64)>,
+    rate_logged: Instant,
     audio: Option<mpsc::Receiver<AudioPacket>>,
     /// What apps copy, for the page.
     clipboard: Option<ClipboardWatch>,
@@ -186,6 +193,7 @@ impl Session {
     ) -> Self {
         let epoch = Instant::now();
         let clipboard = Some(params.media.clipboard());
+        let rate = RateControl::new(MIN_BPS, params.media.bitrate_bps());
         let handler = Control {
             epoch,
             codec: VideoCodec::Hw(params.codec),
@@ -206,6 +214,10 @@ impl Session {
             handler,
             connected: false,
             frames: None,
+            rate,
+            pace: None,
+            rate_mark: None,
+            rate_logged: epoch,
             audio: None,
             clipboard,
             cursor: None,
@@ -325,11 +337,12 @@ impl Session {
             return Ok(());
         }
         self.subscribed_at = Some(Instant::now());
-        self.frames = Some(
-            self.params
-                .media
-                .subscribe(VideoCodec::Hw(self.params.codec))?,
-        );
+        let subscription = self
+            .params
+            .media
+            .subscribe(VideoCodec::Hw(self.params.codec))?;
+        self.frames = Some(subscription.frames);
+        self.pace = Some(subscription.pace);
         if let (Some(audio), Some(_)) = (&self.params.audio, self.audio_mid) {
             self.audio = Some(audio.subscribe());
         }
@@ -527,11 +540,59 @@ impl Session {
     }
 
     fn handle_client_line(&mut self, line: &str) {
+        if let Some(report) = parse_report(line) {
+            self.on_report(report);
+            return;
+        }
         let mut replies = Vec::new();
         self.handler
             .handle_line(line, &mut self.stats, &mut |m| replies.push(m));
         for reply in replies {
             self.send_control(&reply);
+        }
+    }
+
+    /// A report from the page: one rate-control update. Only one with a
+    /// delay counts: a page that shows no frames (hidden) reports none, and
+    /// the rate holds until it does.
+    fn on_report(&mut self, report: Report) {
+        let now = Instant::now();
+        let sent = self.stats.bytes_sent;
+        let mark = self.rate_mark.replace((now, sent));
+        let (Some(delivery_ms), Some(rx_bps), Some((then, before))) =
+            (report.delivery_ms, report.rx_bps, mark)
+        else {
+            return;
+        };
+        let secs = now.duration_since(then).as_secs_f64().max(1e-3);
+        let sample = Sample {
+            rtt: Duration::ZERO,
+            delivery_ms: Some(delivery_ms),
+            rx_bps: Some(rx_bps),
+            backlog_ms: 0.0,
+            loss: report.loss.unwrap_or(0.0),
+            tx_bps: sent.saturating_sub(before) as f64 * 8.0 / secs,
+        };
+        let verdict = self.rate.update(now, &sample);
+        let target = f64::from(self.rate.target()) * VIDEO_SHARE;
+        if let Some(pace) = &self.pace {
+            pace.set_target(target as u32);
+        }
+        self.stats.target_mbps = Some(target / 1e6);
+        self.stats.queue_ms = Some(self.rate.queue_ms());
+        if verdict == Verdict::Overuse
+            || now.duration_since(self.rate_logged) >= Duration::from_secs(5)
+        {
+            self.rate_logged = now;
+            info!(
+                ?verdict,
+                target_mbps = format!("{:.1}", f64::from(self.rate.target()) / 1e6),
+                tx_mbps = format!("{:.1}", sample.tx_bps / 1e6),
+                rx_mbps = format!("{:.1}", rx_bps / 1e6),
+                queue_ms = format!("{:.0}", self.rate.queue_ms()),
+                loss = format!("{:.3}", sample.loss),
+                "webrtc rate"
+            );
         }
     }
 

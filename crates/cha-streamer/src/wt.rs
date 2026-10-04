@@ -16,13 +16,13 @@
 //! The certificate is self-signed for 13 days (browsers accept such a one by
 //! its hash, `serverCertificateHashes`); the portal hands the hash out.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use cha_proto::{DatagramHeader, Flags, Fragmenter, HEADER_LEN, Kind};
+use cha_proto::{DatagramHeader, Flags, Fragmenter, HEADER_LEN, Kind, fec};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{MissedTickBehavior, interval_at};
@@ -30,21 +30,33 @@ use tracing::{debug, info, warn};
 use wtransport::endpoint::IncomingSession;
 use wtransport::endpoint::endpoint_side::Server;
 use wtransport::quinn::TransportConfig;
-use wtransport::quinn::congestion::CubicConfig;
 use wtransport::{Connection, Endpoint, Identity, ServerConfig, VarInt};
 
 use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
+use crate::congestion::MediaWindowFactory;
 use crate::control::{
     Control, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
     next_pointer, percentile,
 };
 use crate::gamepad::Gamepads;
-use crate::media::{EncodedFrame, Media};
+use crate::media::{EncodedFrame, Media, Pace, Subscription};
+use crate::rate::{MIN_BPS, RateControl, Reports, Sample, VIDEO_SHARE, Verdict, parse_report};
 use crate::session::Running;
 use crate::viewers::{Seat, Viewer, Viewers};
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
+/// QUIC's datagram send buffer. Our own backlog rules (below) keep it nearly
+/// empty; the size only has to take a PyroWave frame or two.
+const SEND_BUFFER: usize = 8 << 20;
+/// How often the send queue is checked (hold or not) and the rate updated.
+const PACE_INTERVAL: Duration = Duration::from_millis(50);
+/// Hold the encoder while more than this many frames wait to go out.
+const HOLD_FRAMES: f64 = 1.5;
+/// A dropped frame's keyframe, asked for at most this often.
+const KEYFRAME_RETRY: Duration = Duration::from_millis(300);
+/// The loss a keyframe's parity is sized for, at least.
+const KEYFRAME_LOSS: f64 = 0.003;
 /// What wtransport adds to each datagram (the session id), rounded up.
 const DATAGRAM_OVERHEAD: usize = 8;
 
@@ -68,12 +80,12 @@ pub fn bind(port: u16, names: &[IpAddr]) -> Result<(Endpoint<Server>, String)> {
     let mut transport = TransportConfig::default();
     transport
         // A few frames' worth: more would only hide a stalled path.
-        .datagram_send_buffer_size(8 << 20)
+        .datagram_send_buffer_size(SEND_BUFFER)
         .datagram_receive_buffer_size(Some(1 << 20))
         .max_idle_timeout(Some(Duration::from_secs(10).try_into()?))
         .keep_alive_interval(Some(Duration::from_secs(2)))
-        // S1: Cubic keeps up on a LAN, quinn's BBR stalls (plan §3.1 rule 9).
-        .congestion_controller_factory(Arc::new(CubicConfig::default()));
+        // Our rate control sets the pace, not QUIC's window (plan §3.1 rule 9).
+        .congestion_controller_factory(Arc::new(MediaWindowFactory));
     let config = ServerConfig::builder()
         .with_bind_default(port)
         .with_custom_transport(identity, transport)
@@ -217,6 +229,9 @@ async fn run(
 
     let subscribed = Instant::now();
     let mut video = Video::new(codec, sessions.media.subscribe(codec)?, fragmenter);
+    let mut pacing = Pacing::new(video.pace.target());
+    let mut pace_tick = interval_at(tokio::time::Instant::now() + PACE_INTERVAL, PACE_INTERVAL);
+    pace_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut audio = sessions.audio.as_ref().map(|a| a.subscribe());
     let mut clipboard = Some(sessions.media.clipboard());
     let mut cursor = Some(sessions.media.cursor());
@@ -250,7 +265,7 @@ async fn run(
                     });
                     continue;
                 };
-                video.take_over(next, frames);
+                video.take_over(next, frames, pacing.encoder_target());
                 handler.codec = next;
                 info!(codec = next.name(), stream = video.stream, "switched codec");
                 let _ = out.send(ServerMsg::Codec { codec: next.name(), stream: video.stream, error: None });
@@ -281,6 +296,14 @@ async fn run(
             }
             line = lines.recv() => {
                 let Some(line) = line else { break Ok(()) };
+                if let Some(report) = parse_report(&line) {
+                    pacing.reports.record(report, Instant::now());
+                    continue;
+                }
+                if let Some(id) = rfi_request(&line) {
+                    video.page_lost(&sessions.media, id);
+                    continue;
+                }
                 let Some(name) = codec_request(&line) else {
                     handler.handle_line(&line, &mut stats, &mut |m| { let _ = out.send(m); });
                     continue;
@@ -296,14 +319,17 @@ async fn run(
                         None
                     }
                     Some(next) => match sessions.media.subscribe(next) {
-                        Ok(frames) => {
-                            video.next = Some((next, frames));
+                        Ok(subscription) => {
+                            video.next = Some((next, subscription));
                             continue;
                         }
                         Err(err) => Some(format!("{err:#}")),
                     },
                 };
                 let _ = out.send(ServerMsg::Codec { codec: video.codec.name(), stream: video.stream, error });
+            }
+            _ = pace_tick.tick() => {
+                pacing.tick(&conn, &mut video, &sessions.media, &mut stats);
             }
             _ = report.tick() => {
                 video.report(&mut stats);
@@ -330,41 +356,88 @@ async fn run(
 struct Video {
     codec: VideoCodec,
     frames: mpsc::Receiver<EncodedFrame>,
+    /// How this session paces its encoder (rate, and hold while backed up).
+    pace: Arc<Pace>,
     /// Switching: the other encoder's frames, taken over at the first.
-    next: Option<(VideoCodec, mpsc::Receiver<EncodedFrame>)>,
+    next: Option<(VideoCodec, Subscription)>,
     /// Bumped on each switch and carried in every video datagram, so the
     /// page knows which decoder a frame is for and starts that stream afresh.
     stream: u8,
     frame_id: u32,
-    /// Until a keyframe goes out, no frame may (the first, or after a drop).
+    /// Until a keyframe goes out, no frame may (the first, or after a
+    /// drop), or a recovery frame referring around the frames dropped.
     resync: bool,
+    /// The encoder index of the first frame the page doesn't have (dropped
+    /// here, or reported lost by the page): a recovery frame referring only
+    /// to frames before it resyncs the page.
+    lost: Option<u64>,
+    /// Frames sent lately: their ids and encoder indices.
+    sent: VecDeque<(u32, u64)>,
     fragmenter: Fragmenter,
     /// Composited → encoded (ms) and encoded → sent (µs) since the last report.
     encode_ms: Vec<f64>,
     hop_us: Vec<u64>,
+    /// The loss rate parity is sized for (0: no FEC); the pacing sets it.
+    fec_loss: f64,
+    /// Recent frame size (bytes, smoothed), to count the send queue in frames.
+    frame_bytes: f64,
+    keyframe_asked: Option<Instant>,
 }
 
 impl Video {
-    fn new(
-        codec: VideoCodec,
-        frames: mpsc::Receiver<EncodedFrame>,
-        fragmenter: Fragmenter,
-    ) -> Self {
+    fn new(codec: VideoCodec, subscription: Subscription, fragmenter: Fragmenter) -> Self {
         Self {
             codec,
-            frames,
+            frames: subscription.frames,
+            pace: subscription.pace,
             next: None,
             stream: 0,
+            fec_loss: 0.0,
             frame_id: 0,
             resync: true,
+            lost: None,
+            sent: VecDeque::new(),
             fragmenter,
             encode_ms: Vec::new(),
             hop_us: Vec::new(),
+            frame_bytes: 0.0,
+            keyframe_asked: None,
         }
     }
 
-    /// Sends a frame, or drops it (and, for the hardware codecs, all until
-    /// a keyframe, which is asked for). True if sent.
+    /// Asks the encoder to refer around the frames the page doesn't have
+    /// (reference invalidation; it sends a keyframe where it can't), at most
+    /// every `KEYFRAME_RETRY`.
+    fn ask_resync(&mut self, media: &Media) {
+        if self
+            .keyframe_asked
+            .is_none_or(|at| at.elapsed() >= KEYFRAME_RETRY)
+        {
+            self.keyframe_asked = Some(Instant::now());
+            match self.lost {
+                Some(from) => media.request_invalidate(self.codec, from),
+                None => media.request_keyframe(self.codec),
+            }
+        }
+    }
+
+    /// The page lost frame `id`, and drops what follows until a recovery
+    /// frame or a keyframe.
+    fn page_lost(&mut self, media: &Media, id: u32) {
+        match self.sent.iter().find(|(sent, _)| *sent == id) {
+            Some(&(_, index)) => {
+                self.lost = Some(self.lost.map_or(index, |lost| lost.min(index)));
+                self.keyframe_asked = None;
+                self.ask_resync(media);
+            }
+            // Too long ago to name.
+            None => media.request_keyframe(self.codec),
+        }
+    }
+
+    /// Sends a frame, or drops it (and, for the hardware codecs, all until a
+    /// keyframe or a frame referring around them, which is asked for). True
+    /// if sent.
     fn send(
         &mut self,
         conn: &Connection,
@@ -377,31 +450,46 @@ impl Video {
         // PyroWave: packets that each decode on their own, and every frame
         // stands alone.
         let intra = !frame.packets.is_empty();
-        if self.resync && !frame.key && !intra {
+        // Refers only to frames the page has: it resyncs the page.
+        let recovers = matches!(
+            (frame.recovery, self.lost),
+            (Some(from), Some(lost)) if from <= lost
+        );
+        if self.resync && !frame.key && !recovers && !intra {
             return false;
         }
         let sent = if intra {
             send_packets(conn, frame, self.frame_id, self.stream, epoch, stats)
         } else {
-            send_frame(
-                conn,
-                &mut self.fragmenter,
-                frame,
-                self.frame_id,
-                self.stream,
-                epoch,
-                stats,
-            )
+            self.send_frame(conn, frame, recovers, epoch, stats)
         };
         if !sent {
             stats.frames_dropped += 1;
             if !intra {
-                // Its dependents would be garbage: start over from a keyframe.
+                // Its dependents would be garbage: start over from a frame
+                // referring around it (asked for now, and again once the
+                // queue drains).
+                self.lost = Some(self.lost.map_or(frame.index, |lost| lost.min(frame.index)));
                 self.resync = true;
-                media.request_keyframe(self.codec);
+                self.ask_resync(media);
             }
             return false;
         }
+        if !intra {
+            self.sent.push_back((self.frame_id, frame.index));
+            if self.sent.len() > 256 {
+                self.sent.pop_front();
+            }
+        }
+        if frame.key || recovers {
+            self.lost = None;
+        }
+        let size = frame.data.len() as f64;
+        self.frame_bytes = if self.frame_bytes == 0.0 {
+            size
+        } else {
+            self.frame_bytes * 0.9 + size * 0.1
+        };
         self.encode_ms
             .push(frame.encoded.duration_since(frame.composited).as_secs_f64() * 1e3);
         self.hop_us.push(frame.encoded.elapsed().as_micros() as u64);
@@ -412,13 +500,109 @@ impl Video {
         true
     }
 
+    /// Parity fragments per block for a frame of `len` bytes: enough that,
+    /// at the loss expected, a frame is lost under once in 10⁴, a resync
+    /// point (a keyframe, or a recovery frame) once in 10⁶, but never more
+    /// than half its data. Resync points always have some: everything after
+    /// one needs it, and one is mostly sent because something was lost, when
+    /// parity may not have caught up yet.
+    fn fec_for(&self, len: usize, resync: bool) -> u8 {
+        let k = len
+            .div_ceil(self.fragmenter.shard_len())
+            .clamp(1, fec::BLOCK);
+        let (loss, failure) = if resync {
+            (self.fec_loss.max(KEYFRAME_LOSS), 1e-6)
+        } else {
+            (self.fec_loss, 1e-4)
+        };
+        fec::parity_for(k, loss, failure).min(k.div_ceil(2)) as u8
+    }
+
+    /// Parity's share of a typical frame's data.
+    fn fec_overhead(&self) -> f64 {
+        let len = self.frame_bytes.max(1.0) as usize;
+        let k = len
+            .div_ceil(self.fragmenter.shard_len())
+            .clamp(1, fec::BLOCK);
+        f64::from(self.fec_for(len, false)) / k as f64
+    }
+
+    /// Sends one encoded frame as datagrams (with its parity), or nothing if
+    /// QUIC can't take all of it now. True if sent.
+    fn send_frame(
+        &mut self,
+        conn: &Connection,
+        frame: &EncodedFrame,
+        recovers: bool,
+        epoch: Instant,
+        stats: &mut StreamerStats,
+    ) -> bool {
+        // QUIC's path MTU can shrink mid-session (its black-hole detection,
+        // after losses): cut to what it takes now, or every datagram is
+        // refused.
+        if let Some(max) = conn.max_datagram_size()
+            && max != self.fragmenter.max_datagram()
+            && max > HEADER_LEN + 4
+        {
+            info!(
+                from = self.fragmenter.max_datagram(),
+                to = max,
+                "datagram size changed"
+            );
+            self.fragmenter = Fragmenter::new(max);
+        }
+        let fec = self.fec_for(frame.data.len(), frame.key || recovers);
+        let datagrams = self.fragmenter.datagram_count(frame.data.len(), fec);
+        let budget =
+            datagrams * (HEADER_LEN + DATAGRAM_OVERHEAD + self.fragmenter.payload_capacity());
+        if conn.quic_connection().datagram_send_buffer_space() < budget {
+            return false;
+        }
+        let header = DatagramHeader {
+            kind: Kind::Video,
+            flags: Flags(if frame.key {
+                Flags::KEYFRAME
+            } else if recovers {
+                Flags::RECOVERY
+            } else {
+                0
+            }),
+            stream: self.stream,
+            fec,
+            frame_id: self.frame_id,
+            frag_index: 0,
+            frag_count: 0,
+            send_ts_us: epoch.elapsed().as_micros() as u32,
+        };
+        let mut refused = None;
+        let sent = self
+            .fragmenter
+            .fragment_fec(header, &frame.data, fec, |datagram| {
+                match conn.send_datagram(datagram) {
+                    Ok(()) => stats.bytes_sent += datagram.len() as u64,
+                    Err(err) => refused = Some(err),
+                }
+            });
+        if let Some(err) = refused {
+            debug!(len = frame.data.len(), "video datagram refused: {err}");
+            return false;
+        }
+        sent.is_ok()
+    }
+
     /// From now on, `codec`'s frames, as the next stream. The old encoder
     /// idles once nobody subscribes.
-    fn take_over(&mut self, codec: VideoCodec, frames: mpsc::Receiver<EncodedFrame>) {
+    fn take_over(&mut self, codec: VideoCodec, subscription: Subscription, target_bps: u32) {
         self.codec = codec;
-        self.frames = frames;
+        self.frames = subscription.frames;
+        self.pace = subscription.pace;
+        self.pace.set_target(target_bps);
+        self.frame_bytes = 0.0;
         self.stream = self.stream.wrapping_add(1);
         self.resync = true;
+        // Another encoder's indices.
+        self.lost = None;
+        self.sent.clear();
         self.encode_ms.clear();
         self.hop_us.clear();
     }
@@ -436,49 +620,191 @@ impl Video {
     }
 }
 
-async fn next_frame(
-    next: &mut Option<(VideoCodec, mpsc::Receiver<EncodedFrame>)>,
-) -> Option<EncodedFrame> {
-    match next {
-        Some((_, frames)) => frames.recv().await,
-        None => std::future::pending().await,
+/// A session's rate control (P2.5): its send queue and the path's delay
+/// set the encoder's rate, and hold it while the queue drains.
+struct Pacing {
+    rate: RateControl,
+    /// The page's send → decoded reports, the delay signal.
+    reports: Reports,
+    /// QUIC's packets sent and lost per update, the last 2 s: the loss
+    /// until the page reports.
+    losses: VecDeque<(Instant, u64, u64)>,
+    /// FEC follows the loss (plan §3.1 rule 6) seen while the path was
+    /// calm, and when there last was some; and when it last had a queue.
+    calm_loss: f64,
+    last_loss: Option<Instant>,
+    congested_at: Option<Instant>,
+    /// Parity's share of a typical frame, as last sized.
+    fec_overhead: f64,
+    /// QUIC's counters at the last rate update.
+    last: Option<(Instant, u64, u64, u64)>,
+    logged: Instant,
+    /// The last verdict was a stall (logged as one starts).
+    stalled: bool,
+}
+
+impl Pacing {
+    fn new(max_bps: u32) -> Self {
+        Self {
+            rate: RateControl::new(MIN_BPS, max_bps),
+            reports: Reports::default(),
+            losses: VecDeque::new(),
+            calm_loss: 0.0,
+            last_loss: None,
+            congested_at: None,
+            fec_overhead: 0.0,
+            last: None,
+            logged: Instant::now(),
+            stalled: false,
+        }
+    }
+
+    /// The encoder's rate: video's share, less what its parity takes.
+    fn encoder_target(&self) -> u32 {
+        (f64::from(self.rate.target()) * VIDEO_SHARE / (1.0 + self.fec_overhead)) as u32
+    }
+
+    /// The loss now: the page's count over the last second, QUIC's over
+    /// 2 s until it reports.
+    fn loss(&mut self, now: Instant, sent: u64, lost: u64, reported: Option<f64>) -> f64 {
+        self.losses.push_back((now, sent, lost));
+        while self
+            .losses
+            .front()
+            .is_some_and(|(at, _, _)| now.duration_since(*at) > Duration::from_secs(2))
+        {
+            self.losses.pop_front();
+        }
+        let (sent, lost) = self
+            .losses
+            .iter()
+            .fold((0, 0), |(s, l), (_, ds, dl)| (s + ds, l + dl));
+        let quic = if sent >= 20 {
+            lost as f64 / sent as f64
+        } else {
+            0.0
+        };
+        // The page's count when it reports: QUIC's also has packets that
+        // came, reordered, after it gave up on them.
+        reported.unwrap_or(quic)
+    }
+
+    /// The loss to size parity for. Only what's lost on a calm path counts
+    /// (no queue for longer than the loss is counted over): a queue's
+    /// overflow is the rate's to fix, and parity would only add to it. Half
+    /// again (one second's count is noisy), at least 0.3 %, kept for 5 s
+    /// after the last loss; none on a clean link.
+    fn update_fec(&mut self, now: Instant, loss: f64, congested: bool) -> f64 {
+        if congested {
+            self.congested_at = Some(now);
+        }
+        let calm = self
+            .congested_at
+            .is_none_or(|at| now.duration_since(at) > Duration::from_millis(1200));
+        if calm {
+            self.calm_loss = loss;
+            if loss > 0.001 {
+                self.last_loss = Some(now);
+            }
+        }
+        let recent = self
+            .last_loss
+            .is_some_and(|at| now.duration_since(at) < Duration::from_secs(5));
+        if recent {
+            (self.calm_loss * 1.5).max(0.003)
+        } else {
+            0.0
+        }
+    }
+
+    fn tick(
+        &mut self,
+        conn: &Connection,
+        video: &mut Video,
+        media: &Media,
+        stats: &mut StreamerStats,
+    ) {
+        let quic = conn.quic_connection();
+        let backlog = SEND_BUFFER.saturating_sub(quic.datagram_send_buffer_space());
+        // The queue in frames: hold the encoder (skip frames, none dropped)
+        // while it's more than a frame and a half.
+        let frame_bytes = video
+            .frame_bytes
+            .max(f64::from(video.pace.target()) / 8.0 / 60.0)
+            .max(1.0);
+        let frames_queued = backlog as f64 / frame_bytes;
+        let hold = frames_queued > HOLD_FRAMES;
+        video.pace.set_hold(hold);
+        if video.resync && !hold {
+            video.ask_resync(media);
+        }
+        let now = Instant::now();
+        let s = quic.stats();
+        let counters = (
+            now,
+            s.udp_tx.bytes,
+            s.path.sent_packets,
+            s.path.lost_packets,
+        );
+        let Some((then, bytes, sent, lost)) = self.last.replace(counters) else {
+            return;
+        };
+        let secs = now.duration_since(then).as_secs_f64().max(1e-3);
+        let report = self.reports.latest(now);
+        let loss = self.loss(
+            now,
+            counters.2.saturating_sub(sent),
+            counters.3.saturating_sub(lost),
+            report.loss,
+        );
+        let sample = Sample {
+            rtt: s.path.rtt,
+            delivery_ms: report.delivery_ms,
+            rx_bps: report.rx_bps,
+            backlog_ms: frames_queued * 1000.0 / 60.0,
+            loss,
+            tx_bps: counters.1.saturating_sub(bytes) as f64 * 8.0 / secs,
+        };
+        let verdict = self.rate.update(now, &sample);
+        let queue_ms = self.rate.queue_ms();
+        let congested = queue_ms > 15.0
+            || matches!(
+                verdict,
+                Verdict::Overuse | Verdict::Draining | Verdict::Backoff
+            );
+        video.fec_loss = self.update_fec(now, loss, congested);
+        self.fec_overhead = video.fec_overhead();
+        video.pace.set_target(self.encoder_target());
+        stats.target_mbps = Some(f64::from(self.rate.target()) / 1e6);
+        stats.queue_ms = Some(queue_ms);
+        let stall_starts = verdict == Verdict::Stall && !self.stalled;
+        self.stalled = verdict == Verdict::Stall;
+        if verdict == Verdict::Overuse
+            || stall_starts
+            || now.duration_since(self.logged) >= Duration::from_secs(5)
+        {
+            self.logged = now;
+            info!(
+                ?verdict,
+                target_mbps = format!("{:.1}", f64::from(self.rate.target()) / 1e6),
+                tx_mbps = format!("{:.1}", sample.tx_bps / 1e6),
+                rtt_ms = s.path.rtt.as_millis() as u64,
+                queue_ms = format!("{queue_ms:.0}"),
+                backlog_frames = format!("{frames_queued:.1}"),
+                rx_mbps = sample.rx_bps.map(|r| format!("{:.1}", r / 1e6)),
+                loss = format!("{:.3}", sample.loss),
+                fec = format!("{:.2}", self.fec_overhead),
+                "rate"
+            );
+        }
     }
 }
 
-/// Sends one encoded frame as datagrams, or nothing if QUIC can't take all
-/// of it now. True if sent.
-fn send_frame(
-    conn: &Connection,
-    fragmenter: &mut Fragmenter,
-    frame: &EncodedFrame,
-    frame_id: u32,
-    stream: u8,
-    epoch: Instant,
-    stats: &mut StreamerStats,
-) -> bool {
-    let fragments = fragmenter.fragment_count(frame.data.len());
-    let budget = frame.data.len() + fragments * (HEADER_LEN + DATAGRAM_OVERHEAD);
-    if conn.quic_connection().datagram_send_buffer_space() < budget {
-        return false;
+async fn next_frame(next: &mut Option<(VideoCodec, Subscription)>) -> Option<EncodedFrame> {
+    match next {
+        Some((_, subscription)) => subscription.frames.recv().await,
+        None => std::future::pending().await,
     }
-    let header = DatagramHeader {
-        kind: Kind::Video,
-        flags: Flags(if frame.key { Flags::KEYFRAME } else { 0 }),
-        stream,
-        frame_id,
-        frag_index: 0,
-        frag_count: 0,
-        send_ts_us: epoch.elapsed().as_micros() as u32,
-    };
-    let mut ok = true;
-    let sent = fragmenter.fragment(header, &frame.data, |datagram| {
-        if conn.send_datagram(datagram).is_err() {
-            ok = false;
-        } else {
-            stats.bytes_sent += datagram.len() as u64;
-        }
-    });
-    ok && sent.is_ok()
 }
 
 /// Sends a PyroWave frame: a datagram per packet, or several for a packet
@@ -533,6 +859,7 @@ fn send_packets(
                 kind: Kind::Video,
                 flags: Flags(flags),
                 stream,
+                fec: 0,
                 frame_id,
                 frag_index: index,
                 frag_count,
@@ -564,6 +891,7 @@ fn send_audio(conn: &Connection, packet: &AudioPacket, epoch: Instant, stats: &m
         kind: Kind::Audio,
         flags: Flags(0),
         stream: 0,
+        fec: 0,
         // 10 ms frames: the mixer's sample clock in frames.
         frame_id: (packet.samples / crate::audio::FRAME as u64) as u32,
         frag_index: 0,
@@ -585,6 +913,18 @@ fn send_audio(conn: &Connection, packet: &AudioPacket, epoch: Instant, stats: &m
 
 /// The codec a `{"t":"codec","codec":…}` line asks for (WebTransport only:
 /// the session switches its own subscription).
+/// The frame a `{"t":"rfi","id":…}` line says the page lost.
+fn rfi_request(line: &str) -> Option<u32> {
+    if !line.contains("\"rfi\"") {
+        return None;
+    }
+    let msg: serde_json::Value = serde_json::from_str(line).ok()?;
+    if msg.get("t")?.as_str()? != "rfi" {
+        return None;
+    }
+    u32::try_from(msg.get("id")?.as_u64()?).ok()
+}
+
 fn codec_request(line: &str) -> Option<String> {
     let msg: serde_json::Value = serde_json::from_str(line).ok()?;
     if msg.get("t")?.as_str()? != "codec" {
