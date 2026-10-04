@@ -6,9 +6,25 @@ set -eu
 w="${CHA_WIDTH:-2560}"
 h="${CHA_HEIGHT:-1440}"
 r="${CHA_REFRESH:-60}"
+# The home outlives the container, and Steam is killed when it stops: its pid
+# file and pipe are left naming a process of the last container, and pids
+# start over in each. There is one Steam per home (the portal allows one such
+# environment per user), so none is running now.
+rm -f "$HOME/.steam/steam.pid" "$HOME/.steam/steam.pipe"
 # GTK 4's Vulkan renderer fails under gamescope's WSI layer (Steam's zenity
 # dialogs crashed): GL instead.
 export GSK_RENDERER=gl
+# A home's first launch downloads ~500 MB before Steam has a window, and the
+# picture stays black. steam-status follows Steam's logs and tells the page
+# what it is doing (the environment's setup status, images/README.md); it ends
+# when Steam's UI is up, or with this process.
+steam-status &
+# Two helpers run beside Steam, in gamescope's environment (its X display):
+# - Big Picture sets gamescope's touch click mode to "passthrough", which
+#   drops the pointer's motion; steam-touch-mode puts the mode back;
+# - gamescope doesn't pass the clipboard between our compositor and its X
+#   server; cha-x11-clipboard bridges it to the streamer, as in XFCE (it
+#   exits when X does; after any other exit it starts again).
 exec dbus-run-session -- gamescope --backend wayland \
   -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" \
-  -e -- steam -gamepadui
+  -e -- sh -c 'steam-touch-mode & (until cha-x11-clipboard; do sleep 1; done) & exec steam -gamepadui'

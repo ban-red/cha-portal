@@ -38,7 +38,7 @@
    CHA_PORTAL_URL=https://portal.example docker compose -f deploy/node/compose.yaml run --rm agent --doctor
    ```
 
-   It checks Docker, the images, the GPU through CDI, PyroWave's Vulkan device, `/dev/uinput`, the Steam sandbox, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
+   It checks Docker, the images, the GPU through CDI, PyroWave's Vulkan device, `/dev/uinput`, the Steam sandbox, the home volumes kept for persistent templates, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
 
 ## Reaching nodes
 
@@ -77,5 +77,6 @@ The stream goes straight from the node to the browser; the portal only brokers i
 ## Known gaps
 
 - Behind a proxy, the audit log records the proxy's address, not the client's.
+- Steam's home volumes (`cha-home-<user>-<template>`) live on the node that made them. Nothing backs them up or moves them yet, and the only reset is `docker volume rm` on the node.
 - TURN over TLS on 443 comes later.
 - Steam environments need the `cha-sandbox` AppArmor profile on the node: `sudo install -m 644 deploy/node/host/apparmor/cha-sandbox /etc/apparmor.d/ && sudo apparmor_parser -r -W /etc/apparmor.d/cha-sandbox`. `--doctor` checks it.

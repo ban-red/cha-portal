@@ -68,7 +68,9 @@ use tracing::{info, warn};
 use crate::input::Input;
 use crate::media::FrameHub;
 use clipboard::{Clipboard, TEXT_MIMES};
-pub use clipboard::{ClipboardWatch, MAX_BYTES as CLIPBOARD_MAX_BYTES};
+pub use clipboard::{
+    ClipboardWatch, MAX_BYTES as CLIPBOARD_MAX_BYTES, Publisher as ClipboardPublisher,
+};
 pub use cursor::{CursorShape, CursorWatch, PointerSpot, PointerWatch};
 
 /// What the compositor publishes to the sessions.
@@ -127,6 +129,8 @@ pub struct Handle {
     pub socket_name: OsString,
     /// The text apps last copied.
     pub clipboard: ClipboardWatch,
+    /// Where X11 apps' copies are published (the helper's; see `x11_clipboard`).
+    pub clipboard_publisher: ClipboardPublisher,
     /// The cursor's shape, for a page that draws it.
     pub cursor: CursorWatch,
     /// Where the pointer is, for viewers.
@@ -158,6 +162,7 @@ fn run(
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
     let (clipboard, clipboard_watch) = Clipboard::new();
+    let clipboard_publisher = clipboard.publisher();
     let (cursor, cursor_watch) = watch::channel(CursorShape::Named("default"));
     let (pointer, pointer_watch) = watch::channel(PointerSpot::default());
     let published = Published {
@@ -203,6 +208,7 @@ fn run(
         commands,
         socket_name: state.socket_name.clone(),
         clipboard: clipboard_watch,
+        clipboard_publisher,
         cursor: cursor_watch,
         pointer: pointer_watch,
     }));
@@ -256,7 +262,21 @@ pub struct ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        // A client we cut off for breaking the protocol is why an app
+        // vanishes: say so.
+        match reason {
+            DisconnectReason::ConnectionClosed => info!(?client_id, "a client disconnected"),
+            DisconnectReason::ProtocolError(error) => warn!(
+                ?client_id,
+                code = error.code,
+                interface = error.object_interface,
+                object = error.object_id,
+                "a client broke the protocol: {}",
+                error.message
+            ),
+        }
+    }
 }
 
 /// Protocol globals that only need to stay alive.
@@ -295,6 +315,9 @@ pub struct State {
     pub seat: Seat<State>,
     pub output: Output,
     pub pointer_location: Point<f64, Logical>,
+    /// Where the page last put the pointer (absolute moves), to turn its
+    /// moves into relative motion while a surface holds a pointer lock.
+    pub page_pointer: Option<Point<f64, Logical>>,
     pub cursor_status: CursorImageStatus,
     /// The page draws the cursor: leave it out of the picture.
     pub client_cursor: bool,
@@ -469,6 +492,7 @@ impl State {
             seat,
             output,
             pointer_location,
+            page_pointer: None,
             cursor_status: CursorImageStatus::default_named(),
             client_cursor: false,
             cursor_changed: true,

@@ -8,7 +8,8 @@
 //!   read when they paste; each read is written on a thread too.
 //!
 //! Wayland apps take part directly. X11 apps under rootful Xwayland (XFCE)
-//! keep their clipboard inside the X server.
+//! keep their clipboard inside the X server: `x11_clipboard` bridges it, and
+//! publishes what they copy through the same [`Publisher`].
 
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
@@ -32,15 +33,46 @@ pub const TEXT_MIMES: &[&str] = &[
     "TEXT",
 ];
 /// Larger clipboards aren't forwarded either way.
-pub const MAX_BYTES: usize = 1 << 20;
+pub const MAX_BYTES: usize = cha_proto::clipboard::MAX_TEXT;
 
 /// The environment's latest clipboard text, for the sessions.
 pub type ClipboardWatch = watch::Receiver<Option<Arc<str>>>;
 
-pub struct Clipboard {
+/// Where what apps copy is published: Wayland apps' (read by the compositor)
+/// and X11 apps' (sent by the helper).
+#[derive(Clone)]
+pub struct Publisher {
     publish: watch::Sender<Option<Arc<str>>>,
     /// Bumped per selection, so a slow read can't overwrite a newer one.
     generation: Arc<AtomicU64>,
+}
+
+impl Publisher {
+    pub fn new() -> (Self, ClipboardWatch) {
+        let (publish, watch) = watch::channel(None);
+        let publisher = Self {
+            publish,
+            generation: Arc::default(),
+        };
+        (publisher, watch)
+    }
+
+    /// An X11 app copied `text`: it is what apps copied last. The same text
+    /// as before goes out again too, since the device's clipboard may have
+    /// changed in between. True if it was published.
+    pub fn copied_in_x11(&self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        // Any Wayland read still going is about an older selection.
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.publish.send_replace(Some(text.into()));
+        true
+    }
+}
+
+pub struct Clipboard {
+    publisher: Publisher,
     /// An app set the clipboard offering these types; it's read at the next
     /// tick, since Smithay stores a selection only after telling us of it.
     pending: Option<Vec<String>>,
@@ -48,18 +80,21 @@ pub struct Clipboard {
 
 impl Clipboard {
     pub fn new() -> (Self, ClipboardWatch) {
-        let (publish, watch) = watch::channel(None);
+        let (publisher, watch) = Publisher::new();
         let clipboard = Self {
-            publish,
-            generation: Arc::default(),
+            publisher,
             pending: None,
         };
         (clipboard, watch)
     }
 
+    pub fn publisher(&self) -> Publisher {
+        self.publisher.clone()
+    }
+
     /// An app set the clipboard (or cleared it).
     pub fn changed(&mut self, source: Option<&SelectionSource>) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.publisher.generation.fetch_add(1, Ordering::SeqCst);
         self.pending = source.map(SelectionSource::mime_types);
     }
 
@@ -84,9 +119,8 @@ impl Clipboard {
             debug!("clipboard: the app's selection is gone: {err:?}");
             return;
         }
-        let generation = self.generation.load(Ordering::SeqCst);
-        let publish = self.publish.clone();
-        let latest = Arc::clone(&self.generation);
+        let generation = self.publisher.generation.load(Ordering::SeqCst);
+        let publisher = self.publisher.clone();
         let spawned = std::thread::Builder::new()
             .name("clipboard-read".into())
             .spawn(move || {
@@ -98,11 +132,13 @@ impl Clipboard {
                     debug!("clipboard: reading the app's selection: {err}");
                     return;
                 }
-                if bytes.len() > MAX_BYTES || latest.load(Ordering::SeqCst) != generation {
+                if bytes.len() > MAX_BYTES
+                    || publisher.generation.load(Ordering::SeqCst) != generation
+                {
                     return;
                 }
                 let text: Arc<str> = String::from_utf8_lossy(&bytes).into();
-                publish.send_replace(Some(text));
+                publisher.publish.send_replace(Some(text));
             });
         if let Err(err) = spawned {
             warn!("clipboard: couldn't start a reader: {err}");

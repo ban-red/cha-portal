@@ -14,6 +14,7 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 | `crates/cha-control` | The portal's server: accounts and sessions, audit log, nodes, the API, serving the SPA (SQLite) |
 | `crates/cha-node` | The node agent: enrolls with a join token, then keeps one WebSocket to the portal (inventory, heartbeats, requests) |
 | `crates/cha-streamer` | One environment's media engine: our headless Wayland compositor (Smithay), zero-copy NVENC and PyroWave, our PulseAudio-protocol server and Opus, virtual gamepads, WebRTC and WebTransport ([README](crates/cha-streamer/README.md)) |
+| `crates/cha-x11-clipboard` | The XFCE environment's clipboard helper: bridges the X server's CLIPBOARD to the streamer over a socket in `/run/cha` |
 | `crates/cha-testpattern` | The test-pattern environment: our own Wayland client (moving bar, frame counter, frame-ID strip, a flash and a tone on input, gamepad state) |
 | `crates/cha-nvenc` | Our NVENC + CUDA binding, loaded from the driver at runtime |
 | `crates/cha-pyrowave` | Our PyroWave binding (libpyrowave, loaded at runtime): dma-bufs in, network packets out |
@@ -24,7 +25,7 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 | `deploy/node` | The node's compose stack (the agent), and host files for the owner |
 | `deploy/streamer` | The streamer's image and its dev loop on a node |
 | `images` | Our environment images (test pattern, Chrome, Firefox, XFCE, KDE Plasma, Steam) and the catalog ([README](images/README.md)) |
-| `crates/cha-proto` | `cha-stream/1` wire framing: Sans-IO datagram header, fragmentation, reassembly |
+| `crates/cha-proto` | `cha-stream/1` wire framing: Sans-IO datagram header, fragmentation, reassembly; and the clipboard helper's frames |
 | `web/packages/pyrowave-webgpu` | `@cha/pyrowave-webgpu`: PyroWave decode on WebGPU (TypeScript host for the WGSL port), draws straight to a canvas |
 | `spikes/s1-browser-pyrowave` | Spike S1: can a browser receive PyroWave-shaped traffic? ([README](spikes/s1-browser-pyrowave/README.md)) |
 | `spikes/s1b-pyrowave-webgpu` | Spike S1b: can a browser decode PyroWave fast and bit-exact? ([README](spikes/s1b-pyrowave-webgpu/README.md)) |

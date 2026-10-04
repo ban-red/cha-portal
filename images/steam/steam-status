@@ -1,0 +1,187 @@
+#!/usr/bin/python3
+"""Tells the page what Steam is doing while its picture is still black.
+
+A home's first launch downloads ~500 MB, unpacks it and installs it before
+Steam has a window, and every launch takes a few seconds to bring its UI up.
+This follows Steam's logs and writes the environment's setup status
+(images/README.md, "Setup status"): the file `status` in $XDG_RUNTIME_DIR,
+which the streamer sends to every page.
+
+- Steam's bootstrapper logs `Downloading update (493,420 of 496,367 KB)...`,
+  then `Download Complete.`, `Extracting package...`, `Installing update...`
+  and `Update complete, launching...`, in ~/.local/share/Steam/logs/
+  bootstrap_log.txt. The home outlives the container, so the log holds the
+  earlier launches too: only what is written after this starts counts.
+- The UI is up when Steam's web helper opens its first window
+  (`PopupHTMLWindow` in steamui_html.txt). Should that line ever change, a
+  web helper that has run for 20 s counts too, so the notice can't stay.
+- Then the status is removed and this ends, as it does when its parent does
+  (gamescope's end ends the container's; nothing here may outlive Steam).
+
+Nothing here can stop Steam: it only reads logs, and every failure to write
+is dropped.
+"""
+
+import json
+import os
+import re
+import signal
+import sys
+import time
+
+BOOTSTRAP_LOG = "bootstrap_log.txt"
+UI_LOG = "steamui_html.txt"
+POLL = 0.25
+# A web helper this long means the UI is up, whatever the logs said.
+HELPER_GRACE = 20.0
+
+STARTING = {"label": "Starting Steam"}
+DOWNLOAD = re.compile(r"Downloading update \(([\d,]+) of ([\d,]+) KB\)")
+STAMP = re.compile(r"^\[[^\]]*\] ")
+
+
+def megabytes(kb):
+    """Steam's "1,234" KB as whole megabytes (it counts in thousands)."""
+    return int(kb.replace(",", "")) // 1000
+
+
+class Setup:
+    """What the log lines say Steam is doing: `status` (None once the UI is up)."""
+
+    def __init__(self):
+        self.status = dict(STARTING)
+        self.up = False
+
+    def feed(self, log, line):
+        line = STAMP.sub("", line.strip())
+        if log == UI_LOG:
+            if "PopupHTMLWindow" in line:
+                self.finish()
+        elif log == BOOTSTRAP_LOG:
+            self.bootstrap(line)
+
+    def bootstrap(self, line):
+        progress = DOWNLOAD.search(line)
+        if progress:
+            self.status = {
+                "label": "Downloading Steam",
+                "done": megabytes(progress.group(1)),
+                "total": megabytes(progress.group(2)),
+                "unit": "MB",
+            }
+        elif line.startswith(("Downloading Update", "Downloading update")):
+            self.status = {"label": "Downloading Steam"}
+        elif line.startswith(("Download Complete", "Extracting package")):
+            self.status = {"label": "Unpacking Steam"}
+        elif line.startswith(("Installing update", "Cleaning up")):
+            self.status = {"label": "Installing Steam"}
+        elif line.startswith(("Update complete", "Startup")):
+            self.status = dict(STARTING)
+
+    def finish(self):
+        self.up = True
+        self.status = None
+
+
+class Tail:
+    """The lines appended to a log from now on. The log may not exist yet (a
+    home's first launch makes it): then all of it is new."""
+
+    def __init__(self, path):
+        self.path = path
+        self.offset = self.size()
+        self.partial = b""
+
+    def size(self):
+        try:
+            return os.stat(self.path).st_size
+        except OSError:
+            return 0
+
+    def lines(self):
+        size = self.size()
+        if size < self.offset:
+            # Replaced by a shorter file.
+            self.offset, self.partial = 0, b""
+        if size == self.offset:
+            return []
+        try:
+            with open(self.path, "rb") as f:
+                f.seek(self.offset)
+                data = f.read(size - self.offset)
+        except OSError:
+            return []
+        self.offset += len(data)
+        *whole, self.partial = (self.partial + data).split(b"\n")
+        return [line.decode("utf-8", "replace") for line in whole]
+
+
+def running(comm):
+    """Whether a process of this name runs here."""
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.isdigit():
+            try:
+                with open(f"/proc/{entry}/comm") as f:
+                    if f.read().strip() == comm:
+                        return True
+            except OSError:
+                pass
+    return False
+
+
+def publish(path, status):
+    """Replaces the status file whole (a temp file, then a rename), or removes it."""
+    try:
+        if status is None:
+            os.remove(path)
+            return
+        temp = f"{path}.{os.getpid()}"
+        with open(temp, "w") as f:
+            json.dump(status, f)
+        os.replace(temp, path)
+    except OSError:
+        pass
+
+
+def main():
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/cha")
+    home = os.environ.get("HOME", "/home/cha")
+    logs = os.path.join(home, ".local/share/Steam/logs")
+    path = os.path.join(runtime, "status")
+    tails = {log: Tail(os.path.join(logs, log)) for log in (BOOTSTRAP_LOG, UI_LOG)}
+    setup = Setup()
+    parent = os.getppid()
+    helper_since = None
+    helper_checked = 0.0
+    # SIGTERM ends it the ordinary way, clearing the status on the way out.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    shown = None
+    try:
+        while not setup.up and os.getppid() == parent:
+            for log, tail in tails.items():
+                for line in tail.lines():
+                    setup.feed(log, line)
+            now = time.monotonic()
+            if not setup.up and now - helper_checked >= 1.0:
+                helper_checked = now
+                if not running("steamwebhelper"):
+                    helper_since = None
+                elif helper_since is None:
+                    helper_since = now
+                elif now - helper_since >= HELPER_GRACE:
+                    setup.finish()
+            if setup.status != shown:
+                shown = setup.status
+                publish(path, shown)
+            if not setup.up:
+                time.sleep(POLL)
+    finally:
+        publish(path, None)
+
+
+if __name__ == "__main__":
+    main()

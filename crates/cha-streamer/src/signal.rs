@@ -26,8 +26,10 @@ use crate::media::{EncodeSettings, FrameHub, Media};
 use crate::net;
 use crate::pyro::PyroSettings;
 use crate::session;
+use crate::status::SetupStatus;
 use crate::viewers::{Role, Viewer, Viewers};
 use crate::wt;
+use crate::x11_clipboard::X11Clipboard;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -224,18 +226,36 @@ pub fn main() -> Result<()> {
         std::os::unix::fs::chown(&socket, Some(uid), Some(uid))
             .with_context(|| format!("handing {} to uid {uid}", socket.display()))?;
     }
-    let media = Arc::new(Media::new(
-        hub,
-        &handle,
-        cuda,
-        EncodeSettings {
-            fps: args.fps,
-            bitrate_bps: args.mbps * 1_000_000,
-        },
-        codecs,
-        pyrowave,
-        (width, height),
-    ));
+    // X11 apps (XFCE) keep their clipboard in the X server: a helper in the
+    // app's container bridges it over this socket.
+    let x11_clipboard = match X11Clipboard::start(
+        &runtime_dir.join("clipboard"),
+        args.app_uid,
+        handle.clipboard_publisher.clone(),
+    ) {
+        Ok(bridge) => Some(bridge),
+        Err(err) => {
+            warn!("no clipboard for X11 apps: {err:#}");
+            None
+        }
+    };
+    let media = Arc::new(
+        Media::new(
+            hub,
+            &handle,
+            cuda,
+            EncodeSettings {
+                fps: args.fps,
+                bitrate_bps: args.mbps * 1_000_000,
+            },
+            codecs,
+            pyrowave,
+            (width, height),
+        )
+        .with_x11_clipboard(x11_clipboard)
+        // The app's setup progress (Steam's download), in the shared volume.
+        .with_setup_status(SetupStatus::start(runtime_dir.join("status"))),
+    );
     let runtime = tokio::runtime::Runtime::new()?;
     // Before the app starts, so it finds the sound server.
     let audio = if args.no_audio {

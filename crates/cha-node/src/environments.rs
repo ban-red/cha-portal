@@ -10,6 +10,10 @@
 //!   pads and shares their device nodes and udev entries through two more
 //!   volumes, the app's `/dev/input` and `/run/udev` (read-only); the app may
 //!   open input devices (major 13), and only these exist in its `/dev/input`.
+//! - for templates marked persistent (Steam): a **home volume** the portal
+//!   names per user and template, mounted at the app's `/home/cha`. Unlike the
+//!   volumes above it belongs to the user, not the environment: stopping one
+//!   never removes it.
 //!
 //! The agent is never in the media path: containers outlive agent restarts,
 //! and the agent finds them again by label.
@@ -20,7 +24,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
-use cha_wire::{EnvironmentSpec, SecurityProfile, StreamerEndpoint};
+use cha_wire::{EnvironmentSpec, SecurityProfile, StreamerEndpoint, is_home_volume_name};
 use futures_util::future::BoxFuture;
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request};
@@ -34,6 +38,11 @@ use crate::docker::{ContainerEvent, Docker, encode};
 const LABEL_ENV: &str = "sh.cha.env";
 const LABEL_ROLE: &str = "sh.cha.role";
 const LABEL_HTTP_PORT: &str = "sh.cha.http-port";
+/// On home volumes (`docker volume ls --filter label=sh.cha.home`): `1`, and
+/// whose (`sh.cha.owner`) and for which template (`sh.cha.template`).
+const LABEL_HOME: &str = "sh.cha.home";
+const LABEL_OWNER: &str = "sh.cha.owner";
+const LABEL_TEMPLATE: &str = "sh.cha.template";
 const APP_UID: u32 = 1000;
 const RUNTIME_DIR: &str = "/run/cha";
 /// Where the streamer puts gamepad nodes (`dev/`) and udev entries (`udev/`).
@@ -225,6 +234,13 @@ impl DockerRuntime {
     }
 
     async fn start_environment(&self, spec: EnvironmentSpec) -> Result<StreamerEndpoint> {
+        // The app gets only a volume that is a home: never, say, this agent's
+        // own state.
+        if let Some(home) = &spec.home
+            && !is_home_volume_name(home)
+        {
+            bail!("{home:?} isn't the name of a home volume (cha-home-<user>-<template>)");
+        }
         if let Some(port) = self
             .state
             .lock()
@@ -410,11 +426,8 @@ impl DockerRuntime {
         }
         let groups: Vec<String> = self.render_gid.iter().map(|g| g.to_string()).collect();
         let mut mounts = self.mounts(&spec.id, true);
-        if let Some(home) = &spec.home {
-            mounts
-                .as_array_mut()
-                .expect("mounts are a list")
-                .push(json!({ "Type": "volume", "Source": home, "Target": APP_HOME }));
+        if let Some(home) = home_mount(spec) {
+            mounts.as_array_mut().expect("mounts are a list").push(home);
         }
         // Proton's esync wants many descriptors.
         let ulimits = if spec.security == SecurityProfile::Steam {
@@ -462,7 +475,9 @@ impl DockerRuntime {
         result
     }
 
-    /// Removes an environment's containers (app first) and its volume.
+    /// Removes an environment's containers (app first) and its volumes: the
+    /// runtime directory and the gamepads'. Its home volume, if it has one, is
+    /// the user's and stays (`docker volume rm` it to start over).
     async fn remove(&self, id: &str) -> Result<()> {
         let containers = self.docker.list(&format!("{LABEL_ENV}={id}")).await?;
         let mut ordered: Vec<_> = containers.iter().collect();
@@ -579,6 +594,28 @@ fn volume_name(id: &str) -> String {
     format!("cha-env-{id}")
 }
 
+/// The app's home volume, for a launch that has one. Docker makes the volume
+/// the first time something mounts it, with these labels, and while it is
+/// empty fills it from the image's `/home/cha`: the files, and the directory's
+/// own owner (`cha`, uid 1000) and mode. Later launches find it as it was left.
+fn home_mount(spec: &EnvironmentSpec) -> Option<Value> {
+    let name = spec.home.as_ref()?;
+    let mut labels = serde_json::Map::new();
+    labels.insert(LABEL_HOME.into(), json!("1"));
+    if !spec.owner.is_empty() {
+        labels.insert(LABEL_OWNER.into(), json!(spec.owner));
+    }
+    if !spec.template.is_empty() {
+        labels.insert(LABEL_TEMPLATE.into(), json!(spec.template));
+    }
+    Some(json!({
+        "Type": "volume",
+        "Source": name,
+        "Target": APP_HOME,
+        "VolumeOptions": { "Labels": labels },
+    }))
+}
+
 /// The render node's group id, from the device node (CDI passes it through
 /// with the host's ownership).
 fn render_gid(render_node: &str) -> Option<u32> {
@@ -633,12 +670,21 @@ async fn local(method: Method, port: u16, path: &str, body: Option<&Value>) -> R
 
 #[cfg(test)]
 mod tests {
+    use axum::extract::{Request, State};
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
+    use axum::{Json, Router};
+
     use super::*;
 
     fn runtime() -> DockerRuntime {
+        runtime_on(Docker::new("/nonexistent"))
+    }
+
+    fn runtime_on(docker: Docker) -> DockerRuntime {
         let (exits, _) = broadcast::channel(1);
         DockerRuntime {
-            docker: Docker::new("/nonexistent"),
+            docker,
             config: DockerConfig {
                 streamer_image: "cha/streamer:dev".into(),
                 render_node: "/dev/dri/renderD128".into(),
@@ -665,19 +711,25 @@ mod tests {
             fps: 60,
             portal_key: "cG9ydGFs".into(),
             home: None,
+            owner: "u1".into(),
+            template: "chrome".into(),
+        }
+    }
+
+    fn steam_spec() -> EnvironmentSpec {
+        EnvironmentSpec {
+            id: "e1".into(),
+            image: "cha/env-steam:dev".into(),
+            home: Some("cha-home-u1-steam".into()),
+            template: "steam".into(),
+            ..spec(SecurityProfile::Steam)
         }
     }
 
     #[test]
     fn steam_gets_the_sandbox_profile_and_its_home() {
         let rt = runtime();
-        let app = rt.app_config(
-            &EnvironmentSpec {
-                home: Some("cha-home-u1-steam".into()),
-                ..spec(SecurityProfile::Steam)
-            },
-            47000,
-        );
+        let app = rt.app_config(&steam_spec(), 47000);
         let opts = app["HostConfig"]["SecurityOpt"].as_array().unwrap();
         assert!(opts.iter().any(|o| o == "apparmor=cha-sandbox"));
         assert!(
@@ -686,7 +738,9 @@ mod tests {
         );
         let mounts = app["HostConfig"]["Mounts"].as_array().unwrap();
         let home = mounts.iter().find(|m| m["Target"] == "/home/cha").unwrap();
+        assert_eq!(home["Type"], "volume");
         assert_eq!(home["Source"], "cha-home-u1-steam");
+        assert!(home.get("ReadOnly").is_none(), "the app writes its home");
         assert_eq!(app["HostConfig"]["Ulimits"][0]["Name"], "nofile");
         // Others keep Docker's AppArmor profile and no home volume.
         let chrome = rt.app_config(&spec(SecurityProfile::Browser), 47000);
@@ -792,5 +846,235 @@ mod tests {
         assert_eq!(s["HostConfig"]["Devices"], json!([]));
         let app = rt.app_config(&spec(SecurityProfile::Standard), 47000);
         assert_eq!(app["HostConfig"]["Mounts"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_home_volume_is_labelled_for_tooling() {
+        let home = home_mount(&steam_spec()).unwrap();
+        assert_eq!(
+            home,
+            json!({
+                "Type": "volume",
+                "Source": "cha-home-u1-steam",
+                "Target": "/home/cha",
+                "VolumeOptions": { "Labels": {
+                    "sh.cha.home": "1",
+                    "sh.cha.owner": "u1",
+                    "sh.cha.template": "steam",
+                } },
+            })
+        );
+        // From a portal that doesn't say whose it is: still marked as a home.
+        let anonymous = EnvironmentSpec {
+            owner: String::new(),
+            template: String::new(),
+            ..steam_spec()
+        };
+        assert_eq!(
+            home_mount(&anonymous).unwrap()["VolumeOptions"]["Labels"],
+            json!({ "sh.cha.home": "1" })
+        );
+        // No home, no mount.
+        assert!(home_mount(&spec(SecurityProfile::Browser)).is_none());
+    }
+
+    #[test]
+    fn the_streamer_never_sees_the_home() {
+        let rt = runtime();
+        let streamer = rt.streamer_config(&steam_spec(), 47000);
+        let mounts = streamer["HostConfig"]["Mounts"].as_array().unwrap();
+        assert!(mounts.iter().all(|m| m["Target"] != "/home/cha"));
+        assert!(mounts.iter().all(|m| m.get("VolumeOptions").is_none()));
+    }
+
+    /// The engine's API on a Unix socket, enough for an environment's life:
+    /// it records every request and keeps the containers it is asked to make.
+    #[derive(Default)]
+    struct Engine {
+        /// Method, path with its query, and the JSON body (`null` if none).
+        requests: Mutex<Vec<(String, String, Value)>>,
+        containers: Mutex<Vec<Value>>,
+    }
+
+    impl Engine {
+        /// The bodies of the container creations, by container name.
+        fn created(&self) -> BTreeMap<String, Value> {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(method, uri, _)| {
+                    method == "POST" && uri.starts_with("/containers/create")
+                })
+                .map(|(_, uri, body)| {
+                    let name = uri.split_once("name=").unwrap().1.to_string();
+                    (name, body.clone())
+                })
+                .collect()
+        }
+
+        /// The names of the volumes it was asked to delete.
+        fn deleted_volumes(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(method, ..)| method == "DELETE")
+                .filter_map(|(_, uri, _)| uri.strip_prefix("/volumes/"))
+                .map(|rest| rest.split('?').next().unwrap().to_string())
+                .collect()
+        }
+    }
+
+    async fn engine_call(State(engine): State<Arc<Engine>>, request: Request) -> Response {
+        let (parts, body) = request.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let method = parts.method.to_string();
+        let uri = parts.uri.to_string();
+        engine
+            .requests
+            .lock()
+            .unwrap()
+            .push((method.clone(), uri.clone(), body.clone()));
+        let path = parts.uri.path();
+        let container = |p: &str| {
+            p.trim_start_matches("/containers/")
+                .split('/')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let mut containers = engine.containers.lock().unwrap();
+        match (method.as_str(), path) {
+            ("GET", p) if p.starts_with("/images/") => Json(json!({})).into_response(),
+            ("GET", "/containers/json") => Json(json!(*containers)).into_response(),
+            ("POST", "/containers/create") => {
+                let name = uri.split_once("name=").unwrap().1.to_string();
+                containers
+                    .push(json!({ "Id": name, "State": "created", "Labels": body["Labels"] }));
+                (StatusCode::CREATED, Json(json!({ "Id": name }))).into_response()
+            }
+            ("POST", p) if p.ends_with("/start") => {
+                let id = container(p);
+                for c in containers.iter_mut().filter(|c| c["Id"] == id) {
+                    c["State"] = json!("running");
+                }
+                StatusCode::NO_CONTENT.into_response()
+            }
+            ("POST", p) if p.ends_with("/stop") => StatusCode::NO_CONTENT.into_response(),
+            ("DELETE", p) if p.starts_with("/containers/") => {
+                let id = container(p);
+                containers.retain(|c| c["Id"] != id);
+                StatusCode::NO_CONTENT.into_response()
+            }
+            ("DELETE", p) if p.starts_with("/volumes/") => StatusCode::NO_CONTENT.into_response(),
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
+    /// A fake engine, and a client on its socket.
+    fn fake_engine() -> (Arc<Engine>, tempfile::TempDir, Docker) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let engine = Arc::new(Engine::default());
+        let app = Router::new()
+            .fallback(engine_call)
+            .with_state(Arc::clone(&engine));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (engine, dir, Docker::new(socket))
+    }
+
+    #[tokio::test]
+    async fn a_persistent_launch_mounts_its_home_on_the_app_only() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        rt.start_environment(steam_spec()).await.unwrap();
+
+        let created = engine.created();
+        let mounts_of = |name: &str| {
+            created[name]["HostConfig"]["Mounts"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let app = mounts_of("cha-env-e1-app");
+        let home: Vec<_> = app.iter().filter(|m| m["Target"] == "/home/cha").collect();
+        assert_eq!(home.len(), 1);
+        assert_eq!(home[0]["Source"], "cha-home-u1-steam");
+        assert_eq!(home[0]["VolumeOptions"]["Labels"]["sh.cha.owner"], "u1");
+        assert!(
+            mounts_of("cha-env-e1-streamer")
+                .iter()
+                .all(|m| m["Target"] != "/home/cha")
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_removes_the_scratch_volumes_and_keeps_the_home() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        rt.start_environment(steam_spec()).await.unwrap();
+        engine.requests.lock().unwrap().clear();
+
+        rt.stop_environment("e1").await.unwrap();
+
+        assert_eq!(
+            engine.deleted_volumes(),
+            ["cha-env-e1-input", "cha-env-e1-udev", "cha-env-e1"]
+        );
+        let requests = engine.requests.lock().unwrap();
+        assert!(
+            requests.iter().all(|(_, uri, _)| !uri.contains("cha-home")),
+            "nothing touches the home: {requests:?}"
+        );
+        // The containers went, with only their anonymous volumes (`v=true`).
+        assert!(engine.containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_app_gets_no_volume_that_isnt_a_home() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        for bad in [
+            "cha-node_state",
+            "cha-env-e1",
+            "cha-home-",
+            "cha-home-x/../y",
+            "",
+        ] {
+            let err = rt
+                .start_environment(EnvironmentSpec {
+                    home: Some(bad.into()),
+                    ..steam_spec()
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{err:#}").contains("home volume"),
+                "{bad:?}: {err:#}"
+            );
+        }
+        assert!(
+            engine.requests.lock().unwrap().is_empty(),
+            "nothing was created or even looked up"
+        );
+        assert!(rt.state.lock().unwrap().ports.is_empty());
+    }
+
+    #[tokio::test]
+    async fn other_templates_get_no_home_volume() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        rt.start_environment(spec(SecurityProfile::Browser))
+            .await
+            .unwrap();
+        let created = engine.created();
+        let mounts = created["cha-env-e1-app"]["HostConfig"]["Mounts"]
+            .as_array()
+            .unwrap();
+        assert!(mounts.iter().all(|m| m["Target"] != "/home/cha"));
+        assert!(mounts.iter().all(|m| m.get("VolumeOptions").is_none()));
     }
 }

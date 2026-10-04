@@ -96,6 +96,23 @@ export interface PlayerOptions {
    * picture is view-only; `takeControl()` asks for them.
    */
   onFloor?: (control: boolean, viewers: number) => void;
+  /**
+   * What the app's long setup is doing while its picture may still be black
+   * (a first-run download), or `null` once there is nothing to show. Every
+   * session gets it, watching ones too; a late joiner is told at once.
+   */
+  onStatus?: (status: SetupStatus | null) => void;
+}
+
+/**
+ * An app's setup progress: a label, and how far along when it knows. With no
+ * `total` the progress is indeterminate; `unit` names `done` and `total`.
+ */
+export interface SetupStatus {
+  label: string;
+  done?: number;
+  total?: number;
+  unit?: string;
 }
 
 interface ServerMessage {
@@ -119,6 +136,20 @@ interface ServerMessage {
   x?: number;
   y?: number;
   rgba?: string;
+  label?: string;
+  done?: number;
+  total?: number;
+  unit?: string;
+}
+
+/** A status message as a status: none without a label, and only the numbers it has. */
+function toStatus(msg: ServerMessage): SetupStatus | null {
+  if (typeof msg.label !== "string" || !msg.label) return null;
+  const status: SetupStatus = { label: msg.label };
+  if (typeof msg.done === "number") status.done = msg.done;
+  if (typeof msg.total === "number" && msg.total > 0) status.total = msg.total;
+  if (typeof msg.unit === "string" && msg.unit) status.unit = msg.unit;
+  return status;
 }
 
 /** A cursor image from the environment, ready for CSS. */
@@ -597,6 +628,9 @@ export class Player {
         this.options.onFloor?.(this.hasControl, msg.viewers ?? 1);
         break;
       }
+      case "status":
+        this.options.onStatus?.(toStatus(msg));
+        break;
       case "pointer":
         this.pointerSpot = { x: msg.x ?? 0, y: msg.y ?? 0, drawn: !!msg.drawn };
         this.placePointer();

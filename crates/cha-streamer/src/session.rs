@@ -31,11 +31,12 @@ use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorWatch, PointerWatch};
 use crate::control::{
     Control, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
-    next_pointer, percentile,
+    next_pointer, next_status, percentile,
 };
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace};
 use crate::rate::{MIN_BPS, RateControl, Report, Sample, VIDEO_SHARE, Verdict, parse_report};
+use crate::status::StatusWatch;
 use crate::viewers::Seat;
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
@@ -168,6 +169,8 @@ struct Session {
     cursor_ids: HashSet<u64>,
     /// Where the pointer is, for this page when it only watches.
     pointer: Option<PointerWatch>,
+    /// What the app's setup is doing, once the control channel is open.
+    status: Option<StatusWatch>,
     subscribed_at: Option<Instant>,
     sending_until: Option<Instant>,
     finished_at: Option<Instant>,
@@ -223,6 +226,7 @@ impl Session {
             cursor: None,
             cursor_ids: HashSet::new(),
             pointer: None,
+            status: None,
             subscribed_at: None,
             sending_until: None,
             finished_at: None,
@@ -297,6 +301,12 @@ impl Session {
                 () = self.handler.seat.changed() => {
                     let msg = floor_msg(&self.handler.seat);
                     self.send_control(&msg);
+                }
+                // Every viewer sees what the app is setting up, not only the controller.
+                msg = next_status(&mut self.status) => {
+                    if let Some(msg) = msg {
+                        self.send_control(&msg);
+                    }
                 }
                 shape = next_cursor(&mut self.cursor) => {
                     if let Some(shape) = shape {
@@ -516,6 +526,7 @@ impl Session {
                 self.control = Some(id);
                 self.cursor = Some(self.params.media.cursor());
                 self.pointer = Some(self.params.media.pointer());
+                self.status = Some(self.params.media.status());
                 let media = &self.params.media;
                 let stream = serde_json::json!({
                     "codec": self.params.codec.name(),

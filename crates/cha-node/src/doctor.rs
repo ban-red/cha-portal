@@ -9,6 +9,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use cha_wire::HOME_VOLUME_PREFIX;
 use serde_json::json;
 
 use crate::Identity;
@@ -66,6 +67,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
         checks.push(pyrowave(docker, config).await);
         checks.push(gamepads(docker, config).await);
         checks.push(sandboxes(docker, config).await);
+        checks.push(home_volumes(docker).await);
     }
     checks.push(render_node(&config.render_node));
     checks.push(user_namespaces());
@@ -269,6 +271,28 @@ async fn sandboxes(docker: &Docker, config: &DockerConfig) -> Check {
     }
 }
 
+/// The homes kept for persistent templates (Steam): one volume per user and
+/// template, which stopping an environment leaves alone.
+async fn home_volumes(docker: &Docker) -> Check {
+    match docker.volumes_named(HOME_VOLUME_PREFIX).await {
+        Ok(names) if names.is_empty() => check(
+            Level::Info,
+            "Home volumes",
+            "none yet (Steam keeps one per user, from the first launch)",
+        ),
+        Ok(names) => check(
+            Level::Info,
+            "Home volumes",
+            format!(
+                "{} kept, one per user and persistent template ({HOME_VOLUME_PREFIX}<user>-<template>)",
+                names.len()
+            ),
+        )
+        .fix("`docker volume ls --filter name=cha-home-` lists them; `docker volume rm <name>` resets one"),
+        Err(err) => check(Level::Warn, "Home volumes", format!("{err:#}")),
+    }
+}
+
 fn render_node(path: &str) -> Check {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     match std::fs::metadata(path) {
@@ -287,13 +311,13 @@ fn user_namespaces() -> Check {
     let path = Path::new("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     match std::fs::read_to_string(path).map(|v| v.trim() == "1") {
         Ok(true) => check(
-            Level::Warn,
+            Level::Info,
             "User namespaces",
-            "restricted by AppArmor: browsers' sandboxes work, but bubblewrap (GTK's image \
-             loaders, later Steam) can't build its own; the base image's stand-in runs those \
-             loaders inside the container instead",
+            "restricted by AppArmor: browsers' sandboxes work, and Steam environments run \
+             under cha-sandbox (above); elsewhere bubblewrap (GTK's image loaders) can't build \
+             its own, so the base image's stand-in runs those loaders inside the container",
         )
-        .fix("nothing to do yet; a cha-browser AppArmor profile will lift this (images/README.md)"),
+        .fix("nothing to do; a cha-browser AppArmor profile will lift this (images/README.md)"),
         Ok(false) => check(Level::Ok, "User namespaces", "unrestricted"),
         Err(_) => check(Level::Ok, "User namespaces", "no AppArmor restriction"),
     }

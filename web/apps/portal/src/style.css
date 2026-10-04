@@ -17,6 +17,17 @@
   --color-accent-ink: #042f2b;
   --color-danger: #f87171;
   --color-warn: #fbbf24;
+
+  /* A bar's moving segment, when how far along isn't known. */
+  --animate-indeterminate: indeterminate 1.4s ease-in-out infinite;
+  @keyframes indeterminate {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(250%);
+    }
+  }
 }
 
 @layer base {

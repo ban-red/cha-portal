@@ -9,6 +9,7 @@ export {
   type Codec,
   type PlayerOptions,
   type PlayerState,
+  type SetupStatus,
   type Transport,
   type WebTransportOffer,
 } from "./player";

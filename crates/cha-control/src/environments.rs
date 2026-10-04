@@ -239,25 +239,38 @@ async fn launch(
     )
     .await?;
     info!(%id, template = %template.id, node = %node.name, user = %user.username, "launching");
-    let spec = EnvironmentSpec {
-        id: id.clone(),
+    let spec = environment_spec(id.clone(), &user.id, template, state.media_key.public_b64());
+    tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
+    let row = db::environment_by_id(&state.db, &id)
+        .await?
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the new environment vanished")))?;
+    Ok(Json(view(row, &nodes_by_id(&state).await?)))
+}
+
+/// What a node runs for `owner`'s launch of `template`.
+fn environment_spec(
+    id: String,
+    owner: &str,
+    template: &Template,
+    portal_key: String,
+) -> EnvironmentSpec {
+    EnvironmentSpec {
+        id,
         image: template.image.clone(),
         security: template.security,
         shm_mb: template.shm_mb,
         width: WIDTH,
         height: HEIGHT,
         fps: FPS,
-        portal_key: state.media_key.public_b64(),
-        // Node-local: placement keeps a user on one node while there is one.
+        portal_key,
+        // The volume lives on the node it was first made on: placement keeps
+        // a user on one node while there is one (Phase 3 makes it follow).
         home: template
             .persistent
-            .then(|| format!("cha-home-{}-{}", user.id, template.id)),
-    };
-    tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
-    let row = db::environment_by_id(&state.db, &id)
-        .await?
-        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the new environment vanished")))?;
-    Ok(Json(view(row, &nodes_by_id(&state).await?)))
+            .then(|| cha_wire::home_volume_name(owner, &template.id)),
+        owner: owner.to_string(),
+        template: template.id.clone(),
+    }
 }
 
 async fn stop(
@@ -640,6 +653,29 @@ mod tests {
         assert_eq!(chrome.security, SecurityProfile::Browser);
         assert!(chrome.shm_mb >= 512);
         assert!(template("steam").unwrap().persistent);
+    }
+
+    #[test]
+    fn only_persistent_templates_get_a_home_volume() {
+        let owner = "01a10527-f79f-761b-962f-4b26924a2e68";
+        let steam = environment_spec("e1".into(), owner, template("steam").unwrap(), "k".into());
+        assert_eq!(
+            steam.home.as_deref(),
+            Some("cha-home-01a10527-f79f-761b-962f-4b26924a2e68-steam")
+        );
+        assert_eq!(
+            (steam.owner.as_str(), steam.template.as_str()),
+            (owner, "steam")
+        );
+        for t in catalog().iter().filter(|t| !t.persistent) {
+            let spec = environment_spec("e2".into(), owner, t, "k".into());
+            assert_eq!(spec.home, None, "{} keeps no home", t.id);
+        }
+        // Every persistent template's volume is one the node accepts.
+        for t in catalog().iter().filter(|t| t.persistent) {
+            let spec = environment_spec("e3".into(), owner, t, "k".into());
+            assert!(cha_wire::is_home_volume_name(&spec.home.unwrap()));
+        }
     }
 
     #[test]

@@ -45,9 +45,13 @@ mod session;
 #[cfg(target_os = "linux")]
 mod signal;
 #[cfg(target_os = "linux")]
+mod status;
+#[cfg(target_os = "linux")]
 mod viewers;
 #[cfg(target_os = "linux")]
 mod wt;
+#[cfg(target_os = "linux")]
+mod x11_clipboard;
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
@@ -56,6 +60,23 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
-fn main() -> anyhow::Result<()> {
-    signal::main()
+fn main() {
+    use std::io::Write;
+
+    let code = match signal::main() {
+        Ok(()) => 0,
+        Err(err) => {
+            eprintln!("Error: {err:?}");
+            1
+        }
+    };
+    let _ = std::io::stdout().flush();
+    // Leave without `exit`'s handlers. NVIDIA's libraries unload themselves
+    // in them (`dlclose`), and PyroWave's device warms up on its own thread
+    // at the start (it makes its Vulkan device on that driver): a start that
+    // failed meanwhile (the driver out of memory for CUDA, say) had the
+    // dynamic loader read a library just unmapped under that thread, and
+    // ended in SIGSEGV (exit 139) or a hang instead of the error above.
+    // SAFETY: `_exit` only ends the process.
+    unsafe { libc::_exit(code) }
 }

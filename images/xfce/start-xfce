@@ -10,4 +10,8 @@ export DISPLAY=:1 XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
 # Toolkits fall back to wayland-0 when WAYLAND_DISPLAY is unset; the backends
 # above keep the desktop on X11.
 unset WAYLAND_DISPLAY
+# X apps keep their clipboard inside this X server, out of the streamer's
+# reach: the helper bridges it over /run/cha/clipboard, in both directions.
+# It exits when X does; after any other exit it is started again.
+(until cha-x11-clipboard; do sleep 1; done) &
 exec dbus-run-session startxfce4

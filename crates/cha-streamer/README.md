@@ -183,8 +183,14 @@ Text both ways, on the control channel (`{"t":"clipboard","text":…}`), up to 1
 
 - **Environment → browser:** when an app sets the clipboard, the compositor asks it for the text (UTF-8 first) at the next tick. Smithay reports a selection before storing it. A thread reads the pipe, and the text is published to the sessions, which send it to the page. The player writes it to the device's clipboard, or on the next click if the browser wants a gesture.
 - **Browser → environment:** the page sends its clipboard just before a paste shortcut's keys, so the paste uses it. The text becomes the compositor's own selection, written on a thread to each app that pastes.
-- Wayland apps (Chrome, Firefox) take part directly. X11 apps under rootful Xwayland (XFCE) keep their clipboard inside the X server for now.
-- Tested in the Chrome environment: text with accents and emoji pasted into the omnibox from the page, then copied back, each exactly once.
+- **Wayland apps** (Chrome, Firefox) take part directly.
+- **X11 apps** (XFCE, under rootful Xwayland; Steam, under gamescope's Xwayland, which doesn't pass the clipboard through) keep their clipboard inside the X server, which only the app's container reaches. The `xfce` and `steam` images run a helper, `cha-x11-clipboard` ([`crates/cha-x11-clipboard`](../cha-x11-clipboard), x11rb), as the desktop's user. It talks to the streamer over a Unix socket in the shared volume (`/run/cha/clipboard`, owned by the app's uid; `src/x11_clipboard.rs`), in `cha_proto::clipboard`'s frames: kind, sequence number, length, UTF-8 text.
+  - **X → page:** the helper watches CLIPBOARD's owner (XFixes). On a new one it reads `TARGETS`, then the text as `UTF8_STRING` (or Latin-1 `STRING`), INCR included, up to 1 MiB, and sends a `copied` frame. The streamer publishes it where Wayland copies go, so the sessions forward it to the page. Every copy goes up, the same text again too, since the device's clipboard may have changed since; the helper's own taking of the clipboard (for the page's text) isn't a copy, so the page's text doesn't echo back.
+  - **Page → X:** a `set` frame makes the helper own CLIPBOARD (with a server timestamp, checked afterwards), then answer `ack`. It serves `TARGETS`, `TIMESTAMP`, UTF-8 text (`UTF8_STRING`, `TEXT`, `text/plain;charset=utf-8`, `text/plain`) and Latin-1 `STRING` (`?` for what it lacks), by INCR in 64 KiB chunks past the server's request limit. `Media::set_clipboard` waits for the `ack` (30 ms at most; not at all with no helper connected) before returning, so the paste's V key, which follows on the same ordered channel, reaches Xwayland after the X selection is owned. The wait is on the session's task, never the compositor's.
+  - Plain threads: one accepts, each helper has a reader and a writer. The helper reconnects every second if the streamer restarts, and exits with the X server. Only CLIPBOARD is bridged, not PRIMARY (Wayland apps' isn't either).
+  - `cha-x11-clipboard --get` and `--put TEXT` are an ordinary X client's reading and owning, for tests and ops.
+- Tested in XFCE end to end through the portal: copies from xfce4-terminal and Thunar reach the page, and the page's text pastes into both, 293 KB (by INCR both ways) and accents, CJK and emoji included, byte-exact.
+- Tested in the Chrome environment: text with accents and emoji pasted into the omnibox from the page, then copied back, each exactly once. The helper is tested against a real X server (Xvfb) and a pretend streamer: copies both ways, accents and emoji, INCR both ways (300 KB), refusal over 1 MiB, and `xclip`'s reads of every target and its Latin-1 `STRING` ownership.
 
 ## Cursor (P2.6)
 
@@ -193,6 +199,13 @@ In desktop mode the page draws the cursor (`{"t":"cursor","client":true}`), so i
 - **Shapes** go out on change as `{"t":"cursor"}`. A named cursor is a CSS keyword: we implement the cursor-shape protocol, whose names are CSS's, and Chrome and GTK 4 use it, so `text` over a text field costs a few bytes. Apps that draw their own cursor surface (Xwayland, GTK 3, Qt) send the image as straight-alpha RGBA, base64, once per session per image (later only its `id`); larger than 256 px goes as `default`.
 - **The page** sets the element's CSS cursor. Images go through `image-set()` at the stream's scale, so a 30 px cursor in a 2× stream shows at 15 CSS px, crisp.
 - Tested: Chrome's cursor-shape names (`default`, `text` over the omnibox), and XFCE's arrow image through rootful Xwayland.
+
+## Setup status (P2.1)
+
+What an app's long first-run setup is doing, for the pages to show while the picture is still black (Steam's first launch downloads ~500 MB). The contract is in [`images/README.md`](../../images/README.md): the app replaces `/run/cha/status`, one JSON object, atomically.
+
+- **Reading.** A plain thread (`src/status.rs`) reads the file every 250 ms: an open and a few dozen bytes, with no inotify binding to maintain. `label` is required (the rest is optional: `done`, `total`, `unit`); `done` is held to `total`, long text is cut, and a missing file, `{}` or no label clears the status. A file that doesn't parse or is over 4 KiB changes nothing, so an app that doesn't write atomically costs at most a moment's old status. It is published on a `watch` channel, like the clipboard.
+- **Sending.** Every session, WebRTC and WebTransport alike, sends `{"t":"status","label","done","total","unit"}` when its control channel opens (if there is a status) and on each change, and `{"t":"status"}` with no label once it is cleared. All viewers get it, not only the controller. The player's `onStatus` and the portal's progress notice take it from there.
 
 ## Gamepads (P1.6)
 

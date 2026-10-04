@@ -8,6 +8,7 @@ import {
   type Codec,
   type PlayerState,
   type ProbeResult,
+  type SetupStatus,
   type StatsSnapshot,
   type Transport,
 } from "@cha/player";
@@ -108,6 +109,21 @@ function noteClipboard(written: boolean) {
   clearTimeout(clipboardNoteTimer);
   clipboardNoteTimer = setTimeout(() => (clipboardNote.value = null), written ? 1500 : 4000);
 }
+/** What the app's long setup is doing (a first-run download), over the black picture. */
+const setup = ref<SetupStatus | null>(null);
+const amount = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: n < 10 ? 1 : 0 });
+/** "123 of 496 MB", or "123 MB" when the total isn't known. */
+const setupDetail = computed(() => {
+  const s = setup.value;
+  if (s?.done === undefined) return null;
+  const unit = s.unit ? ` ${s.unit}` : "";
+  return s.total ? `${amount(s.done)} of ${amount(s.total)}${unit}` : `${amount(s.done)}${unit}`;
+});
+/** How far along, or null while that isn't known (an indeterminate bar). */
+const setupPercent = computed(() => {
+  const s = setup.value;
+  return s?.total ? Math.min(100, Math.max(0, ((s.done ?? 0) / s.total) * 100)) : null;
+});
 function toggleSound() {
   muted.value = !muted.value;
   try {
@@ -135,6 +151,7 @@ async function connect() {
   player?.close();
   if (!video.value) return;
   problem.value = null;
+  setup.value = null;
   const mine = ++attempt;
   // Fresh TURN credentials each time; a portal without TURN returns none.
   const iceServers = await api
@@ -166,12 +183,17 @@ async function connect() {
       hasControl.value = control;
       viewers.value = count;
     },
+    onStatus: (status) => {
+      if (player === p) setup.value = status;
+    },
     signal: async (offer, c) => (await api.connect(id.value, { codec: c, offer })).answer!,
     onState: (s, detail) => {
       if (player !== p) return;
       state.value = s;
       if (s === "connected") retries = 0;
       if (detail) problem.value = detail;
+      // The status comes with the connection; the next one brings it again.
+      if (s === "disconnected" || s === "failed") setup.value = null;
       // A dropped connection (Wi-Fi blip, node restart) comes back on its own.
       if ((s === "disconnected" || s === "failed") && !leaving && retries < 3) {
         retries++;
@@ -379,6 +401,29 @@ const STATUS: Record<PlayerState, string> = {
       class="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg border border-line bg-panel/90 px-3 py-1.5 text-sm backdrop-blur"
     >
       {{ clipboardNote }}
+    </div>
+
+    <!-- Setup status: the app's long first-run setup, while the picture is black -->
+    <div v-if="setup && state === 'connected'" class="pointer-events-none absolute inset-0 grid place-items-center">
+      <div role="status" class="w-80 max-w-[calc(100%-2rem)] rounded-xl border border-line bg-panel/90 px-6 py-5 text-center backdrop-blur">
+        <p class="font-medium">{{ setup.label }}</p>
+        <p v-if="setupDetail" class="mt-1 text-sm text-ink-2 tabular-nums">{{ setupDetail }}</p>
+        <div
+          class="mt-4 h-1.5 overflow-hidden rounded-full bg-canvas"
+          role="progressbar"
+          :aria-label="setup.label"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-valuenow="setupPercent === null ? undefined : Math.round(setupPercent)"
+        >
+          <div
+            v-if="setupPercent !== null"
+            class="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
+            :style="{ width: `${setupPercent}%` }"
+          />
+          <div v-else class="h-full w-2/5 animate-indeterminate rounded-full bg-accent motion-reduce:w-full motion-reduce:animate-none motion-reduce:opacity-40" />
+        </div>
+      </div>
     </div>
 
     <!-- Status -->

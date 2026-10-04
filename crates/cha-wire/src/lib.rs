@@ -184,9 +184,46 @@ pub struct EnvironmentSpec {
     /// connections that carry a media token it signed.
     pub portal_key: String,
     /// A volume kept across launches, mounted as the app's home (templates
-    /// marked persistent: one per user and template, on this node).
+    /// marked persistent: one per user and template, on this node). Named by
+    /// [`home_volume_name`]; the node refuses any other name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
+    /// The user who launched it: a label on the home volume, so tooling can
+    /// tell whose it is. Empty from a portal that doesn't say.
+    #[serde(default)]
+    pub owner: String,
+    /// The catalog template's id: the other label on the home volume.
+    #[serde(default)]
+    pub template: String,
+}
+
+/// What every home volume's name starts with.
+pub const HOME_VOLUME_PREFIX: &str = "cha-home-";
+
+/// The home volume of `owner` in `template` (ids, as the portal has them):
+/// `cha-home-<owner>-<template>`, with anything Docker's volume names don't
+/// allow made `_`. User ids are UUIDs and template ids are slugs, so no two
+/// pairs end up with one name.
+pub fn home_volume_name(owner: &str, template: &str) -> String {
+    let safe = |id: &str| {
+        id.chars()
+            .map(|c| if volume_char(c) { c } else { '_' })
+            .collect::<String>()
+    };
+    format!("{HOME_VOLUME_PREFIX}{}-{}", safe(owner), safe(template))
+}
+
+/// Whether `name` is a home volume's name: ours, and one Docker takes. A node
+/// mounts nothing else as an app's home (its own `state` volume, say).
+pub fn is_home_volume_name(name: &str) -> bool {
+    name.len() > HOME_VOLUME_PREFIX.len()
+        && name.starts_with(HOME_VOLUME_PREFIX)
+        && name.chars().all(volume_char)
+}
+
+/// Docker's volume names: `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
+fn volume_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')
 }
 
 /// The app container's confinement (plan §4.2). Every profile runs the app as
@@ -441,12 +478,95 @@ mod tests {
                 fps: 60,
                 portal_key: "k".into(),
                 home: None,
+                owner: "u1".into(),
+                template: "chrome".into(),
             },
         })
         .unwrap();
         assert_eq!(start["op"], "start_environment");
         assert_eq!(start["environment"]["security"], "browser");
         assert_eq!(start["environment"]["shmMb"], 1024);
+        assert!(start["environment"].get("home").is_none());
+        assert_eq!(start["environment"]["owner"], "u1");
+        assert_eq!(start["environment"]["template"], "chrome");
+    }
+
+    #[test]
+    fn specs_from_before_homes_still_parse() {
+        // What a portal sent before `home`, `owner` and `template` existed.
+        let old = serde_json::json!({
+            "id": "e1",
+            "image": "cha/env-chrome:dev",
+            "security": "browser",
+            "shmMb": 1024,
+            "width": 2560,
+            "height": 1440,
+            "fps": 60,
+            "portalKey": "k",
+        });
+        let spec: EnvironmentSpec = serde_json::from_value(old).unwrap();
+        assert_eq!(spec.home, None);
+        assert!(spec.owner.is_empty() && spec.template.is_empty());
+
+        // One with a home, as the first slice sent it (a name, no labels).
+        let with_home = serde_json::json!({
+            "id": "e2",
+            "image": "cha/env-steam:dev",
+            "security": "steam",
+            "shmMb": 2048,
+            "width": 2560,
+            "height": 1440,
+            "fps": 60,
+            "portalKey": "k",
+            "home": "cha-home-u1-steam",
+            // A field from a newer portal: ignored, as `owner` and `template`
+            // are by a node that predates them.
+            "owner": "u1",
+            "template": "steam",
+            "somethingNew": 1,
+        });
+        let spec: EnvironmentSpec = serde_json::from_value(with_home).unwrap();
+        assert_eq!(spec.home.as_deref(), Some("cha-home-u1-steam"));
+        assert_eq!(
+            (spec.owner.as_str(), spec.template.as_str()),
+            ("u1", "steam")
+        );
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(
+            serde_json::from_value::<EnvironmentSpec>(json).unwrap(),
+            spec
+        );
+    }
+
+    #[test]
+    fn home_volumes_are_named_for_docker() {
+        let uuid = "01a10527-f79f-761b-962f-4b26924a2e68";
+        assert_eq!(
+            home_volume_name(uuid, "steam"),
+            "cha-home-01a10527-f79f-761b-962f-4b26924a2e68-steam"
+        );
+        assert_eq!(
+            home_volume_name(uuid, "test-pattern"),
+            "cha-home-01a10527-f79f-761b-962f-4b26924a2e68-test-pattern"
+        );
+        // Anything outside Docker's charset becomes `_`.
+        let odd = home_volume_name("a b/c:d", "é.x");
+        assert_eq!(odd, "cha-home-a_b_c_d-_.x");
+        assert!(is_home_volume_name(&odd));
+        assert!(is_home_volume_name(&home_volume_name(uuid, "steam")));
+    }
+
+    #[test]
+    fn only_home_volumes_count_as_homes() {
+        assert!(is_home_volume_name("cha-home-u1-steam"));
+        assert!(!is_home_volume_name("cha-home-"));
+        // The node's own volumes, other containers' and malformed names.
+        assert!(!is_home_volume_name("cha-node_state"));
+        assert!(!is_home_volume_name("cha-env-e1"));
+        assert!(!is_home_volume_name("cha-home-u1/../x"));
+        assert!(!is_home_volume_name("cha-home-u1 steam"));
+        assert!(!is_home_volume_name("/var/lib/steam"));
+        assert!(!is_home_volume_name(""));
     }
 
     #[test]

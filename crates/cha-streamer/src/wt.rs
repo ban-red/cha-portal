@@ -37,7 +37,7 @@ use crate::codec::VideoCodec;
 use crate::congestion::MediaWindowFactory;
 use crate::control::{
     Control, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
-    next_pointer, percentile,
+    next_pointer, next_status, percentile,
 };
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace, Subscription};
@@ -237,6 +237,7 @@ async fn run(
     let mut cursor = Some(sessions.media.cursor());
     let mut cursor_ids = HashSet::new();
     let mut pointer = Some(sessions.media.pointer());
+    let mut status = Some(sessions.media.status());
     let _ = out.send(floor_msg(&handler.seat));
     let mut stats = StreamerStats::default();
     let mut report = interval_at(tokio::time::Instant::now() + STATS_INTERVAL, STATS_INTERVAL);
@@ -293,6 +294,12 @@ async fn run(
             }
             () = handler.seat.changed() => {
                 let _ = out.send(floor_msg(&handler.seat));
+            }
+            // Every viewer sees what the app is setting up, not only the controller.
+            msg = next_status(&mut status) => {
+                if let Some(msg) = msg {
+                    let _ = out.send(msg);
+                }
             }
             line = lines.recv() => {
                 let Some(line) = line else { break Ok(()) };

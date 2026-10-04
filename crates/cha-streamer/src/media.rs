@@ -30,6 +30,8 @@ use crate::compositor::{
 };
 use crate::input::Input;
 use crate::pyro::{PyroSettings, PyroWorker};
+use crate::status::{SetupStatus, StatusWatch};
+use crate::x11_clipboard::X11Clipboard;
 
 /// One composited frame, sitting in an output buffer until every encoder that
 /// got it lets go.
@@ -293,8 +295,12 @@ pub struct Media {
     encoders: Mutex<HashMap<VideoCodec, EncoderThread>>,
     size: Mutex<(u32, u32)>,
     clipboard: ClipboardWatch,
+    /// The bridge to X11 apps' clipboard, if there's one to start.
+    x11_clipboard: Option<Arc<X11Clipboard>>,
     cursor: CursorWatch,
     pointer: PointerWatch,
+    /// The app's setup status, if there's a file to follow.
+    setup_status: SetupStatus,
 }
 
 impl Media {
@@ -317,9 +323,24 @@ impl Media {
             encoders: Mutex::default(),
             size: Mutex::new(size),
             clipboard: compositor.clipboard.clone(),
+            x11_clipboard: None,
             cursor: compositor.cursor.clone(),
             pointer: compositor.pointer.clone(),
+            setup_status: SetupStatus::default(),
         }
+    }
+
+    /// Also tells the pages what the app's long setup is doing (Steam's
+    /// download), from the file it writes.
+    pub fn with_setup_status(mut self, status: SetupStatus) -> Self {
+        self.setup_status = status;
+        self
+    }
+
+    /// Also hands the browser's clipboard to X11 apps (XFCE) through `bridge`.
+    pub fn with_x11_clipboard(mut self, bridge: Option<Arc<X11Clipboard>>) -> Self {
+        self.x11_clipboard = bridge;
+        self
     }
 
     pub fn codecs(&self) -> &[VideoCodec] {
@@ -411,6 +432,11 @@ impl Media {
         watch
     }
 
+    /// The app's setup status, from now on (the current one counts as new).
+    pub fn status(&self) -> StatusWatch {
+        self.setup_status.subscribe()
+    }
+
     /// Where the pointer is, from now on (the current spot counts as new).
     pub fn pointer(&self) -> PointerWatch {
         let mut watch = self.pointer.clone();
@@ -429,6 +455,12 @@ impl Media {
             return false;
         }
         let _ = self.compositor.send(Command::SetClipboard(text.into()));
+        // X11 apps: wait until the helper owns the X clipboard, so the paste
+        // keys after this text find it. The session's task waits, never the
+        // compositor.
+        if let Some(bridge) = &self.x11_clipboard {
+            bridge.set(text);
+        }
         true
     }
 

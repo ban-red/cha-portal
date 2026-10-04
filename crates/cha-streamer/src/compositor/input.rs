@@ -29,10 +29,29 @@ impl State {
         let pointer = self.seat.get_pointer().expect("the seat has a pointer");
         match input {
             Input::Move { x, y } => {
+                let location = self.clamp_to_output((x, y).into());
+                let last = self.page_pointer.replace(location);
                 if self.pointer_locked() {
+                    // A locked pointer moves by relative motion only (a game,
+                    // or gamescope while Steam hides its cursor); a page in
+                    // desktop mode sends positions, so pass on how far it
+                    // moved. Otherwise the app's cursor never moves.
+                    if let Some(last) = last {
+                        let delta = location - last;
+                        let under = self.surface_under(self.pointer_location);
+                        pointer.relative_motion(
+                            self,
+                            under,
+                            &RelativeMotionEvent {
+                                delta,
+                                delta_unaccel: delta,
+                                time,
+                            },
+                        );
+                        pointer.frame(self);
+                    }
                     return;
                 }
-                let location = self.clamp_to_output((x, y).into());
                 self.move_pointer(location, serial, time);
             }
             Input::Relative { dx, dy } => {

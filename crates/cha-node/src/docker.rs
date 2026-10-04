@@ -269,6 +269,19 @@ impl Docker {
         }
     }
 
+    /// The names of the volumes that start with `prefix`, sorted.
+    pub async fn volumes_named(&self, prefix: &str) -> Result<Vec<String>> {
+        let filters = serde_json::json!({ "name": [prefix] }).to_string();
+        let bytes = self
+            .call(
+                Method::GET,
+                &format!("/volumes?filters={}", encode(&filters)),
+                None,
+            )
+            .await?;
+        volume_names(&bytes, prefix)
+    }
+
     /// Every container (running or not) carrying `label`.
     pub async fn list(&self, label: &str) -> Result<Vec<ContainerSummary>> {
         let filters = serde_json::json!({ "label": [label] }).to_string();
@@ -314,6 +327,23 @@ impl Docker {
         }
         Ok(())
     }
+}
+
+/// The names in a `GET /volumes` reply that start with `prefix` (the engine's
+/// `name` filter matches anywhere in the name), sorted. `Volumes` is `null`
+/// when there are none.
+fn volume_names(body: &[u8], prefix: &str) -> Result<Vec<String>> {
+    let reply: Value = serde_json::from_slice(body)?;
+    let mut names: Vec<String> = reply["Volumes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v["Name"].as_str())
+        .filter(|name| name.starts_with(prefix))
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    Ok(names)
 }
 
 fn parse_event(line: &[u8]) -> Option<ContainerEvent> {
@@ -396,6 +426,23 @@ mod tests {
         assert_eq!(event.id, "abc");
         assert_eq!(event.exit_code, Some(137));
         assert_eq!(event.labels["sh.cha.env"], "e1");
+    }
+
+    #[test]
+    fn lists_volumes_by_prefix() {
+        let body = br#"{"Volumes":[
+            {"Name":"cha-home-u2-steam","Driver":"local"},
+            {"Name":"other-cha-home-x","Driver":"local"},
+            {"Name":"cha-home-u1-steam","Driver":"local"}],"Warnings":null}"#;
+        assert_eq!(
+            volume_names(body, "cha-home-").unwrap(),
+            ["cha-home-u1-steam", "cha-home-u2-steam"]
+        );
+        assert!(
+            volume_names(br#"{"Volumes":null,"Warnings":null}"#, "cha-home-")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

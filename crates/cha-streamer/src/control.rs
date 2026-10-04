@@ -1,6 +1,7 @@
 //! The control channel, the same on every transport (plan §3.1): JSON lines
 //! carrying the page's pings, input, resize, keyframe requests and clipboard
-//! text in, and pongs, acknowledgements, stats and the apps' clipboard out.
+//! text in, and pongs, acknowledgements, stats, the apps' clipboard and their
+//! setup status out.
 //! Only the session with the floor (`viewers`) acts on the environment; the
 //! others watch. WebRTC carries it on the `control`
 //! DataChannel, WebTransport on the session's first bidirectional stream.
@@ -17,6 +18,7 @@ use crate::compositor::{ClipboardWatch, CursorShape, CursorWatch, PointerSpot, P
 use crate::gamepad::{Gamepads, PadState};
 use crate::input::BrowserInput;
 use crate::media::Media;
+use crate::status::{Status, StatusWatch};
 use crate::viewers::Seat;
 
 #[derive(Debug, Serialize)]
@@ -59,6 +61,12 @@ pub enum ServerMsg {
     },
     /// The cursor's shape, for a page that draws it (P2.6).
     Cursor(CursorMsg),
+    /// What the app's long setup is doing (P2.1); with no `label`, nothing now.
+    /// Every session gets it, not only the controller's.
+    Status {
+        #[serde(flatten)]
+        status: Option<Status>,
+    },
     /// Whether this session has the controls, and how many sessions watch.
     Floor {
         control: bool,
@@ -302,6 +310,23 @@ pub async fn next_cursor(watch: &mut Option<CursorWatch>) -> Option<CursorShape>
     }
 }
 
+/// The app's next setup status as a message (a cleared one has no label);
+/// never resolves once the watcher is gone.
+pub async fn next_status(watch: &mut Option<StatusWatch>) -> Option<ServerMsg> {
+    match watch {
+        Some(rx) => match rx.changed().await {
+            Ok(()) => Some(ServerMsg::Status {
+                status: rx.borrow_and_update().clone(),
+            }),
+            Err(_) => {
+                *watch = None;
+                None
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
 /// The floor as this session sees it.
 pub fn floor_msg(seat: &Seat) -> ServerMsg {
     ServerMsg::Floor {
@@ -345,4 +370,77 @@ pub fn percentile<T: Copy>(sorted: &[T], q: f64) -> Option<T> {
     }
     let i = ((sorted.len() as f64 * q) as usize).min(sorted.len() - 1);
     Some(sorted[i])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(msg: &ServerMsg) -> String {
+        serde_json::to_string(msg).unwrap()
+    }
+
+    #[test]
+    fn status_messages_carry_the_status_flat() {
+        let status = Status {
+            label: "Downloading Steam".into(),
+            done: Some(123.0),
+            total: Some(496.0),
+            unit: Some("MB".into()),
+        };
+        assert_eq!(
+            line(&ServerMsg::Status {
+                status: Some(status)
+            }),
+            r#"{"t":"status","label":"Downloading Steam","done":123.0,"total":496.0,"unit":"MB"}"#
+        );
+        let bare = Status {
+            label: "Unpacking Steam".into(),
+            done: None,
+            total: None,
+            unit: None,
+        };
+        assert_eq!(
+            line(&ServerMsg::Status { status: Some(bare) }),
+            r#"{"t":"status","label":"Unpacking Steam"}"#
+        );
+        assert_eq!(
+            line(&ServerMsg::Status { status: None }),
+            r#"{"t":"status"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_hears_every_status_change_and_the_clearing() {
+        let (publish, watch) = tokio::sync::watch::channel(None);
+        let mut watch = Some(watch);
+        let say = |label: &str| {
+            publish.send_replace(Some(Status {
+                label: label.into(),
+                done: None,
+                total: None,
+                unit: None,
+            }));
+        };
+        say("Installing");
+        assert_eq!(
+            line(&next_status(&mut watch).await.unwrap()),
+            r#"{"t":"status","label":"Installing"}"#
+        );
+        publish.send_replace(None);
+        assert_eq!(
+            line(&next_status(&mut watch).await.unwrap()),
+            r#"{"t":"status"}"#
+        );
+        // The watcher is gone: no more news, and none ever again.
+        drop(publish);
+        assert!(next_status(&mut watch).await.is_none());
+        assert!(watch.is_none());
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            next_status(&mut watch),
+        )
+        .await
+        .expect_err("pending for good");
+    }
 }

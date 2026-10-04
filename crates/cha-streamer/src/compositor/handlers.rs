@@ -5,6 +5,7 @@
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
+use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::ImportDma;
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
@@ -43,7 +44,7 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::{ClientState, State, clipboard};
 
@@ -230,10 +231,21 @@ impl DmabufHandler for State {
         dmabuf: Dmabuf,
         notifier: ImportNotifier,
     ) {
-        if self.renderer.import_dmabuf(&dmabuf, None).is_ok() {
-            let _ = notifier.successful::<State>();
-        } else {
-            notifier.failed();
+        match self.renderer.import_dmabuf(&dmabuf, None) {
+            Ok(_) => {
+                let _ = notifier.successful::<State>();
+            }
+            Err(err) => {
+                // A client that asked for the buffer at once (`create_immed`)
+                // is disconnected for it: say why.
+                warn!(
+                    size = ?dmabuf.size(),
+                    format = ?dmabuf.format(),
+                    planes = dmabuf.num_planes(),
+                    "refusing a client's dmabuf: {err}"
+                );
+                notifier.failed();
+            }
         }
     }
 }
