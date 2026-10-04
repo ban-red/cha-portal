@@ -1,0 +1,65 @@
+{
+  "capturedAt": "2026-10-04T04:10:46Z",
+  "mode": "resize",
+  "gpu": "NVIDIA GeForce RTX 4090, 595.71.05",
+  "gstreamer": "GStreamer 1.28.2",
+  "fps": 60,
+  "results": [
+    {
+      "codec": "h265",
+      "start": "2560x1440",
+      "steps": [
+        {
+          "size": "1920x1080",
+          "toSourceMs": 36.1,
+          "toEncodedMs": 38.9,
+          "toChromeResizeMs": null,
+          "maxEncodedGapMs": 31.1
+        },
+        {
+          "size": "1280x720",
+          "toSourceMs": 35.1,
+          "toEncodedMs": 36.8,
+          "toChromeResizeMs": null,
+          "maxEncodedGapMs": 24.9
+        },
+        {
+          "size": "2560x1440",
+          "toSourceMs": 25.0,
+          "toEncodedMs": 28.6,
+          "toChromeResizeMs": null,
+          "maxEncodedGapMs": 27.9
+        }
+      ],
+      "finalChromeSize": "500x46"
+    },
+    {
+      "codec": "h264",
+      "start": "2560x1440",
+      "steps": [
+        {
+          "size": "1920x1080",
+          "toSourceMs": 36.1,
+          "toEncodedMs": 38.1,
+          "toChromeResizeMs": null,
+          "maxEncodedGapMs": 30.9
+        },
+        {
+          "size": "1280x720",
+          "toSourceMs": 35.1,
+          "toEncodedMs": 36.7,
+          "toChromeResizeMs": null,
+          "maxEncodedGapMs": 33.4
+        },
+        {
+          "size": "2560x1440",
+          "toSourceMs": 36.5,
+          "toEncodedMs": 39.4,
+          "toChromeResizeMs": null,
+          "maxEncodedGapMs": 37.4
+        }
+      ],
+      "finalChromeSize": "500x46"
+    }
+  ]
+}

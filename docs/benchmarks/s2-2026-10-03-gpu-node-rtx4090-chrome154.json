@@ -1,0 +1,302 @@
+{
+  "capturedAt": "2026-10-04T03:13:10Z",
+  "gpu": "NVIDIA GeForce RTX 4090, 595.71.05",
+  "gstreamer": "GStreamer 1.28.2",
+  "chromeVersion": "Google Chrome 154.0.8037.97",
+  "size": "2560x1440@60",
+  "seconds": 15.0,
+  "results": [
+    {
+      "path": "cuda",
+      "codec": "h265",
+      "client": "none",
+      "pipeline": "waylanddisplaysrc name=wl render-node=/dev/dri/renderD128 cuda-device-id=0 do-timestamp=true ! video/x-raw(memory:CUDAMemory),width=2560,height=1440,framerate=60/1 ! nvh265enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink name=sink sync=false",
+      "nvidia": {
+        "gpuUtil": "1",
+        "encUtil": "5",
+        "encSessions": "1",
+        "encAvgFps": "0",
+        "encAvgLatencyUs": "0"
+      },
+      "cpuPercent": 1.5,
+      "sourceFps": 60.0,
+      "encodedFps": 60.0,
+      "latencyMs": {
+        "n": 903,
+        "p50": 1.683,
+        "p95": 1.713,
+        "p99": 1.749,
+        "max": 1.807
+      }
+    },
+    {
+      "path": "cuda",
+      "codec": "h265",
+      "client": "chrome",
+      "pipeline": "waylanddisplaysrc name=wl render-node=/dev/dri/renderD128 cuda-device-id=0 do-timestamp=true ! video/x-raw(memory:CUDAMemory),width=2560,height=1440,framerate=60/1 ! nvh265enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink name=sink sync=false",
+      "socket": "wayland-1",
+      "nvidia": {
+        "gpuUtil": "2",
+        "encUtil": "5",
+        "encSessions": "1",
+        "encAvgFps": "60",
+        "encAvgLatencyUs": "1553"
+      },
+      "cpuPercent": 2.5,
+      "chromeCpuPercent": 7.6,
+      "sourceFps": 60.0,
+      "encodedFps": 60.0,
+      "latencyMs": {
+        "n": 903,
+        "p50": 1.716,
+        "p95": 1.784,
+        "p99": 1.827,
+        "max": 1.873
+      },
+      "chrome": {
+        "renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4090/PCIe/SSE2, OpenGL ES 3.2)",
+        "size": "2560x1440",
+        "fps": [
+          60,
+          60,
+          60,
+          60,
+          60
+        ],
+        "notes": [
+          "[102:124:1004/031333.653849:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[102:124:1004/031333.653886:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[102:124:1004/031333.812291:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[102:124:1004/031333.812598:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[102:124:1004/031333.812622:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[102:124:1004/031333.824640:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[102:124:1004/031333.978409:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[102:102:1004/031334.010666:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:",
+          "[102:124:1004/031334.010717:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[102:102:1004/031334.010756:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:",
+          "[102:124:1004/031334.010779:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[102:102:1004/031334.011315:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:"
+        ]
+      }
+    },
+    {
+      "path": "sysmem",
+      "codec": "h265",
+      "client": "none",
+      "pipeline": "waylanddisplaysrc name=wl render-node=/dev/dri/renderD128 do-timestamp=true ! video/x-raw,format=RGBx,width=2560,height=1440,framerate=60/1 ! cudaupload ! nvh265enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink name=sink sync=false",
+      "nvidia": {
+        "gpuUtil": "9",
+        "encUtil": "5",
+        "encSessions": "1",
+        "encAvgFps": "60",
+        "encAvgLatencyUs": "1537"
+      },
+      "cpuPercent": 16.1,
+      "sourceFps": 60.0,
+      "encodedFps": 60.0,
+      "latencyMs": {
+        "n": 903,
+        "p50": 2.693,
+        "p95": 2.764,
+        "p99": 2.801,
+        "max": 3.649
+      }
+    },
+    {
+      "path": "sysmem",
+      "codec": "h265",
+      "client": "chrome",
+      "pipeline": "waylanddisplaysrc name=wl render-node=/dev/dri/renderD128 do-timestamp=true ! video/x-raw,format=RGBx,width=2560,height=1440,framerate=60/1 ! cudaupload ! nvh265enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink name=sink sync=false",
+      "socket": "wayland-1",
+      "nvidia": {
+        "gpuUtil": "10",
+        "encUtil": "5",
+        "encSessions": "1",
+        "encAvgFps": "59",
+        "encAvgLatencyUs": "1576"
+      },
+      "cpuPercent": 17.7,
+      "chromeCpuPercent": 8.7,
+      "sourceFps": 60.0,
+      "encodedFps": 60.0,
+      "latencyMs": {
+        "n": 902,
+        "p50": 2.804,
+        "p95": 2.926,
+        "p99": 3.666,
+        "max": 3.817
+      },
+      "chrome": {
+        "renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4090/PCIe/SSE2, OpenGL ES 3.2)",
+        "size": "2560x1440",
+        "fps": [
+          60,
+          60,
+          60,
+          60,
+          60
+        ],
+        "notes": [
+          "[512:534:1004/031418.149772:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[512:534:1004/031418.149794:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[512:534:1004/031418.220569:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[512:534:1004/031418.220634:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[512:534:1004/031418.220649:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[512:534:1004/031418.242333:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[512:534:1004/031418.264960:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[512:512:1004/031418.302467:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:",
+          "[512:534:1004/031418.302519:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[512:512:1004/031418.302549:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:",
+          "[512:534:1004/031418.302573:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[512:512:1004/031418.303231:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:"
+        ]
+      }
+    },
+    {
+      "path": "cuda",
+      "codec": "h264",
+      "client": "none",
+      "pipeline": "waylanddisplaysrc name=wl render-node=/dev/dri/renderD128 cuda-device-id=0 do-timestamp=true ! video/x-raw(memory:CUDAMemory),width=2560,height=1440,framerate=60/1 ! nvh264enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink name=sink sync=false",
+      "nvidia": {
+        "gpuUtil": "1",
+        "encUtil": "5",
+        "encSessions": "1",
+        "encAvgFps": "0",
+        "encAvgLatencyUs": "0"
+      },
+      "cpuPercent": 1.5,
+      "sourceFps": 60.0,
+      "encodedFps": 60.0,
+      "latencyMs": {
+        "n": 903,
+        "p50": 1.807,
+        "p95": 1.83,
+        "p99": 1.853,
+        "max": 1.935
+      }
+    },
+    {
+      "path": "cuda",
+      "codec": "h264",
+      "client": "chrome",
+      "pipeline": "waylanddisplaysrc name=wl render-node=/dev/dri/renderD128 cuda-device-id=0 do-timestamp=true ! video/x-raw(memory:CUDAMemory),width=2560,height=1440,framerate=60/1 ! nvh264enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink name=sink sync=false",
+      "socket": "wayland-1",
+      "nvidia": {
+        "gpuUtil": "2",
+        "encUtil": "5",
+        "encSessions": "1",
+        "encAvgFps": "0",
+        "encAvgLatencyUs": "0"
+      },
+      "cpuPercent": 2.6,
+      "chromeCpuPercent": 7.7,
+      "sourceFps": 60.0,
+      "encodedFps": 60.0,
+      "latencyMs": {
+        "n": 903,
+        "p50": 1.82,
+        "p95": 1.879,
+        "p99": 1.93,
+        "max": 2.012
+      },
+      "chrome": {
+        "renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4090/PCIe/SSE2, OpenGL ES 3.2)",
+        "size": "2560x1440",
+        "fps": [
+          60,
+          60,
+          60,
+          60,
+          60
+        ],
+        "notes": [
+          "[924:946:1004/031502.662965:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[924:946:1004/031502.662984:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[924:946:1004/031502.723404:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[924:946:1004/031502.723428:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[924:946:1004/031502.723436:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[924:946:1004/031502.746663:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[924:946:1004/031502.751894:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[924:924:1004/031502.807765:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:",
+          "[924:946:1004/031502.807805:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[924:924:1004/031502.807838:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:",
+          "[924:946:1004/031502.807851:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[924:924:1004/031502.808416:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:"
+        ]
+      }
+    },
+    {
+      "path": "sysmem",
+      "codec": "h264",
+      "client": "none",
+      "pipeline": "waylanddisplaysrc name=wl render-node=/dev/dri/renderD128 do-timestamp=true ! video/x-raw,format=RGBx,width=2560,height=1440,framerate=60/1 ! cudaupload ! nvh264enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink name=sink sync=false",
+      "nvidia": {
+        "gpuUtil": "9",
+        "encUtil": "5",
+        "encSessions": "1",
+        "encAvgFps": "0",
+        "encAvgLatencyUs": "0"
+      },
+      "cpuPercent": 16.0,
+      "sourceFps": 60.0,
+      "encodedFps": 60.0,
+      "latencyMs": {
+        "n": 903,
+        "p50": 2.828,
+        "p95": 2.88,
+        "p99": 2.92,
+        "max": 3.714
+      }
+    },
+    {
+      "path": "sysmem",
+      "codec": "h264",
+      "client": "chrome",
+      "pipeline": "waylanddisplaysrc name=wl render-node=/dev/dri/renderD128 do-timestamp=true ! video/x-raw,format=RGBx,width=2560,height=1440,framerate=60/1 ! cudaupload ! nvh264enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink name=sink sync=false",
+      "socket": "wayland-1",
+      "nvidia": {
+        "gpuUtil": "9",
+        "encUtil": "5",
+        "encSessions": "1",
+        "encAvgFps": "0",
+        "encAvgLatencyUs": "0"
+      },
+      "cpuPercent": 16.7,
+      "chromeCpuPercent": 7.8,
+      "sourceFps": 60.0,
+      "encodedFps": 60.0,
+      "latencyMs": {
+        "n": 903,
+        "p50": 2.85,
+        "p95": 2.977,
+        "p99": 3.224,
+        "max": 3.974
+      },
+      "chrome": {
+        "renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4090/PCIe/SSE2, OpenGL ES 3.2)",
+        "size": "2560x1440",
+        "fps": [
+          60,
+          60,
+          60,
+          60,
+          60
+        ],
+        "notes": [
+          "[1336:1358:1004/031547.160357:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[1336:1358:1004/031547.160377:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[1336:1358:1004/031547.208229:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[1336:1358:1004/031547.208255:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+          "[1336:1358:1004/031547.208261:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[1336:1358:1004/031547.232888:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[1336:1358:1004/031547.238203:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[1336:1336:1004/031547.321417:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:",
+          "[1336:1358:1004/031547.321460:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[1336:1336:1004/031547.321508:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:",
+          "[1336:1358:1004/031547.321525:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+          "[1336:1336:1004/031547.322999:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:"
+        ]
+      }
+    }
+  ]
+}

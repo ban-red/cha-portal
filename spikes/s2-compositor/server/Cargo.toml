@@ -1,0 +1,24 @@
+[package]
+name = "s2-streamer"
+version = "0.0.0"
+description = "Spike S2 milestone 2: compositor -> NVENC -> WebRTC, with input back"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

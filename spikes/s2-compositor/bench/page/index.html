@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>S2 load</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud { position: fixed; left: 16px; top: 12px; font: 600 28px/1.2 monospace; color: #fff; text-shadow: 0 0 4px #000; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<script>
+// Full-screen animated plasma with fine detail, so every frame changes
+// everywhere (hard for the encoder, like a game or video). Logs the GL
+// renderer and Chrome's own frame rate to stderr (--enable-logging=stderr).
+const canvas = document.getElementById("c");
+const gl = canvas.getContext("webgl2", { antialias: false, desynchronized: true });
+const log = (o) => console.log("CHA " + JSON.stringify(o));
+if (!gl) {
+  log({ error: "no webgl2" });
+} else {
+  const ext = gl.getExtension("WEBGL_debug_renderer_info");
+  log({ renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+        vendor: ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR) });
+  const vs = `#version 300 es
+    in vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
+  const fs = `#version 300 es
+    precision highp float; uniform float t; uniform vec2 r; out vec4 o;
+    float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main() {
+      vec2 uv = gl_FragCoord.xy / r;
+      float v = sin(uv.x * 40.0 + t * 3.1) + sin(uv.y * 31.0 - t * 2.3)
+              + sin((uv.x + uv.y) * 25.0 + t * 1.7) + sin(length(uv - 0.5) * 60.0 - t * 4.0);
+      vec3 c = 0.5 + 0.5 * cos(v + t + vec3(0.0, 2.1, 4.2));
+      c += 0.12 * (h(gl_FragCoord.xy + floor(t * 60.0)) - 0.5);  // per-frame grain
+      o = vec4(c, 1.0);
+    }`;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "p");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const uT = gl.getUniformLocation(prog, "t");
+  const uR = gl.getUniformLocation(prog, "r");
+  const hud = document.getElementById("hud");
+  let frames = 0, last = performance.now();
+  const draw = (now) => {
+    const w = Math.round(innerWidth * devicePixelRatio), h = Math.round(innerHeight * devicePixelRatio);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    gl.viewport(0, 0, w, h);
+    gl.uniform1f(uT, now / 1000);
+    gl.uniform2f(uR, w, h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    frames++;
+    if (now - last >= 1000) {
+      const fps = Math.round((frames * 1000) / (now - last));
+      hud.textContent = `${w}x${h} ${fps} fps`;
+      log({ fps, w, h });
+      frames = 0;
+      last = now;
+    }
+    requestAnimationFrame(draw);
+  };
+  requestAnimationFrame(draw);
+  // The resize bench times when the window follows the compositor's output.
+  addEventListener("resize", () => log({ resized: true, w: innerWidth, h: innerHeight }));
+}
+</script>
+</body>
+</html>

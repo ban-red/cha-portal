@@ -19,6 +19,10 @@ interface ServerInfo {
   cert_hash_hex: string;
   /** The S3 gateway: live frames from a GameStream host, WebRTC only. */
   gateway?: boolean;
+  /** The S2 streamer: forwards keyboard and mouse from the video to the compositor. */
+  input?: boolean;
+  /** The S2 streamer can resize its output while streaming. */
+  resize?: boolean;
 }
 
 /**
@@ -74,6 +78,12 @@ interface Result {
   endReason: string;
   /** First decoder error, or why the run failed. */
   error?: string | null;
+  /** S2 streamer: synthetic click → the flash it causes on screen, by stage. */
+  inputProbe?: Record<string, unknown>;
+  /** WebRTC path: "probe" (synthetic clicks), "forward" (your input) or "none". */
+  inputMode?: string;
+  /** S2 streamer: request → first presented frame at each new size. */
+  resizeTest?: Record<string, unknown>;
 }
 
 // Chrome's main-thread insertable stream for video (the standard is VideoTrackGenerator in workers).
@@ -403,6 +413,237 @@ async function runWebTransport(s: StreamInfo, path: Path): Promise<Result> {
   return finish(s, path, label, times, { received, dropped, shown, errors }, { ...end, error: firstError }, serverStats);
 }
 
+/**
+ * Sends pointer, wheel and keys over the control channel while the pointer is
+ * over the video (S2 streamer). Positions are normalized to the video picture
+ * (letterboxing excluded); keys are physical `KeyboardEvent.code`s.
+ */
+function forwardInput(control: RTCDataChannel): () => void {
+  const send = (msg: Record<string, unknown>) => {
+    if (control.readyState === "open") control.send(JSON.stringify({ t: "input", ...msg }) + "\n");
+  };
+  const toVideo = (e: PointerEvent | WheelEvent) => {
+    const r = video.getBoundingClientRect();
+    const scale = Math.min(r.width / (video.videoWidth || r.width), r.height / (video.videoHeight || r.height));
+    const w = (video.videoWidth || r.width) * scale;
+    const h = (video.videoHeight || r.height) * scale;
+    return { x: (e.clientX - r.left - (r.width - w) / 2) / w, y: (e.clientY - r.top - (r.height - h) / 2) / h };
+  };
+  let over = false;
+  const move = (e: PointerEvent) => send({ k: "move", ...toVideo(e) });
+  const down = (e: PointerEvent) => {
+    video.setPointerCapture(e.pointerId);
+    send({ k: "move", ...toVideo(e) });
+    send({ k: "button", b: e.button, down: true });
+    e.preventDefault();
+  };
+  const up = (e: PointerEvent) => send({ k: "button", b: e.button, down: false });
+  const wheel = (e: WheelEvent) => {
+    send({ k: "wheel", dx: e.deltaX, dy: e.deltaY });
+    e.preventDefault();
+  };
+  const key = (down: boolean) => (e: KeyboardEvent) => {
+    if (!over) return;
+    send({ k: "key", code: e.code, down });
+    e.preventDefault();
+  };
+  const keydown = key(true);
+  const keyup = key(false);
+  const enter = () => (over = true);
+  const leave = () => (over = false);
+  const menu = (e: Event) => e.preventDefault();
+  video.style.cursor = "none";
+  video.addEventListener("pointermove", move);
+  video.addEventListener("pointerdown", down);
+  video.addEventListener("pointerup", up);
+  video.addEventListener("pointerenter", enter);
+  video.addEventListener("pointerleave", leave);
+  video.addEventListener("wheel", wheel, { passive: false });
+  video.addEventListener("contextmenu", menu);
+  addEventListener("keydown", keydown);
+  addEventListener("keyup", keyup);
+  return () => {
+    video.style.cursor = "";
+    video.removeEventListener("pointermove", move);
+    video.removeEventListener("pointerdown", down);
+    video.removeEventListener("pointerup", up);
+    video.removeEventListener("pointerenter", enter);
+    video.removeEventListener("pointerleave", leave);
+    video.removeEventListener("wheel", wheel);
+    video.removeEventListener("contextmenu", menu);
+    removeEventListener("keydown", keydown);
+    removeEventListener("keyup", keyup);
+  };
+}
+
+const PROBE_INTERVAL_MS = 500;
+const FLASH_LUMA = 200;
+
+interface ProbeSample {
+  id: number;
+  /** Page clock (absolute ms) when the click went out. */
+  clickAt: number;
+  /** Streamer clock (µs) when the click arrived. */
+  srvUs?: number;
+  /** First frame showing the flash. */
+  frameId?: number;
+  presentedAt?: number;
+  displayAt?: number;
+}
+
+/**
+ * Input → screen round trip on the S2 streamer: a synthetic click every
+ * PROBE_INTERVAL_MS; the live page in the stream turns white on each click;
+ * the first presented frame whose bottom-right corner is white closes it.
+ */
+class InputProbe {
+  readonly samples: ProbeSample[] = [];
+  private pending: ProbeSample | null = null;
+  private startTimer?: ReturnType<typeof setTimeout>;
+  private clickTimer?: ReturnType<typeof setInterval>;
+  private readonly ctx: CanvasRenderingContext2D;
+
+  constructor(private readonly control: RTCDataChannel) {
+    const c = document.createElement("canvas");
+    c.width = c.height = 4;
+    this.ctx = c.getContext("2d", { willReadFrequently: true })!;
+  }
+
+  start(afterMs: number): void {
+    // Park the remote pointer in the middle, away from the sampled corner.
+    this.send({ k: "move", x: 0.5, y: 0.5 });
+    this.startTimer = setTimeout(() => (this.clickTimer = setInterval(() => this.click(), PROBE_INTERVAL_MS)), afterMs);
+  }
+
+  stop(): void {
+    clearTimeout(this.startTimer);
+    clearInterval(this.clickTimer);
+  }
+
+  acknowledged(id: number, srvUs: number): void {
+    const s = this.samples[id];
+    if (s) s.srvUs = srvUs;
+  }
+
+  onFrame(md: VideoFrameCallbackMetadata, frameId: number | undefined): void {
+    const s = this.pending;
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (!s || !w) return;
+    this.ctx.drawImage(video, w * 0.9, h * 0.9, w * 0.06, h * 0.06, 0, 0, 4, 4);
+    const d = this.ctx.getImageData(0, 0, 4, 4).data;
+    let luma = 0;
+    for (let i = 0; i < d.length; i += 4) luma += 0.2126 * d[i]! + 0.7152 * d[i + 1]! + 0.0722 * d[i + 2]!;
+    if (luma / 16 < FLASH_LUMA) return;
+    s.frameId = frameId;
+    s.presentedAt = performance.timeOrigin + md.presentationTime;
+    s.displayAt = performance.timeOrigin + md.expectedDisplayTime;
+    this.pending = null;
+  }
+
+  /** Per-stage p50/p95, with the final clock offset. */
+  summary(
+    toAbs: (us: number) => number | null,
+    sendUs: Map<number, number>,
+    frameUs: Map<number, { c?: number; e?: number }>,
+  ): Record<string, unknown> {
+    const stage = (f: (s: ProbeSample) => number | null) =>
+      pct(this.samples.flatMap((s) => (s.presentedAt === undefined ? [] : [f(s)].filter((v): v is number => v !== null))));
+    const abs = (us: number | undefined) => (us === undefined ? null : toAbs(us));
+    const frame = (s: ProbeSample) => (s.frameId === undefined ? undefined : frameUs.get(s.frameId));
+    const sent = (s: ProbeSample) => abs(s.frameId === undefined ? undefined : sendUs.get(s.frameId));
+    const minus = (a: number | null | undefined, b: number | null | undefined) =>
+      a === null || a === undefined || b === null || b === undefined ? null : a - b;
+    return {
+      n: this.samples.filter((s) => s.presentedAt !== undefined).length,
+      missed: this.samples.filter((s) => s.presentedAt === undefined).length,
+      intervalMs: PROBE_INTERVAL_MS,
+      totalMs: stage((s) => s.presentedAt! - s.clickAt),
+      toDisplayMs: stage((s) => minus(s.displayAt, s.clickAt)),
+      stagesMs: {
+        clickToStreamer: stage((s) => minus(abs(s.srvUs), s.clickAt)),
+        streamerToComposited: stage((s) => minus(abs(frame(s)?.c), abs(s.srvUs))),
+        compositedToEncoded: stage((s) => minus(abs(frame(s)?.e), abs(frame(s)?.c))),
+        encodedToSent: stage((s) => minus(sent(s), abs(frame(s)?.e))),
+        sentToPresented: stage((s) => minus(s.presentedAt, sent(s))),
+      },
+    };
+  }
+
+  private click(): void {
+    if (this.control.readyState !== "open") return;
+    this.pending = { id: this.samples.length, clickAt: performance.timeOrigin + performance.now() };
+    this.samples.push(this.pending);
+    this.send({ k: "button", b: 0, down: true, probe: this.pending.id });
+    this.send({ k: "button", b: 0, down: false });
+  }
+
+  private send(msg: Record<string, unknown>): void {
+    if (this.control.readyState === "open") this.control.send(JSON.stringify({ t: "input", ...msg }) + "\n");
+  }
+}
+
+const RESIZE_STEPS: [number, number][] = [[1920, 1080], [1280, 720], [2560, 1440]];
+const RESIZE_EVERY_MS = 3000;
+
+interface ResizeStep {
+  w: number;
+  h: number;
+  /** Page clock (absolute ms) when the request went out. */
+  askedAt: number;
+  /** First presented frame at the new size. */
+  presentedAt?: number;
+}
+
+/**
+ * Resizes the S2 streamer's output mid-run and times request → first presented
+ * frame at each new size, plus the longest gap between presented frames.
+ */
+class ResizeTest {
+  readonly steps: ResizeStep[] = [];
+  private readonly timers: ReturnType<typeof setTimeout>[] = [];
+  private readonly presented: number[] = [];
+
+  constructor(private readonly control: RTCDataChannel) {}
+
+  start(): void {
+    RESIZE_STEPS.forEach(([w, h], i) => {
+      this.timers.push(
+        setTimeout(() => {
+          if (this.control.readyState !== "open") return;
+          this.steps.push({ w, h, askedAt: performance.timeOrigin + performance.now() });
+          this.control.send(JSON.stringify({ t: "resize", w, h }) + "\n");
+        }, RESIZE_EVERY_MS * (i + 1)),
+      );
+    });
+  }
+
+  stop(): void {
+    this.timers.forEach(clearTimeout);
+  }
+
+  onFrame(md: VideoFrameCallbackMetadata): void {
+    const at = performance.timeOrigin + md.presentationTime;
+    this.presented.push(at);
+    const step = this.steps.at(-1);
+    if (step && step.presentedAt === undefined && md.width === step.w && md.height === step.h) step.presentedAt = at;
+  }
+
+  summary(): Record<string, unknown> {
+    return {
+      steps: this.steps.map((s) => {
+        const around = this.presented.filter((t) => t >= s.askedAt - 500 && t <= s.askedAt + 1500);
+        const gaps = around.slice(1).map((t, i) => t - around[i]!);
+        return {
+          size: `${s.w}x${s.h}`,
+          toPresentedMs: s.presentedAt === undefined ? null : +(s.presentedAt - s.askedAt).toFixed(1),
+          maxPresentGapMs: gaps.length ? +Math.max(...gaps).toFixed(1) : null,
+        };
+      }),
+    };
+  }
+}
+
 /** The RTP path: str0m sends the stream as a video track; rVFC reports each frame. */
 async function runWebRtc(s: StreamInfo): Promise<Result> {
   const secs = Number($<HTMLInputElement>("secs").value) || 15;
@@ -411,9 +652,12 @@ async function runWebRtc(s: StreamInfo): Promise<Result> {
   const times = new Map<number, FrameTimes>();
   const idByRtp = new Map<number, number>();
   const sendUs = new Map<number, number>();
+  const frameUs = new Map<number, { c?: number; e?: number }>();
   let shown = 0;
   let serverStats: Record<string, unknown> | null = null;
   let best: { rtt: number; offset: number } | null = null;
+  let probe: InputProbe | null = null;
+  let resizer: ResizeTest | null = null;
   const toAbs = (us: number) => (best ? performance.timeOrigin + us / 1000 - best.offset : null);
 
   const pc = new RTCPeerConnection();
@@ -435,6 +679,8 @@ async function runWebRtc(s: StreamInfo): Promise<Result> {
   const stopWatching = watchVideo((md) => {
     if (md.rtpTimestamp === undefined) return;
     const id = idByRtp.get(md.rtpTimestamp);
+    probe?.onFrame(md, id);
+    resizer?.onFrame(md);
     if (id === undefined) return;
     const t = times.get(id) ?? { sentAt: null };
     times.set(id, t);
@@ -448,12 +694,25 @@ async function runWebRtc(s: StreamInfo): Promise<Result> {
   });
 
   let pinger: ReturnType<typeof setInterval> | undefined;
+  let stopInput: (() => void) | null = null;
   const done = new Promise<string>((resolve) => {
     let buffer = "";
     control.onopen = () => {
       const ping = () => control.readyState === "open" && control.send(JSON.stringify({ t: "ping", c: performance.now() }) + "\n");
       ping();
       pinger = setInterval(ping, 200);
+      if (server?.resize && $<HTMLInputElement>("resizeTest").checked) {
+        resizer = new ResizeTest(control);
+        resizer.start();
+      }
+      if (server?.input && $<HTMLInputElement>("probe").checked) {
+        probe = new InputProbe(control);
+        probe.start(2000);
+        status(`Running ${s.name} via webrtc, input probe on (hands off the video)…`);
+      } else if (server?.input) {
+        stopInput = forwardInput(control);
+        status(`Running ${s.name} via webrtc, forwarding your input over the video…`);
+      }
     };
     control.onmessage = (e: MessageEvent<string>) => {
       buffer += e.data;
@@ -462,7 +721,15 @@ async function runWebRtc(s: StreamInfo): Promise<Result> {
         const line = buffer.slice(0, nl).trim();
         buffer = buffer.slice(nl + 1);
         if (!line) continue;
-        const msg = JSON.parse(line) as { t: string; c?: number; s_us?: number; id?: number; rtp?: number };
+        const msg = JSON.parse(line) as {
+          t: string;
+          c?: number;
+          s_us?: number;
+          id?: number;
+          rtp?: number;
+          c_us?: number;
+          e_us?: number;
+        };
         if (msg.t === "pong") {
           const tNow = performance.now();
           const rtt = tNow - msg.c!;
@@ -470,6 +737,9 @@ async function runWebRtc(s: StreamInfo): Promise<Result> {
         } else if (msg.t === "sent") {
           idByRtp.set(msg.rtp!, msg.id!);
           sendUs.set(msg.id!, msg.s_us!);
+          if (msg.e_us !== undefined) frameUs.set(msg.id!, { c: msg.c_us, e: msg.e_us });
+        } else if (msg.t === "probe") {
+          probe?.acknowledged(msg.id!, msg.s_us!);
         } else if (msg.t === "stats" || msg.t === "done") {
           serverStats = msg as Record<string, unknown>;
           if (msg.t === "done") setTimeout(() => resolve("done"), 600);
@@ -483,7 +753,8 @@ async function runWebRtc(s: StreamInfo): Promise<Result> {
   });
 
   await pc.setLocalDescription(await pc.createOffer());
-  const query = `name=${encodeURIComponent(s.name)}&fps=${fps}&secs=${secs}&host=${encodeURIComponent(host)}`;
+  const token = $<HTMLInputElement>("token").value.trim();
+  const query = `name=${encodeURIComponent(s.name)}&fps=${fps}&secs=${secs}&host=${encodeURIComponent(host)}&token=${encodeURIComponent(token)}`;
   const res = await fetch(`${httpBase}/webrtc/media?${query}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -494,6 +765,10 @@ async function runWebRtc(s: StreamInfo): Promise<Result> {
 
   const reason = await done;
   clearInterval(pinger);
+  // Assigned in control.onopen, which TypeScript's narrowing can't see.
+  (stopInput as (() => void) | null)?.();
+  (probe as InputProbe | null)?.stop();
+  (resizer as ResizeTest | null)?.stop();
   stopWatching();
   const minRttMs = best ? (best as { rtt: number }).rtt : null;
   // Map send times with the final (best) clock offset.
@@ -509,7 +784,17 @@ async function runWebRtc(s: StreamInfo): Promise<Result> {
   const counts = { received: sendUs.size, dropped: 0, shown, errors: 0 };
   const impl = rtc?.decoderImplementation ?? "browser decoder";
   const label = `webrtc (RTP, ${String(impl)}${rtc?.powerEfficientDecoder ? ", hw" : ""})`;
-  return finish(s, "webrtc", label, times, counts, { reason, minRttMs }, serverStats, rtc);
+  const result = finish(s, "webrtc", label, times, counts, { reason, minRttMs }, serverStats, rtc);
+  const p = probe as InputProbe | null;
+  result.inputMode = p ? "probe" : server?.input ? "forward" : "none";
+  const r = resizer as ResizeTest | null;
+  if (r) result.resizeTest = r.summary();
+  if (p) {
+    result.inputProbe = p.summary(toAbs, sendUs, frameUs);
+    const total = result.inputProbe.totalMs as Pct;
+    status(`Input → screen: p50 ${total.p50?.toFixed(1)} ms, p95 ${total.p95?.toFixed(1)} ms over ${String(result.inputProbe.n)} clicks`);
+  }
+  return result;
 }
 
 /** The video receiver's inbound-rtp stats, plus per-frame averages in ms. */
@@ -637,6 +922,35 @@ function status(text: string): void {
 }
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Keeps the setup across reloads: fields in localStorage, the token only for this tab's session. */
+function persistSetup(): void {
+  const fields = ["host", "httpPort", "secs", "fps", "dgram", "path", "probe", "resizeTest", "token"];
+  const store = (id: string) => (id === "token" ? sessionStorage : localStorage);
+  for (const id of fields) {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+    if (!el) continue;
+    const key = `s1c-setup-${id}`;
+    try {
+      const saved = store(id).getItem(key);
+      if (saved !== null) {
+        if (el instanceof HTMLInputElement && el.type === "checkbox") el.checked = saved === "1";
+        else el.value = saved;
+      }
+    } catch {
+      // Storage unavailable; the form just starts empty.
+    }
+    el.addEventListener("change", () => {
+      try {
+        const value = el instanceof HTMLInputElement && el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value;
+        store(id).setItem(key, value);
+      } catch {
+        // Ignore: persistence is a convenience.
+      }
+    });
+  }
+}
+persistSetup();
 
 $("load").onclick = () => guarded(loadStreams);
 $("all").onclick = () =>

@@ -1,0 +1,247 @@
+{
+  "capturedAt": "2026-10-04T04:05:53.928Z",
+  "env": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "adapter": "apple metal-3",
+    "subgroups": true,
+    "decoders": {
+      "chrome-h264": "WebCodecs (hardware), WebRTC ok",
+      "chrome-hevc": "WebCodecs (hardware), WebRTC ok"
+    }
+  },
+  "results": [
+    {
+      "stream": "chrome-h264",
+      "codec": "h264",
+      "codecString": "avc1.640033",
+      "bitrateMbps": 40,
+      "path": "webrtc",
+      "decoder": "webrtc (RTP, browser decoder)",
+      "framesReceived": 901,
+      "framesDropped": 0,
+      "framesShown": 895,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.885009765625,
+        "p95": 2.63818359375
+      },
+      "decodedMs": {
+        "p50": 3.4599609375,
+        "p95": 4.6591796875
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 3.72998046875,
+        "p95": 7.10009765625
+      },
+      "displayMs": {
+        "p50": 24.31591796875,
+        "p95": 29.629150390625
+      },
+      "decodeOnlyMs": {
+        "p50": 1.60009765625,
+        "p95": 2.300048828125
+      },
+      "minRttMs": 0.7999999523162842,
+      "server": {
+        "t": "stats",
+        "elapsed_ms": 15526,
+        "frames_generated": 901,
+        "frames_sent": 901,
+        "bytes_sent": 48325162,
+        "keyframes": 1,
+        "keyframe_requests": 0,
+        "first_frame_ms": 18,
+        "composite_to_encoded_ms_p50": 1.8291250000000001,
+        "composite_to_encoded_ms_p99": 2.086934,
+        "encoded_to_sent_us_p50": 18,
+        "encoded_to_sent_us_p99": 84,
+        "frame_interval_ms_p50": 16.666081,
+        "frame_interval_ms_p99": 17.010061,
+        "inputs": 53,
+        "inputs_unmapped": 0
+      },
+      "rtc": {
+        "framesReceived": 901,
+        "framesDecoded": 901,
+        "framesDropped": 0,
+        "keyFramesDecoded": 1,
+        "framesPerSecond": 24,
+        "frameWidth": 2560,
+        "frameHeight": 1440,
+        "packetsLost": 0,
+        "nackCount": 0,
+        "pliCount": 0,
+        "firCount": 0,
+        "totalDecodeTime": 1.7376969999999998,
+        "totalProcessingDelay": 2.413998,
+        "totalAssemblyTime": 0.221027,
+        "jitterBufferDelay": 0.653216,
+        "jitterBufferTargetDelay": 10.325612,
+        "jitterBufferMinimumDelay": 10.325612,
+        "jitterBufferEmittedCount": 901,
+        "decodeMsAvg": 1.93,
+        "processingMsAvg": 2.68,
+        "jitterBufferMsAvg": 0.72
+      },
+      "endReason": "done",
+      "error": null,
+      "inputMode": "probe",
+      "inputProbe": {
+        "n": 25,
+        "missed": 2,
+        "intervalMs": 500,
+        "totalMs": {
+          "p50": 35.400146484375,
+          "p95": 36.5
+        },
+        "toDisplayMs": {
+          "p50": 55.60009765625,
+          "p95": 63.900146484375
+        },
+        "stagesMs": {
+          "clickToStreamer": {
+            "p50": 1.140869140625,
+            "p95": 2.174072265625
+          },
+          "streamerToComposited": {
+            "p50": 29.0859375,
+            "p95": 30.4599609375
+          },
+          "compositedToEncoded": {
+            "p50": 1.947998046875,
+            "p95": 2.179931640625
+          },
+          "encodedToSent": {
+            "p50": 0.015869140625,
+            "p95": 0.069091796875
+          },
+          "sentToPresented": {
+            "p50": 3.26025390625,
+            "p95": 3.9482421875
+          }
+        }
+      }
+    },
+    {
+      "stream": "chrome-hevc",
+      "codec": "hevc",
+      "codecString": "hev1.1.6.L153.B0",
+      "bitrateMbps": 40,
+      "path": "webrtc",
+      "decoder": "webrtc (RTP, browser decoder)",
+      "framesReceived": 901,
+      "framesDropped": 0,
+      "framesShown": 901,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.992919921875,
+        "p95": 2.5908203125
+      },
+      "decodedMs": {
+        "p50": 3.8828125,
+        "p95": 4.900146484375
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 4.117919921875,
+        "p95": 7.52783203125
+      },
+      "displayMs": {
+        "p50": 17.64990234375,
+        "p95": 23.765869140625
+      },
+      "decodeOnlyMs": {
+        "p50": 1.800048828125,
+        "p95": 2.5
+      },
+      "minRttMs": 0.5999999642372131,
+      "server": {
+        "t": "stats",
+        "elapsed_ms": 15527,
+        "frames_generated": 901,
+        "frames_sent": 901,
+        "bytes_sent": 49794131,
+        "keyframes": 1,
+        "keyframe_requests": 0,
+        "first_frame_ms": 17,
+        "composite_to_encoded_ms_p50": 1.75197,
+        "composite_to_encoded_ms_p99": 1.9702330000000001,
+        "encoded_to_sent_us_p50": 17,
+        "encoded_to_sent_us_p99": 97,
+        "frame_interval_ms_p50": 16.666102,
+        "frame_interval_ms_p99": 17.070676,
+        "inputs": 53,
+        "inputs_unmapped": 0
+      },
+      "rtc": {
+        "framesReceived": 901,
+        "framesDecoded": 901,
+        "framesDropped": 0,
+        "keyFramesDecoded": 1,
+        "framesPerSecond": 25,
+        "frameWidth": 2560,
+        "frameHeight": 1440,
+        "packetsLost": 0,
+        "nackCount": 0,
+        "pliCount": 0,
+        "firCount": 0,
+        "totalDecodeTime": 1.719666,
+        "totalProcessingDelay": 2.400495,
+        "totalAssemblyTime": 0.215767,
+        "jitterBufferDelay": 0.659833,
+        "jitterBufferTargetDelay": 10.357096,
+        "jitterBufferMinimumDelay": 10.357096,
+        "jitterBufferEmittedCount": 901,
+        "decodeMsAvg": 1.91,
+        "processingMsAvg": 2.66,
+        "jitterBufferMsAvg": 0.73
+      },
+      "endReason": "done",
+      "error": null,
+      "inputMode": "probe",
+      "inputProbe": {
+        "n": 25,
+        "missed": 2,
+        "intervalMs": 500,
+        "totalMs": {
+          "p50": 33.60009765625,
+          "p95": 34.900146484375
+        },
+        "toDisplayMs": {
+          "p50": 46.699951171875,
+          "p95": 51.300048828125
+        },
+        "stagesMs": {
+          "clickToStreamer": {
+            "p50": 0.533203125,
+            "p95": 0.998046875
+          },
+          "streamerToComposited": {
+            "p50": 29.152099609375,
+            "p95": 29.447021484375
+          },
+          "compositedToEncoded": {
+            "p50": 1.87109375,
+            "p95": 2.009033203125
+          },
+          "encodedToSent": {
+            "p50": 0.01513671875,
+            "p95": 0.029052734375
+          },
+          "sentToPresented": {
+            "p50": 1.9609375,
+            "p95": 3.2529296875
+          }
+        }
+      }
+    }
+  ],
+  "note": "s2-streamer with --compositor-fps 240 --fps 60 (every 4th compositor frame encoded)."
+}

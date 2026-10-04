@@ -1,0 +1,22 @@
+diff --git a/wayland-display-core/src/comp/mod.rs b/wayland-display-core/src/comp/mod.rs
+index d5b7b14..19fa523 100644
+--- a/wayland-display-core/src/comp/mod.rs
++++ b/wayland-display-core/src/comp/mod.rs
+@@ -425,9 +425,14 @@ pub(crate) fn apply_video_info(
+             .unwrap_or(new_size),
+         );
+ 
+-        let new_size = max_size
+-            .intersection(Rectangle::from_size(new_size))
+-            .map(|rect| rect.size);
++        // xdg-shell: a zero max size (per dimension) means "no maximum". Intersecting
++        // with a zero-sized rectangle sent a configure without a size, and clients
++        // (Chrome) fell back to a tiny default window after every resize.
++        let max = max_size.size;
++        let new_size = Some(Size::from((
++            if max.w > 0 { new_size.w.min(max.w) } else { new_size.w },
++            if max.h > 0 { new_size.h.min(max.h) } else { new_size.h },
++        )));
+         toplevel.with_pending_state(|state| {
+             state.size = new_size;
+             state.states.set(XdgState::Fullscreen);

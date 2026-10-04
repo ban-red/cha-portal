@@ -1,0 +1,185 @@
+{
+  "capturedAt": "2026-10-04T03:49:39Z",
+  "mode": "input",
+  "gpu": "NVIDIA GeForce RTX 4090, 595.71.05",
+  "gstreamer": "GStreamer 1.28.2",
+  "chromeVersion": "Google Chrome 154.0.8037.97",
+  "size": "2560x1440",
+  "results": [
+    {
+      "case": "baseline",
+      "chromeFlags": [],
+      "fps": 60,
+      "clicks": 30,
+      "compositorFps": 60.0,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 51.93,
+        "p50": 59.84,
+        "p95": 67.62,
+        "max": 67.9
+      },
+      "frames": {
+        "p50": 3.59,
+        "min": 3.12
+      },
+      "chromeNotes": [
+        "[85:110:1004/034942.944003:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT"
+      ]
+    },
+    {
+      "case": "no-gpu-vsync",
+      "chromeFlags": [
+        "--disable-gpu-vsync"
+      ],
+      "fps": 60,
+      "clicks": 30,
+      "compositorFps": 60.0,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 51.53,
+        "p50": 60.23,
+        "p95": 67.16,
+        "max": 67.77
+      },
+      "frames": {
+        "p50": 3.61,
+        "min": 3.09
+      },
+      "chromeNotes": [
+        "[497:522:1004/035005.726906:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT"
+      ]
+    },
+    {
+      "case": "no-frame-rate-limit",
+      "chromeFlags": [
+        "--disable-frame-rate-limit"
+      ],
+      "fps": 60,
+      "clicks": 30,
+      "compositorFps": 60.0,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 52.38,
+        "p50": 60.88,
+        "p95": 67.57,
+        "max": 68.13
+      },
+      "frames": {
+        "p50": 3.65,
+        "min": 3.14
+      },
+      "chromeNotes": [
+        "[903:928:1004/035029.881017:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[903:928:1004/035029.941369:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[903:928:1004/035029.941376:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection."
+      ]
+    },
+    {
+      "case": "no-vsync+no-limit",
+      "chromeFlags": [
+        "--disable-gpu-vsync",
+        "--disable-frame-rate-limit"
+      ],
+      "fps": 60,
+      "clicks": 30,
+      "compositorFps": 60.0,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 53.54,
+        "p50": 62.19,
+        "p95": 69.63,
+        "max": 71.47
+      },
+      "frames": {
+        "p50": 3.73,
+        "min": 3.21
+      },
+      "chromeNotes": [
+        "[1306:1332:1004/035052.688371:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT"
+      ]
+    },
+    {
+      "case": "baseline",
+      "chromeFlags": [],
+      "fps": 120,
+      "clicks": 30,
+      "compositorFps": 120.0,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 25.42,
+        "p50": 30.8,
+        "p95": 34.26,
+        "max": 34.61
+      },
+      "frames": {
+        "p50": 3.7,
+        "min": 3.05
+      },
+      "chromeNotes": [
+        "[1752:1787:1004/035113.483386:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.037 ms",
+        "[1712:1737:1004/035114.278897:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[1712:1737:1004/035114.373377:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[1712:1737:1004/035114.373385:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection."
+      ]
+    },
+    {
+      "case": "no-gpu-vsync",
+      "chromeFlags": [
+        "--disable-gpu-vsync"
+      ],
+      "fps": 120,
+      "clicks": 30,
+      "compositorFps": 120.0,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 26.71,
+        "p50": 30.85,
+        "p95": 34.23,
+        "max": 35.05
+      },
+      "frames": {
+        "p50": 3.7,
+        "min": 3.21
+      },
+      "chromeNotes": [
+        "[2118:2144:1004/035137.046548:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[2118:2144:1004/035137.077579:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR",
+        "[2118:2144:1004/035137.134335:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[2118:2144:1004/035137.134343:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection.",
+        "[2159:2205:1004/035148.086537:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.09 ms"
+      ]
+    },
+    {
+      "case": "no-vsync+no-limit",
+      "chromeFlags": [
+        "--disable-gpu-vsync",
+        "--disable-frame-rate-limit"
+      ],
+      "fps": 120,
+      "clicks": 30,
+      "compositorFps": 120.0,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 28.08,
+        "p50": 33.87,
+        "p95": 38.06,
+        "max": 38.19
+      },
+      "frames": {
+        "p50": 4.06,
+        "min": 3.37
+      },
+      "chromeNotes": [
+        "[2523:2548:1004/035201.077579:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT"
+      ]
+    }
+  ]
+}

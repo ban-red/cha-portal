@@ -1,0 +1,180 @@
+{
+  "capturedAt": "2026-10-04T03:59:44Z",
+  "mode": "input",
+  "gpu": "NVIDIA GeForce RTX 4090, 595.71.05",
+  "gstreamer": "GStreamer 1.28.2",
+  "chromeVersion": "Google Chrome 154.0.8037.97",
+  "size": "2560x1440",
+  "results": [
+    {
+      "case": "60",
+      "chromeFlags": [],
+      "fps": 60,
+      "forwardedFps": null,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "7",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "59",
+        "encAvgLatencyUs": "2779"
+      },
+      "compositorFps": 60.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 67.39,
+        "p50": 76.01,
+        "p95": 86.27,
+        "max": 86.43
+      },
+      "frames": {
+        "p50": 4.56,
+        "min": 4.04
+      },
+      "chromeNotes": [
+        "[86:111:1004/035948.435656:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[86:111:1004/035948.526358:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[86:111:1004/035948.526367:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection."
+      ]
+    },
+    {
+      "case": "120",
+      "chromeFlags": [],
+      "fps": 120,
+      "forwardedFps": null,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "12",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "59",
+        "encAvgLatencyUs": "3140"
+      },
+      "compositorFps": 120.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 9.11,
+        "p50": 13.55,
+        "p95": 16.84,
+        "max": 17.6
+      },
+      "frames": {
+        "p50": 1.63,
+        "min": 1.09
+      },
+      "chromeNotes": [
+        "[493:517:1004/040011.203007:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[493:517:1004/040011.312667:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[493:517:1004/040011.312675:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection."
+      ]
+    },
+    {
+      "case": "240",
+      "chromeFlags": [],
+      "fps": 240,
+      "forwardedFps": null,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "21",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "60",
+        "encAvgLatencyUs": "3132"
+      },
+      "compositorFps": 240.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 14.37,
+        "p50": 16.37,
+        "p95": 18.14,
+        "max": 18.14
+      },
+      "frames": {
+        "p50": 3.93,
+        "min": 3.45
+      },
+      "chromeNotes": [
+        "[901:926:1004/040034.098848:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR",
+        "[901:926:1004/040034.099415:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR",
+        "[901:926:1004/040034.103906:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR",
+        "[901:926:1004/040034.169151:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[901:926:1004/040034.169159:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection."
+      ]
+    },
+    {
+      "case": "240->120",
+      "chromeFlags": [],
+      "fps": 240,
+      "forwardedFps": 120,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "19",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "59",
+        "encAvgLatencyUs": "3064"
+      },
+      "compositorFps": 114.7,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 21.0,
+        "p50": 28.49,
+        "p95": 37.03,
+        "max": 38.9
+      },
+      "frames": {
+        "p50": 6.84,
+        "min": 5.04
+      },
+      "chromeNotes": [
+        "[1312:1337:1004/040056.914861:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR",
+        "[1312:1337:1004/040056.960099:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[1312:1337:1004/040056.960108:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection."
+      ]
+    },
+    {
+      "case": "240->60",
+      "chromeFlags": [],
+      "fps": 240,
+      "forwardedFps": 60,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "22",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "59",
+        "encAvgLatencyUs": "2747"
+      },
+      "compositorFps": 60.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 16.9,
+        "p50": 24.22,
+        "p95": 32.56,
+        "max": 33.1
+      },
+      "frames": {
+        "p50": 5.81,
+        "min": 4.06
+      },
+      "chromeNotes": [
+        "[1758:1801:1004/040117.687433:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.022 ms",
+        "[1758:1801:1004/040118.262430:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.141 ms",
+        "[1718:1743:1004/040119.718239:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR",
+        "[1718:1743:1004/040119.791499:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[1718:1743:1004/040119.791514:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection.",
+        "[1718:1743:1004/040119.837392:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR"
+      ]
+    }
+  ]
+}

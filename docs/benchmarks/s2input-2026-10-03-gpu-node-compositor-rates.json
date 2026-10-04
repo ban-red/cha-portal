@@ -1,0 +1,200 @@
+{
+  "capturedAt": "2026-10-04T03:56:24Z",
+  "mode": "input",
+  "gpu": "NVIDIA GeForce RTX 4090, 595.71.05",
+  "gstreamer": "GStreamer 1.28.2",
+  "chromeVersion": "Google Chrome 154.0.8037.97",
+  "size": "2560x1440",
+  "results": [
+    {
+      "case": "rate-60-a",
+      "chromeFlags": [],
+      "fps": 60,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "7",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "60",
+        "encAvgLatencyUs": "2603"
+      },
+      "compositorFps": 60.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 67.29,
+        "p50": 75.51,
+        "p95": 82.83,
+        "max": 83.18
+      },
+      "frames": {
+        "p50": 4.53,
+        "min": 4.04
+      },
+      "chromeNotes": [
+        "[86:110:1004/035628.613427:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[127:213:1004/035629.905866:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.123 ms",
+        "[127:213:1004/035638.689054:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.052 ms"
+      ]
+    },
+    {
+      "case": "rate-60-b",
+      "chromeFlags": [],
+      "fps": 60,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "7",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "59",
+        "encAvgLatencyUs": "3201"
+      },
+      "compositorFps": 60.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 66.87,
+        "p50": 74.52,
+        "p95": 82.67,
+        "max": 82.93
+      },
+      "frames": {
+        "p50": 4.47,
+        "min": 4.01
+      },
+      "chromeNotes": [
+        "[497:522:1004/035651.421999:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[497:522:1004/035651.461053:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR"
+      ]
+    },
+    {
+      "case": "rate-120-a",
+      "chromeFlags": [],
+      "fps": 120,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "12",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "60",
+        "encAvgLatencyUs": "3182"
+      },
+      "compositorFps": 120.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 34.82,
+        "p50": 39.55,
+        "p95": 42.89,
+        "max": 46.57
+      },
+      "frames": {
+        "p50": 4.75,
+        "min": 4.18
+      },
+      "chromeNotes": [
+        "[905:930:1004/035714.271556:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[905:930:1004/035714.373955:ERROR:google_apis/gcm/engine/mcs_client.cc:702]   Error code: 401  Error message: Authentication Failed: wrong_secret",
+        "[905:930:1004/035714.373963:ERROR:google_apis/gcm/engine/mcs_client.cc:704] Failed to log in to GCM, resetting connection."
+      ]
+    },
+    {
+      "case": "rate-120-b",
+      "chromeFlags": [],
+      "fps": 120,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "12",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "59",
+        "encAvgLatencyUs": "3117"
+      },
+      "compositorFps": 120.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 21.56,
+        "p50": 30.0,
+        "p95": 33.97,
+        "max": 34.1
+      },
+      "frames": {
+        "p50": 3.6,
+        "min": 2.59
+      },
+      "chromeNotes": [
+        "[1311:1336:1004/035737.084872:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT"
+      ]
+    },
+    {
+      "case": "rate-240-a",
+      "chromeFlags": [],
+      "fps": 240,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "22",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "59",
+        "encAvgLatencyUs": "3049"
+      },
+      "compositorFps": 240.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 16.83,
+        "p50": 18.67,
+        "p95": 20.33,
+        "max": 20.46
+      },
+      "frames": {
+        "p50": 4.48,
+        "min": 4.04
+      },
+      "chromeNotes": [
+        "[1760:1796:1004/035758.543775:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.005 ms",
+        "[1720:1745:1004/035759.950959:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT"
+      ]
+    },
+    {
+      "case": "rate-240-b",
+      "chromeFlags": [],
+      "fps": 240,
+      "clicks": 30,
+      "nvidia": {
+        "gpuUtil": "22",
+        "encUtil": "10",
+        "encSessions": "2",
+        "encAvgFps": "60",
+        "encAvgLatencyUs": "3192"
+      },
+      "compositorFps": 240.0,
+      "starved": false,
+      "missed": 0,
+      "clickToCompositedMs": {
+        "n": 30,
+        "min": 16.99,
+        "p50": 18.8,
+        "p95": 20.68,
+        "max": 20.79
+      },
+      "frames": {
+        "p50": 4.51,
+        "min": 4.08
+      },
+      "chromeNotes": [
+        "[2169:2206:1004/035821.370702:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.137 ms",
+        "[2130:2155:1004/035822.765100:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT",
+        "[2130:2155:1004/035822.803281:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR",
+        "[2169:2206:1004/035832.433439:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.007 ms",
+        "[2169:2206:1004/035836.804374:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.152 ms"
+      ]
+    }
+  ]
+}

@@ -70,6 +70,9 @@
           <label>Seconds per stream <input id="secs" type="number" value="15" /></label>
           <label>FPS <input id="fps" type="number" value="60" /></label>
           <label>Max datagram (bytes) <input id="dgram" type="number" value="1200" /></label>
+          <label>Token (S2 streamer) <input id="token" autocomplete="off" spellcheck="false" /></label>
+          <label><input id="probe" type="checkbox" /> Input → screen probe (S2 streamer: synthetic clicks; keep hands off)</label>
+          <label><input id="resizeTest" type="checkbox" /> Resize test (S2 streamer: 1920×1080, 1280×720, back to 2560×1440)</label>
           <label>Present path
             <select id="path">
               <option value="webgpu">WebTransport → WebCodecs → WebGPU canvas</option>

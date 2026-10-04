@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>S2 live</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #101418; color: #e8eef4; font: 28px/1.35 system-ui, sans-serif; cursor: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; }
+  #panel { position: fixed; left: 48px; top: 40px; padding: 24px 32px; background: rgba(0, 0, 0, 0.55); border-radius: 12px; min-width: 760px; }
+  h1 { margin: 0 0 12px; font-size: 40px; }
+  input { font: inherit; width: 100%; box-sizing: border-box; padding: 8px 12px; margin-top: 12px; border-radius: 8px; border: 2px solid #4a90d9; background: #0b0f14; color: inherit; }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  #cross { position: fixed; width: 40px; height: 40px; margin: -20px 0 0 -20px; border: 3px solid #ffd400; border-radius: 50%; pointer-events: none; }
+  .k { font-family: ui-monospace, monospace; color: #ffd400; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>Cha Portal · S2 live</h1>
+  <div>Pointer <span class="k" id="pos">–</span> · clicks <span class="k" id="clicks">0</span> · wheel <span class="k" id="wheel">0</span></div>
+  <div>Last key <span class="k" id="key">–</span> · <span class="k" id="fps">–</span></div>
+  <input id="text" placeholder="Click here and type" autocomplete="off">
+</div>
+<div id="cross"></div>
+<div id="flash"></div>
+<script>
+// A moving gradient behind an input echo: where the pointer is, what was
+// clicked or typed. A click flashes the screen white for 100 ms, so the
+// click -> screen round trip is visible and measurable (the S2/S4 probes).
+const $ = (id) => document.getElementById(id);
+let clicks = 0, wheel = 0, flashTimer = 0;
+addEventListener("pointermove", (e) => {
+  $("cross").style.left = e.clientX + "px";
+  $("cross").style.top = e.clientY + "px";
+  $("pos").textContent = `${Math.round(e.clientX)}, ${Math.round(e.clientY)}`;
+});
+addEventListener("pointerdown", (e) => {
+  $("clicks").textContent = ++clicks;
+  $("flash").style.opacity = "1";
+  // A fixed 100 ms, not "two frames": with Chrome's frame-rate limit off, frames are
+  // too short for the compositor to sample. Probes only use the flash's onset.
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => ($("flash").style.opacity = "0"), 100);
+  if (e.target !== $("text")) $("text").focus();
+});
+addEventListener("wheel", (e) => ($("wheel").textContent = (wheel += Math.sign(e.deltaY))));
+addEventListener("keydown", (e) => ($("key").textContent = `${e.code} (${e.key})`));
+
+const canvas = $("c");
+const ctx = canvas.getContext("2d");
+let frames = 0, last = performance.now();
+const draw = (now) => {
+  if (canvas.width !== innerWidth || canvas.height !== innerHeight) {
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+  }
+  const t = now / 1000;
+  const g = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  g.addColorStop(0, `hsl(${(t * 40) % 360} 55% 22%)`);
+  g.addColorStop(1, `hsl(${(t * 40 + 140) % 360} 55% 14%)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // A sweeping bar shows motion smoothness.
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillRect(((t * 600) % (canvas.width + 200)) - 200, 0, 200, canvas.height);
+  frames++;
+  if (now - last >= 1000) {
+    $("fps").textContent = `${Math.round((frames * 1000) / (now - last))} fps`;
+    frames = 0;
+    last = now;
+  }
+  requestAnimationFrame(draw);
+};
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

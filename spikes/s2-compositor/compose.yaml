@@ -1,0 +1,59 @@
+# Spike S2 on a Cha Node with an NVIDIA GPU (CDI spec required, as for S1e).
+# From the repository root:
+#   milestone 1, one-shot bench (results in spikes/s2-compositor/results/, nothing
+#   listens on the network):
+#     docker compose -f spikes/s2-compositor/compose.yaml run --rm --build s2-compositor
+#   milestone 2, live streamer (TCP 4495 + UDP 4496 on the LAN; prints its token):
+#     docker compose -f spikes/s2-compositor/compose.yaml --profile live up -d --build s2-streamer
+#     docker compose -f spikes/s2-compositor/compose.yaml logs s2-streamer | grep token
+#     docker compose -f spikes/s2-compositor/compose.yaml --profile live down
+name: cha-s2
+
+services:
+  s2-compositor:
+    build:
+      context: ../..
+      dockerfile: spikes/s2-compositor/Dockerfile
+      target: bench
+    image: cha/s2-compositor
+    environment:
+      S2_WIDTH: "2560"
+      S2_HEIGHT: "1440"
+      S2_FPS: "60"
+      S2_SECONDS: "15"
+      S2_CODECS: h265,h264
+    # The GPU as a CDI device (the whole driver: EGL/GBM for the compositor and
+    # Chrome, Vulkan for the NV12 converter, CUDA/NVENC for the encoder).
+    devices:
+      - nvidia.com/gpu=all
+      - /dev/dri
+    # Chrome needs more than Docker's default 64 MB of /dev/shm.
+    shm_size: 2gb
+    volumes:
+      - ./results:/out
+
+  s2-streamer:
+    profiles: [live]
+    build:
+      context: ../..
+      dockerfile: spikes/s2-compositor/Dockerfile
+      target: streamer
+    image: cha/s2-streamer
+    # Host networking so WebRTC's host candidate is the node's LAN address.
+    network_mode: host
+    # The compositor (and Chrome) run at 240 fps and every 4th frame is encoded:
+    # click -> frame ~24 ms instead of ~76 ms with a 60 fps compositor (S2 input bench).
+    command: ["--compositor-fps", "240", "--fps", "60"]
+    environment:
+      RUST_LOG: info,str0m=warn
+    devices:
+      - nvidia.com/gpu=all
+      - /dev/dri
+    shm_size: 2gb
+    # Keeps the access token across restarts.
+    volumes:
+      - s2-state:/state
+    restart: "no"
+
+volumes:
+  s2-state:

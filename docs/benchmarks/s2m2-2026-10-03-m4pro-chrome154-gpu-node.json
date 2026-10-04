@@ -1,0 +1,174 @@
+{
+  "capturedAt": "2026-10-04T03:31:02.202Z",
+  "env": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "adapter": "apple metal-3",
+    "subgroups": true,
+    "decoders": {
+      "chrome-h264": "WebCodecs (hardware), WebRTC ok",
+      "chrome-hevc": "WebCodecs (hardware), WebRTC ok"
+    }
+  },
+  "results": [
+    {
+      "stream": "chrome-h264",
+      "codec": "h264",
+      "codecString": "avc1.640033",
+      "bitrateMbps": 40,
+      "path": "webrtc",
+      "decoder": "webrtc (RTP, browser decoder)",
+      "framesReceived": 901,
+      "framesDropped": 0,
+      "framesShown": 893,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 2.00390625,
+        "p95": 2.93994140625
+      },
+      "decodedMs": {
+        "p50": 3.548095703125,
+        "p95": 5.285888671875
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 3.83984375,
+        "p95": 7.93798828125
+      },
+      "displayMs": {
+        "p50": 16.7138671875,
+        "p95": 22.376953125
+      },
+      "decodeOnlyMs": {
+        "p50": 1.5,
+        "p95": 2.89990234375
+      },
+      "minRttMs": 0.800000011920929,
+      "server": {
+        "t": "stats",
+        "elapsed_ms": 15527,
+        "frames_generated": 901,
+        "frames_sent": 901,
+        "bytes_sent": 65687529,
+        "keyframes": 1,
+        "keyframe_requests": 0,
+        "first_frame_ms": 17,
+        "composite_to_encoded_ms_p50": 1.894122,
+        "composite_to_encoded_ms_p99": 2.0962709999999998,
+        "encoded_to_sent_us_p50": 19,
+        "encoded_to_sent_us_p99": 102,
+        "frame_interval_ms_p50": 16.669407,
+        "frame_interval_ms_p99": 16.975881,
+        "inputs": 504,
+        "inputs_unmapped": 0
+      },
+      "rtc": {
+        "framesReceived": 901,
+        "framesDecoded": 901,
+        "framesDropped": 0,
+        "keyFramesDecoded": 1,
+        "framesPerSecond": 24,
+        "frameWidth": 2560,
+        "frameHeight": 1440,
+        "packetsLost": 0,
+        "nackCount": 0,
+        "pliCount": 0,
+        "firCount": 0,
+        "totalDecodeTime": 2.023413,
+        "totalProcessingDelay": 2.8336919999999997,
+        "totalAssemblyTime": 0.377741,
+        "jitterBufferDelay": 0.78904,
+        "jitterBufferTargetDelay": 9.980832999999999,
+        "jitterBufferMinimumDelay": 9.980832999999999,
+        "jitterBufferEmittedCount": 901,
+        "decodeMsAvg": 2.25,
+        "processingMsAvg": 3.15,
+        "jitterBufferMsAvg": 0.88
+      },
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "chrome-hevc",
+      "codec": "hevc",
+      "codecString": "hev1.1.6.L153.B0",
+      "bitrateMbps": 40,
+      "path": "webrtc",
+      "decoder": "webrtc (RTP, browser decoder)",
+      "framesReceived": 901,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.913330078125,
+        "p95": 2.802978515625
+      },
+      "decodedMs": {
+        "p50": 3.7880859375,
+        "p95": 5.42822265625
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 4.145263671875,
+        "p95": 7.8271484375
+      },
+      "displayMs": {
+        "p50": 18.278076171875,
+        "p95": 33.087158203125
+      },
+      "decodeOnlyMs": {
+        "p50": 1.800048828125,
+        "p95": 3
+      },
+      "minRttMs": 0.5999999642372131,
+      "server": {
+        "t": "stats",
+        "elapsed_ms": 15526,
+        "frames_generated": 901,
+        "frames_sent": 901,
+        "bytes_sent": 65436550,
+        "keyframes": 1,
+        "keyframe_requests": 0,
+        "first_frame_ms": 14,
+        "composite_to_encoded_ms_p50": 1.850221,
+        "composite_to_encoded_ms_p99": 2.071149,
+        "encoded_to_sent_us_p50": 21,
+        "encoded_to_sent_us_p99": 106,
+        "frame_interval_ms_p50": 16.670531,
+        "frame_interval_ms_p99": 16.996102999999998,
+        "inputs": 899,
+        "inputs_unmapped": 0
+      },
+      "rtc": {
+        "framesReceived": 901,
+        "framesDecoded": 901,
+        "framesDropped": 0,
+        "keyFramesDecoded": 1,
+        "framesPerSecond": 24,
+        "frameWidth": 2560,
+        "frameHeight": 1440,
+        "packetsLost": 0,
+        "nackCount": 0,
+        "pliCount": 0,
+        "firCount": 0,
+        "totalDecodeTime": 1.8907159999999998,
+        "totalProcessingDelay": 2.6316569999999997,
+        "totalAssemblyTime": 0.295442,
+        "jitterBufferDelay": 0.719822,
+        "jitterBufferTargetDelay": 10.049294,
+        "jitterBufferMinimumDelay": 10.049294,
+        "jitterBufferEmittedCount": 901,
+        "decodeMsAvg": 2.1,
+        "processingMsAvg": 2.92,
+        "jitterBufferMsAvg": 0.8
+      },
+      "endReason": "done",
+      "error": null
+    }
+  ]
+}

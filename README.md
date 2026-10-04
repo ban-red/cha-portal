@@ -17,6 +17,7 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 | `spikes/s1b-pyrowave-webgpu` | Spike S1b: can a browser decode PyroWave fast and bit-exact? ([README](spikes/s1b-pyrowave-webgpu/README.md)) |
 | `spikes/s1c-codec-compare` | Spikes S1c/S1d: PyroWave vs H.264/HEVC/AV1 on the same transport, and four ways to put a decoded frame on screen ([README](spikes/s1c-codec-compare/README.md)) |
 | `spikes/s1e-encode-latency` | Spike S1e: per-frame encode latency on the node GPU, NVENC vs PyroWave ([README](spikes/s1e-encode-latency/README.md)) |
+| `spikes/s2-compositor` | Spike S2: gst-wayland-display compositor with Google Chrome on the node GPU, NVENC zero-copy ([README](spikes/s2-compositor/README.md)) |
 | `spikes/s3-gateway` | Spike S3: Moonlight (Wolf) → WebRTC passthrough gateway, measured by the S1d page ([README](spikes/s3-gateway/README.md)) |
 | `docs/` | Plan, research and benchmark results |
 
