@@ -1,0 +1,50 @@
+# Spike S3 on a Cha Node: Wolf (GameStream host) plus the Moonlight → WebRTC gateway.
+# From the repository root:
+#   docker compose -f spikes/s3-gateway/compose.yaml up -d --build
+#   docker compose -f spikes/s3-gateway/compose.yaml logs -f
+# Then point the S1c/S1d page at <node>:4490 and run the matrix.
+# Tear down (state volumes included): docker compose -f spikes/s3-gateway/compose.yaml down -v
+name: cha-s3
+
+services:
+  # Minimal Wolf for a video-only test with its built-in "Test ball" app (no app
+  # containers): no Docker socket, no /dev bind, no uinput/uhid, no udev rules.
+  # Wolf's full setup (Steam, desktops) needs those; see README.
+  wolf:
+    image: ghcr.io/games-on-whales/wolf:stable@sha256:b0ef253739f9bd49b71eba7e150c955fd05990c0d409e666d89236995351551a
+    # Moonlight ports: TCP 47984/47989/48010, UDP 47999/48100/48200; mDNS on 5353.
+    network_mode: host
+    environment:
+      WOLF_LOG_LEVEL: ${WOLF_LOG_LEVEL:-INFO}  # DEBUG / TRACE when troubleshooting
+      WOLF_RENDER_NODE: /dev/dri/renderD128
+      WOLF_SOCKET_PATH: /var/run/wolf/wolf.sock
+    # The GPU through CDI, like S1e: `--gpus` breaks NVIDIA Vulkan/EGL here.
+    devices:
+      - nvidia.com/gpu=all
+      - /dev/dri
+    volumes:
+      - wolf-etc:/etc/wolf
+      - wolf-run:/var/run/wolf
+    restart: "no"
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: spikes/s3-gateway/server/Dockerfile
+    image: cha/s3-gateway
+    # TCP 4490 (signalling), UDP 4491 (WebRTC). Reaches Wolf on loopback.
+    network_mode: host
+    depends_on: [wolf]
+    # Offers every Wolf app with "test" in its title (Test ball, Test snow) × H.264/HEVC.
+    command: ["--wolf-socket", "/var/run/wolf/wolf.sock", "--state-dir", "/state", "--apps", "test"]
+    environment:
+      RUST_LOG: info,str0m=warn,moonlight_common=warn
+    volumes:
+      - wolf-run:/var/run/wolf
+      - gateway-state:/state
+    restart: "no"
+
+volumes:
+  wolf-etc:
+  wolf-run:
+  gateway-state:

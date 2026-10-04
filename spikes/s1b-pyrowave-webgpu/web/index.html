@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>S1b Decode Bench</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f7f5;
+        --fg: #1d1d1b;
+        --muted: #6b6b66;
+        --line: #deded8;
+        --panel: #ffffff;
+        --pass: #1f7a3a;
+        --fail: #b3261e;
+        --accent: #2f5bd3;
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141413;
+          --fg: #ecece8;
+          --muted: #9b9b94;
+          --line: #2c2c29;
+          --panel: #1c1c1a;
+          --pass: #5cc27a;
+          --fail: #f2766b;
+          --accent: #8aa8ff;
+        }
+      }
+      body { margin: 0; background: var(--bg); color: var(--fg); }
+      main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p.lede { color: var(--muted); margin: 0 0 20px; }
+      section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+      h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 12px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+      label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+      input, select, button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+      .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+      button { cursor: pointer; padding: 8px 14px; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #status { margin-top: 10px; color: var(--muted); min-height: 1.4em; }
+      canvas { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; display: block; }
+      .table-wrap { overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
+      th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+      th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+      th { color: var(--muted); font-weight: 500; }
+      .pass { color: var(--pass); font-weight: 600; }
+      .fail { color: var(--fail); font-weight: 600; }
+      pre { white-space: pre-wrap; font-size: 12px; color: var(--muted); margin: 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>S1b PyroWave decode bench</h1>
+      <p class="lede">
+        Decodes real PyroWave frames on this browser's GPU with <code>@cha/pyrowave-webgpu</code> and draws them straight
+        from the decoder's buffer. Validate checks frame 0 against the native decoder; Throughput decodes back to back;
+        Paced decodes at 60 fps the way a stream would.
+      </p>
+
+      <section>
+        <h2>Setup</h2>
+        <div class="grid">
+          <label>Clip <select id="clip"></select></label>
+          <label>Paced run (seconds) <input id="secs" type="number" value="10" /></label>
+          <label>Paced rate (fps) <input id="fps" type="number" value="60" /></label>
+        </div>
+        <div class="actions">
+          <button id="validate">Validate frame 0</button>
+          <button id="throughput">Throughput</button>
+          <button id="paced" class="primary">Paced</button>
+          <button id="all">Run all clips</button>
+          <button id="copy">Copy results JSON</button>
+        </div>
+        <div id="status"></div>
+      </section>
+
+      <section>
+        <h2>Output</h2>
+        <canvas id="canvas" width="2560" height="1440"></canvas>
+      </section>
+
+      <section>
+        <h2>Results</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Clip</th><th>Mode</th><th>Frames</th><th>Parse p50 / p95</th><th>GPU dequant p50 / p95</th>
+                <th>GPU iDWT p50 / p95</th><th>GPU total p50 / p95</th><th>Submit→done p50 / p95</th><th>Wall / frame</th>
+                <th>Check</th>
+              </tr>
+            </thead>
+            <tbody id="results"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Environment</h2>
+        <pre id="env"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

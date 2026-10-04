@@ -1,0 +1,75 @@
+{
+  "capturedAt": "2026-10-03T23:31:16.969Z",
+  "env": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "adapter": {
+      "vendor": "apple",
+      "architecture": "metal-3",
+      "description": ""
+    },
+    "subgroups": true,
+    "subgroupSizes": [
+      32,
+      32
+    ],
+    "timestampQuery": true
+  },
+  "rows": [
+    {
+      "clip": "testsrc2-1440p-420-604k",
+      "mode": "paced",
+      "fps": 120,
+      "frames": 1062,
+      "parseMs": {
+        "p50": 0.10000002384185791,
+        "p95": 0.20000004768371582
+      },
+      "dequantMs": {
+        "p50": 0.422369,
+        "p95": 0.611698
+      },
+      "idwtMs": {
+        "p50": 3.494072,
+        "p95": 5.584749
+      },
+      "gpuTotalMs": {
+        "p50": 4.038063,
+        "p95": 6.167823
+      },
+      "submitToDoneMs": {
+        "p50": 5.899999976158142,
+        "p95": 8.400000035762787
+      },
+      "wallMsPerFrame": null,
+      "check": null
+    },
+    {
+      "clip": "testsrc2-1440p-444-1229k",
+      "mode": "paced",
+      "fps": 120,
+      "frames": 1111,
+      "parseMs": {
+        "p50": 0.19999998807907104,
+        "p95": 0.30000001192092896
+      },
+      "dequantMs": {
+        "p50": 0.447118,
+        "p95": 0.573991
+      },
+      "idwtMs": {
+        "p50": 4.895092,
+        "p95": 5.730621
+      },
+      "gpuTotalMs": {
+        "p50": 5.395584,
+        "p95": 6.299487
+      },
+      "submitToDoneMs": {
+        "p50": 7,
+        "p95": 9
+      },
+      "wallMsPerFrame": null,
+      "check": null
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+
+# Local / OS
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+
+# Spike results captured locally (commit curated ones under docs/benchmarks/)
+spikes/**/results/
+
+# Encoded test clips and native tool builds are large and local
+spikes/**/clips/
+spikes/**/streams/
+spikes/**/public/clips
+spikes/**/.cache/
+
+# Python
+__pycache__/

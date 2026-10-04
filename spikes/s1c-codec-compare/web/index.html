@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>S1c Codec Compare</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f7f5;
+        --fg: #1d1d1b;
+        --muted: #6b6b66;
+        --line: #deded8;
+        --panel: #ffffff;
+        --accent: #2f5bd3;
+        --warn: #a15c00;
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141413;
+          --fg: #ecece8;
+          --muted: #9b9b94;
+          --line: #2c2c29;
+          --panel: #1c1c1a;
+          --accent: #8aa8ff;
+          --warn: #e3a64a;
+        }
+      }
+      body { margin: 0; background: var(--bg); color: var(--fg); }
+      main { max-width: 1280px; margin: 0 auto; padding: 24px 16px 48px; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p.lede { color: var(--muted); margin: 0 0 20px; }
+      section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+      h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 12px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+      label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+      input, button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+      .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+      button { cursor: pointer; padding: 8px 14px; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #status { margin-top: 10px; color: var(--muted); min-height: 1.4em; }
+      canvas, video { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; display: block; }
+      [hidden] { display: none !important; }
+      .table-wrap { overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
+      th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+      th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(4), td:nth-child(4) { text-align: left; }
+      th { color: var(--muted); font-weight: 500; }
+      .warn { color: var(--warn); }
+      pre { white-space: pre-wrap; font-size: 12px; color: var(--muted); margin: 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>S1c codec compare</h1>
+      <p class="lede">
+        The same 1440p60 content as PyroWave (WebGPU decode) and as low-latency H.264 / HEVC / AV1 (WebCodecs, hardware
+        preferred), replayed by the node over the same WebTransport path. Every frame is timed from the moment the
+        server sent it: last fragment, decoded, drawn, handed to the compositor (canvas: the next animation frame; &lt;video&gt;:
+        <code>requestVideoFrameCallback</code>'s presentation time) and, for &lt;video&gt;, Chrome's expected display time.
+      </p>
+
+      <section>
+        <h2>Setup</h2>
+        <div class="grid">
+          <label>Server host <input id="host" value="localhost" /></label>
+          <label>HTTP port <input id="httpPort" type="number" value="4480" /></label>
+          <label>Seconds per stream <input id="secs" type="number" value="15" /></label>
+          <label>FPS <input id="fps" type="number" value="60" /></label>
+          <label>Max datagram (bytes) <input id="dgram" type="number" value="1200" /></label>
+          <label>Present path
+            <select id="path">
+              <option value="webgpu">WebTransport → WebCodecs → WebGPU canvas</option>
+              <option value="video">WebTransport → WebCodecs → &lt;video&gt; (track generator)</option>
+              <option value="canvas2d">WebTransport → WebCodecs → 2D canvas</option>
+              <option value="webrtc">WebRTC video track (RTP, playout-delay 0)</option>
+            </select>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="load">Load streams</button>
+          <button id="all" class="primary" disabled>Run all streams</button>
+          <button id="matrix" disabled>Run matrix (H.264/HEVC/AV1 × all paths)</button>
+          <button id="copy">Copy results JSON</button>
+        </div>
+        <div id="status"></div>
+      </section>
+
+      <section>
+        <h2>Streams</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Stream</th><th>Codec</th><th>Mbit/s</th><th>Decoder here</th><th></th></tr>
+            </thead>
+            <tbody id="streams"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Output</h2>
+        <canvas id="canvas" width="2560" height="1440"></canvas>
+        <canvas id="canvas2d" width="2560" height="1440" hidden></canvas>
+        <video id="video" muted playsinline hidden></video>
+      </section>
+
+      <section>
+        <h2>Results: ms from send, p50 / p95</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Stream</th><th>Codec</th><th>Mbit/s</th><th>Path</th><th>Frames ok</th>
+                <th>Last fragment</th><th>Decoded</th><th>Drawn</th><th>To compositor</th><th>Expected display</th><th>Decode only</th>
+              </tr>
+            </thead>
+            <tbody id="results"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Environment</h2>
+        <pre id="env"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "@cha/pyrowave-webgpu",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later AND MIT",
+  "description": "PyroWave decoder on WebGPU: TypeScript host for the WGSL port of imbcmdth/pyrowave@webgpu",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2"
+  }
+}

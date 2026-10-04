@@ -1,0 +1,20 @@
+# Spike S1/S1c server on a Cha Node. From the repository root:
+#   docker compose -f spikes/s1-browser-pyrowave/compose.yaml up -d --build
+# Switch the QUIC congestion controller with S1_CC=bbr|cubic|new-reno.
+# S1c replays the encoded streams in spikes/s1c-codec-compare/streams (make them
+# on the Mac with spikes/s1c-codec-compare/tools/make-streams.py and sync them over).
+name: cha-s1
+
+services:
+  s1-server:
+    build:
+      context: ../..
+      dockerfile: spikes/s1-browser-pyrowave/server/Dockerfile
+    image: cha/s1-server
+    # Host networking: UDP goes straight to the NIC and WebRTC sees the real IPs.
+    # Uses TCP 4480 (info/signaling), UDP 4433 (WebTransport), UDP 4434 (WebRTC).
+    network_mode: host
+    command: ["--cc", "${S1_CC:-cubic}", "--streams", "/streams"]
+    volumes:
+      - ../s1c-codec-compare/streams:/streams:ro
+    restart: unless-stopped

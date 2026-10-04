@@ -1,0 +1,355 @@
+{
+  "capturedAt": "2026-10-03T23:27:21.118Z",
+  "env": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "adapter": {
+      "vendor": "apple",
+      "architecture": "metal-3",
+      "description": ""
+    },
+    "subgroups": true,
+    "subgroupSizes": [
+      32,
+      32
+    ],
+    "timestampQuery": true
+  },
+  "rows": [
+    {
+      "clip": "mandelbrot-1440p-420-604k",
+      "mode": "validate",
+      "frames": 1,
+      "parseMs": {
+        "p50": 0.6000000238418579,
+        "p95": 0.6000000238418579
+      },
+      "dequantMs": {
+        "p50": 0.664138,
+        "p95": 0.664138
+      },
+      "idwtMs": {
+        "p50": 5.346929,
+        "p95": 5.346929
+      },
+      "gpuTotalMs": {
+        "p50": 6.011608,
+        "p95": 6.011608
+      },
+      "submitToDoneMs": {
+        "p50": 81.80000001192093,
+        "p95": 81.80000001192093
+      },
+      "wallMsPerFrame": null,
+      "check": {
+        "pass": true,
+        "detail": "bit-exact vs native"
+      }
+    },
+    {
+      "clip": "mandelbrot-1440p-420-604k",
+      "mode": "throughput",
+      "frames": 180,
+      "parseMs": {
+        "p50": 0.09999996423721313,
+        "p95": 0.19999998807907104
+      },
+      "dequantMs": {
+        "p50": 0.134954,
+        "p95": 0.176032
+      },
+      "idwtMs": {
+        "p50": 1.198004,
+        "p95": 1.463994
+      },
+      "gpuTotalMs": {
+        "p50": 1.332773,
+        "p95": 1.639317
+      },
+      "submitToDoneMs": {
+        "p50": 4.100000023841858,
+        "p95": 4.900000035762787
+      },
+      "wallMsPerFrame": 1.5166666666666666,
+      "check": null
+    },
+    {
+      "clip": "mandelbrot-1440p-420-604k",
+      "mode": "paced",
+      "frames": 600,
+      "parseMs": {
+        "p50": 0.10000002384185791,
+        "p95": 0.20000004768371582
+      },
+      "dequantMs": {
+        "p50": 0.606116,
+        "p95": 0.617866
+      },
+      "idwtMs": {
+        "p50": 5.542124,
+        "p95": 5.776245
+      },
+      "gpuTotalMs": {
+        "p50": 6.150906,
+        "p95": 6.443068
+      },
+      "submitToDoneMs": {
+        "p50": 7.900000035762787,
+        "p95": 8.799999952316284
+      },
+      "wallMsPerFrame": null,
+      "check": null
+    },
+    {
+      "clip": "mandelbrot-1440p-444-1229k",
+      "mode": "validate",
+      "frames": 1,
+      "parseMs": {
+        "p50": 0.5,
+        "p95": 0.5
+      },
+      "dequantMs": {
+        "p50": 1.269189,
+        "p95": 1.269189
+      },
+      "idwtMs": {
+        "p50": 10.018557,
+        "p95": 10.018557
+      },
+      "gpuTotalMs": {
+        "p50": 11.288537,
+        "p95": 11.288537
+      },
+      "submitToDoneMs": {
+        "p50": 27.399999976158142,
+        "p95": 27.399999976158142
+      },
+      "wallMsPerFrame": null,
+      "check": {
+        "pass": true,
+        "detail": "bit-exact vs native"
+      }
+    },
+    {
+      "clip": "mandelbrot-1440p-444-1229k",
+      "mode": "throughput",
+      "frames": 180,
+      "parseMs": {
+        "p50": 0.19999998807907104,
+        "p95": 0.30000001192092896
+      },
+      "dequantMs": {
+        "p50": 0.244288,
+        "p95": 0.301286
+      },
+      "idwtMs": {
+        "p50": 2.219008,
+        "p95": 2.32784
+      },
+      "gpuTotalMs": {
+        "p50": 2.465295,
+        "p95": 2.629501
+      },
+      "submitToDoneMs": {
+        "p50": 7.199999988079071,
+        "p95": 7.5
+      },
+      "wallMsPerFrame": 2.6416666666666666,
+      "check": null
+    },
+    {
+      "clip": "mandelbrot-1440p-444-1229k",
+      "mode": "paced",
+      "frames": 600,
+      "parseMs": {
+        "p50": 0.30000001192092896,
+        "p95": 0.5
+      },
+      "dequantMs": {
+        "p50": 0.611491,
+        "p95": 1.153023
+      },
+      "idwtMs": {
+        "p50": 5.765203,
+        "p95": 9.717809
+      },
+      "gpuTotalMs": {
+        "p50": 6.566108,
+        "p95": 10.937542
+      },
+      "submitToDoneMs": {
+        "p50": 8.5,
+        "p95": 12.800000011920929
+      },
+      "wallMsPerFrame": null,
+      "check": null
+    },
+    {
+      "clip": "testsrc2-1440p-420-604k",
+      "mode": "validate",
+      "frames": 1,
+      "parseMs": {
+        "p50": 0.19999998807907104,
+        "p95": 0.19999998807907104
+      },
+      "dequantMs": {
+        "p50": 0.59749,
+        "p95": 0.59749
+      },
+      "idwtMs": {
+        "p50": 5.673581,
+        "p95": 5.673581
+      },
+      "gpuTotalMs": {
+        "p50": 6.271613,
+        "p95": 6.271613
+      },
+      "submitToDoneMs": {
+        "p50": 16.69999998807907,
+        "p95": 16.69999998807907
+      },
+      "wallMsPerFrame": null,
+      "check": {
+        "pass": true,
+        "detail": "bit-exact vs native"
+      }
+    },
+    {
+      "clip": "testsrc2-1440p-420-604k",
+      "mode": "throughput",
+      "frames": 180,
+      "parseMs": {
+        "p50": 0.10000002384185791,
+        "p95": 0.19999998807907104
+      },
+      "dequantMs": {
+        "p50": 0.134915,
+        "p95": 0.176706
+      },
+      "idwtMs": {
+        "p50": 1.195607,
+        "p95": 1.565476
+      },
+      "gpuTotalMs": {
+        "p50": 1.33073,
+        "p95": 1.742473
+      },
+      "submitToDoneMs": {
+        "p50": 4.100000023841858,
+        "p95": 5
+      },
+      "wallMsPerFrame": 1.5083333333333333,
+      "check": null
+    },
+    {
+      "clip": "testsrc2-1440p-420-604k",
+      "mode": "paced",
+      "frames": 600,
+      "parseMs": {
+        "p50": 0.10000002384185791,
+        "p95": 0.20000004768371582
+      },
+      "dequantMs": {
+        "p50": 0.606824,
+        "p95": 0.615616
+      },
+      "idwtMs": {
+        "p50": 5.53929,
+        "p95": 5.715913
+      },
+      "gpuTotalMs": {
+        "p50": 6.14824,
+        "p95": 6.362153
+      },
+      "submitToDoneMs": {
+        "p50": 8,
+        "p95": 8.699999988079071
+      },
+      "wallMsPerFrame": null,
+      "check": null
+    },
+    {
+      "clip": "testsrc2-1440p-444-1229k",
+      "mode": "validate",
+      "frames": 1,
+      "parseMs": {
+        "p50": 0.19999998807907104,
+        "p95": 0.19999998807907104
+      },
+      "dequantMs": {
+        "p50": 1.02415,
+        "p95": 1.02415
+      },
+      "idwtMs": {
+        "p50": 7.180015,
+        "p95": 7.180015
+      },
+      "gpuTotalMs": {
+        "p50": 8.204957,
+        "p95": 8.204957
+      },
+      "submitToDoneMs": {
+        "p50": 19,
+        "p95": 19
+      },
+      "wallMsPerFrame": null,
+      "check": {
+        "pass": true,
+        "detail": "bit-exact vs native"
+      }
+    },
+    {
+      "clip": "testsrc2-1440p-444-1229k",
+      "mode": "throughput",
+      "frames": 180,
+      "parseMs": {
+        "p50": 0.19999998807907104,
+        "p95": 0.30000001192092896
+      },
+      "dequantMs": {
+        "p50": 0.229747,
+        "p95": 0.270871
+      },
+      "idwtMs": {
+        "p50": 2.22205,
+        "p95": 2.526128
+      },
+      "gpuTotalMs": {
+        "p50": 2.452505,
+        "p95": 2.783958
+      },
+      "submitToDoneMs": {
+        "p50": 7.5,
+        "p95": 8
+      },
+      "wallMsPerFrame": 2.695555555489328,
+      "check": null
+    },
+    {
+      "clip": "testsrc2-1440p-444-1229k",
+      "mode": "paced",
+      "frames": 600,
+      "parseMs": {
+        "p50": 0.19999998807907104,
+        "p95": 0.30000001192092896
+      },
+      "dequantMs": {
+        "p50": 0.572199,
+        "p95": 1.045942
+      },
+      "idwtMs": {
+        "p50": 6.032116,
+        "p95": 9.421315
+      },
+      "gpuTotalMs": {
+        "p50": 6.736981,
+        "p95": 10.460507
+      },
+      "submitToDoneMs": {
+        "p50": 8.699999988079071,
+        "p95": 12.5
+      },
+      "wallMsPerFrame": null,
+      "check": null
+    }
+  ]
+}

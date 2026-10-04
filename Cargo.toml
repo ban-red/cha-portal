@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "spikes/*/server"]
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0-or-later"
+rust-version = "1.93"
+
+[workspace.dependencies]
+cha-proto = { path = "crates/cha-proto" }
+
+[profile.release]
+debug = 1
+lto = "thin"

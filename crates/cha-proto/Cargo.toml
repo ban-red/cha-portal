@@ -1,0 +1,9 @@
+[package]
+name = "cha-proto"
+version = "0.0.1"
+description = "cha-stream/1 wire framing: Sans-IO datagram headers, fragmentation and reassembly"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]

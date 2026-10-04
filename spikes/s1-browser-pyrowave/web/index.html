@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>S1 Receive Bench</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f7f5;
+        --fg: #1d1d1b;
+        --muted: #6b6b66;
+        --line: #deded8;
+        --panel: #ffffff;
+        --pass: #1f7a3a;
+        --fail: #b3261e;
+        --accent: #2f5bd3;
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141413;
+          --fg: #ecece8;
+          --muted: #9b9b94;
+          --line: #2c2c29;
+          --panel: #1c1c1a;
+          --pass: #5cc27a;
+          --fail: #f2766b;
+          --accent: #8aa8ff;
+        }
+      }
+      body { margin: 0; background: var(--bg); color: var(--fg); }
+      main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p.lede { color: var(--muted); margin: 0 0 20px; }
+      section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+      h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 12px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+      label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+      input, select, button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+      label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--fg); }
+      .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+      button { cursor: pointer; padding: 8px 14px; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .live { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+      .stat { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+      .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+      .stat span { font-size: 12px; color: var(--muted); }
+      #status { margin-top: 10px; color: var(--muted); min-height: 1.4em; }
+      .table-wrap { overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
+      th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+      th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+      th { color: var(--muted); font-weight: 500; }
+      .pass { color: var(--pass); font-weight: 600; }
+      .fail { color: var(--fail); font-weight: 600; }
+      pre { white-space: pre-wrap; font-size: 12px; color: var(--muted); margin: 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>S1 browser receive bench</h1>
+      <p class="lede">
+        Can this browser receive PyroWave-shaped traffic? The server sends fixed-size intra frames as
+        bursts of datagrams over WebTransport and WebRTC DataChannels. Gate: 1440p60 4:4:4 at about 590&nbsp;Mbit/s.
+      </p>
+
+      <section>
+        <h2>Setup</h2>
+        <div class="grid">
+          <label>Server host <input id="host" value="localhost" /></label>
+          <label>HTTP port <input id="httpPort" type="number" value="4480" /></label>
+          <label>Preset <select id="preset"></select></label>
+          <label>Mbit/s <input id="mbps" type="number" step="10" /></label>
+          <label>FPS <input id="fps" type="number" /></label>
+          <label>Seconds <input id="secs" type="number" value="15" /></label>
+          <label>Max datagram (bytes) <input id="dgram" type="number" value="1200" /></label>
+          <label>Transport
+            <select id="transport">
+              <option value="webtransport">WebTransport datagrams</option>
+              <option value="webrtc">WebRTC DataChannel</option>
+            </select>
+          </label>
+          <label>WT incomingHighWaterMark <input id="hwm" type="number" value="4096" /></label>
+          <label class="check"><input id="byob" type="checkbox" /> BYOB reader (WT)</label>
+        </div>
+        <div class="actions">
+          <button id="run" class="primary">Run once</button>
+          <button id="sweep">Run gate sweep (both transports)</button>
+          <button id="copy">Copy results JSON</button>
+        </div>
+        <div id="status"></div>
+      </section>
+
+      <section>
+        <h2>Live</h2>
+        <div class="live" id="live"></div>
+      </section>
+
+      <section>
+        <h2>Results</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Transport</th><th>Preset</th><th>Target</th><th>Recv median</th><th>Recv min</th>
+                <th>Datagram loss</th><th>Frames ok</th><th>Spread p50 / p99</th>
+                <th>Latency first p50 / p99</th><th>Latency done p50 / p99</th><th>Jitter p99</th>
+                <th>Sender drops</th><th>Gate</th>
+              </tr>
+            </thead>
+            <tbody id="results"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Environment</h2>
+        <pre id="env"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

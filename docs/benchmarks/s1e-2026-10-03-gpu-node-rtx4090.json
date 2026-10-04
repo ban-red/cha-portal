@@ -1,0 +1,468 @@
+{
+  "capturedAt": "2026-10-04T00:57:21Z",
+  "gpu": "NVIDIA GeForce RTX 4090, 595.71.05",
+  "gstreamer": [
+    "gst-launch-1.0 version 1.28.2"
+  ],
+  "frames": 600,
+  "resolution": "2560x1440@60",
+  "diagnostics": {
+    "devices": [
+      "/dev/nvidia-caps",
+      "/dev/nvidia-modeset",
+      "/dev/nvidia-uvm",
+      "/dev/nvidia-uvm-tools",
+      "/dev/nvidia0",
+      "/dev/nvidiactl"
+    ],
+    "libraries": {
+      "libcuda.so.1": true,
+      "libnvidia-encode.so.1": true,
+      "libnvrtc.so": false,
+      "libGLX_nvidia.so.0": true,
+      "libEGL_nvidia.so.0": true,
+      "libnvidia-glvkspirv.so": true,
+      "libvulkan.so.1": true
+    },
+    "nvcodecFeatures": [
+      "cudadownload: CUDA downloader",
+      "cudaipcsink: CUDA IPC Sink",
+      "cudaipcsrc: CUDA IPC Src",
+      "cudaupload: CUDA uploader",
+      "nvautogpuav1enc: NVENC AV1 Video Encoder Auto GPU select Mode",
+      "nvautogpuh264enc: NVENC H.264 Video Encoder Auto GPU select Mode",
+      "nvautogpuh265enc: NVENC H.265 Video Encoder Auto GPU select Mode",
+      "nvav1dec: NVDEC AV1 Decoder",
+      "nvav1enc: NVENC AV1 Video Encoder CUDA Mode",
+      "nvh264dec: NVDEC H.264 Decoder",
+      "nvh264enc: NVENC H.264 Video Encoder CUDA Mode",
+      "nvh265dec: NVDEC H.265 Decoder",
+      "nvh265enc: NVENC H.265 Video Encoder CUDA Mode",
+      "nvjpegdec: NVDEC jpeg Video Decoder",
+      "nvmpeg2videodec: NVDEC mpeg2video Video Decoder",
+      "nvmpeg4videodec: NVDEC mpeg4video Video Decoder",
+      "nvmpegvideodec: NVDEC mpegvideo Video Decoder",
+      "nvvp8dec: NVDEC VP8 Decoder",
+      "nvvp9dec: NVDEC VP9 Decoder"
+    ],
+    "nvcodecPlugin": [
+      "Plugin Details:",
+      "  Name                     nvcodec",
+      "  Description              GStreamer NVCODEC plugin",
+      "  Filename                 /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstnvcodec.so",
+      "  Version                  1.28.2",
+      "  License                  LGPL",
+      "  Source module            gst-plugins-bad",
+      "  Documentation            https://gstreamer.freedesktop.org/documentation/nvcodec/",
+      "  Source release date      2026-04-07",
+      "  Binary package           GStreamer Bad Plugins (Ubuntu)",
+      "  Origin URL               https://launchpad.net/ubuntu/+source/gst-plugins-bad1.0",
+      ""
+    ],
+    "nvcodecInitLog": [
+      "0:00:00.026829261         73         73 WARN               cudanvrtc gstcudanvrtc.cpp:163:gst_cuda_nvrtc_load_library_once: Could not open nvrtc library libnvrtc.so: cannot open shared object file: No such file or directory"
+    ],
+    "vulkanManifests": {
+      "/etc/vulkan/icd.d/nvidia_icd.json": "{\n    \"file_format_version\" : \"1.0.1\",\n    \"ICD\": {\n        \"library_path\": \"libGLX_nvidia.so.0\",\n        \"api_version\" : \"1.4.329\"\n    }\n}"
+    },
+    "vulkanDevices": [
+      "deviceType         = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU",
+      "deviceName         = NVIDIA GeForce RTX 4090",
+      "driverName         = NVIDIA",
+      "driverInfo         = 595.71.05"
+    ],
+    "vulkanError": null
+  },
+  "results": [
+    {
+      "codec": "h264",
+      "element": "nvh264enc",
+      "pattern": "ball",
+      "settings": [
+        "preset=p1",
+        "tune=ultra-low-latency",
+        "rc-mode=cbr",
+        "bitrate=40000",
+        "max-bitrate=40000",
+        "vbv-buffer-size=666",
+        "bframes=0",
+        "gop-size=-1",
+        "rc-lookahead=0",
+        "zerolatency=true"
+      ],
+      "bitrateKbps": 40000,
+      "pipeline": "videotestsrc is-live=true num-buffers=600 pattern=ball ! video/x-raw,format=NV12,width=2560,height=1440,framerate=60/1 ! cudaupload name=up ! video/x-raw(memory:CUDAMemory),format=NV12 ! nvh264enc name=enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink sync=false",
+      "seconds": 10.1,
+      "encodeMs": {
+        "n": 570,
+        "p50": 1.886,
+        "p95": 1.959,
+        "p99": 1.97,
+        "mean": 1.879
+      },
+      "uploadMs": {
+        "n": 570,
+        "p50": 0.313,
+        "p95": 0.571,
+        "p99": 0.584,
+        "mean": 0.522
+      },
+      "sourceToSinkMs": {
+        "n": 570,
+        "p50": 2.234,
+        "p95": 2.578,
+        "p99": 2.603,
+        "mean": 2.442
+      }
+    },
+    {
+      "codec": "h264",
+      "element": "nvh264enc",
+      "pattern": "snow",
+      "settings": [
+        "preset=p1",
+        "tune=ultra-low-latency",
+        "rc-mode=cbr",
+        "bitrate=40000",
+        "max-bitrate=40000",
+        "vbv-buffer-size=666",
+        "bframes=0",
+        "gop-size=-1",
+        "rc-lookahead=0",
+        "zerolatency=true"
+      ],
+      "bitrateKbps": 40000,
+      "pipeline": "videotestsrc is-live=true num-buffers=600 pattern=snow ! video/x-raw,format=NV12,width=2560,height=1440,framerate=60/1 ! cudaupload name=up ! video/x-raw(memory:CUDAMemory),format=NV12 ! nvh264enc name=enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink sync=false",
+      "seconds": 10.2,
+      "encodeMs": {
+        "n": 570,
+        "p50": 1.99,
+        "p95": 2.022,
+        "p99": 2.059,
+        "mean": 1.982
+      },
+      "uploadMs": {
+        "n": 570,
+        "p50": 0.306,
+        "p95": 0.379,
+        "p99": 0.541,
+        "mean": 0.318
+      },
+      "sourceToSinkMs": {
+        "n": 570,
+        "p50": 2.335,
+        "p95": 2.429,
+        "p99": 2.633,
+        "mean": 2.356
+      }
+    },
+    {
+      "codec": "hevc",
+      "element": "nvh265enc",
+      "pattern": "ball",
+      "settings": [
+        "preset=p1",
+        "tune=ultra-low-latency",
+        "rc-mode=cbr",
+        "bitrate=40000",
+        "max-bitrate=40000",
+        "vbv-buffer-size=666",
+        "bframes=0",
+        "gop-size=-1",
+        "rc-lookahead=0",
+        "zerolatency=true"
+      ],
+      "bitrateKbps": 40000,
+      "pipeline": "videotestsrc is-live=true num-buffers=600 pattern=ball ! video/x-raw,format=NV12,width=2560,height=1440,framerate=60/1 ! cudaupload name=up ! video/x-raw(memory:CUDAMemory),format=NV12 ! nvh265enc name=enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink sync=false",
+      "seconds": 10.1,
+      "encodeMs": {
+        "n": 570,
+        "p50": 1.726,
+        "p95": 1.779,
+        "p99": 1.801,
+        "mean": 1.725
+      },
+      "uploadMs": {
+        "n": 570,
+        "p50": 0.317,
+        "p95": 0.553,
+        "p99": 0.583,
+        "mean": 0.374
+      },
+      "sourceToSinkMs": {
+        "n": 570,
+        "p50": 2.081,
+        "p95": 2.386,
+        "p99": 2.423,
+        "mean": 2.143
+      }
+    },
+    {
+      "codec": "hevc",
+      "element": "nvh265enc",
+      "pattern": "snow",
+      "settings": [
+        "preset=p1",
+        "tune=ultra-low-latency",
+        "rc-mode=cbr",
+        "bitrate=40000",
+        "max-bitrate=40000",
+        "vbv-buffer-size=666",
+        "bframes=0",
+        "gop-size=-1",
+        "rc-lookahead=0",
+        "zerolatency=true"
+      ],
+      "bitrateKbps": 40000,
+      "pipeline": "videotestsrc is-live=true num-buffers=600 pattern=snow ! video/x-raw,format=NV12,width=2560,height=1440,framerate=60/1 ! cudaupload name=up ! video/x-raw(memory:CUDAMemory),format=NV12 ! nvh265enc name=enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink sync=false",
+      "seconds": 10.1,
+      "encodeMs": {
+        "n": 570,
+        "p50": 1.887,
+        "p95": 1.996,
+        "p99": 2.072,
+        "mean": 1.893
+      },
+      "uploadMs": {
+        "n": 570,
+        "p50": 0.306,
+        "p95": 0.382,
+        "p99": 0.458,
+        "mean": 0.315
+      },
+      "sourceToSinkMs": {
+        "n": 570,
+        "p50": 2.23,
+        "p95": 2.371,
+        "p99": 2.466,
+        "mean": 2.244
+      }
+    },
+    {
+      "codec": "av1",
+      "element": "nvav1enc",
+      "pattern": "ball",
+      "settings": [
+        "preset=p1",
+        "tune=ultra-low-latency",
+        "rc-mode=cbr",
+        "bitrate=40000",
+        "max-bitrate=40000",
+        "vbv-buffer-size=666",
+        "bframes=0",
+        "gop-size=-1",
+        "rc-lookahead=0",
+        "zerolatency=true"
+      ],
+      "bitrateKbps": 40000,
+      "pipeline": "videotestsrc is-live=true num-buffers=600 pattern=ball ! video/x-raw,format=NV12,width=2560,height=1440,framerate=60/1 ! cudaupload name=up ! video/x-raw(memory:CUDAMemory),format=NV12 ! nvav1enc name=enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink sync=false",
+      "seconds": 10.2,
+      "encodeMs": {
+        "n": 570,
+        "p50": 1.811,
+        "p95": 1.881,
+        "p99": 1.894,
+        "mean": 1.817
+      },
+      "uploadMs": {
+        "n": 570,
+        "p50": 0.316,
+        "p95": 0.528,
+        "p99": 0.556,
+        "mean": 0.368
+      },
+      "sourceToSinkMs": {
+        "n": 570,
+        "p50": 2.166,
+        "p95": 2.459,
+        "p99": 2.482,
+        "mean": 2.229
+      }
+    },
+    {
+      "codec": "av1",
+      "element": "nvav1enc",
+      "pattern": "snow",
+      "settings": [
+        "preset=p1",
+        "tune=ultra-low-latency",
+        "rc-mode=cbr",
+        "bitrate=40000",
+        "max-bitrate=40000",
+        "vbv-buffer-size=666",
+        "bframes=0",
+        "gop-size=-1",
+        "rc-lookahead=0",
+        "zerolatency=true"
+      ],
+      "bitrateKbps": 40000,
+      "pipeline": "videotestsrc is-live=true num-buffers=600 pattern=snow ! video/x-raw,format=NV12,width=2560,height=1440,framerate=60/1 ! cudaupload name=up ! video/x-raw(memory:CUDAMemory),format=NV12 ! nvav1enc name=enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate=40000 max-bitrate=40000 vbv-buffer-size=666 bframes=0 gop-size=-1 rc-lookahead=0 zerolatency=true ! fakesink sync=false",
+      "seconds": 10.2,
+      "encodeMs": {
+        "n": 570,
+        "p50": 2.198,
+        "p95": 2.242,
+        "p99": 2.267,
+        "mean": 2.19
+      },
+      "uploadMs": {
+        "n": 570,
+        "p50": 0.305,
+        "p95": 0.351,
+        "p99": 0.432,
+        "mean": 0.311
+      },
+      "sourceToSinkMs": {
+        "n": 570,
+        "p50": 2.53,
+        "p95": 2.612,
+        "p99": 2.723,
+        "mean": 2.534
+      }
+    },
+    {
+      "codec": "pyrowave-420",
+      "bytesPerFrame": 604166,
+      "command": "pyrowave-webgpu-encode /tmp/src-420.y4m /tmp/out-420.pyrowave 604166 --frames 120 --timestamps --gpu-input",
+      "timingsMs": {
+        "upload + record + submit": {
+          "mean": 0.597,
+          "p50": 0.588,
+          "p95": 0.606
+        },
+        "wait for GPU + readback": {
+          "mean": 0.405,
+          "p50": 0.408,
+          "p95": 0.412
+        },
+        "packetize": {
+          "mean": 0.046,
+          "p50": 0.04,
+          "p95": 0.069
+        },
+        "total": {
+          "mean": 1.048,
+          "p50": 1.038,
+          "p95": 1.079
+        },
+        "GPU DWT": {
+          "mean": 0.077,
+          "p50": 0.077,
+          "p95": 0.077
+        },
+        "GPU quantize": {
+          "mean": 0.053,
+          "p50": 0.053,
+          "p95": 0.055
+        },
+        "GPU analyze": {
+          "mean": 0.018,
+          "p50": 0.018,
+          "p95": 0.019
+        },
+        "GPU resolve": {
+          "mean": 0.006,
+          "p50": 0.005,
+          "p95": 0.006
+        },
+        "GPU packing": {
+          "mean": 0.037,
+          "p50": 0.037,
+          "p95": 0.038
+        },
+        "GPU total (first to last pass)": {
+          "mean": 0.211,
+          "p50": 0.211,
+          "p95": 0.213
+        }
+      },
+      "log": [
+        "Encoded 120 frames of 2560x1440 4:2:0, 604125.9 bytes per frame on average (target 604166).",
+        "Per frame, excluding the first:",
+        "  upload + record + submit     mean    0.597 ms  median    0.588 ms  p95    0.606 ms",
+        "  wait for GPU + readback      mean    0.405 ms  median    0.408 ms  p95    0.412 ms",
+        "  packetize                    mean    0.046 ms  median    0.040 ms  p95    0.069 ms",
+        "  total                        mean    1.048 ms  median    1.038 ms  p95    1.079 ms",
+        "  GPU DWT                      mean    0.077 ms  median    0.077 ms  p95    0.077 ms",
+        "  GPU quantize                 mean    0.053 ms  median    0.053 ms  p95    0.055 ms",
+        "  GPU analyze                  mean    0.018 ms  median    0.018 ms  p95    0.019 ms",
+        "  GPU resolve                  mean    0.006 ms  median    0.005 ms  p95    0.006 ms",
+        "  GPU packing                  mean    0.037 ms  median    0.037 ms  p95    0.038 ms",
+        "  GPU total (first to last pass) mean    0.211 ms  median    0.211 ms  p95    0.213 ms",
+        "pyrowave-webgpu: Using NVIDIA GeForce RTX 4090 (Vulkan), subgroup size 0 to 0, precision 1, timestamps."
+      ]
+    },
+    {
+      "codec": "pyrowave-444",
+      "bytesPerFrame": 1229166,
+      "command": "pyrowave-webgpu-encode /tmp/src-444.y4m /tmp/out-444.pyrowave 1229166 --frames 120 --timestamps --gpu-input",
+      "timingsMs": {
+        "upload + record + submit": {
+          "mean": 1.132,
+          "p50": 1.118,
+          "p95": 1.162
+        },
+        "wait for GPU + readback": {
+          "mean": 0.703,
+          "p50": 0.708,
+          "p95": 0.719
+        },
+        "packetize": {
+          "mean": 0.088,
+          "p50": 0.091,
+          "p95": 0.095
+        },
+        "total": {
+          "mean": 1.922,
+          "p50": 1.917,
+          "p95": 1.959
+        },
+        "GPU DWT": {
+          "mean": 0.139,
+          "p50": 0.138,
+          "p95": 0.139
+        },
+        "GPU quantize": {
+          "mean": 0.084,
+          "p50": 0.084,
+          "p95": 0.087
+        },
+        "GPU analyze": {
+          "mean": 0.034,
+          "p50": 0.034,
+          "p95": 0.034
+        },
+        "GPU resolve": {
+          "mean": 0.003,
+          "p50": 0.003,
+          "p95": 0.004
+        },
+        "GPU packing": {
+          "mean": 0.047,
+          "p50": 0.046,
+          "p95": 0.055
+        },
+        "GPU total (first to last pass)": {
+          "mean": 0.328,
+          "p50": 0.327,
+          "p95": 0.338
+        }
+      },
+      "log": [
+        "Encoded 120 frames of 2560x1440 4:4:4, 872006.1 bytes per frame on average (target 1229166).",
+        "Per frame, excluding the first:",
+        "  upload + record + submit     mean    1.132 ms  median    1.118 ms  p95    1.162 ms",
+        "  wait for GPU + readback      mean    0.703 ms  median    0.708 ms  p95    0.719 ms",
+        "  packetize                    mean    0.088 ms  median    0.091 ms  p95    0.095 ms",
+        "  total                        mean    1.922 ms  median    1.917 ms  p95    1.959 ms",
+        "  GPU DWT                      mean    0.139 ms  median    0.138 ms  p95    0.139 ms",
+        "  GPU quantize                 mean    0.084 ms  median    0.084 ms  p95    0.087 ms",
+        "  GPU analyze                  mean    0.034 ms  median    0.034 ms  p95    0.034 ms",
+        "  GPU resolve                  mean    0.003 ms  median    0.003 ms  p95    0.004 ms",
+        "  GPU packing                  mean    0.047 ms  median    0.046 ms  p95    0.055 ms",
+        "  GPU total (first to last pass) mean    0.328 ms  median    0.327 ms  p95    0.338 ms",
+        "pyrowave-webgpu: Using NVIDIA GeForce RTX 4090 (Vulkan), subgroup size 0 to 0, precision 1, timestamps."
+      ]
+    }
+  ]
+}

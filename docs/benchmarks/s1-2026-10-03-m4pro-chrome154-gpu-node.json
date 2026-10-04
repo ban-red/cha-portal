@@ -1,0 +1,909 @@
+{
+  "capturedAt": "2026-10-03T22:58:15.933Z",
+  "env": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "brands": [
+      {
+        "brand": "Chromium",
+        "version": "154"
+      },
+      {
+        "brand": "Google Chrome",
+        "version": "154"
+      },
+      {
+        "brand": "Not A(Brand",
+        "version": "99"
+      }
+    ],
+    "platform": "macOS",
+    "hardwareConcurrency": 12,
+    "webTransport": true,
+    "crossOriginIsolated": false,
+    "webgpu": {
+      "vendor": "apple",
+      "architecture": "metal-3",
+      "subgroups": true,
+      "shaderF16": true,
+      "maxComputeWorkgroupStorageSize": 32768,
+      "maxStorageBufferBindingSize": 4294967292
+    }
+  },
+  "server": {
+    "wt_port": 4433,
+    "cert_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "addresses": [
+      "192.168.1.20",
+      "127.0.0.1"
+    ],
+    "cc": "cubic"
+  },
+  "rows": [
+    {
+      "presetId": "1080p60-420",
+      "presetLabel": "1080p60 4:2:0 couch (≈220)",
+      "wireMs": 3.9007092198581557,
+      "result": {
+        "transport": "webtransport",
+        "config": {
+          "mbps": 220,
+          "fps": 60,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 220,
+            "fps": 60,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 458333,
+          "fragments_per_frame": 388,
+          "max_datagram": 1200,
+          "total_frames": 900
+        },
+        "server": {
+          "frames_generated": 900,
+          "frames_sent": 900,
+          "frames_dropped_backpressure": 0,
+          "datagrams_refused": 0,
+          "datagrams_sent": 349200,
+          "bytes_sent": 418086900,
+          "rtt_ms": 3.468197,
+          "cwnd": 1122883,
+          "lost_packets": 2,
+          "mtu": 1452,
+          "send_buffer_free": 8388576,
+          "buffered_amount": null
+        },
+        "minRttMs": 1.100000023843677,
+        "summary": {
+          "durationMs": 14986.799999952316,
+          "datagrams": 349198,
+          "bytes": 418084500,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 0,
+          "framesComplete": 899,
+          "framesIncomplete": 1,
+          "framesMissing": 0,
+          "datagramLoss": 0.0000057273768614418685,
+          "rateMbps": {
+            "median": 222.96048000000002,
+            "min": 222.19248000000002,
+            "mean": 223.0112318833759
+          },
+          "spreadMs": {
+            "p50": 3.900000035762787,
+            "p95": 5.699999988079071,
+            "p99": 7.599999964237213,
+            "max": 9.600000023841858
+          },
+          "latencyFirstMs": {
+            "p50": 0.3520000059602353,
+            "p95": 0.7189999761576473,
+            "p99": 1.7799999642356852,
+            "max": 6.309000029803428
+          },
+          "latencyCompleteMs": {
+            "p50": 4.288000005960384,
+            "p95": 6.246999999999389,
+            "p99": 8.156000017879705,
+            "max": 11.921999999998661
+          },
+          "completionJitterMs": {
+            "p50": 0.5333333214124032,
+            "p95": 2.266666630903881,
+            "p99": 3.966666678587597,
+            "max": 16.133333285649616
+          }
+        },
+        "endReason": "done"
+      },
+      "gate": {
+        "pass": false,
+        "failures": [
+          "spread p99 7.6 > wire 3.9 + 3 ms"
+        ]
+      }
+    },
+    {
+      "presetId": "1080p60-420",
+      "presetLabel": "1080p60 4:2:0 couch (≈220)",
+      "wireMs": 3.9007092198581557,
+      "result": {
+        "transport": "webrtc",
+        "config": {
+          "mbps": 220,
+          "fps": 60,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 220,
+            "fps": 60,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 458333,
+          "fragments_per_frame": 388,
+          "max_datagram": 1200,
+          "total_frames": 900
+        },
+        "server": null,
+        "minRttMs": 16.19999998807907,
+        "summary": {
+          "durationMs": 14999.300000011921,
+          "datagrams": 270961,
+          "bytes": 324414018,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 21,
+          "framesComplete": 697,
+          "framesIncomplete": 2,
+          "framesMissing": 0,
+          "datagramLoss": 0.0010029054761588885,
+          "rateMbps": {
+            "median": 192.673056,
+            "min": 119.055768,
+            "mean": 185.77998492390245
+          },
+          "spreadMs": {
+            "p50": 18.5,
+            "p95": 26.30000001192093,
+            "p99": 32.19999998807907,
+            "max": 354.7999999523163
+          },
+          "latencyFirstMs": {
+            "p50": 289.7569999821135,
+            "p95": 339.4830000178772,
+            "p99": 1429.0819999701962,
+            "max": 1446.8190000178802
+          },
+          "latencyCompleteMs": {
+            "p50": 309.04899999404006,
+            "p95": 359.8709999821149,
+            "p99": 1448.3819999821171,
+            "max": 1465.9189999821174
+          },
+          "completionJitterMs": {
+            "p50": 1.9333332975705453,
+            "p95": 9.93333335717519,
+            "p99": 15.633333345254261,
+            "max": 1434.1333332856495
+          }
+        },
+        "endReason": "timeout"
+      },
+      "gate": {
+        "pass": false,
+        "failures": [
+          "recv 193 < 97% of 220",
+          "spread p99 32.2 > wire 3.9 + 3 ms",
+          "latency p99 1448.4 > wire + 6 ms"
+        ]
+      }
+    },
+    {
+      "presetId": "1440p60-420",
+      "presetLabel": "1440p60 4:2:0 couch (≈290)",
+      "wireMs": 5.141843971631205,
+      "result": {
+        "transport": "webtransport",
+        "config": {
+          "mbps": 290,
+          "fps": 60,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 290,
+            "fps": 60,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 604166,
+          "fragments_per_frame": 511,
+          "max_datagram": 1200,
+          "total_frames": 900
+        },
+        "server": {
+          "frames_generated": 900,
+          "frames_sent": 900,
+          "frames_dropped_backpressure": 0,
+          "datagrams_refused": 0,
+          "datagrams_sent": 459900,
+          "bytes_sent": 551107800,
+          "rtt_ms": 4.353871,
+          "cwnd": 3256201,
+          "lost_packets": 0,
+          "mtu": 1452,
+          "send_buffer_free": 7759371,
+          "buffered_amount": null
+        },
+        "minRttMs": 0.8000000119209272,
+        "summary": {
+          "durationMs": 14987.900000035763,
+          "datagrams": 459900,
+          "bytes": 551107800,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 0,
+          "framesComplete": 900,
+          "framesIncomplete": 0,
+          "framesMissing": 0,
+          "datagramLoss": 0,
+          "rateMbps": {
+            "median": 293.9697720806546,
+            "min": 292.53216,
+            "mean": 293.90024769379824
+          },
+          "spreadMs": {
+            "p50": 5.199999988079071,
+            "p95": 6.099999964237213,
+            "p99": 8,
+            "max": 11.300000011920929
+          },
+          "latencyFirstMs": {
+            "p50": 0.4099999940408452,
+            "p95": 0.6139999821186848,
+            "p99": 0.8170000178813552,
+            "max": 9.01899997019791
+          },
+          "latencyCompleteMs": {
+            "p50": 5.606999994039143,
+            "p95": 6.6249999940396265,
+            "p99": 8.470000005960173,
+            "max": 17.686000005960523
+          },
+          "completionJitterMs": {
+            "p50": 0.5333333214124032,
+            "p95": 1.93333335717519,
+            "p99": 3.866666654745739,
+            "max": 10.966666678587597
+          }
+        },
+        "endReason": "done"
+      },
+      "gate": {
+        "pass": true,
+        "failures": []
+      }
+    },
+    {
+      "presetId": "1440p60-420",
+      "presetLabel": "1440p60 4:2:0 couch (≈290)",
+      "wireMs": 5.141843971631205,
+      "result": {
+        "transport": "webrtc",
+        "config": {
+          "mbps": 290,
+          "fps": 60,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 290,
+            "fps": 60,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 604166,
+          "fragments_per_frame": 511,
+          "max_datagram": 1200,
+          "total_frames": 900
+        },
+        "server": {
+          "frames_generated": 83,
+          "frames_sent": 83,
+          "frames_dropped_backpressure": 0,
+          "datagrams_refused": 0,
+          "datagrams_sent": 42413,
+          "bytes_sent": 50824386,
+          "rtt_ms": null,
+          "cwnd": null,
+          "lost_packets": null,
+          "mtu": null,
+          "send_buffer_free": null,
+          "buffered_amount": 5464278
+        },
+        "minRttMs": 881.3999999761581,
+        "summary": {
+          "durationMs": 19132.600000023842,
+          "datagrams": 274534,
+          "bytes": 328980054,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 210,
+          "framesComplete": 536,
+          "framesIncomplete": 2,
+          "framesMissing": 0,
+          "datagramLoss": 0.0021606442648353097,
+          "rateMbps": {
+            "median": 177.85624637112247,
+            "min": 25.90611304580766,
+            "mean": 144.60626479535068
+          },
+          "spreadMs": {
+            "p50": 26,
+            "p95": 71.89999997615814,
+            "p99": 84.80000001192093,
+            "max": 87.39999997615814
+          },
+          "latencyFirstMs": {
+            "p50": -134.17999997615698,
+            "p95": -90.18199997615011,
+            "p99": -61.18999997615174,
+            "max": 854.0090000119235
+          },
+          "latencyCompleteMs": {
+            "p50": -107.19699997614953,
+            "p95": -58.216000023836386,
+            "p99": -36.92600001191022,
+            "max": 876.6089999761607
+          },
+          "completionJitterMs": {
+            "p50": 9.333333333333332,
+            "p95": 56.13333334525426,
+            "p99": 71.13333334525426,
+            "max": 1283.4333333571751
+          }
+        },
+        "endReason": "timeout"
+      },
+      "gate": {
+        "pass": false,
+        "failures": [
+          "recv 178 < 97% of 290",
+          "spread p99 84.8 > wire 5.1 + 3 ms"
+        ]
+      }
+    },
+    {
+      "presetId": "1440p60-444",
+      "presetLabel": "1440p60 4:4:4 desk (≈590) · gate",
+      "wireMs": 10.460992907801419,
+      "result": {
+        "transport": "webtransport",
+        "config": {
+          "mbps": 590,
+          "fps": 60,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 590,
+            "fps": 60,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 1229166,
+          "fragments_per_frame": 1039,
+          "max_datagram": 1200,
+          "total_frames": 900
+        },
+        "server": {
+          "frames_generated": 900,
+          "frames_sent": 900,
+          "frames_dropped_backpressure": 0,
+          "datagrams_refused": 0,
+          "datagrams_sent": 935100,
+          "bytes_sent": 1121211000,
+          "rtt_ms": 8.728223,
+          "cwnd": 44296370,
+          "lost_packets": 0,
+          "mtu": 1452,
+          "send_buffer_free": 7108499,
+          "buffered_amount": null
+        },
+        "minRttMs": 0.5,
+        "summary": {
+          "durationMs": 14995.199999988079,
+          "datagrams": 935100,
+          "bytes": 1121211000,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 0,
+          "framesComplete": 900,
+          "framesIncomplete": 0,
+          "framesMissing": 0,
+          "datagramLoss": 0,
+          "rateMbps": {
+            "median": 597.9216,
+            "min": 597.528,
+            "mean": 598.0106948742871
+          },
+          "spreadMs": {
+            "p50": 10.699999988079071,
+            "p95": 11.5,
+            "p99": 13.800000011920929,
+            "max": 23.80000001192093
+          },
+          "latencyFirstMs": {
+            "p50": 0.44399997019718285,
+            "p95": 0.6149999999997817,
+            "p99": 0.9530000119209276,
+            "max": 8.799999988079435
+          },
+          "latencyCompleteMs": {
+            "p50": 11.111000017881452,
+            "p95": 12.134999970197669,
+            "p99": 15.401000011920928,
+            "max": 26.21499998807849
+          },
+          "completionJitterMs": {
+            "p50": 0.7333333094914742,
+            "p95": 1.9333332975705453,
+            "p99": 4.733333309491474,
+            "max": 10.633333345254261
+          }
+        },
+        "endReason": "done"
+      },
+      "gate": {
+        "pass": false,
+        "failures": [
+          "spread p99 13.8 > wire 10.5 + 3 ms"
+        ]
+      }
+    },
+    {
+      "presetId": "1440p60-444",
+      "presetLabel": "1440p60 4:4:4 desk (≈590) · gate",
+      "wireMs": 10.460992907801419,
+      "result": {
+        "transport": "webrtc",
+        "config": {
+          "mbps": 590,
+          "fps": 60,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 590,
+            "fps": 60,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 1229166,
+          "fragments_per_frame": 1039,
+          "max_datagram": 1200,
+          "total_frames": 900
+        },
+        "server": null,
+        "minRttMs": null,
+        "summary": {
+          "durationMs": 25930.900000035763,
+          "datagrams": 205106,
+          "bytes": 245928230,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 1072,
+          "framesComplete": 195,
+          "framesIncomplete": 3,
+          "framesMissing": 0,
+          "datagramLoss": 0.008205247858760867,
+          "rateMbps": {
+            "median": 71.09864,
+            "min": 1.3630055037219815,
+            "mean": 74.52863329158372
+          },
+          "spreadMs": {
+            "p50": 121.30000001192093,
+            "p95": 150.80000001192093,
+            "p99": 154.69999998807907,
+            "max": 156.39999997615814
+          },
+          "latencyFirstMs": {
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null
+          },
+          "latencyCompleteMs": {
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null
+          },
+          "completionJitterMs": {
+            "p50": 105.0333333214124,
+            "p95": 134.73333330949148,
+            "p99": 1151.4333333571751,
+            "max": 1318.233333369096
+          }
+        },
+        "endReason": "timeout"
+      },
+      "gate": {
+        "pass": false,
+        "failures": [
+          "recv 71 < 97% of 590",
+          "loss 0.82% ≥ 0.5%",
+          "frames ok 98.48% < 99.5%",
+          "spread p99 154.7 > wire 10.5 + 3 ms"
+        ]
+      }
+    },
+    {
+      "presetId": "1440p120-420",
+      "presetLabel": "1440p120 4:2:0 couch (≈580)",
+      "wireMs": 5.141843971631205,
+      "result": {
+        "transport": "webtransport",
+        "config": {
+          "mbps": 580,
+          "fps": 120,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 580,
+            "fps": 120,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 604166,
+          "fragments_per_frame": 511,
+          "max_datagram": 1200,
+          "total_frames": 1800
+        },
+        "server": {
+          "frames_generated": 1800,
+          "frames_sent": 1800,
+          "frames_dropped_backpressure": 0,
+          "datagrams_refused": 0,
+          "datagrams_sent": 919800,
+          "bytes_sent": 1102215600,
+          "rtt_ms": 4.315958,
+          "cwnd": 6534956,
+          "lost_packets": 0,
+          "mtu": 1452,
+          "send_buffer_free": 7759371,
+          "buffered_amount": null
+        },
+        "minRttMs": 0.3999999761581421,
+        "summary": {
+          "durationMs": 14995.699999988079,
+          "datagrams": 919800,
+          "bytes": 1102215600,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 0,
+          "framesComplete": 1800,
+          "framesIncomplete": 0,
+          "framesMissing": 0,
+          "datagramLoss": 0,
+          "rateMbps": {
+            "median": 588.019917994181,
+            "min": 587.0703566929732,
+            "mean": 587.8941005166276
+          },
+          "spreadMs": {
+            "p50": 5.300000011920929,
+            "p95": 6.300000011920929,
+            "p99": 7.5,
+            "max": 13.900000035762787
+          },
+          "latencyFirstMs": {
+            "p50": 0.27800000000206637,
+            "p95": 0.4489999880788673,
+            "p99": 0.9460000476838104,
+            "max": 11.708000023842033
+          },
+          "latencyCompleteMs": {
+            "p50": 5.574999976158324,
+            "p95": 6.643000000000029,
+            "p99": 8.306999999999789,
+            "max": 20.88200002384201
+          },
+          "completionJitterMs": {
+            "p50": 0.43333329757054706,
+            "p95": 1.7666666309038792,
+            "p99": 3.266666690508524,
+            "max": 7.066666642824808
+          }
+        },
+        "endReason": "done"
+      },
+      "gate": {
+        "pass": true,
+        "failures": []
+      }
+    },
+    {
+      "presetId": "1440p120-420",
+      "presetLabel": "1440p120 4:2:0 couch (≈580)",
+      "wireMs": 5.141843971631205,
+      "result": {
+        "transport": "webrtc",
+        "config": {
+          "mbps": 580,
+          "fps": 120,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 580,
+            "fps": 120,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 604166,
+          "fragments_per_frame": 511,
+          "max_datagram": 1200,
+          "total_frames": 1800
+        },
+        "server": {
+          "frames_generated": 103,
+          "frames_sent": 94,
+          "frames_dropped_backpressure": 9,
+          "datagrams_refused": 0,
+          "datagrams_sent": 48034,
+          "bytes_sent": 57560148,
+          "rtt_ms": null,
+          "cwnd": null,
+          "lost_packets": null,
+          "mtu": null,
+          "send_buffer_free": null,
+          "buffered_amount": 6119820
+        },
+        "minRttMs": 2990.5,
+        "summary": {
+          "durationMs": 25932.19999998808,
+          "datagrams": 289125,
+          "bytes": 346465230,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 590,
+          "framesComplete": 563,
+          "framesIncomplete": 3,
+          "framesMissing": 0,
+          "datagramLoss": 0.0023891351399942806,
+          "rateMbps": {
+            "median": 91.51849615365758,
+            "min": 28.41327354241338,
+            "mean": 112.42185411026718
+          },
+          "spreadMs": {
+            "p50": 31.900000035762787,
+            "p95": 79.79999995231628,
+            "p99": 85.5,
+            "max": 1157
+          },
+          "latencyFirstMs": {
+            "p50": -1221.5739999761572,
+            "p95": -1101.7099999522907,
+            "p99": -132.5789999999979,
+            "max": 47.06100001191953
+          },
+          "latencyCompleteMs": {
+            "p50": -1187.1319999642146,
+            "p95": -1019.2909999880649,
+            "p99": -107.17199998805881,
+            "max": 61.46100004768232
+          },
+          "completionJitterMs": {
+            "p50": 23.766666630903877,
+            "p95": 72.9666666785876,
+            "p99": 79.56666670242946,
+            "max": 1244.3666667143505
+          }
+        },
+        "endReason": "timeout"
+      },
+      "gate": {
+        "pass": false,
+        "failures": [
+          "recv 92 < 97% of 580",
+          "frames ok 99.47% < 99.5%",
+          "spread p99 85.5 > wire 5.1 + 3 ms",
+          "9 frames dropped at sender"
+        ]
+      }
+    },
+    {
+      "presetId": "stress-800",
+      "presetLabel": "Stress 800 Mbit/s @ 60",
+      "wireMs": 14.184397163120568,
+      "result": {
+        "transport": "webtransport",
+        "config": {
+          "mbps": 800,
+          "fps": 60,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 800,
+            "fps": 60,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 1666666,
+          "fragments_per_frame": 1408,
+          "max_datagram": 1200,
+          "total_frames": 900
+        },
+        "server": {
+          "frames_generated": 900,
+          "frames_sent": 900,
+          "frames_dropped_backpressure": 0,
+          "datagrams_refused": 0,
+          "datagrams_sent": 1267200,
+          "bytes_sent": 1520274600,
+          "rtt_ms": 12.916949,
+          "cwnd": 86934239,
+          "lost_packets": 0,
+          "mtu": 1452,
+          "send_buffer_free": 6652918,
+          "buffered_amount": null
+        },
+        "minRttMs": 0.3999999761563231,
+        "summary": {
+          "durationMs": 14998.300000011921,
+          "datagrams": 1267200,
+          "bytes": 1520274600,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 0,
+          "framesComplete": 900,
+          "framesIncomplete": 0,
+          "framesMissing": 0,
+          "datagramLoss": 0,
+          "rateMbps": {
+            "median": 810.8184381368549,
+            "min": 810.21792,
+            "mean": 810.8020541433606
+          },
+          "spreadMs": {
+            "p50": 14.5,
+            "p95": 15.199999988079071,
+            "p99": 16.099999964237213,
+            "max": 20.19999998807907
+          },
+          "latencyFirstMs": {
+            "p50": 0.37400003576294694,
+            "p95": 0.5460000238417706,
+            "p99": 1.2119999880787873,
+            "max": 6.420000017881392
+          },
+          "latencyCompleteMs": {
+            "p50": 14.92699999999968,
+            "p95": 15.636000011921169,
+            "p99": 16.81000003576264,
+            "max": 22.620000005960463
+          },
+          "completionJitterMs": {
+            "p50": 0.6333332856496163,
+            "p95": 1.5666667024294547,
+            "p99": 2.366666654745739,
+            "max": 4.966666678587597
+          }
+        },
+        "endReason": "done"
+      },
+      "gate": {
+        "pass": true,
+        "failures": []
+      }
+    },
+    {
+      "presetId": "stress-800",
+      "presetLabel": "Stress 800 Mbit/s @ 60",
+      "wireMs": 14.184397163120568,
+      "result": {
+        "transport": "webrtc",
+        "config": {
+          "mbps": 800,
+          "fps": 60,
+          "secs": 15,
+          "dgram": 1200
+        },
+        "hello": {
+          "t": "hello",
+          "config": {
+            "mbps": 800,
+            "fps": 60,
+            "secs": 15,
+            "dgram": 1200
+          },
+          "frame_bytes": 1666666,
+          "fragments_per_frame": 1408,
+          "max_datagram": 1200,
+          "total_frames": 900
+        },
+        "server": null,
+        "minRttMs": null,
+        "summary": {
+          "durationMs": 14998.5,
+          "datagrams": 257482,
+          "bytes": 308904508,
+          "duplicates": 0,
+          "malformed": 0,
+          "lateDatagrams": 949,
+          "framesComplete": 178,
+          "framesIncomplete": 5,
+          "framesMissing": 0,
+          "datagramLoss": 0.00438943740685549,
+          "rateMbps": {
+            "median": 193.068128,
+            "min": 45.543697302567175,
+            "mean": 183.79909669859833
+          },
+          "spreadMs": {
+            "p50": 66.19999998807907,
+            "p95": 91.59999996423721,
+            "p99": 108.39999997615814,
+            "max": 154.89999997615814
+          },
+          "latencyFirstMs": {
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null
+          },
+          "latencyCompleteMs": {
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null
+          },
+          "completionJitterMs": {
+            "p50": 49.63333334525426,
+            "p95": 75.83333333333333,
+            "p99": 193.9333333571752,
+            "max": 1396.8333333333333
+          }
+        },
+        "endReason": "timeout"
+      },
+      "gate": {
+        "pass": false,
+        "failures": [
+          "recv 193 < 97% of 800",
+          "frames ok 97.27% < 99.5%",
+          "spread p99 108.4 > wire 14.2 + 3 ms"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,270 @@
+{
+  "capturedAt": "2026-10-03T23:48:51.481Z",
+  "env": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "adapter": "apple metal-3",
+    "subgroups": true,
+    "decoders": {
+      "av1-420-40m": "WebCodecs (hardware)",
+      "h264-420-40m": "WebCodecs (hardware)",
+      "hevc-420-40m": "WebCodecs (hardware)",
+      "hevc-420-80m": "WebCodecs (hardware)",
+      "pyrowave-420-290m": "WebGPU",
+      "pyrowave-444-590m": "WebGPU"
+    }
+  },
+  "results": [
+    {
+      "stream": "av1-420-40m",
+      "codec": "av1",
+      "codecString": "av01.0.13M.08",
+      "bitrateMbps": 39.3,
+      "decoder": "WebCodecs hw",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.23291015625,
+        "p95": 2.19580078125
+      },
+      "decodedMs": {
+        "p50": 2.47119140625,
+        "p95": 3.87109375
+      },
+      "drawnMs": {
+        "p50": 3.904052734375,
+        "p95": 5.771240234375
+      },
+      "presentedMs": {
+        "p50": 7.978271484375,
+        "p95": 13.4931640625
+      },
+      "decodeOnlyMs": {
+        "p50": 1.2001953125,
+        "p95": 1.7001953125
+      },
+      "minRttMs": 0.6000000238400389,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 62576,
+        "bytes_sent": 74575463
+      },
+      "endReason": "done"
+    },
+    {
+      "stream": "h264-420-40m",
+      "codec": "h264",
+      "codecString": "avc1.42C033",
+      "bitrateMbps": 34.7,
+      "decoder": "WebCodecs hw",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.239990234375,
+        "p95": 2.31884765625
+      },
+      "decodedMs": {
+        "p50": 2.004150390625,
+        "p95": 3.405029296875
+      },
+      "drawnMs": {
+        "p50": 3.529052734375,
+        "p95": 5.337890625
+      },
+      "presentedMs": {
+        "p50": 6.903076171875,
+        "p95": 11.279052734375
+      },
+      "decodeOnlyMs": {
+        "p50": 0.800048828125,
+        "p95": 1.300048828125
+      },
+      "minRttMs": 0.5999999642372131,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 55398,
+        "bytes_sent": 65958468
+      },
+      "endReason": "done"
+    },
+    {
+      "stream": "hevc-420-40m",
+      "codec": "hevc",
+      "codecString": "hev1.1.6.H150.90",
+      "bitrateMbps": 50.2,
+      "decoder": "WebCodecs hw",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.445068359375,
+        "p95": 2.77099609375
+      },
+      "decodedMs": {
+        "p50": 2.412109375,
+        "p95": 4.088134765625
+      },
+      "drawnMs": {
+        "p50": 3.818115234375,
+        "p95": 5.64013671875
+      },
+      "presentedMs": {
+        "p50": 8.0380859375,
+        "p95": 11.468994140625
+      },
+      "decodeOnlyMs": {
+        "p50": 0.900146484375,
+        "p95": 1.5
+      },
+      "minRttMs": 0.6000000238418579,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 81216,
+        "bytes_sent": 96957757
+      },
+      "endReason": "done"
+    },
+    {
+      "stream": "hevc-420-80m",
+      "codec": "hevc",
+      "codecString": "hev1.1.6.H150.90",
+      "bitrateMbps": 84,
+      "decoder": "WebCodecs hw",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.97509765625,
+        "p95": 3.171142578125
+      },
+      "decodedMs": {
+        "p50": 3.092041015625,
+        "p95": 4.55908203125
+      },
+      "drawnMs": {
+        "p50": 4.5087890625,
+        "p95": 6.199951171875
+      },
+      "presentedMs": {
+        "p50": 8.659912109375,
+        "p95": 11.95703125
+      },
+      "decodeOnlyMs": {
+        "p50": 1.099853515625,
+        "p95": 1.699951171875
+      },
+      "minRttMs": 0.800000011920929,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 134672,
+        "bytes_sent": 161104036
+      },
+      "endReason": "done"
+    },
+    {
+      "stream": "pyrowave-420-290m",
+      "codec": "pyrowave",
+      "codecString": null,
+      "bitrateMbps": 290,
+      "decoder": "WebGPU",
+      "framesReceived": 899,
+      "framesDropped": 1,
+      "framesShown": 899,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 6.077880859375,
+        "p95": 9.01708984375
+      },
+      "decodedMs": {
+        "p50": 8.51416015625,
+        "p95": 11.984130859375
+      },
+      "drawnMs": {
+        "p50": 8.51416015625,
+        "p95": 11.984130859375
+      },
+      "presentedMs": {
+        "p50": 11.389892578125,
+        "p95": 16.336181640625
+      },
+      "decodeOnlyMs": {
+        "p50": 2.199951171875,
+        "p95": 4
+      },
+      "minRttMs": 0.6000000238418579,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 459900,
+        "bytes_sent": 551059800
+      },
+      "endReason": "done"
+    },
+    {
+      "stream": "pyrowave-444-590m",
+      "codec": "pyrowave",
+      "codecString": null,
+      "bitrateMbps": 580.9,
+      "decoder": "WebGPU",
+      "framesReceived": 890,
+      "framesDropped": 10,
+      "framesShown": 890,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 12.5419921875,
+        "p95": 19.241943359375
+      },
+      "decodedMs": {
+        "p50": 16.200927734375,
+        "p95": 22.94189453125
+      },
+      "drawnMs": {
+        "p50": 16.200927734375,
+        "p95": 22.94189453125
+      },
+      "presentedMs": {
+        "p50": 20.02197265625,
+        "p95": 26.094970703125
+      },
+      "decodeOnlyMs": {
+        "p50": 3.5,
+        "p95": 4.400146484375
+      },
+      "minRttMs": 0.5999999642372131,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 920685,
+        "bytes_sent": 1103963580
+      },
+      "endReason": "done"
+    }
+  ]
+}

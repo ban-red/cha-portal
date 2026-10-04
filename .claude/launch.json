@@ -1,0 +1,55 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "s1-server",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": [
+        "run",
+        "--release",
+        "-p",
+        "s1-server",
+        "--",
+        "--streams",
+        "spikes/s1c-codec-compare/streams"
+      ],
+      "port": 4480
+    },
+    {
+      "name": "s1-web",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "run",
+        "--cwd",
+        "spikes/s1-browser-pyrowave/web",
+        "dev"
+      ],
+      "port": 5180,
+      "autoPort": true
+    },
+    {
+      "name": "s1b-web",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "run",
+        "--cwd",
+        "spikes/s1b-pyrowave-webgpu/web",
+        "dev"
+      ],
+      "port": 5181,
+      "autoPort": true
+    },
+    {
+      "name": "s1c-web",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "run",
+        "--cwd",
+        "spikes/s1c-codec-compare/web",
+        "dev"
+      ],
+      "port": 5182,
+      "autoPort": true
+    }
+  ]
+}

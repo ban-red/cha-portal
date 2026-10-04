@@ -1,0 +1,693 @@
+{
+  "capturedAt": "2026-10-04T02:53:11.501Z",
+  "env": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "adapter": "apple metal-3",
+    "subgroups": true,
+    "decoders": {
+      "av1-420-40m": "WebCodecs (hardware), WebRTC ok",
+      "h264-420-40m": "WebCodecs (hardware), WebRTC ok",
+      "hevc-420-40m": "WebCodecs (hardware), WebRTC ok",
+      "hevc-420-80m": "WebCodecs (hardware), WebRTC ok",
+      "pyrowave-420-290m": "WebGPU",
+      "pyrowave-444-590m": "WebGPU"
+    }
+  },
+  "results": [
+    {
+      "stream": "h264-420-40m",
+      "codec": "h264",
+      "codecString": "avc1.42C033",
+      "bitrateMbps": 34.7,
+      "path": "webgpu",
+      "decoder": "webgpu (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.821044921875,
+        "p95": 2.93994140625
+      },
+      "decodedMs": {
+        "p50": 2.94091796875,
+        "p95": 4.348876953125
+      },
+      "drawnMs": {
+        "p50": 5.64794921875,
+        "p95": 8.008056640625
+      },
+      "presentedMs": {
+        "p50": 8.9169921875,
+        "p95": 12.98291015625
+      },
+      "displayMs": {
+        "p50": null,
+        "p95": null
+      },
+      "decodeOnlyMs": {
+        "p50": 1.099853515625,
+        "p95": 1.800048828125
+      },
+      "minRttMs": 0.6999999880772521,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 55398,
+        "bytes_sent": 65958468
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "h264-420-40m",
+      "codec": "h264",
+      "codecString": "avc1.42C033",
+      "bitrateMbps": 34.7,
+      "path": "video",
+      "decoder": "video (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.9140625,
+        "p95": 3.6240234375
+      },
+      "decodedMs": {
+        "p50": 3.157958984375,
+        "p95": 5.6240234375
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 3.2578125,
+        "p95": 5.786865234375
+      },
+      "displayMs": {
+        "p50": 15.98583984375,
+        "p95": 19.86181640625
+      },
+      "decodeOnlyMs": {
+        "p50": 1,
+        "p95": 2.099853515625
+      },
+      "minRttMs": 0.5999999642372131,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 55398,
+        "bytes_sent": 65958468
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "h264-420-40m",
+      "codec": "h264",
+      "codecString": "avc1.42C033",
+      "bitrateMbps": 34.7,
+      "path": "canvas2d",
+      "decoder": "canvas2d (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.164794921875,
+        "p95": 2.35498046875
+      },
+      "decodedMs": {
+        "p50": 1.412841796875,
+        "p95": 3.20263671875
+      },
+      "drawnMs": {
+        "p50": 1.6337890625,
+        "p95": 3.5908203125
+      },
+      "presentedMs": {
+        "p50": 2.872802734375,
+        "p95": 8.844970703125
+      },
+      "displayMs": {
+        "p50": null,
+        "p95": null
+      },
+      "decodeOnlyMs": {
+        "p50": 0.199951171875,
+        "p95": 1.099853515625
+      },
+      "minRttMs": 0.5999999642372131,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 55398,
+        "bytes_sent": 65958468
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "h264-420-40m",
+      "codec": "h264",
+      "codecString": "avc1.42C033",
+      "bitrateMbps": 34.7,
+      "path": "webrtc",
+      "decoder": "webrtc (RTP, browser decoder)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 3.096923828125,
+        "p95": 4.50390625
+      },
+      "decodedMs": {
+        "p50": 5.034912109375,
+        "p95": 6.53076171875
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 5.385009765625,
+        "p95": 8.029052734375
+      },
+      "displayMs": {
+        "p50": 18.02099609375,
+        "p95": 22.906005859375
+      },
+      "decodeOnlyMs": {
+        "p50": 1.800048828125,
+        "p95": 2.800048828125
+      },
+      "minRttMs": 0.9000000357627869,
+      "server": {
+        "t": "stats",
+        "elapsed_ms": 15520,
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 0,
+        "bytes_sent": 65072100,
+        "rtt_ms": null,
+        "cwnd": null,
+        "lost_packets": null,
+        "mtu": null,
+        "send_buffer_free": null,
+        "buffered_amount": null
+      },
+      "rtc": {
+        "framesReceived": 900,
+        "framesDecoded": 900,
+        "framesDropped": 0,
+        "keyFramesDecoded": 4,
+        "framesPerSecond": 25,
+        "frameWidth": 2560,
+        "frameHeight": 1440,
+        "packetsLost": 0,
+        "nackCount": 0,
+        "pliCount": 0,
+        "firCount": 0,
+        "totalDecodeTime": 1.7198229999999999,
+        "totalProcessingDelay": 2.897086,
+        "totalAssemblyTime": 0.825857,
+        "jitterBufferDelay": 1.146798,
+        "jitterBufferTargetDelay": 10.004819,
+        "jitterBufferMinimumDelay": 10.004819,
+        "jitterBufferEmittedCount": 900,
+        "decodeMsAvg": 1.91,
+        "processingMsAvg": 3.22,
+        "jitterBufferMsAvg": 1.27
+      },
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "hevc-420-40m",
+      "codec": "hevc",
+      "codecString": "hev1.1.6.H150.90",
+      "bitrateMbps": 50.2,
+      "path": "webgpu",
+      "decoder": "webgpu (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.574951171875,
+        "p95": 3.0419921875
+      },
+      "decodedMs": {
+        "p50": 1.825927734375,
+        "p95": 3.810791015625
+      },
+      "drawnMs": {
+        "p50": 4.203857421875,
+        "p95": 6.948974609375
+      },
+      "presentedMs": {
+        "p50": 7.337890625,
+        "p95": 11.853759765625
+      },
+      "displayMs": {
+        "p50": null,
+        "p95": null
+      },
+      "decodeOnlyMs": {
+        "p50": 0.199951171875,
+        "p95": 0.999755859375
+      },
+      "minRttMs": 0.6000000238418579,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 81216,
+        "bytes_sent": 96957757
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "hevc-420-40m",
+      "codec": "hevc",
+      "codecString": "hev1.1.6.H150.90",
+      "bitrateMbps": 50.2,
+      "path": "video",
+      "decoder": "video (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 899,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 2.774169921875,
+        "p95": 4.7919921875
+      },
+      "decodedMs": {
+        "p50": 3.301025390625,
+        "p95": 5.7890625
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 3.374755859375,
+        "p95": 5.888916015625
+      },
+      "displayMs": {
+        "p50": 15.476806640625,
+        "p95": 20.3740234375
+      },
+      "decodeOnlyMs": {
+        "p50": 0.499755859375,
+        "p95": 1.39990234375
+      },
+      "minRttMs": 0.699999988079071,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 81216,
+        "bytes_sent": 96957757
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "hevc-420-40m",
+      "codec": "hevc",
+      "codecString": "hev1.1.6.H150.90",
+      "bitrateMbps": 50.2,
+      "path": "canvas2d",
+      "decoder": "canvas2d (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.992919921875,
+        "p95": 3.425048828125
+      },
+      "decodedMs": {
+        "p50": 1.98681640625,
+        "p95": 3.919921875
+      },
+      "drawnMs": {
+        "p50": 2.2626953125,
+        "p95": 4.2529296875
+      },
+      "presentedMs": {
+        "p50": 3.462890625,
+        "p95": 9.546875
+      },
+      "displayMs": {
+        "p50": null,
+        "p95": null
+      },
+      "decodeOnlyMs": {
+        "p50": -0.10009765625,
+        "p95": 0.69970703125
+      },
+      "minRttMs": 0.5999999642353941,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 81216,
+        "bytes_sent": 96957757
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "hevc-420-40m",
+      "codec": "hevc",
+      "codecString": "hev1.1.6.H150.90",
+      "bitrateMbps": 50.2,
+      "path": "webrtc",
+      "decoder": "webrtc (RTP, browser decoder)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 3.570068359375,
+        "p95": 6.30615234375
+      },
+      "decodedMs": {
+        "p50": 5.418212890625,
+        "p95": 8.2900390625
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 5.89599609375,
+        "p95": 9.89697265625
+      },
+      "displayMs": {
+        "p50": 18.372802734375,
+        "p95": 24.171875
+      },
+      "decodeOnlyMs": {
+        "p50": 1.800048828125,
+        "p95": 2.5
+      },
+      "minRttMs": 1.100000023841858,
+      "server": {
+        "t": "stats",
+        "elapsed_ms": 15530,
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 0,
+        "bytes_sent": 95658301,
+        "rtt_ms": null,
+        "cwnd": null,
+        "lost_packets": null,
+        "mtu": null,
+        "send_buffer_free": null,
+        "buffered_amount": null
+      },
+      "rtc": {
+        "framesReceived": 900,
+        "framesDecoded": 900,
+        "framesDropped": 0,
+        "keyFramesDecoded": 4,
+        "framesPerSecond": 25,
+        "frameWidth": 2560,
+        "frameHeight": 1440,
+        "packetsLost": 0,
+        "nackCount": 0,
+        "pliCount": 0,
+        "firCount": 0,
+        "totalDecodeTime": 1.663201,
+        "totalProcessingDelay": 3.5680129999999997,
+        "totalAssemblyTime": 1.443478,
+        "jitterBufferDelay": 1.8801139999999998,
+        "jitterBufferTargetDelay": 11.890785,
+        "jitterBufferMinimumDelay": 11.890785,
+        "jitterBufferEmittedCount": 900,
+        "decodeMsAvg": 1.85,
+        "processingMsAvg": 3.96,
+        "jitterBufferMsAvg": 2.09
+      },
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "av1-420-40m",
+      "codec": "av1",
+      "codecString": "av01.0.13M.08",
+      "bitrateMbps": 39.3,
+      "path": "webgpu",
+      "decoder": "webgpu (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.56298828125,
+        "p95": 2.916015625
+      },
+      "decodedMs": {
+        "p50": 1.283935546875,
+        "p95": 2.948974609375
+      },
+      "drawnMs": {
+        "p50": 3.936767578125,
+        "p95": 6.508056640625
+      },
+      "presentedMs": {
+        "p50": 7.509033203125,
+        "p95": 11.35009765625
+      },
+      "displayMs": {
+        "p50": null,
+        "p95": null
+      },
+      "decodeOnlyMs": {
+        "p50": -0.39990234375,
+        "p95": 0.400146484375
+      },
+      "minRttMs": 0.6000000238418579,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 62576,
+        "bytes_sent": 74575463
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "av1-420-40m",
+      "codec": "av1",
+      "codecString": "av01.0.13M.08",
+      "bitrateMbps": 39.3,
+      "path": "video",
+      "decoder": "video (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 2.491943359375,
+        "p95": 3.945068359375
+      },
+      "decodedMs": {
+        "p50": 2.622802734375,
+        "p95": 4.378662109375
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 2.7177734375,
+        "p95": 4.46484375
+      },
+      "displayMs": {
+        "p50": 14.414794921875,
+        "p95": 18.955810546875
+      },
+      "decodeOnlyMs": {
+        "p50": 0.099853515625,
+        "p95": 0.7998046875
+      },
+      "minRttMs": 0.699999988079071,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 62576,
+        "bytes_sent": 74575463
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "av1-420-40m",
+      "codec": "av1",
+      "codecString": "av01.0.13M.08",
+      "bitrateMbps": 39.3,
+      "path": "canvas2d",
+      "decoder": "canvas2d (WebCodecs hw)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 1.66015625,
+        "p95": 2.61083984375
+      },
+      "decodedMs": {
+        "p50": 1.18994140625,
+        "p95": 2.607666015625
+      },
+      "drawnMs": {
+        "p50": 1.484619140625,
+        "p95": 3.021728515625
+      },
+      "presentedMs": {
+        "p50": 2.305908203125,
+        "p95": 9.05078125
+      },
+      "displayMs": {
+        "p50": null,
+        "p95": null
+      },
+      "decodeOnlyMs": {
+        "p50": -0.500244140625,
+        "p95": 0.19970703125
+      },
+      "minRttMs": 0.6999999880772521,
+      "server": {
+        "t": "done",
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 62576,
+        "bytes_sent": 74575463
+      },
+      "rtc": null,
+      "endReason": "done",
+      "error": null
+    },
+    {
+      "stream": "av1-420-40m",
+      "codec": "av1",
+      "codecString": "av01.0.13M.08",
+      "bitrateMbps": 39.3,
+      "path": "webrtc",
+      "decoder": "webrtc (RTP, browser decoder)",
+      "framesReceived": 900,
+      "framesDropped": 0,
+      "framesShown": 900,
+      "decodeErrors": 0,
+      "lastFragmentMs": {
+        "p50": 3.500244140625,
+        "p95": 4.71923828125
+      },
+      "decodedMs": {
+        "p50": 6.051025390625,
+        "p95": 7.26806640625
+      },
+      "drawnMs": {
+        "p50": null,
+        "p95": null
+      },
+      "presentedMs": {
+        "p50": 6.37109375,
+        "p95": 8.506103515625
+      },
+      "displayMs": {
+        "p50": 18.572998046875,
+        "p95": 23.377197265625
+      },
+      "decodeOnlyMs": {
+        "p50": 2.39990234375,
+        "p95": 3.10009765625
+      },
+      "minRttMs": 1.199999988079071,
+      "server": {
+        "t": "stats",
+        "elapsed_ms": 15530,
+        "frames_generated": 900,
+        "frames_sent": 900,
+        "frames_dropped_backpressure": 0,
+        "datagrams_refused": 0,
+        "datagrams_sent": 0,
+        "bytes_sent": 73574247,
+        "rtt_ms": null,
+        "cwnd": null,
+        "lost_packets": null,
+        "mtu": null,
+        "send_buffer_free": null,
+        "buffered_amount": null
+      },
+      "rtc": {
+        "framesReceived": 900,
+        "framesDecoded": 900,
+        "framesDropped": 0,
+        "keyFramesDecoded": 4,
+        "framesPerSecond": 24,
+        "frameWidth": 2560,
+        "frameHeight": 1440,
+        "packetsLost": 0,
+        "nackCount": 0,
+        "pliCount": 0,
+        "firCount": 0,
+        "totalDecodeTime": 2.254993,
+        "totalProcessingDelay": 3.241943,
+        "totalAssemblyTime": 0.704746,
+        "jitterBufferDelay": 0.9454349999999999,
+        "jitterBufferTargetDelay": 10.217032,
+        "jitterBufferMinimumDelay": 10.217032,
+        "jitterBufferEmittedCount": 900,
+        "decodeMsAvg": 2.51,
+        "processingMsAvg": 3.6,
+        "jitterBufferMsAvg": 1.05
+      },
+      "endReason": "done",
+      "error": null
+    }
+  ]
+}

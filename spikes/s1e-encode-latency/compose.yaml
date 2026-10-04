@@ -1,0 +1,24 @@
+# Spike S1e on a Cha Node with an NVIDIA GPU (needs nvidia-container-toolkit).
+# From the repository root:
+#   docker compose -f spikes/s1e-encode-latency/compose.yaml run --rm --build s1e-encode
+# Results land in spikes/s1e-encode-latency/results/.
+name: cha-s1e
+
+services:
+  s1e-encode:
+    build:
+      context: ../..
+      dockerfile: spikes/s1e-encode-latency/Dockerfile
+    image: cha/s1e-encode
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: all
+      S1E_FRAMES: "600"
+    volumes:
+      - ./results:/out
+    # The GPU as a CDI device (the toolkit's generated spec, e.g.
+    # /var/run/cdi/nvidia.yaml), not `--gpus`/`driver: nvidia`. The legacy
+    # --gpus path leaves out what NVIDIA's Vulkan driver needs
+    # (/dev/nvidia-modeset, the ICD manifest, libnvidia-present on 595), so
+    # vkCreateInstance fails; CDI injects the whole driver.
+    devices:
+      - nvidia.com/gpu=all
