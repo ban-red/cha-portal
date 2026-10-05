@@ -55,7 +55,10 @@ const PRESET_P1: GUID = guid(
 /// Reference frames kept: after a loss, the next frame can refer to one up to
 /// this many frames back (less one). A page notices a loss about a frame
 /// late and its report takes half a round trip, so at 60 fps this covers
-/// round trips up to ~100 ms (AV1 has eight reference slots).
+/// round trips up to ~100 ms, at 120 about half that (a loss further back
+/// costs a keyframe instead). It stays 8 at every rate: AV1 has eight
+/// reference slots, and a bigger DPB at 1440p would pass what H.264 and HEVC
+/// levels allow decoders (12 frames).
 pub const DPB_FRAMES: u32 = 8;
 
 /// The SDK these bindings come from (13.0); the driver must support it.
@@ -593,6 +596,19 @@ impl Encoder {
         self.config.bitrate_bps
     }
 
+    /// Changes the frame rate and the bitrate in place, from the next frame
+    /// on: NVENC's rate control (the VBV is one frame of bits) and its timing
+    /// follow, with no reset and no keyframe. The caller gives frames at
+    /// the new rate.
+    pub fn set_frame_rate(&mut self, fps: u32, bitrate_bps: u32) -> Result<()> {
+        if (fps, bitrate_bps) == (self.config.fps, self.config.bitrate_bps) {
+            return Ok(());
+        }
+        self.config.fps = fps;
+        self.config.bitrate_bps = bitrate_bps;
+        self.reconfigure(false)
+    }
+
     /// Applies the config; `reset` (a new size) restarts from a keyframe.
     fn reconfigure(&mut self, reset: bool) -> Result<()> {
         let _current = self.ctx.push()?;
@@ -756,6 +772,108 @@ mod tests {
     fn codec_names_round_trip() {
         for codec in Codec::ALL {
             assert_eq!(Codec::from_name(codec.name()), Some(codec));
+        }
+    }
+
+    /// Encodes 1440p at 60 fps, switches the encoder to 120 in place (the
+    /// bitrate scaled by 2^0.75), and measures `encode` at 120: it has to fit
+    /// in 8.3 ms. Prints the timings (`--nocapture`). Needs an NVIDIA GPU.
+    #[test]
+    #[ignore = "needs an NVIDIA GPU"]
+    fn switches_to_120_fps_in_place_and_keeps_up() {
+        use std::ffi::c_void;
+        type Alloc = unsafe extern "C" fn(*mut u64, usize) -> i32;
+        type Upload = unsafe extern "C" fn(u64, *const c_void, usize) -> i32;
+        let (w, h) = (2560u32, 1440u32);
+        let ctx = CudaContext::new(None).unwrap();
+        let lib = crate::dl::Library::open(&["libcuda.so.1"]).unwrap();
+        // SAFETY: the symbols' types are cuda.h's.
+        let (alloc, upload): (Alloc, Upload) = unsafe {
+            (
+                lib.symbol(c"cuMemAlloc_v2").unwrap(),
+                lib.symbol(c"cuMemcpyHtoD_v2").unwrap(),
+            )
+        };
+        let _current = ctx.push().unwrap();
+        // Two noisy gradients, so each frame differs from the last.
+        let surfaces: Vec<Surface> = (0..2u32)
+            .map(|n| {
+                let mut seed = 0x9e37_79b9u32 ^ n;
+                let pixels: Vec<u8> = (0..w * h * 4)
+                    .map(|i| {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        let x = (i / 4) % w;
+                        ((x * 255 / w) as u8 / 2).wrapping_add((seed >> 28) as u8 * 4)
+                    })
+                    .collect();
+                let mut ptr = 0u64;
+                // SAFETY: a current context; the copy is as long as the allocation.
+                unsafe {
+                    assert_eq!(alloc(&mut ptr, pixels.len()), 0);
+                    assert_eq!(upload(ptr, pixels.as_ptr().cast(), pixels.len()), 0);
+                }
+                Surface::Pitch { ptr, pitch: w * 4 }
+            })
+            .collect();
+        let base = 40_000_000u32;
+        for codec in Codec::ALL {
+            let mut encoder = Encoder::new(
+                Arc::clone(&ctx),
+                EncoderConfig {
+                    codec,
+                    input: InputFormat::Argb,
+                    width: w,
+                    height: h,
+                    max_width: w,
+                    max_height: h,
+                    fps: 60,
+                    bitrate_bps: base,
+                },
+            )
+            .unwrap();
+            let mut out = Vec::new();
+            let mut run = |encoder: &mut Encoder, frames: usize| {
+                let mut times = Vec::new();
+                let mut bytes = 0;
+                for i in 0..frames {
+                    let started = Instant::now();
+                    let key = encoder.encode(surfaces[i % 2], i == 0, &mut out).unwrap();
+                    times.push(started.elapsed().as_secs_f64() * 1e3);
+                    bytes += out.len();
+                    assert_eq!(key, i == 0);
+                }
+                times.sort_by(f64::total_cmp);
+                (
+                    times[times.len() / 2],
+                    times[times.len() * 99 / 100],
+                    bytes / frames,
+                )
+            };
+            let (p50, p99, bytes) = run(&mut encoder, 120);
+            eprintln!("{codec:?} 60 fps: encode p50 {p50:.2} ms p99 {p99:.2} ms, {bytes} B/frame");
+            // Live: the frame rate and the scaled bitrate, no keyframe.
+            let scaled = (f64::from(base) * 2f64.powf(0.75)) as u32;
+            encoder.set_frame_rate(120, scaled).unwrap();
+            assert_eq!((encoder.config().fps, encoder.bitrate()), (120, scaled));
+            let mut out2 = Vec::new();
+            let mut times = Vec::new();
+            let mut keys = 0;
+            let mut bytes_total = 0;
+            for i in 0..480 {
+                let started = Instant::now();
+                keys += u32::from(encoder.encode(surfaces[i % 2], false, &mut out2).unwrap());
+                times.push(started.elapsed().as_secs_f64() * 1e3);
+                bytes_total += out2.len();
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!(
+                "{codec:?} 120 fps: encode p50 {:.2} ms p99 {:.2} ms max {:.2} ms, {} B/frame, {keys} keyframes",
+                times[240],
+                times[475],
+                times[479],
+                bytes_total / 480
+            );
+            assert_eq!(keys, 0, "the switch must not cost a keyframe");
         }
     }
 }

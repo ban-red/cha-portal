@@ -19,6 +19,7 @@ base64 = "0.22"
 bytes = "1"
 cha-nvenc = { path = "../cha-nvenc" }
 cha-pyrowave = { path = "../cha-pyrowave" }
+cha-sysinfo = { path = "../cha-sysinfo" }
 cha-proto.workspace = true
 cha-wire = { path = "../cha-wire" }
 clap = { version = "4", features = ["derive", "env"] }

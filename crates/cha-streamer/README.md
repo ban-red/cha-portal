@@ -21,8 +21,8 @@ app ─Wayland─▶ compositor (Smithay, GLES on the render node)
 ## How it works
 
 - **Two clocks.**
-  - A timerfd ticks at the compositor rate (`--compositor-fps`, default 240). Every tick sends frame callbacks and presentation feedback, so apps draw at that rate. S2 showed this halves click → screen latency.
-  - Only every encode tick (`--fps`, default 60) composites, and only if something changed. Nothing is composited that won't be encoded.
+  - A timerfd ticks at the compositor rate (`--compositor-fps`, default 240, rounded up to a multiple of `--fps`: 270 for 90 fps, so every encoded frame falls on a tick). Every tick sends frame callbacks and presentation feedback, so apps draw at that rate. S2 showed this halves click → screen latency.
+  - Only every encode tick (`--fps`, default 60; 90 and 120 are options, see *Frame rate*) composites, and only if something changed. Nothing is composited that won't be encoded.
   - Chrome paces itself to presentation feedback, not frame callbacks: with feedback at 60 Hz it drew at 60 fps even with 240 Hz callbacks.
 - **Zero-copy.**
   - The output pool is four GBM buffers in the GPU's own tiling (`ARGB8888`).
@@ -57,6 +57,34 @@ The Chromium fast path, `cha-stream/1` (plan §3.1), beside WebRTC on its own UD
 - **Stats** carry composited → encoded and encoded → sent percentiles per report window, so a codec's cost shows within half a second of switching to it.
 - **First numbers** (the app's browser, which wasn't painting, so no click → screen yet): H.264 at 1616×1256 decodes in 1.5–1.6 ms with nothing lost; click → sound 55 ms p50, against 85–90 over WebRTC (no NetEq buffer).
 
+## Frame rate (60 to 120 fps)
+
+The baseline stays 1440p60 on 1 GbE; 90 and 120 are options. `--fps` sets the rate at the start (the node passes the app's choice), and a page can change it while the stream runs.
+
+- **Bitrate.** The defaults are for 60 fps (`framerate.rs` holds the rules):
+  - **NVENC codecs:** `--mbps` × (fps / 60)^0.75, so ×1.36 at 90 and ×1.68 at 120 (40 → 67 Mbit/s). Frames are cheaper at a higher rate (less changes between them), so the bitrate grows slower than the rate. The result is the session's starting rate and its ceiling; rate control climbs to it.
+  - **PyroWave:** `--pyrowave-mbps` is the budget at 60 fps. It is per frame, so the total grows linearly with the rate and a frame keeps its quality, up to 600 Mbit/s, what 1 GbE carries with room for audio and framing. 4:2:0 at 120 fps is 580 Mbit/s, under it. 4:4:4 is 580 at 60 fps and would be 1160 at 120: capped, so its frames get half the bytes (logged once). PyroWave has no bitrate to trim: rate control only holds frames while the queue drains.
+- **Live change** (`{"t":"fps","fps":60|90|120}`, any transport, only from the session with the controls). The compositor retimes its clock and composites at the new rate. Each encoder follows on its next frame: `nvEncReconfigureEncoder` changes the frame rate and bitrate in place (the VBV is one frame of bits, and NVENC's timing follows), with no keyframe and no gap, so there is no encoder to restart as a codec switch has. A reconfigure that fails restarts that encoder from a keyframe. The sessions see the new rate on their next 50 ms tick and move rate control's ceiling to the scaled bitrate (`RateControl::rescale`): a target that the path never held back goes to it, a target the path had cut keeps its level (a higher ceiling is climbed to) or follows a lower ceiling down in proportion. Answered with `{"t":"fps","fps":N}`, or `{"t":"fps","fps":N,"error":"…"}` with the rate still running. Every viewer sees the new rate in the next `stats` message (about every 500 ms), which carries `fps`, as does the `hello`'s `stream` and `GET /info`. The page offers it only for desktop apps: a gamescope app (Steam) can't change its refresh while running.
+- **What scales with the rate, and what is fixed in time** (the audit for 60 to 120 fps):
+
+| Where | Rule | At 120 fps |
+|---|---|---|
+| NVENC bitrate, VBV (one frame of bits), frame rate in the encoder init | scaled (above); VBV and timing follow `fps` | 67 Mbit/s, VBV 70 kB |
+| PyroWave frame budget | per frame, total scaled and capped at 600 Mbit/s | as above |
+| Encode interval (compositor), re-encode throttle (a keyframe or recovery with nothing new on screen: once per frame) | per frame | 8.3 ms |
+| Keyframes, IDR, GOP | none: infinite GOP, keyframes only on request | — |
+| Send-queue hold (`HOLD_MS`) | fixed in time, 25 ms (1.5 frames at 60). In frames it would halve and hold over queues rate control doesn't call one yet (soft back-off starts at 20 ms) | 3 frames |
+| Queue seen by rate control (`backlog_ms`) | in time: frames queued × the frame interval | — |
+| Frame-size average (hold's estimate) | fixed in time: weight 0.9 per frame at 60 fps, 0.95 at 120 (~170 ms) | — |
+| FEC: chance a frame is lost past its parity | per second, not per frame: 10⁻⁴ at 60, 0.5 × 10⁻⁴ at 120 (a stall once in 167 s at either) | 0.5 × 10⁻⁴ |
+| FEC: keyframes and recovery frames (10⁻⁶, 0.3 % loss) | fixed: rare, not per-frame | — |
+| Rate control (40 and 20 ms queue thresholds, 15 ms delay growth, 100 ms reports, 300 ms and 1.2 s settling, 400 ms stall grace, 50 % a second climb) | fixed in time, all of it (`rate.rs`): a queue means the same latency at any rate | — |
+| Pacing tick (50 ms), keyframe retry (300 ms), stuck subscriber (1 s), PyroWave heal (250 ms) | fixed in time | — |
+| RFI: DPB of 8 frames (`DPB_FRAMES`) | fixed in frames, so its reach in time halves: ~117 ms at 60, ~58 ms at 120 (less the loss report's trip). It can't grow: AV1 has eight reference slots, and a bigger DPB at 1440p passes the 12 frames H.264 and HEVC levels allow decoders. A loss further back costs a keyframe, as before | ~58 ms |
+| RFI ring of sent frames (256) | fixed in frames, and enough: invalidation reaches 7 frames back, so a longer memory names frames nothing can use. 4.3 s at 60, 2.1 s at 120 | 2.1 s |
+
+- **Measured** (RTX 4090 in the dev container, `cha-nvenc`'s ignored test `switches_to_120_fps_in_place_and_keeps_up`, 1440p ARGB from CUDA memory, two noisy frames alternating, no compositor): H.264, HEVC and AV1 encode in 1.6–2.4 ms (p50) at both rates, p99 at most 2.5 ms, inside the 8.3 ms a 120 fps frame has. The in-place switch from 60 to 120 fps with the bitrate scaled made 480 frames with no keyframe. A 120 fps frame is about 67 kB against 79 kB at 60 (the picture here is synthetic noise, so only the ratio means anything).
+
 ## Rate control and FEC (P2.5)
 
 The WAN tier over WebTransport (plan §3.1 rules 1, 2 and 6). Spike S7 ([`spikes/s7-wan`](../../spikes/s7-wan/README.md)) drives it through netem.
@@ -75,17 +103,17 @@ The WAN tier over WebTransport (plan §3.1 rules 1, 2 and 6). Spike S7 ([`spikes
   - **Longer path:** a "queue" that holds while the rate falls by a third for 2 s is a longer path, and the delay floor moves up to it.
   - **Stall:** next to nothing arriving, or the reports stopping, is mostly a busy browser, so it's waited out for up to 400 ms. What arrives after it is a burst whose delays show the queue, and a cut goes to what arrives then.
 - **Encoder.** The target goes to NVENC in place, without an IDR (`nvEncReconfigureEncoder`), when it moves by more than 1/32. Video gets 92 % of the rate, less what parity takes.
-  - **Hold:** while more than 1.5 frames wait in QUIC's send buffer, the encoder holds, skipping frames rather than queueing them. A subscriber held for over a second (a stuck page) stops holding the shared encoder.
+  - **Hold:** while more than 25 ms of frames (1.5 at 60 fps) wait in QUIC's send buffer, the encoder holds, skipping frames rather than queueing them. A subscriber held for over a second (a stuck page) stops holding the shared encoder.
   - **Keyframes:** a keyframe re-encode happens at most once per frame interval.
 - **Congestion window** (`congestion.rs`): our own quinn controller, a fixed 8 MB window that ignores loss, since rate control paces the media. Cubic halved its window at every random loss and starved the stream at 1 % loss.
 - **FEC** (`cha-proto::fec`): systematic Reed-Solomon over GF(2⁸) with a Cauchy matrix, in blocks of up to 128 data fragments.
-  - **How much:** per block (header byte 3), the least parity that keeps a frame's odds of being lost under 10⁻⁴ (10⁻⁶ for keyframes and recovery frames, the binomial tail), and never more than half its data.
+  - **How much:** per block (header byte 3), the least parity that keeps a frame's odds of being lost under 10⁻⁴ at 60 fps (scaled by 60 / fps; 10⁻⁶ for keyframes and recovery frames, the binomial tail), and never more than half its data.
   - **For what loss:** 1.5× the loss measured while the path was calm, at least 0.3 %, held for 5 s after the last loss. A queue's overflow is rate control's to fix; parity would only add to it.
   - **Keyframes and recovery frames** always have parity for at least 0.3 % loss: one is mostly asked for because something was lost, and a resync point has to arrive. Before recovery frames had it, one sent at the onset of loss was often lost itself.
   - **Wire:** parity datagrams, flagged `PARITY` with indices after the data, carry the frame's length and a shard. The page rebuilds a frame as soon as any k of a block's k + m shards are in.
 - **Resync (RFI).** A lost frame costs a P-frame instead of a keyframe: the next frame refers around it.
-  - **Request:** the page's worker sends `{"t":"rfi","id":N}` on the control stream, N being the first lost frame's id. The session maps it to the encoder's frame index (a ring of the last 256 frames it sent), records it as the page's loss point, and asks the encoder to invalidate from there (`Media::request_invalidate`).
-  - **Encoder:** `nvEncInvalidateRefFrames` for each frame from the loss on; the DPB holds 8 frames (`cha-nvenc`'s `DPB_FRAMES`). A loss more than 7 frames back, or before the last keyframe, gets a keyframe instead. With nothing new on screen, the last frame is encoded again around the loss. Frames the sender drops itself (QUIC's buffer full) take the same path rather than always a keyframe.
+  - **Request:** the page's worker sends `{"t":"rfi","id":N}` on the control stream, N being the first lost frame's id. The session maps it to the encoder's frame index (a ring of the last 256 frames it sent: 4.3 s at 60 fps, 2.1 at 120, more than reference invalidation can use), records it as the page's loss point, and asks the encoder to invalidate from there (`Media::request_invalidate`).
+  - **Encoder:** `nvEncInvalidateRefFrames` for each frame from the loss on; the DPB holds 8 frames (`cha-nvenc`'s `DPB_FRAMES`; ~117 ms at 60 fps, ~58 ms at 120). A loss more than 7 frames back, or before the last keyframe, gets a keyframe instead. With nothing new on screen, the last frame is encoded again around the loss. Frames the sender drops itself (QUIC's buffer full) take the same path rather than always a keyframe.
   - **Flag:** the next frame is `RECOVERY` for every session whose loss point is at or after the invalidation point; the others get it as a normal frame. It has keyframe-grade parity.
   - **Page:** the worker drops frames until a keyframe or a `RECOVERY` frame that answers its loss. It asks again at once if that frame is itself lost (overtaken by later frames, or silent for 250 ms), and asks for a keyframe if nothing came 250 ms after asking.
   - **Log:** the encoder's 10 s line has `recoveries=` and `rfi_keyframes=` (the fallbacks).
@@ -126,7 +154,7 @@ The LAN tier (plan §3.2–3.3): Themaister's wavelet codec, intra-only, a few t
 
 - **Encoder** ([`cha-pyrowave`](../cha-pyrowave), our binding to `libpyrowave-shared`, loaded at run time): its own Vulkan device on the same GPU, picked by PCI vendor and device id. One device per streamer, shared by both modes (their calls take turns), made in the background at start-up. Making one takes ~0.4–0.6 s and stalls the GPU's other work (NVENC, the compositor) for ~0.2 s, which a first switch to PyroWave mid-session would show as a freeze. The warm device costs ~57 MiB of VRAM (an idle streamer: 394 → 451 MiB); leave PyroWave out of `--codecs` to skip it. Each output buffer is imported once as a dma-buf with its DRM modifier. The encoder takes RGB and converts to YCbCr on the GPU, then splits the frame into packets of about 1100 bytes that each decode on their own.
 - **Modifiers.** NVIDIA's GL picks compressed modifiers that its Vulkan driver can't import, so the output pool leaves those out (they gain nothing for a buffer that is read once).
-- **Budget:** `--pyrowave-mbps` (default 290) for 4:2:0 at 1440p and `--fps`, scaled with the picture's area; 4:4:4 gets twice as much.
+- **Budget:** `--pyrowave-mbps` (default 290) for 4:2:0 at 1440p and 60 fps, scaled with the picture's area; 4:4:4 gets twice as much. It is per frame, so the total grows with `--fps`, to 600 Mbit/s at most (*Frame rate*).
 - **No keyframes.** Every frame stands alone, so a lost datagram blurs its region of one frame and nothing waits for a resync. When the screen goes still, the last frame is sent once more after 250 ms (a heal), so a loss doesn't stay on screen.
 - **Wire.** One PyroWave packet per datagram. Its blocks are atomic, so a packet can come out larger than asked; it is then split across datagrams flagged `CONTINUES` (more follow) and `CONTINUED` (a tail). The player assembles whole packets, decodes everything that arrived by the 60 ms deadline, and drops older frames.
 - **Browser:** `@cha/pyrowave-webgpu` decodes into an offscreen WebGPU canvas; each frame becomes a VideoFrame for the same track generator and `<video>` as the hardware codecs, so presentation, stats and the probe work alike.

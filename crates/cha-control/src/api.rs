@@ -32,6 +32,7 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::ice::routes())
         .merge(crate::storage::routes())
         .merge(crate::controllers::routes())
+        .merge(crate::apps::routes())
         .fallback(|| async { ApiError::NotFound("no such API".into()) })
 }
 

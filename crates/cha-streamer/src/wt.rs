@@ -39,20 +39,38 @@ use crate::control::{
     Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
     next_pointer, next_status, percentile,
 };
+use crate::framerate;
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace, Subscription};
 use crate::rate::{MIN_BPS, RateControl, Reports, Sample, VIDEO_SHARE, Verdict, parse_report};
 use crate::session::Running;
+use crate::system::Sampler;
 use crate::viewers::{Seat, Viewer, Viewers};
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
+const SYSTEM_INTERVAL: Duration = Duration::from_secs(1);
 /// QUIC's datagram send buffer. Our own backlog rules (below) keep it nearly
 /// empty; the size only has to take a PyroWave frame or two.
 const SEND_BUFFER: usize = 8 << 20;
 /// How often the send queue is checked (hold or not) and the rate updated.
 const PACE_INTERVAL: Duration = Duration::from_millis(50);
-/// Hold the encoder while more than this many frames wait to go out.
-const HOLD_FRAMES: f64 = 1.5;
+/// Hold the encoder while more than this long's worth of frames waits to go
+/// out: a frame and a half at 60 fps. It is a time, not a count of frames, so
+/// it means the same latency at 90 and 120 fps; counted in frames it would
+/// halve at 120 and hold, skipping frames, over queues rate control doesn't
+/// yet call one (its soft back-off starts at 20 ms).
+const HOLD_MS: f64 = 25.0;
+/// How many sent frames are remembered, to name the ones the page lost
+/// (at 120 fps, 2 s). Reference invalidation reaches back only `DPB_FRAMES`,
+/// and a loss further back costs a keyframe, so more would be of no use.
+const SENT_FRAMES: usize = 256;
+/// The chance a frame is lost whole, past its parity, at the loss expected,
+/// at 60 fps. At other rates it scales with the time between frames, so
+/// the stalls it stands for come as often (once in 167 s at 60, 83 s at
+/// 120): a stall is what a page sees, not a frame.
+const FRAME_FAILURE_60: f64 = 1e-4;
+/// A resync point's (a keyframe's) loss chance: they're rare, so no scaling.
+const RESYNC_FAILURE: f64 = 1e-6;
 /// A dropped frame's keyframe, asked for at most this often.
 const KEYFRAME_RETRY: Duration = Duration::from_millis(300);
 /// The loss a keyframe's parity is sized for, at least.
@@ -222,13 +240,19 @@ async fn run(
             "input": true,
             "audio": sessions.audio.is_some(),
             "gamepads": sessions.gamepads.is_some(),
+            "fps": sessions.media.fps(),
             "transport": "webtransport",
             "maxDatagram": max_datagram,
         }),
     });
 
     let subscribed = Instant::now();
-    let mut video = Video::new(codec, sessions.media.subscribe(codec)?, fragmenter);
+    let mut video = Video::new(
+        codec,
+        sessions.media.subscribe(codec)?,
+        fragmenter,
+        sessions.media.fps(),
+    );
     let mut pacing = Pacing::new(video.pace.target());
     let mut pace_tick = interval_at(tokio::time::Instant::now() + PACE_INTERVAL, PACE_INTERVAL);
     pace_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -243,6 +267,9 @@ async fn run(
     let mut stats = StreamerStats::default();
     let mut report = interval_at(tokio::time::Instant::now() + STATS_INTERVAL, STATS_INTERVAL);
     report.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut system = Sampler::new();
+    let mut system_tick = interval_at(tokio::time::Instant::now(), SYSTEM_INTERVAL);
+    system_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let result = loop {
         tokio::select! {
@@ -347,10 +374,16 @@ async fn run(
             }
             _ = report.tick() => {
                 video.report(&mut stats);
+                stats.fps = Some(sessions.media.fps());
                 let _ = out.send(ServerMsg::Stats {
                     elapsed_ms: epoch.elapsed().as_millis() as u64,
                     stats: stats.clone(),
                 });
+            }
+            _ = system_tick.tick() => {
+                if let Some(sample) = system.sample() {
+                    let _ = out.send(ServerMsg::System(sample));
+                }
             }
             err = conn.closed() => break Err(anyhow::anyhow!("{err}")),
             _ = &mut stopped => {
@@ -396,10 +429,17 @@ struct Video {
     /// Recent frame size (bytes, smoothed), to count the send queue in frames.
     frame_bytes: f64,
     keyframe_asked: Option<Instant>,
+    /// The frame rate this session last saw (`Pacing::tick` follows it).
+    fps: u32,
 }
 
 impl Video {
-    fn new(codec: VideoCodec, subscription: Subscription, fragmenter: Fragmenter) -> Self {
+    fn new(
+        codec: VideoCodec,
+        subscription: Subscription,
+        fragmenter: Fragmenter,
+        fps: u32,
+    ) -> Self {
         Self {
             codec,
             frames: subscription.frames,
@@ -416,6 +456,7 @@ impl Video {
             hop_us: Vec::new(),
             frame_bytes: 0.0,
             keyframe_asked: None,
+            fps,
         }
     }
 
@@ -491,7 +532,7 @@ impl Video {
         }
         if !intra {
             self.sent.push_back((self.frame_id, frame.index));
-            if self.sent.len() > 256 {
+            if self.sent.len() > SENT_FRAMES {
                 self.sent.pop_front();
             }
         }
@@ -502,7 +543,8 @@ impl Video {
         self.frame_bytes = if self.frame_bytes == 0.0 {
             size
         } else {
-            self.frame_bytes * 0.9 + size * 0.1
+            let keep = frame_bytes_memory(self.fps);
+            self.frame_bytes * keep + size * (1.0 - keep)
         };
         self.encode_ms
             .push(frame.encoded.duration_since(frame.composited).as_secs_f64() * 1e3);
@@ -515,9 +557,9 @@ impl Video {
     }
 
     /// Parity fragments per block for a frame of `len` bytes: enough that,
-    /// at the loss expected, a frame is lost under once in 10⁴, a resync
-    /// point (a keyframe, or a recovery frame) once in 10⁶, but never more
-    /// than half its data. Resync points always have some: everything after
+    /// at the loss expected, a frame is lost under `FRAME_FAILURE_60` (once
+    /// in 10⁴ at 60 fps, scaled to the rate), a resync point (a keyframe, or a
+    /// recovery frame) once in 10⁶, but never more than half its data. Resync points always have some: everything after
     /// one needs it, and one is mostly sent because something was lost, when
     /// parity may not have caught up yet.
     fn fec_for(&self, len: usize, resync: bool) -> u8 {
@@ -525,9 +567,9 @@ impl Video {
             .div_ceil(self.fragmenter.shard_len())
             .clamp(1, fec::BLOCK);
         let (loss, failure) = if resync {
-            (self.fec_loss.max(KEYFRAME_LOSS), 1e-6)
+            (self.fec_loss.max(KEYFRAME_LOSS), RESYNC_FAILURE)
         } else {
-            (self.fec_loss, 1e-4)
+            (self.fec_loss, frame_failure(self.fps))
         };
         fec::parity_for(k, loss, failure).min(k.div_ceil(2)) as u8
     }
@@ -632,6 +674,27 @@ impl Video {
         self.encode_ms.clear();
         self.hop_us.clear();
     }
+}
+
+/// The weight an old frame size keeps in `Video::frame_bytes` per new frame:
+/// 0.9 at 60 fps, so it averages the last ~170 ms, and the same time at
+/// every rate.
+fn frame_bytes_memory(fps: u32) -> f64 {
+    0.9f64.powf(f64::from(framerate::BASE_FPS) / f64::from(fps.max(1)))
+}
+
+/// The chance a frame is lost whole at `fps` (see `FRAME_FAILURE_60`).
+fn frame_failure(fps: u32) -> f64 {
+    FRAME_FAILURE_60 * f64::from(framerate::BASE_FPS) / f64::from(fps.max(1))
+}
+
+/// How long the send queue is, in milliseconds of frames: `backlog` bytes at
+/// `frame_bytes` each (never under what a frame of the target rate holds),
+/// one `1/fps` apart.
+fn queued_ms(backlog: usize, frame_bytes: f64, target_bps: u32, fps: u32) -> f64 {
+    let fps = f64::from(fps.max(1));
+    let frame_bytes = frame_bytes.max(f64::from(target_bps) / 8.0 / fps).max(1.0);
+    backlog as f64 / frame_bytes * 1000.0 / fps
 }
 
 /// A session's rate control (P2.5): its send queue and the path's delay
@@ -740,14 +803,22 @@ impl Pacing {
     ) {
         let quic = conn.quic_connection();
         let backlog = SEND_BUFFER.saturating_sub(quic.datagram_send_buffer_space());
-        // The queue in frames: hold the encoder (skip frames, none dropped)
-        // while it's more than a frame and a half.
-        let frame_bytes = video
-            .frame_bytes
-            .max(f64::from(video.pace.target()) / 8.0 / 60.0)
-            .max(1.0);
-        let frames_queued = backlog as f64 / frame_bytes;
-        let hold = frames_queued > HOLD_FRAMES;
+        // A frame rate change (any viewer's): the ceiling follows, and the
+        // frame-based averages keep their time.
+        let fps = media.fps();
+        if fps != video.fps {
+            video.fps = fps;
+            self.rate.rescale(media.bitrate_bps());
+            info!(
+                fps,
+                ceiling_mbps = media.bitrate_bps() / 1_000_000,
+                "frame rate"
+            );
+        }
+        // The queue in time: hold the encoder (skip frames, none dropped)
+        // while it's more than `HOLD_MS`.
+        let backlog_ms = queued_ms(backlog, video.frame_bytes, video.pace.target(), fps);
+        let hold = backlog_ms > HOLD_MS;
         video.pace.set_hold(hold);
         if video.resync && !hold {
             video.ask_resync(media);
@@ -775,7 +846,7 @@ impl Pacing {
             rtt: s.path.rtt,
             delivery_ms: report.delivery_ms,
             rx_bps: report.rx_bps,
-            backlog_ms: frames_queued * 1000.0 / 60.0,
+            backlog_ms,
             loss,
             tx_bps: counters.1.saturating_sub(bytes) as f64 * 8.0 / secs,
         };
@@ -804,7 +875,7 @@ impl Pacing {
                 tx_mbps = format!("{:.1}", sample.tx_bps / 1e6),
                 rtt_ms = s.path.rtt.as_millis() as u64,
                 queue_ms = format!("{queue_ms:.0}"),
-                backlog_frames = format!("{frames_queued:.1}"),
+                backlog_ms = format!("{backlog_ms:.0}"),
                 rx_mbps = sample.rx_bps.map(|r| format!("{:.1}", r / 1e6)),
                 loss = format!("{:.3}", sample.loss),
                 fec = format!("{:.2}", self.fec_overhead),
@@ -951,5 +1022,43 @@ async fn next_packet(audio: &mut Option<mpsc::Receiver<AudioPacket>>) -> Option<
     match audio {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_queue_is_the_same_time_at_every_frame_rate() {
+        // 40 Mbit/s: a frame is 83 kB at 60 fps. 125 kB queued is 1.5 frames,
+        // 25 ms.
+        let at_60 = queued_ms(125_000, 83_333.0, 40_000_000, 60);
+        assert!((at_60 - 25.0).abs() < 0.1, "{at_60}");
+        // At 120 fps a frame is 70 kB (67 Mbit/s over 120), and the same
+        // 25 ms of queue is three of them.
+        let bps = framerate::nvenc_bps(40_000_000, 120);
+        let frame = f64::from(bps) / 8.0 / 120.0;
+        let at_120 = queued_ms((frame * 3.0) as usize, frame, bps, 120);
+        assert!((at_120 - 25.0).abs() < 0.1, "{at_120}");
+        // Before any frame was sent, the target stands in for a frame's size.
+        let early = queued_ms(125_000, 0.0, 40_000_000, 60);
+        assert!((early - 25.0).abs() < 0.1, "{early}");
+    }
+
+    #[test]
+    fn frame_averages_keep_their_time() {
+        // 0.9 per frame at 60 fps: the weight of 10 frames, 167 ms.
+        assert!((frame_bytes_memory(60) - 0.9).abs() < 1e-9);
+        let at_120 = frame_bytes_memory(120);
+        assert!((at_120 * at_120 - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_lost_frame_stalls_as_often_at_every_rate() {
+        assert!((frame_failure(60) - 1e-4).abs() < 1e-12);
+        assert!((frame_failure(120) - 0.5e-4).abs() < 1e-12);
+        // Lost frames a second stay the same.
+        assert!((frame_failure(90) * 90.0 - frame_failure(60) * 60.0).abs() < 1e-9);
     }
 }

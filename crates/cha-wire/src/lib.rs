@@ -32,6 +32,14 @@
 //! ([`ToNode::Welcome::environment_warnings`]), and a node sends none until it
 //! does; an older node never sends one.
 //!
+//! The log of an environment that died ([`ToPortal::EnvironmentExited::log`]) is
+//! one more optional field, and serde ignores fields it doesn't know: an older
+//! portal reads the message and drops the log, an older node sends none.
+//!
+//! Usage ([`ToPortal::Usage`]) is the same kind of variant, so it has the same
+//! guard: [`ToNode::Welcome::node_usage`]. A node that is told so sends one
+//! every few seconds ([`USAGE_INTERVAL_SECS`]).
+//!
 //! The gamepad kind ([`EnvironmentSpec::gamepad`]) is one more optional field:
 //! a node that predates it ignores it and makes Xbox 360 pads, which is what
 //! a spec without it means, so an older portal's launches are unchanged.
@@ -99,6 +107,10 @@ pub enum ToNode {
         /// such a portal's welcome).
         #[serde(default)]
         environment_warnings: bool,
+        /// The portal understands [`ToPortal::Usage`]; the same guard, for the
+        /// same reason.
+        #[serde(default)]
+        node_usage: bool,
     },
     Request {
         id: u64,
@@ -137,6 +149,11 @@ pub enum ToPortal {
         /// It ended with an error (a non-zero exit, a crash) rather than the
         /// app quitting normally.
         failed: bool,
+        /// The last lines of what its containers logged (the streamer's, then
+        /// the app's), kept because the node removes them: for the owner to
+        /// read. Empty when there was none or the node is older.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        log: Vec<String>,
     },
     /// What a starting environment is doing, when it takes long enough to be
     /// worth saying (copying a user's old home into its new directory). The
@@ -151,6 +168,11 @@ pub enum ToPortal {
     EnvironmentWarning {
         id: String,
         warning: Option<String>,
+    },
+    /// The machine's use now, every [`USAGE_INTERVAL_SECS`] while connected
+    /// (only once the welcome says the portal reads it).
+    Usage {
+        usage: NodeUsage,
     },
     Request {
         id: u64,
@@ -238,6 +260,8 @@ pub struct EnvironmentSpec {
     pub shm_mb: u32,
     pub width: u32,
     pub height: u32,
+    /// Frames per second: 60, 90 or 120 from the portal. The streamer paces
+    /// to it and the app gets it as its refresh rate (`CHA_REFRESH`).
     pub fps: u32,
     /// The portal's public key (base64 Ed25519): the streamer accepts only
     /// connections that carry a media token it signed.
@@ -425,6 +449,51 @@ pub struct Gpu {
     pub encoders: Vec<String>,
 }
 
+/// How often a node reports its [`NodeUsage`].
+pub const USAGE_INTERVAL_SECS: u64 = 3;
+
+/// A node's CPU, RAM and GPU use at one moment (percent 0..100, bytes, watts,
+/// °C).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeUsage {
+    pub cpu: f64,
+    pub cores: u32,
+    /// The 1, 5 and 15 minute load averages.
+    pub load: [f64; 3],
+    pub mem_used: u64,
+    pub mem_total: u64,
+    /// Every NVIDIA GPU, in NVML's order; none if the agent can't see NVML.
+    pub gpus: Vec<GpuUsage>,
+    /// Environments this node is running.
+    pub environments: u32,
+}
+
+/// One GPU's use; what the driver didn't give is absent.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuUsage {
+    pub index: u32,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub util: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_total: Option<u64>,
+    /// NVENC and NVDEC utilisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enc: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dec: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_limit: Option<f64>,
+}
+
 /// The bytes a node signs to prove it holds its key: bound to this connection's
 /// challenge and to the node id.
 pub fn hello_message(nonce: &str, node_id: &str) -> Vec<u8> {
@@ -596,8 +665,84 @@ mod tests {
             old,
             ToNode::Welcome {
                 environment_warnings: false,
+                node_usage: false,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn usage_is_camel_case_and_leaves_out_what_the_gpu_didnt_say() {
+        let usage = NodeUsage {
+            cpu: 12.5,
+            cores: 16,
+            load: [1.0, 0.5, 0.25],
+            mem_used: 4,
+            mem_total: 8,
+            gpus: vec![GpuUsage {
+                index: 0,
+                name: "RTX".into(),
+                util: Some(40),
+                ..GpuUsage::default()
+            }],
+            environments: 2,
+        };
+        let json = serde_json::to_value(ToPortal::Usage {
+            usage: usage.clone(),
+        })
+        .unwrap();
+        assert_eq!(json["type"], "usage");
+        assert_eq!(json["usage"]["memUsed"], 4);
+        assert_eq!(
+            json["usage"]["gpus"][0],
+            serde_json::json!({ "index": 0, "name": "RTX", "util": 40 })
+        );
+        let back: ToPortal = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ToPortal::Usage { usage: u } if u == usage));
+    }
+
+    #[test]
+    fn an_exit_carries_its_log_and_both_ages_read_each_other() {
+        // An older node sends none.
+        let old: ToPortal = serde_json::from_value(serde_json::json!({
+            "type": "environment_exited", "id": "e1", "detail": "gone", "failed": true
+        }))
+        .unwrap();
+        assert!(matches!(old, ToPortal::EnvironmentExited { ref log, .. } if log.is_empty()));
+
+        let new = serde_json::to_value(ToPortal::EnvironmentExited {
+            id: "e1".into(),
+            detail: "gone".into(),
+            failed: true,
+            log: vec!["Error: boom".into()],
+        })
+        .unwrap();
+        assert_eq!(new["log"], serde_json::json!(["Error: boom"]));
+        // A message without a log doesn't carry the key.
+        let bare = serde_json::to_value(ToPortal::EnvironmentExited {
+            id: "e1".into(),
+            detail: "gone".into(),
+            failed: false,
+            log: Vec::new(),
+        })
+        .unwrap();
+        assert!(bare.get("log").is_none());
+
+        // An older portal's enum has no `log`; it must still read the message.
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        #[allow(dead_code)]
+        enum Older {
+            EnvironmentExited {
+                id: String,
+                detail: String,
+                failed: bool,
+            },
+        }
+        let older: Older = serde_json::from_value(new).unwrap();
+        assert!(matches!(
+            older,
+            Older::EnvironmentExited { failed: true, .. }
         ));
     }
 

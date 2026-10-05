@@ -7,6 +7,7 @@
 //! sent once more ("heal"), so a loss doesn't stay on screen; nothing is sent
 //! otherwise while nothing changes (the compositor only composites damage).
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,7 @@ use cha_pyrowave::{Chroma, Device, Dmabuf, Encoder, Image, Packet};
 use smithay::backend::allocator::Buffer;
 use tracing::{info, warn};
 
+use crate::framerate;
 use crate::media::{EncodedFrame, Frame, Mailbox, Subscribers, Wake, deliver, pace_of};
 
 /// Bytes of bitstream per packet: one datagram each, with room for our
@@ -30,23 +32,34 @@ pub struct PyroSettings {
     /// The GPU's PCI ids: PyroWave makes its own Vulkan device on it.
     pub vendor_id: u32,
     pub device_id: u32,
-    /// The budget for 4:2:0 at 1440p and `fps` (4:4:4 gets twice as much),
-    /// scaled with the picture's area.
+    /// The budget for 4:2:0 at 1440p and 60 fps (4:4:4 gets twice as much),
+    /// scaled with the picture's area; per frame, so the total grows with
+    /// the frame rate (`framerate.rs`).
     pub mbps_420: u32,
-    pub fps: u32,
+    /// The current frame rate, shared with `Media` (a page can change it).
+    pub fps: Arc<AtomicU32>,
+    /// The cap on the total has been logged.
+    cap_logged: Arc<AtomicBool>,
     /// The one Vulkan device the streamer's PyroWave encoders share.
     shared: Arc<OnceLock<Result<Arc<Device>, String>>>,
 }
 
 impl PyroSettings {
-    pub fn new(vendor_id: u32, device_id: u32, mbps_420: u32, fps: u32) -> Self {
+    pub fn new(vendor_id: u32, device_id: u32, mbps_420: u32) -> Self {
         Self {
             vendor_id,
             device_id,
             mbps_420,
-            fps,
+            fps: Arc::new(AtomicU32::new(framerate::BASE_FPS)),
+            cap_logged: Arc::default(),
             shared: Arc::default(),
         }
+    }
+
+    /// Follows `fps`, the streamer's current frame rate.
+    pub fn following(mut self, fps: Arc<AtomicU32>) -> Self {
+        self.fps = fps;
+        self
     }
 
     /// The shared device, made on first use (a later caller waits for it).
@@ -80,9 +93,16 @@ impl PyroSettings {
 
     fn frame_budget(&self, chroma: Chroma, width: u32, height: u32) -> usize {
         let area = f64::from(width * height) / f64::from(2560 * 1440);
-        let mbps = f64::from(self.mbps_420) * if chroma == Chroma::Yuv444 { 2.0 } else { 1.0 };
-        let bytes = mbps * 1e6 / 8.0 / f64::from(self.fps.max(1)) * area;
-        (bytes as usize).max(64 * 1024)
+        let fps = self.fps.load(Ordering::Relaxed);
+        let (bytes, capped) = framerate::pyrowave_frame_bytes(self.mbps_420, chroma, area, fps);
+        if capped && !self.cap_logged.swap(true, Ordering::Relaxed) {
+            info!(
+                fps,
+                cap_mbps = framerate::PYROWAVE_CAP_MBPS,
+                "PyroWave at this size and rate would take more than the link carries: frames are cut to fit"
+            );
+        }
+        bytes
     }
 }
 

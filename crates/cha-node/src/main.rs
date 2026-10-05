@@ -205,6 +205,7 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
         data_root: args.data_root.clone(),
         shared_dirs,
         nvidia_wine_dir: parse_nvidia_wine_dir(&args.nvidia_wine_dir)?,
+        log_dir: Some(args.state_dir.join("logs")),
     })
 }
 

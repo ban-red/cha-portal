@@ -28,6 +28,7 @@ use crate::compositor::{
     CLIPBOARD_MAX_BYTES, ClipboardWatch, Command, CursorWatch, Handle, MAX_SIZE, PointerWatch,
     Slot, fit_size,
 };
+use crate::framerate;
 use crate::input::Input;
 use crate::pyro::{PyroSettings, PyroWorker};
 use crate::status::{SetupStatus, StatusWatch};
@@ -278,9 +279,13 @@ struct EncoderThread {
     thread: std::thread::JoinHandle<()>,
 }
 
+/// What the streamer starts with.
 #[derive(Clone, Copy, Debug)]
 pub struct EncodeSettings {
+    /// The frame rate at the start; a page can change it.
     pub fps: u32,
+    /// The NVENC codecs' bitrate at 60 fps; at another rate it is scaled
+    /// (`framerate::nvenc_bps`).
     pub bitrate_bps: u32,
 }
 
@@ -289,6 +294,9 @@ pub struct Media {
     compositor: channel::Sender<Command>,
     cuda: Arc<CudaContext>,
     settings: EncodeSettings,
+    /// The current frame rate: the compositor, every encoder and every
+    /// session follow it.
+    fps: Arc<AtomicU32>,
     codecs: Vec<VideoCodec>,
     /// PyroWave's, if it's offered.
     pyrowave: Option<PyroSettings>,
@@ -313,13 +321,15 @@ impl Media {
         pyrowave: Option<PyroSettings>,
         size: (u32, u32),
     ) -> Self {
+        let fps = Arc::new(AtomicU32::new(settings.fps));
         Self {
             hub,
             compositor: compositor.commands.clone(),
             cuda,
             settings,
+            pyrowave: pyrowave.map(|p| p.following(Arc::clone(&fps))),
+            fps,
             codecs,
-            pyrowave,
             encoders: Mutex::default(),
             size: Mutex::new(size),
             clipboard: compositor.clipboard.clone(),
@@ -347,9 +357,30 @@ impl Media {
         &self.codecs
     }
 
-    /// The session's ceiling: what rate control starts from and climbs to.
+    /// The current frame rate.
+    pub fn fps(&self) -> u32 {
+        self.fps.load(Ordering::Relaxed)
+    }
+
+    /// The session's ceiling: what rate control starts from and climbs to,
+    /// for the NVENC codecs, at the current frame rate.
     pub fn bitrate_bps(&self) -> u32 {
-        self.settings.bitrate_bps
+        framerate::nvenc_bps(self.settings.bitrate_bps, self.fps())
+    }
+
+    /// Changes the frame rate (one of `framerate::CHOICES`) for everyone
+    /// watching: the compositor composites at it, the encoders are
+    /// reconfigured in place on their next frame (no gap, no keyframe), and
+    /// the sessions rescale their rate control when they see it
+    /// (`RateControl::rescale`). Returns the rate now.
+    pub fn set_fps(&self, fps: u32) -> Result<u32, String> {
+        let fps = framerate::validate(fps)?;
+        let before = self.fps.swap(fps, Ordering::Relaxed);
+        if before != fps {
+            info!(from = before, to = fps, "frame rate");
+            let _ = self.compositor.send(Command::SetFps(fps));
+        }
+        Ok(fps)
     }
 
     /// The output's current size.
@@ -366,7 +397,7 @@ impl Media {
             codec.name()
         );
         let (tx, rx) = mpsc::channel(8);
-        let pace = Pace::new(self.settings.bitrate_bps);
+        let pace = Pace::new(self.bitrate_bps());
         let mut encoders = self.encoders.lock().expect("encoders lock");
         // An encoder that gave up (it logged why) gets another go.
         if let Some(dead) = encoders.remove(&codec) {
@@ -477,7 +508,7 @@ impl Media {
                 let worker = EncoderWorker {
                     codec,
                     cuda: Arc::clone(&self.cuda),
-                    settings: self.settings,
+                    fps: Arc::clone(&self.fps),
                     mailbox: Arc::clone(&mailbox),
                     subscribers: Arc::clone(&subscribers),
                 };
@@ -508,7 +539,7 @@ impl Media {
 struct EncoderWorker {
     codec: Codec,
     cuda: Arc<CudaContext>,
-    settings: EncodeSettings,
+    fps: Arc<AtomicU32>,
     mailbox: Arc<Mailbox>,
     subscribers: Subscribers,
 }
@@ -611,9 +642,12 @@ impl EncoderWorker {
         // Lost frames to refer around at the next encode (from this index on).
         let mut invalidate: Option<u64> = None;
         let mut dump = RfiDump::from_env(self.codec);
-        let interval = Duration::from_secs(1) / self.settings.fps.max(1);
         let mut last_encode: Option<Instant> = None;
         loop {
+            // The frame interval follows the rate: a re-encode (a keyframe
+            // or recovery asked for with nothing new on screen) comes at most
+            // once per frame.
+            let interval = framerate::interval(self.fps.load(Ordering::Relaxed));
             let (frame, key, reencode) = match self.mailbox.wait(Duration::from_millis(100)) {
                 Wake::Closed => return,
                 Wake::Frame(frame, key) => (frame, key || keyframe_pending, false),
@@ -726,6 +760,7 @@ impl EncoderWorker {
         out: &mut Vec<u8>,
         stats: &mut EncodeStats,
     ) -> Result<(bool, Option<u64>)> {
+        let fps = self.fps.load(Ordering::Relaxed);
         let (encoder, generation) = match encoder {
             Some((encoder, generation)) => (encoder, generation),
             None => {
@@ -739,7 +774,7 @@ impl EncoderWorker {
                         height: frame.height,
                         max_width: MAX_SIZE.0,
                         max_height: MAX_SIZE.1,
-                        fps: self.settings.fps,
+                        fps,
                         bitrate_bps: target_bps,
                     },
                 )
@@ -761,9 +796,16 @@ impl EncoderWorker {
             *generation = frame.generation;
         }
         let mut key = want.key;
-        // Follow the subscribers' rate; small wobbles aren't worth a change.
+        // Follow the frame rate (with the rate asked for: its VBV and timing
+        // are per frame), and the subscribers' bitrate; small wobbles aren't
+        // worth a change.
         let current = encoder.bitrate();
-        if target_bps.abs_diff(current) > current / 32 {
+        if encoder.config().fps != fps {
+            encoder
+                .set_frame_rate(fps, target_bps)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            stats.rate_changes += 1;
+        } else if target_bps.abs_diff(current) > current / 32 {
             encoder
                 .set_bitrate(target_bps)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;

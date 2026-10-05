@@ -853,6 +853,145 @@ async fn guests_have_no_controller_settings() {
 }
 
 #[tokio::test]
+async fn a_user_chooses_a_frame_rate_per_app() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, _) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+
+    let listed = p
+        .call("GET", "/api/apps/settings", Some(&alice), None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    assert_eq!(
+        app_of(&listed.body, "steam"),
+        &json!({ "template": "steam", "name": "Steam", "fps": null, "defaultFps": 60 })
+    );
+
+    let set = p
+        .call(
+            "PUT",
+            "/api/apps/settings/steam",
+            Some(&alice),
+            Some(json!({ "fps": 120 })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    assert_eq!(set.body["fps"], 120);
+    assert_eq!(set.body["defaultFps"], 60);
+
+    // Only alice's own choice, only for steam.
+    let alices = p
+        .call("GET", "/api/apps/settings", Some(&alice), None)
+        .await
+        .body;
+    assert_eq!(app_of(&alices, "steam")["fps"], 120);
+    assert_eq!(app_of(&alices, "chrome")["fps"], json!(null));
+    let bobs = p
+        .call("GET", "/api/apps/settings", Some(&bob), None)
+        .await
+        .body;
+    assert_eq!(app_of(&bobs, "steam")["fps"], json!(null));
+
+    let ninety = p
+        .call(
+            "PUT",
+            "/api/apps/settings/steam",
+            Some(&alice),
+            Some(json!({ "fps": 90 })),
+        )
+        .await;
+    assert_eq!(ninety.body["fps"], 90);
+    let cleared = p
+        .call(
+            "PUT",
+            "/api/apps/settings/steam",
+            Some(&alice),
+            Some(json!({ "fps": null })),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK);
+    assert_eq!(cleared.body["fps"], json!(null));
+
+    let missing = p
+        .call(
+            "PUT",
+            "/api/apps/settings/nope",
+            Some(&alice),
+            Some(json!({ "fps": 90 })),
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    for bad in [
+        json!({ "fps": 75 }),
+        json!({ "fps": 144 }),
+        json!({ "fps": "60" }),
+        json!({ "fps": -60 }),
+    ] {
+        let reply = p
+            .call("PUT", "/api/apps/settings/steam", Some(&alice), Some(bad))
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    }
+    // Leaving the rate out isn't a reset.
+    let no_fps = p
+        .call(
+            "PUT",
+            "/api/apps/settings/steam",
+            Some(&alice),
+            Some(json!({})),
+        )
+        .await;
+    assert!(no_fps.status.is_client_error());
+
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let entry = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "apps.fps_set" && e["target"] == "steam")
+        .expect("the choice is audited");
+    assert!(entry["detail"].as_str().unwrap().contains("fps"));
+
+    assert_eq!(
+        p.call("GET", "/api/apps/settings", None, None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        p.call(
+            "PUT",
+            "/api/apps/settings/steam",
+            None,
+            Some(json!({ "fps": 90 })),
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn guests_have_no_app_settings() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (guest, _) = p.account(&admin, "guest1", "guest").await;
+    let listed = p
+        .call("GET", "/api/apps/settings", Some(&guest), None)
+        .await;
+    assert_eq!(listed.body["apps"], json!([]));
+    let set = p
+        .call(
+            "PUT",
+            "/api/apps/settings/chrome",
+            Some(&guest),
+            Some(json!({ "fps": 90 })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn settings_wait_for_a_live_environment() {
     let p = portal().await;
     let admin = p.setup_admin().await;
@@ -961,6 +1100,63 @@ async fn a_nodes_warning_shows_on_the_environment_until_it_clears_or_ends() {
             .await
             .unwrap()
     );
+}
+
+#[tokio::test]
+async fn a_dead_environments_log_is_for_its_owner_and_admins() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+    let (_, id) = p.live_environment(&alice_id, "steam").await;
+    let path = format!("/api/environments/{id}");
+
+    // A start the node reported as an error first; its exit follows with the log.
+    db::transition_environment(&p.db, &id, &["running"], "failed", Some("start failed"))
+        .await
+        .unwrap();
+    let log = json!(["a line", "Error: out of memory"]).to_string();
+    assert!(
+        db::record_exit(&p.db, &id, true, "The GPU is out of memory", Some(&log))
+            .await
+            .unwrap()
+    );
+    // A second report takes nothing: the log is already there.
+    assert!(
+        !db::record_exit(&p.db, &id, true, "again", Some("[]"))
+            .await
+            .unwrap()
+    );
+
+    let shown = p.call("GET", &path, Some(&alice), None).await;
+    assert_eq!(shown.body["detail"], "The GPU is out of memory");
+    assert_eq!(shown.body["log"], json!(["a line", "Error: out of memory"]));
+    let listed = p.call("GET", "/api/environments", Some(&alice), None).await;
+    assert_eq!(listed.body[0]["log"], shown.body["log"]);
+    let seen = p.call("GET", &path, Some(&admin), None).await;
+    assert_eq!(seen.body["log"], shown.body["log"]);
+    // Anyone else doesn't get the environment, let alone its log.
+    let other = p.call("GET", &path, Some(&bob), None).await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND);
+    assert!(other.body.get("log").is_none());
+
+    // One that ended with no log shows null.
+    let (_, quiet) = p.live_environment(&alice_id, "chrome").await;
+    assert!(
+        db::record_exit(&p.db, &quiet, false, "the app exited", None)
+            .await
+            .unwrap()
+    );
+    let shown = p
+        .call(
+            "GET",
+            &format!("/api/environments/{quiet}"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    assert_eq!(shown.body["state"], "destroyed");
+    assert_eq!(shown.body["log"], Value::Null);
 }
 
 #[tokio::test]

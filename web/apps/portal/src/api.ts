@@ -52,6 +52,38 @@ export interface NodeInfo {
   online: boolean;
   connectedAt: number | null;
   inventory: Inventory | null;
+  /** What it uses now; null while offline or when it hasn't reported lately. */
+  usage: NodeUsage | null;
+}
+
+/** A node's CPU, RAM and GPU use (percent 0..100, bytes, watts, °C), refreshed every few seconds. */
+export interface NodeUsage {
+  cpu: number;
+  cores: number;
+  /** The 1, 5 and 15 minute load averages. */
+  load: [number, number, number];
+  memUsed: number;
+  memTotal: number;
+  gpus: GpuUsage[];
+  /** Environments it is running. */
+  environments: number;
+  /** When it was reported (unix seconds). */
+  at: number;
+}
+
+/** One NVIDIA GPU; a figure the driver didn't give is absent. */
+export interface GpuUsage {
+  index: number;
+  name: string;
+  util?: number;
+  vramUsed?: number;
+  vramTotal?: number;
+  /** NVENC and NVDEC utilisation. */
+  enc?: number;
+  dec?: number;
+  temp?: number;
+  power?: number;
+  powerLimit?: number;
 }
 
 export type SecurityProfile = "standard" | "browser";
@@ -86,6 +118,8 @@ export interface Environment {
   detail: string | null;
   /** Something its node noticed while it runs, for the user (null: nothing). */
   warning: string | null;
+  /** The last lines its containers logged when it died (its owner and admins; null: none kept). */
+  log: string[] | null;
   createdAt: number;
   updatedAt: number;
   /** Where its streamer listens while it runs. */
@@ -143,6 +177,20 @@ export interface ControllerApp {
   kind: PadKind | null;
   /** What the app gets when the user hasn't chosen. */
   default: PadKind;
+}
+
+/** The frame rates an app can run at. */
+export type Fps = 60 | 90 | 120;
+
+/** One app's frame rate for the signed-in user (`GET /apps/settings`). */
+export interface AppSettings {
+  /** The template id, e.g. "steam". */
+  template: string;
+  name: string;
+  /** The user's choice; null follows the default. */
+  fps: Fps | null;
+  /** What the app gets when the user hasn't chosen. */
+  defaultFps: Fps;
 }
 
 /** An error the API returned: HTTP status, stable code, readable message. */
@@ -214,6 +262,11 @@ export const api = {
   /** `null` goes back to the app's default. Applies from the app's next launch. */
   setControllerKind: (template: string, kind: PadKind | null) =>
     request<unknown>("PUT", `/controllers/apps/${encodeURIComponent(template)}`, { kind }),
+  /** Each app's frame rate. 404 until the server supports it. */
+  appSettings: () => request<{ apps: AppSettings[] }>("GET", "/apps/settings"),
+  /** `null` goes back to the app's default. Applies from the app's next launch. */
+  setAppFps: (template: string, fps: Fps | null) =>
+    request<unknown>("PUT", `/apps/settings/${encodeURIComponent(template)}`, { fps }),
   adminStorage: () => request<AdminStorageInfo>("GET", "/admin/storage"),
   setAdminStorage: (template: string, body: { defaultPersistent?: boolean; sharedAccess?: SharedAccess }) =>
     request<AdminStorageApp>("PUT", `/admin/storage/${encodeURIComponent(template)}`, body),

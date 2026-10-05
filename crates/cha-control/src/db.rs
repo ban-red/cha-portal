@@ -376,13 +376,15 @@ pub struct EnvironmentRow {
     pub detail: Option<String>,
     /// Something the user should know about while it runs (from its node).
     pub warning: Option<String>,
+    /// What its containers last logged when it died, as a JSON array of lines.
+    pub log: Option<String>,
     pub http_port: Option<i64>,
     pub webrtc_port: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, http_port, webrtc_port, created_at, updated_at";
+const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, log, http_port, webrtc_port, created_at, updated_at";
 
 pub async fn insert_environment(
     db: &SqlitePool,
@@ -558,6 +560,49 @@ pub async fn transition_environment(
     Ok(query.execute(db).await?.rows_affected() > 0)
 }
 
+/// An environment that stopped on its own, as its node tells it: moves it to
+/// `failed` or `destroyed` from starting or running, with what its containers
+/// logged (a JSON array of lines). A failed start can reach the portal as the
+/// node's error first and its exit (the better account, with the log) second,
+/// so a failed environment with no log yet takes them too.
+pub async fn record_exit(
+    db: &SqlitePool,
+    id: &str,
+    failed: bool,
+    detail: &str,
+    log: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let state = if failed { "failed" } else { "destroyed" };
+    let moved = sqlx::query(
+        "UPDATE environments SET state = ?, detail = ?, log = ?, warning = NULL, updated_at = ? \
+         WHERE id = ? AND state IN ('starting', 'running')",
+    )
+    .bind(state)
+    .bind(detail)
+    .bind(log)
+    .bind(now())
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0;
+    if moved || !failed || log.is_none() {
+        return Ok(moved);
+    }
+    Ok(sqlx::query(
+        "UPDATE environments SET detail = ?, log = ?, updated_at = ? \
+         WHERE id = ? AND state = 'failed' AND log IS NULL",
+    )
+    .bind(detail)
+    .bind(log)
+    .bind(now())
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
 pub async fn set_environment_running(
     db: &SqlitePool,
     id: &str,
@@ -700,6 +745,49 @@ pub async fn set_user_gamepad(
         }
         None => {
             sqlx::query("DELETE FROM user_app_gamepad WHERE user_id = ?1 AND template_id = ?2")
+                .bind(user_id)
+                .bind(template_id)
+                .execute(db)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// The user's own frame rate choices: template id → fps.
+pub async fn user_fps(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<std::collections::HashMap<String, u32>, sqlx::Error> {
+    let rows: Vec<(String, u32)> =
+        sqlx::query_as("SELECT template_id, fps FROM user_app_fps WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(db)
+            .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Sets the user's frame rate for an app, or clears it (`None`: the app's default).
+pub async fn set_user_fps(
+    db: &SqlitePool,
+    user_id: &str,
+    template_id: &str,
+    fps: Option<u32>,
+) -> Result<(), sqlx::Error> {
+    match fps {
+        Some(fps) => {
+            sqlx::query(
+                "INSERT INTO user_app_fps (user_id, template_id, fps) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (user_id, template_id) DO UPDATE SET fps = ?3",
+            )
+            .bind(user_id)
+            .bind(template_id)
+            .bind(fps)
+            .execute(db)
+            .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM user_app_fps WHERE user_id = ?1 AND template_id = ?2")
                 .bind(user_id)
                 .bind(template_id)
                 .execute(db)

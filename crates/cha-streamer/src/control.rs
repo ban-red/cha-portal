@@ -20,6 +20,7 @@ use crate::gamepad::{EVENT_CLASSES, Gamepads, MAX_PADS, PadEvent, PadState};
 use crate::input::BrowserInput;
 use crate::media::Media;
 use crate::status::{Status, StatusWatch};
+use crate::system::SystemSample;
 use crate::viewers::Seat;
 
 #[derive(Debug, Serialize)]
@@ -53,6 +54,13 @@ pub enum ServerMsg {
     Codec {
         codec: &'static str,
         stream: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// The frame rate is now `fps` (the answer to the page's `fps` request).
+    /// With `error`, it didn't change and `fps` is what still runs.
+    Fps {
+        fps: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -123,6 +131,8 @@ pub enum ServerMsg {
         h: u32,
         s_us: u64,
     },
+    /// The node's CPU, RAM and GPU use, about once a second (`system.rs`).
+    System(SystemSample),
     Stats {
         elapsed_ms: u64,
         #[serde(flatten)]
@@ -156,6 +166,9 @@ pub struct StreamerStats {
     pub encoded_to_sent_us_p99: Option<u64>,
     pub frame_interval_ms_p50: Option<f64>,
     pub frame_interval_ms_p99: Option<f64>,
+    /// The frame rate now (the page can change it: `{"t":"fps"}`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
     /// Rate control (WebTransport): the rate it aims at, and the path's
     /// RTT growth over its minimum.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,8 +209,10 @@ impl Control {
         };
         let kind = msg.get("t").and_then(|t| t.as_str());
         // A viewer watches: what it sends doesn't reach the environment.
-        if matches!(kind, Some("input" | "resize" | "clipboard" | "cursor"))
-            && !self.seat.has_control()
+        if matches!(
+            kind,
+            Some("input" | "resize" | "clipboard" | "cursor" | "fps")
+        ) && !self.seat.has_control()
         {
             return;
         }
@@ -225,6 +240,8 @@ impl Control {
                     });
                 }
             }
+            // The frame rate, for every viewer: 60, 90 or 120.
+            Some("fps") => reply(fps_reply(&self.media, &msg)),
             // The page draws the cursor (desktop) or wants it in the picture.
             Some("cursor") => {
                 if let Some(client) = msg.get("client").and_then(|c| c.as_bool()) {
@@ -276,6 +293,32 @@ impl Control {
 
     pub fn now_us(&self) -> u64 {
         self.epoch.elapsed().as_micros() as u64
+    }
+}
+
+/// The answer to a `{"t":"fps","fps":N}` request: the rate now, or why it
+/// didn't change.
+fn fps_reply(media: &Media, msg: &serde_json::Value) -> ServerMsg {
+    answer_fps(msg, |fps| media.set_fps(fps), || media.fps())
+}
+
+/// `set` applies a valid request; `current` is the rate that runs now.
+fn answer_fps(
+    msg: &serde_json::Value,
+    set: impl FnOnce(u32) -> Result<u32, String>,
+    current: impl FnOnce() -> u32,
+) -> ServerMsg {
+    let requested = msg
+        .get("fps")
+        .and_then(|f| f.as_u64())
+        .and_then(|f| u32::try_from(f).ok())
+        .ok_or_else(|| "no fps".to_string());
+    match requested.and_then(set) {
+        Ok(fps) => ServerMsg::Fps { fps, error: None },
+        Err(error) => ServerMsg::Fps {
+            fps: current(),
+            error: Some(error),
+        },
     }
 }
 
@@ -734,5 +777,39 @@ mod tests {
         )
         .await
         .expect_err("pending for good");
+    }
+
+    #[test]
+    fn the_frame_rate_request_is_answered_with_the_rate_or_the_reason() {
+        let ask = |text: &str| {
+            let msg: serde_json::Value = serde_json::from_str(text).unwrap();
+            let reply = answer_fps(&msg, crate::framerate::validate, || 60);
+            serde_json::to_string(&reply).unwrap()
+        };
+        assert_eq!(ask(r#"{"t":"fps","fps":120}"#), r#"{"t":"fps","fps":120}"#);
+        assert_eq!(ask(r#"{"t":"fps","fps":90}"#), r#"{"t":"fps","fps":90}"#);
+        assert_eq!(
+            ask(r#"{"t":"fps","fps":144}"#),
+            r#"{"t":"fps","fps":60,"error":"144 fps isn't one of 60, 90, 120"}"#
+        );
+        assert_eq!(
+            ask(r#"{"t":"fps"}"#),
+            r#"{"t":"fps","fps":60,"error":"no fps"}"#
+        );
+        assert_eq!(
+            ask(r#"{"t":"fps","fps":"fast"}"#),
+            r#"{"t":"fps","fps":60,"error":"no fps"}"#
+        );
+    }
+
+    #[test]
+    fn the_stats_carry_the_frame_rate_once_known() {
+        let line = |stats: StreamerStats| serde_json::to_value(stats).unwrap();
+        assert!(line(StreamerStats::default()).get("fps").is_none());
+        let known = StreamerStats {
+            fps: Some(90),
+            ..StreamerStats::default()
+        };
+        assert_eq!(line(known)["fps"], 90);
     }
 }

@@ -58,7 +58,7 @@ Cha Portal (portal.cha.sh) is a self-hosted dashboard for "portaling" into remot
 | License | **AGPL-3.0-or-later**. GPL-3 code (moonlight-common-rust, Sunshine bits) may be embedded. | User (approved 2026-10-03) |
 | Network | LAN and WAN equally first-class → adaptive codec ladder | User |
 | Exposure | **Strictly self-hosted.** No `cha.sh`-hosted relays, DNS or cert brokers. For remote access we recommend a tunnel/overlay such as **Tailscale** (also Headscale/NetBird/WireGuard). TURN stays an optional self-hosted add-on. | User (2026-10-03) |
-| Baseline client | **MacBook Pro M4 + Google Chrome (macOS), wired 1 GbE, targeting 1440p60.** Every gate and benchmark is measured on this first. | User (2026-10-03) |
+| Baseline client | **MacBook Pro M4 + Google Chrome (macOS), wired 1 GbE, targeting 1440p60.** Every gate and benchmark is measured on this first. 90 and 120 fps are options (per app, and switchable live on desktop apps); the baseline stays 60. | User (2026-10-03) |
 | Node test hardware | NVIDIA, AMD and Intel Linux boxes are all available | User (2026-10-03) |
 | Priorities | Phase 2: **Chrome environment before KDE**. The Moonlight *host* façade stays in "Later", because `cha-stream/1` is the first-class protocol. | User (2026-10-03) |
 | Backend language | **Rust** (control plane, node agent, streamer, gateway, native client) | Recommendation, approved |

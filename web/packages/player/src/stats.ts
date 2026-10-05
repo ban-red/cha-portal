@@ -5,6 +5,8 @@ export interface StatsSnapshot {
   width: number | null;
   height: number | null;
   fps: number | null;
+  /** The frame rate the streamer encodes at (60, 90 or 120); null until it says. `fps` is what arrives. */
+  targetFps: number | null;
   mbps: number | null;
   /** Average decode time per frame over the last interval. */
   decodeMs: number | null;
@@ -31,6 +33,60 @@ export interface StatsSnapshot {
   frameGapMs: number | null;
   /** Average audio jitter-buffer wait over the last interval (NetEq). */
   audioJitterMs: number | null;
+  /** The node's resource use, from the streamer's last report; null if none came in the last 3 s. */
+  node: NodeStats | null;
+}
+
+/** The node's CPU, RAM and GPU, once a second (the `system` control message). Percent is 0..100. */
+export interface NodeStats {
+  /** The whole machine's CPU use and its core count; the 1-minute load. */
+  cpu: number;
+  cores: number;
+  load1: number;
+  /** Bytes. */
+  memUsed: number;
+  memTotal: number;
+  /** The GPU the streamer encodes on, if the node has NVML; each of these only if it was read. */
+  gpu?: number;
+  vramUsed?: number;
+  vramTotal?: number;
+  /** NVENC and NVDEC utilisation. */
+  enc?: number;
+  dec?: number;
+  /** °C, watts and MHz (the SM clock). */
+  temp?: number;
+  power?: number;
+  powerLimit?: number;
+  clock?: number;
+  /** The streamer's own CPU, in percent of one core (so it may pass 100). */
+  streamerCpu: number;
+  /** Milliseconds since it arrived. */
+  ageMs: number;
+}
+
+/** A report older than this isn't shown. */
+export const NODE_STATS_FRESH_MS = 3000;
+
+/** A `system` message as node stats (without its age), or null if it lacks the basics. */
+export function toNodeStats(msg: Record<string, unknown>): Omit<NodeStats, "ageMs"> | null {
+  const num = (k: string) => (typeof msg[k] === "number" && Number.isFinite(msg[k]) ? (msg[k] as number) : undefined);
+  const cpu = num("cpu");
+  const memTotal = num("mem_total");
+  if (cpu === undefined || memTotal === undefined) return null;
+  const stats: Omit<NodeStats, "ageMs"> = {
+    cpu,
+    cores: num("cores") ?? 0,
+    load1: num("load1") ?? 0,
+    memUsed: num("mem_used") ?? 0,
+    memTotal,
+    streamerCpu: num("streamer_cpu") ?? 0,
+  };
+  const optional = { gpu: "gpu", vramUsed: "vram_used", vramTotal: "vram_total", enc: "enc", dec: "dec", temp: "temp", power: "power", powerLimit: "power_limit", clock: "clock" } as const;
+  for (const [field, key] of Object.entries(optional)) {
+    const v = num(key);
+    if (v !== undefined) (stats as unknown as Record<string, number>)[field] = v;
+  }
+  return stats;
 }
 
 interface Counters {
@@ -81,6 +137,7 @@ export class StatsReader {
       width: typeof i.frameWidth === "number" ? i.frameWidth : null,
       height: typeof i.frameHeight === "number" ? i.frameHeight : null,
       fps: typeof i.framesPerSecond === "number" ? i.framesPerSecond : null,
+      targetFps: null,
       mbps: prev ? ((now.bytes - prev.bytes) * 8) / ((now.at - prev.at) * 1000) : null,
       decodeMs: prev ? per(now.decodeTime - prev.decodeTime, now.decoded - prev.decoded) : null,
       jitterMs: prev ? per(now.jitterDelay - prev.jitterDelay, now.emitted - prev.emitted) : null,
@@ -92,6 +149,7 @@ export class StatsReader {
       deliveryP95Ms: null,
       frameGapMs: null,
       framesRecovered: 0,
+      node: null,
       audioJitterMs: prev ? per(now.audioDelay - prev.audioDelay, now.audioEmitted - prev.audioEmitted) : null,
     };
   }

@@ -530,6 +530,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "cha-control",
+ "cha-sysinfo",
  "cha-wire",
  "clap",
  "futures-util",
@@ -580,6 +581,7 @@ dependencies = [
  "cha-nvenc",
  "cha-proto",
  "cha-pyrowave",
+ "cha-sysinfo",
  "cha-wire",
  "clap",
  "libc",
@@ -593,6 +595,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wtransport",
+]
+
+[[package]]
+name = "cha-sysinfo"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tracing",
 ]
 
 [[package]]

@@ -7,12 +7,14 @@
 //! environments ([`environments`]) through the Docker engine ([`docker`]), and
 //! keeping and deleting the data users keep for apps ([`storage`]).
 
+pub mod crashlog;
 pub mod docker;
 pub mod doctor;
 pub mod environments;
 pub mod hostfiles;
 pub mod inventory;
 pub mod storage;
+pub mod usage;
 
 use std::fs;
 use std::io::Write;
@@ -278,18 +280,21 @@ impl Agent {
             protocol: PROTOCOL_VERSION,
         };
         sink.send(encode(&hello)?).await?;
-        let (heartbeat, portal_reads_warnings) = match next_message(&mut stream).await? {
-            Next::Message(ToNode::Welcome {
-                heartbeat_secs,
-                environment_warnings,
-                ..
-            }) => (
-                Duration::from_secs(heartbeat_secs.max(1)),
-                environment_warnings,
-            ),
-            Next::Closed(closed) => return Ok(closed),
-            Next::Message(other) => bail!("expected a welcome, got {other:?}"),
-        };
+        let (heartbeat, portal_reads_warnings, portal_reads_usage) =
+            match next_message(&mut stream).await? {
+                Next::Message(ToNode::Welcome {
+                    heartbeat_secs,
+                    environment_warnings,
+                    node_usage,
+                    ..
+                }) => (
+                    Duration::from_secs(heartbeat_secs.max(1)),
+                    environment_warnings,
+                    node_usage,
+                ),
+                Next::Closed(closed) => return Ok(closed),
+                Next::Message(other) => bail!("expected a welcome, got {other:?}"),
+            };
         *welcomed = true;
         info!(%node_id, portal = %self.identity.portal_url, "connected");
 
@@ -339,6 +344,14 @@ impl Agent {
         let start = tokio::time::Instant::now();
         let mut heartbeats = tokio::time::interval_at(start + heartbeat, heartbeat);
         let mut refresh = tokio::time::interval_at(start + INVENTORY_REFRESH, INVENTORY_REFRESH);
+        // Only a portal that reads usage gets it (it hangs up on what it
+        // doesn't know). A first reading now is the CPU's baseline.
+        let mut cpu = cha_sysinfo::Sampler::new();
+        let _ = cpu.sample();
+        let sampler = Arc::new(std::sync::Mutex::new(cpu));
+        let usage_every = Duration::from_secs(cha_wire::USAGE_INTERVAL_SECS);
+        let mut usage_ticks = tokio::time::interval_at(start + usage_every, usage_every);
+        usage_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_heard = Instant::now();
         loop {
             tokio::select! {
@@ -349,6 +362,28 @@ impl Agent {
                     sink.send(encode(&ToPortal::Heartbeat)?).await?;
                     // The portal's WebSocket layer pongs, which proves it's alive.
                     sink.send(Message::Ping(Default::default())).await?;
+                }
+                _ = usage_ticks.tick(), if portal_reads_usage => {
+                    // A slow engine mustn't hold up the heartbeats.
+                    let environments = match &self.runtime {
+                        Some(runtime) => {
+                            tokio::time::timeout(Duration::from_secs(2), runtime.running())
+                                .await
+                                .ok()
+                                .and_then(Result::ok)
+                                .map_or(0, |r| r.len() as u32)
+                        }
+                        None => 0,
+                    };
+                    let sampler = Arc::clone(&sampler);
+                    let usage = tokio::task::spawn_blocking(move || {
+                        let mut sampler = sampler.lock().expect("sampler lock");
+                        usage::sample(&mut sampler, environments)
+                    })
+                    .await?;
+                    if let Some(usage) = usage {
+                        sink.send(encode(&ToPortal::Usage { usage })?).await?;
+                    }
                 }
                 _ = refresh.tick() => {
                     let fresh = tokio::task::spawn_blocking(collect.clone()).await?;
@@ -361,8 +396,8 @@ impl Agent {
                     sink.send(encode(&msg)?).await?;
                 }
                 exit = next_event(&mut exits) => {
-                    if let Some(Exit { id, detail, failed }) = exit {
-                        sink.send(encode(&ToPortal::EnvironmentExited { id, detail, failed })?).await?;
+                    if let Some(Exit { id, detail, failed, log }) = exit {
+                        sink.send(encode(&ToPortal::EnvironmentExited { id, detail, failed, log })?).await?;
                     }
                 }
                 said = next_event(&mut progress) => {

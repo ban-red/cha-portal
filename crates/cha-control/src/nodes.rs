@@ -16,8 +16,8 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::{delete, get, post};
 use cha_wire::{
-    EnrollRequest, EnrollResponse, Inventory, NodeRequest, NodeResponse, PROTOCOL_VERSION,
-    PortalRequest, PortalResponse, ToNode, ToPortal, close,
+    EnrollRequest, EnrollResponse, Inventory, NodeRequest, NodeResponse, NodeUsage,
+    PROTOCOL_VERSION, PortalRequest, PortalResponse, ToNode, ToPortal, close,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,6 +36,9 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Node messages are small; this bounds what an unauthenticated peer can send.
 const MAX_MESSAGE_BYTES: usize = 1 << 20;
+/// A node's usage counts as stale after this long without a report (they come
+/// every few seconds).
+const USAGE_FRESH: Duration = Duration::from_secs(15);
 /// Join tokens carry a prefix so they're recognisable in a shell history or a
 /// secret scanner.
 pub const JOIN_TOKEN_PREFIX: &str = "chajoin_";
@@ -71,6 +74,9 @@ struct Connection {
 #[derive(Default)]
 pub struct NodeHub {
     connections: Mutex<HashMap<String, Connection>>,
+    /// The latest usage each connected node reported, and when. In memory
+    /// only: it is for a live view and means nothing after a restart.
+    usage: std::sync::Mutex<HashMap<String, (NodeUsage, Instant, i64)>>,
     next_id: AtomicU64,
 }
 
@@ -81,6 +87,25 @@ impl NodeHub {
             .await
             .get(node_id)
             .map(|c| c.connected_at)
+    }
+
+    fn record_usage(&self, node_id: &str, usage: NodeUsage) {
+        self.usage
+            .lock()
+            .expect("usage lock")
+            .insert(node_id.to_string(), (usage, Instant::now(), db::now()));
+    }
+
+    /// What the node last reported and when (unix seconds), unless that was
+    /// long ago.
+    pub fn usage(&self, node_id: &str) -> Option<(NodeUsage, i64)> {
+        self.usage_at(node_id, Instant::now())
+    }
+
+    fn usage_at(&self, node_id: &str, now: Instant) -> Option<(NodeUsage, i64)> {
+        let usage = self.usage.lock().expect("usage lock");
+        let (usage, seen, at) = usage.get(node_id)?;
+        (now.saturating_duration_since(*seen) <= USAGE_FRESH).then(|| (usage.clone(), *at))
     }
 
     /// Sends `request` to a connected node and waits for its reply.
@@ -126,6 +151,7 @@ impl NodeHub {
     async fn kick(&self, node_id: &str, code: u16, reason: &'static str) {
         if let Some(conn) = self.connections.lock().await.remove(node_id) {
             let _ = conn.tx.send(Outgoing::Close(code, reason));
+            self.usage.lock().expect("usage lock").remove(node_id);
         }
     }
 
@@ -149,6 +175,7 @@ impl NodeHub {
         let mut conns = self.connections.lock().await;
         if conns.get(node_id).is_some_and(|c| c.serial == serial) {
             conns.remove(node_id);
+            self.usage.lock().expect("usage lock").remove(node_id);
         }
     }
 }
@@ -293,6 +320,7 @@ async fn serve_node(state: AppState, mut socket: WebSocket) -> anyhow::Result<()
         node_id: node_id.clone(),
         heartbeat_secs: HEARTBEAT_SECS,
         environment_warnings: true,
+        node_usage: true,
     };
     send(&mut socket, &welcome).await?;
     info!(%node_id, name = %node.name, %agent_version, "node connected");
@@ -334,6 +362,7 @@ async fn pump(
                 last_heard = Instant::now();
                 match serde_json::from_str::<ToPortal>(&text)? {
                     ToPortal::Heartbeat => db::touch_node(&state.db, node_id, None).await?,
+                    ToPortal::Usage { usage } => state.nodes.record_usage(node_id, usage),
                     ToPortal::Inventory { inventory } => {
                         let json = serde_json::to_string(&inventory)?;
                         db::set_node_inventory(&state.db, node_id, &json).await?;
@@ -364,8 +393,19 @@ async fn pump(
                         db::set_environment_warning(&state.db, &id, node_id, warning.as_deref())
                             .await?;
                     }
-                    ToPortal::EnvironmentExited { id, detail, failed } => {
-                        tokio::spawn(crate::environments::exited(state.clone(), id, detail, failed));
+                    ToPortal::EnvironmentExited {
+                        id,
+                        detail,
+                        failed,
+                        log,
+                    } => {
+                        tokio::spawn(crate::environments::exited(
+                            state.clone(),
+                            id,
+                            detail,
+                            failed,
+                            log,
+                        ));
                     }
                     ToPortal::Response { id, result } => {
                         if let Some(waiter) = pending.lock().await.remove(&id) {
@@ -407,6 +447,17 @@ struct NodeView {
     online: bool,
     connected_at: Option<i64>,
     inventory: Option<Inventory>,
+    /// What it uses now; null while offline or when it hasn't reported lately.
+    usage: Option<UsageView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageView {
+    #[serde(flatten)]
+    usage: NodeUsage,
+    /// When it was reported (unix seconds).
+    at: i64,
 }
 
 async fn list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<Vec<NodeView>>> {
@@ -417,8 +468,17 @@ async fn list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<Vec
             .inventory
             .as_deref()
             .and_then(|j| serde_json::from_str(j).ok());
+        let usage = if connected_at.is_some() {
+            state
+                .nodes
+                .usage(&node.id)
+                .map(|(usage, at)| UsageView { usage, at })
+        } else {
+            None
+        };
         out.push(NodeView {
             online: connected_at.is_some(),
+            usage,
             connected_at,
             inventory,
             node,
@@ -509,4 +569,31 @@ async fn ping(
         "rttMs": started.elapsed().as_secs_f64() * 1000.0,
         "nodeUnixMs": unix_ms,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_is_kept_until_it_is_stale_or_the_node_goes() {
+        let hub = NodeHub::default();
+        assert!(hub.usage("n1").is_none());
+        hub.record_usage(
+            "n1",
+            NodeUsage {
+                cpu: 40.0,
+                ..NodeUsage::default()
+            },
+        );
+        let (usage, at) = hub.usage("n1").unwrap();
+        assert_eq!(usage.cpu, 40.0);
+        assert!(at > 0);
+        assert!(hub.usage("n2").is_none());
+        let later = Instant::now() + USAGE_FRESH + Duration::from_secs(1);
+        assert!(hub.usage_at("n1", later).is_none());
+        // A newer report revives it.
+        hub.record_usage("n1", NodeUsage::default());
+        assert!(hub.usage("n1").is_some());
+    }
 }

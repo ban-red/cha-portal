@@ -33,6 +33,11 @@
 //!   400 ms. What it held back then comes in a burst, whose delays show the
 //!   queue it built, and the cut goes to what arrives then. A congested
 //!   path still delivers at its rate; one that doesn't for longer counts.
+//!
+//! Everything here is in time (milliseconds, seconds) and bits per second,
+//! none in frames, so it holds as it is from 60 to 120 fps: the queue the
+//! thresholds speak of is the same milliseconds of latency at either rate.
+//! Only the ceiling follows the frame rate (`rescale`).
 
 use std::time::{Duration, Instant};
 
@@ -158,6 +163,22 @@ impl RateControl {
 
     pub fn target(&self) -> u32 {
         self.target as u32
+    }
+
+    /// The ceiling moved (the frame rate changed, and the NVENC codecs'
+    /// bitrate with it). A target that was at the old ceiling, because the
+    /// path never held it back, goes to the new one; one the path had cut
+    /// follows a lower ceiling down in proportion, and a higher one by
+    /// climbing: what the path takes didn't change.
+    pub fn rescale(&mut self, max_bps: u32) {
+        let old = self.max_bps;
+        self.max_bps = f64::from(max_bps).max(self.min_bps);
+        if self.target >= 0.98 * old {
+            self.target = self.max_bps;
+        } else if self.max_bps < old {
+            self.target *= self.max_bps / old;
+        }
+        self.target = self.target.clamp(self.min_bps, self.max_bps);
     }
 
     /// The queue the last update saw (delay growth over its floor, ms).
@@ -578,5 +599,30 @@ mod tests {
             .rposition(|v| *v == Verdict::Rebase)
             .unwrap();
         assert!(verdicts[v + 1..].iter().all(|v| *v != Verdict::Backoff));
+    }
+
+    #[test]
+    fn the_ceiling_follows_the_frame_rate() {
+        let mut rc = RateControl::new(1_000_000, 40_000_000);
+        // Never held back: to the new ceiling at once, and back.
+        rc.rescale(67_000_000);
+        assert_eq!(rc.target(), 67_000_000);
+        rc.rescale(40_000_000);
+        assert_eq!(rc.target(), 40_000_000);
+        // Cut by the path to 10: a higher ceiling leaves it to climb.
+        let t = Instant::now();
+        rc.update(t, &sample(20, 0.0, 30.0));
+        rc.update(t + Duration::from_millis(100), &sample(80, 0.0, 12.0));
+        let cut = rc.target();
+        assert!(cut < 20_000_000);
+        rc.rescale(67_000_000);
+        assert_eq!(rc.target(), cut);
+        // A lower one takes it down in proportion.
+        rc.rescale(40_000_000 / 2);
+        let expected = f64::from(cut) * 20e6 / 67e6;
+        assert!((f64::from(rc.target()) - expected).abs() < 2.0);
+        // Never under the floor.
+        rc.rescale(10);
+        assert_eq!(rc.target(), 1_000_000);
     }
 }

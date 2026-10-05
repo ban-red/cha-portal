@@ -34,6 +34,8 @@ mod control;
 #[cfg(target_os = "linux")]
 mod dualsense;
 #[cfg(target_os = "linux")]
+mod framerate;
+#[cfg(target_os = "linux")]
 mod gamepad;
 #[cfg(target_os = "linux")]
 mod media;
@@ -51,6 +53,8 @@ mod signal;
 mod status;
 #[cfg(target_os = "linux")]
 mod steam_controller;
+#[cfg(target_os = "linux")]
+mod system;
 #[cfg(target_os = "linux")]
 mod uhid;
 #[cfg(target_os = "linux")]

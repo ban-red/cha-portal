@@ -4,16 +4,20 @@ import { computed, ref } from "vue";
 
 import { ApiError, api, type NodeInfo } from "../api";
 import FormError from "../components/FormError.vue";
+import NodeUsage from "../components/NodeUsage.vue";
 import { ago, clockTime, dateTime, megabytes } from "../format";
 
 const queryClient = useQueryClient();
-// Status comes from the live node channel; poll so it stays current, and
-// faster while a join token is out so the new node appears promptly.
+// Status and usage come from the live node channel; poll so they stay
+// current: every few seconds while the page is visible (the usage changes
+// that fast), and faster while a join token is out so the new node appears
+// promptly. A hidden tab doesn't poll.
 const issued = ref<{ token: string; expiresAt: number } | null>(null);
 const nodes = useQuery({
   queryKey: ["nodes"],
   queryFn: api.nodes,
-  refetchInterval: () => (issued.value ? 2000 : 5000),
+  refetchInterval: () => (issued.value ? 2000 : 3000),
+  refetchIntervalInBackground: false,
 });
 
 // ---- Adding a node ----
@@ -192,6 +196,9 @@ function status(node: NodeInfo): { text: string; dot: string } {
           <dd class="font-mono text-xs leading-5 break-all text-ink-2">{{ node.inventory.addresses.join(", ") || "—" }}</dd>
         </dl>
         <p v-else class="mt-4 text-sm text-ink-3">No inventory reported yet.</p>
+
+        <NodeUsage v-if="node.usage" :usage="node.usage" />
+        <p v-else-if="node.online" class="mt-4 text-xs text-ink-3">No live data</p>
 
         <footer class="mt-5 flex items-center gap-2 border-t border-line pt-4">
           <span class="mr-auto text-xs text-ink-3" :title="dateTime(node.enrolledAt)">Enrolled {{ ago(node.enrolledAt) }}</span>

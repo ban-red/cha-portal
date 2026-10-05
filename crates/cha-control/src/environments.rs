@@ -23,6 +23,7 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use crate::AppState;
+use crate::apps;
 use crate::auth::{ClientInfo, CurrentUser};
 use crate::controllers;
 use crate::db::{self, EnvironmentRow, NodeRow, Role, User};
@@ -46,7 +47,6 @@ const CODECS: [&str; 3] = ["h264", "hevc", "av1"];
 const PYROWAVE_CODECS: [&str; 2] = ["pyrowave420", "pyrowave444"];
 const WIDTH: u32 = 2560;
 const HEIGHT: u32 = 1440;
-const FPS: u32 = 60;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -86,6 +86,10 @@ pub struct Template {
     /// is `xbox360` (`crate::controllers`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamepad: Option<GamepadKind>,
+    /// The frame rate it gets unless the user chooses another (60, 90 or 120);
+    /// absent is 60 (`crate::apps`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -125,6 +129,8 @@ struct EnvironmentView {
     detail: Option<String>,
     /// Something to tell the user while it runs (its node noticed a problem).
     warning: Option<String>,
+    /// What its containers last logged when it died, for its owner and admins.
+    log: Option<Vec<String>>,
     created_at: i64,
     updated_at: i64,
     /// Where the streamer listens, while it runs (the portal brokers
@@ -140,7 +146,7 @@ struct StreamerView {
     webrtc_port: i64,
 }
 
-fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>) -> EnvironmentView {
+fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>, viewer: &User) -> EnvironmentView {
     let node = row.node_id.as_ref().and_then(|id| nodes.get(id));
     let host = node
         .and_then(|n| n.inventory.as_deref())
@@ -154,6 +160,10 @@ fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>) -> EnvironmentVie
         }),
         _ => None,
     };
+    let log = (row.owner_id == viewer.id || viewer.role == Role::Admin)
+        .then_some(row.log.as_deref())
+        .flatten()
+        .and_then(|j| serde_json::from_str(j).ok());
     EnvironmentView {
         template_name: template(&row.template_id)
             .map_or_else(|| row.template_id.clone(), |t| t.name.clone()),
@@ -165,6 +175,7 @@ fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>) -> EnvironmentVie
         state: row.state,
         detail: row.detail,
         warning: row.warning,
+        log,
         created_at: row.created_at,
         updated_at: row.updated_at,
         streamer,
@@ -195,7 +206,9 @@ async fn list(
 ) -> ApiResult<Json<Vec<EnvironmentView>>> {
     let rows = db::list_environments(&state.db, Some(&user.id), LIST_LIMIT).await?;
     let nodes = nodes_by_id(&state).await?;
-    Ok(Json(rows.into_iter().map(|r| view(r, &nodes)).collect()))
+    Ok(Json(
+        rows.into_iter().map(|r| view(r, &nodes, &user)).collect(),
+    ))
 }
 
 async fn show(
@@ -204,7 +217,7 @@ async fn show(
     Path(id): Path<String>,
 ) -> ApiResult<Json<EnvironmentView>> {
     let row = visible(&state, &user, &id).await?;
-    Ok(Json(view(row, &nodes_by_id(&state).await?)))
+    Ok(Json(view(row, &nodes_by_id(&state).await?, &user)))
 }
 
 #[derive(Deserialize)]
@@ -249,6 +262,7 @@ async fn launch(
         ));
     }
     let gamepad = controllers::effective_for(&state, &user.id, template).await?;
+    let fps = apps::fps_for(&state, &user.id, template).await?;
     let node = place(&state).await?;
     let app_data = storage::spec_storage(&user.id, template, settings);
     // A node that predates app data would drop what it can't read, and the
@@ -281,12 +295,13 @@ async fn launch(
         state.media_key.public_b64(),
         app_data.map(Box::new),
         gamepad,
+        fps,
     );
     tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
     let row = db::environment_by_id(&state.db, &id)
         .await?
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the new environment vanished")))?;
-    Ok(Json(view(row, &nodes_by_id(&state).await?)))
+    Ok(Json(view(row, &nodes_by_id(&state).await?, &user)))
 }
 
 /// What a node runs for `owner`'s launch of `template`, with the app data
@@ -298,6 +313,7 @@ fn environment_spec(
     portal_key: String,
     storage: Option<Box<cha_wire::Storage>>,
     gamepad: GamepadKind,
+    fps: u32,
 ) -> EnvironmentSpec {
     EnvironmentSpec {
         id,
@@ -306,7 +322,7 @@ fn environment_spec(
         shm_mb: template.shm_mb,
         width: WIDTH,
         height: HEIGHT,
-        fps: FPS,
+        fps,
         portal_key,
         // Not the old way of keeping a home (a volume the portal named): the
         // node moves such a volume's files into the new directory itself.
@@ -347,7 +363,7 @@ async fn stop(
         }
     }
     let row = visible(&state, &user, &id).await?;
-    Ok(Json(view(row, &nodes_by_id(&state).await?)))
+    Ok(Json(view(row, &nodes_by_id(&state).await?, &user)))
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -678,19 +694,42 @@ pub async fn reconcile(
 }
 
 /// An environment stopped on its own on its node.
-pub async fn exited(state: AppState, id: String, detail: String, failed: bool) {
-    let to = if failed { "failed" } else { "destroyed" };
-    if let Err(err) =
-        db::transition_environment(&state.db, &id, &["starting", "running"], to, Some(&detail))
-            .await
-    {
+pub async fn exited(state: AppState, id: String, detail: String, failed: bool, log: Vec<String>) {
+    let detail: String = detail.chars().take(DETAIL_CHARS).collect();
+    let log = bounded_log(log);
+    let log = (!log.is_empty()).then(|| serde_json::to_string(&log).unwrap_or_default());
+    if let Err(err) = db::record_exit(&state.db, &id, failed, &detail, log.as_deref()).await {
         warn!(%id, "recording an exit: {err}");
     }
+}
+
+/// What the portal keeps of a detail, whatever a node sends.
+const DETAIL_CHARS: usize = 300;
+/// And of a log: its last lines, each cut short.
+const LOG_LINES: usize = 60;
+const LOG_LINE_CHARS: usize = 300;
+
+fn bounded_log(log: Vec<String>) -> Vec<String> {
+    let skip = log.len().saturating_sub(LOG_LINES);
+    log.into_iter()
+        .skip(skip)
+        .map(|line| line.chars().take(LOG_LINE_CHARS).collect())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_log_is_cut_to_its_last_lines_and_short_lines() {
+        let log: Vec<String> = (0..100).map(|n| format!("line {n}")).collect();
+        let kept = bounded_log(log);
+        assert_eq!(kept.len(), LOG_LINES);
+        assert_eq!(kept[0], "line 40");
+        let long = bounded_log(vec!["x".repeat(1000)]);
+        assert_eq!(long[0].chars().count(), LOG_LINE_CHARS);
+    }
 
     #[test]
     fn the_catalog_parses() {
@@ -701,6 +740,15 @@ mod tests {
         assert_eq!(chrome.security, SecurityProfile::Browser);
         assert!(chrome.shm_mb >= 512);
         assert!(template("steam").unwrap().persistent);
+    }
+
+    #[test]
+    fn every_catalog_frame_rate_is_one_we_offer() {
+        for t in catalog() {
+            if let Some(fps) = t.fps {
+                assert!(apps::FPS_CHOICES.contains(&fps), "{}: fps {fps}", t.id);
+            }
+        }
     }
 
     #[test]
@@ -718,8 +766,10 @@ mod tests {
             "k".into(),
             storage::spec_storage(owner, steam, settings).map(Box::new),
             GamepadKind::Xbox360,
+            60,
         );
         assert_eq!(spec.home, None);
+        assert_eq!(spec.fps, 60);
         assert_eq!(
             (spec.owner.as_str(), spec.template.as_str()),
             (owner, "steam")
@@ -740,8 +790,10 @@ mod tests {
             "k".into(),
             None,
             GamepadKind::Dualsense,
+            120,
         );
         assert_eq!(plain.gamepad, Some(GamepadKind::Dualsense));
+        assert_eq!(plain.fps, 120);
         assert_eq!(spec.gamepad, None);
         assert_eq!(plain.storage, None);
         assert_eq!(plain.home, None);

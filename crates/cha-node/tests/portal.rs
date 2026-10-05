@@ -499,10 +499,12 @@ async fn environments_launch_stop_fail_and_reconcile() {
             id: id.clone(),
             detail: "the app exited with code 1".into(),
             failed: true,
+            log: vec!["--- app ---".into(), "Error: boom".into()],
         })
         .unwrap();
     let env = p.wait_for_env(&id, |e| e["state"] == "failed").await;
     assert_eq!(env["detail"], "the app exited with code 1");
+    assert_eq!(env["log"], json!(["--- app ---", "Error: boom"]));
 
     let (status, list) = p.admin("GET", "/api/environments", None).await;
     assert_eq!(status, 200);
@@ -843,4 +845,114 @@ async fn what_the_node_says_while_starting_shows_until_it_runs() {
         .admin("GET", &format!("/api/environments/{id}"), None)
         .await;
     assert!(env["detail"].is_null());
+}
+
+/// A hand-driven node connection: the handshake, then what the test sends.
+/// Returns the welcome it got.
+async fn raw_node(
+    p: &Portal,
+    identity: &Identity,
+) -> (
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    cha_wire::ToNode,
+) {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let url = format!(
+        "{}{}",
+        p.url.replacen("http://", "ws://", 1),
+        cha_wire::CONNECT_PATH
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let text = |m: Message| match m {
+        Message::Text(t) => t.to_string(),
+        other => panic!("expected text, got {other:?}"),
+    };
+    let challenge: cha_wire::ToNode =
+        serde_json::from_str(&text(ws.next().await.unwrap().unwrap())).unwrap();
+    let cha_wire::ToNode::Challenge { nonce, protocol } = challenge else {
+        panic!("expected a challenge");
+    };
+    let hello = cha_wire::ToPortal::Hello {
+        node_id: identity.node_id.clone(),
+        signature: identity
+            .key()
+            .unwrap()
+            .sign_b64(&cha_wire::hello_message(&nonce, &identity.node_id)),
+        agent_version: "test".into(),
+        protocol,
+    };
+    ws.send(Message::text(serde_json::to_string(&hello).unwrap()))
+        .await
+        .unwrap();
+    let welcome = serde_json::from_str(&text(ws.next().await.unwrap().unwrap())).unwrap();
+    (ws, welcome)
+}
+
+#[tokio::test]
+async fn a_nodes_usage_shows_on_the_nodes_page_while_it_is_connected() {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let p = portal().await;
+    let identity = enroll(&p.url, &p.join_token().await, "gpu-box")
+        .await
+        .unwrap();
+    let (mut ws, welcome) = raw_node(&p, &identity).await;
+    // The portal says it reads usage, so nodes may send it.
+    assert!(matches!(
+        welcome,
+        cha_wire::ToNode::Welcome {
+            node_usage: true,
+            ..
+        }
+    ));
+    let node = p
+        .wait_for_node(&identity.node_id, |n| n["online"] == true)
+        .await;
+    assert!(node["usage"].is_null(), "nothing reported yet");
+
+    let usage = cha_wire::NodeUsage {
+        cpu: 37.5,
+        cores: 16,
+        load: [1.5, 1.0, 0.5],
+        mem_used: 8 << 30,
+        mem_total: 32 << 30,
+        gpus: vec![cha_wire::GpuUsage {
+            index: 0,
+            name: "NVIDIA GeForce RTX 4090".into(),
+            util: Some(88),
+            vram_used: Some(10 << 30),
+            vram_total: Some(24 << 30),
+            enc: Some(12),
+            temp: Some(61),
+            power: Some(250.5),
+            power_limit: Some(450.0),
+            ..cha_wire::GpuUsage::default()
+        }],
+        environments: 2,
+    };
+    let msg = cha_wire::ToPortal::Usage { usage };
+    ws.send(Message::text(serde_json::to_string(&msg).unwrap()))
+        .await
+        .unwrap();
+    let node = p
+        .wait_for_node(&identity.node_id, |n| !n["usage"].is_null())
+        .await;
+    let usage = &node["usage"];
+    assert_eq!(usage["cpu"], 37.5);
+    assert_eq!(usage["cores"], 16);
+    assert_eq!(usage["load"], json!([1.5, 1.0, 0.5]));
+    assert_eq!(usage["memTotal"], 32u64 << 30);
+    assert_eq!(usage["environments"], 2);
+    assert_eq!(usage["gpus"][0]["util"], 88);
+    assert_eq!(usage["gpus"][0]["powerLimit"], 450.0);
+    assert!(usage["gpus"][0].get("dec").is_none());
+    assert!(usage["at"].as_i64().unwrap() > 0);
+
+    // Gone with the connection.
+    ws.close(None).await.unwrap();
+    let node = p
+        .wait_for_node(&identity.node_id, |n| n["online"] == false)
+        .await;
+    assert!(node["usage"].is_null());
 }

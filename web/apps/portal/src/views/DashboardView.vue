@@ -3,10 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, ref } from "vue";
 
 import { ApiError, api, type Environment, type EnvironmentState, type Template } from "../api";
+import EnvironmentLog from "../components/EnvironmentLog.vue";
 import FormError from "../components/FormError.vue";
 import WarningNote from "../components/WarningNote.vue";
 import { ago, dateTime } from "../format";
 import { useSession } from "../stores/session";
+import { FPS_CHOICES, useAppFps } from "../appFps";
 import { KINDS, kindLabel, useControllerApps } from "../controllerKinds";
 import { STORAGE_KEY } from "../storage";
 
@@ -31,6 +33,8 @@ const saved = computed(
 
 // Which controller each app sees, chosen right on its card (from its next launch).
 const controllerApps = useControllerApps();
+// And the frame rate it runs at, the same way.
+const appFps = useAppFps();
 
 const live = computed(() =>
   (environments.data.value ?? []).filter((e) => e.state !== "destroyed" && e.state !== "failed"),
@@ -96,26 +100,46 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
           <h3 class="font-semibold">{{ t.name }}</h3>
           <p class="mt-1 flex-1 text-sm text-ink-2">{{ t.description }}</p>
           <div
-            v-if="session.user?.role !== 'guest' && !controllerApps.missing.value && controllerApps.byTemplate.value.get(t.id)"
+            v-if="
+              session.user?.role !== 'guest' &&
+              ((!controllerApps.missing.value && controllerApps.byTemplate.value.get(t.id)) ||
+                (!appFps.missing.value && appFps.byTemplate.value.get(t.id)))
+            "
             class="mt-3"
           >
-            <div>
-              <label :for="`${t.id}-controller`" class="mb-1 block text-xs text-ink-3">Controller</label>
-              <select
-                :id="`${t.id}-controller`"
-                :value="controllerApps.byTemplate.value.get(t.id)?.kind ?? ''"
-                class="field w-full py-1 text-xs"
-                title="The controller this app sees, from its next launch"
-                @change="controllerApps.choose(controllerApps.byTemplate.value.get(t.id)!, $event)"
-              >
-                <option value="">Default ({{ kindLabel(controllerApps.byTemplate.value.get(t.id)!.default) }})</option>
-                <option v-for="k in KINDS" :key="k.kind" :value="k.kind">{{ k.label }}</option>
-              </select>
+            <div class="grid grid-cols-2 gap-2">
+              <div v-if="!controllerApps.missing.value && controllerApps.byTemplate.value.get(t.id)">
+                <label :for="`${t.id}-controller`" class="mb-1 block text-xs text-ink-3">Controller</label>
+                <select
+                  :id="`${t.id}-controller`"
+                  :value="controllerApps.byTemplate.value.get(t.id)?.kind ?? ''"
+                  class="field w-full py-1 text-xs"
+                  title="The controller this app sees, from its next launch"
+                  @change="controllerApps.choose(controllerApps.byTemplate.value.get(t.id)!, $event)"
+                >
+                  <option value="">Default ({{ kindLabel(controllerApps.byTemplate.value.get(t.id)!.default) }})</option>
+                  <option v-for="k in KINDS" :key="k.kind" :value="k.kind">{{ k.label }}</option>
+                </select>
+              </div>
+              <div v-if="!appFps.missing.value && appFps.byTemplate.value.get(t.id)">
+                <label :for="`${t.id}-fps`" class="mb-1 block text-xs text-ink-3">Frame rate</label>
+                <select
+                  :id="`${t.id}-fps`"
+                  :value="appFps.byTemplate.value.get(t.id)?.fps ?? ''"
+                  class="field w-full py-1 text-xs"
+                  title="Your screen needs to refresh this fast for it to show; 120 needs a 120 Hz display. From the next launch"
+                  @change="appFps.choose(appFps.byTemplate.value.get(t.id)!, $event)"
+                >
+                  <option value="">Default ({{ appFps.byTemplate.value.get(t.id)!.defaultFps }} fps)</option>
+                  <option v-for="f in FPS_CHOICES" :key="f" :value="f">{{ f }} fps</option>
+                </select>
+              </div>
             </div>
             <p v-if="live.some((e) => e.templateId === t.id)" class="mt-1 text-[11px] text-ink-3">
               Running: a change applies when you stop it and launch it again.
             </p>
             <FormError v-if="controllerApps.errors[t.id]" polite class="mt-1" :message="controllerApps.errors[t.id] ?? null" />
+            <FormError v-if="appFps.errors[t.id]" polite class="mt-1" :message="appFps.errors[t.id] ?? null" />
           </div>
           <button
             class="btn-primary mt-4"
@@ -172,13 +196,14 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
     <section v-if="ended.length" class="space-y-3">
       <h2 class="text-sm font-medium tracking-wide text-ink-2 uppercase">Recently ended</h2>
       <div class="card divide-y divide-line">
-        <div v-for="e in ended" :key="e.id" class="flex items-center gap-4 px-4 py-2.5 text-sm">
+        <div v-for="e in ended" :key="e.id" class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 text-sm">
           <span class="size-2 shrink-0 rounded-full" :class="STATES[e.state].dot" />
           <span class="w-36 shrink-0 truncate text-ink-2">{{ e.templateName }}</span>
-          <span class="min-w-0 flex-1 truncate" :class="e.state === 'failed' ? 'text-danger' : 'text-ink-3'">
+          <span class="min-w-0 flex-1 break-words" :class="e.state === 'failed' ? 'text-danger' : 'text-ink-3'">
             {{ STATES[e.state].text }}<template v-if="e.detail">: {{ e.detail }}</template>
           </span>
           <span class="shrink-0 text-xs text-ink-3" :title="dateTime(e.updatedAt)">{{ ago(e.updatedAt) }}</span>
+          <EnvironmentLog :log="e.log" class="basis-full" />
         </div>
       </div>
     </section>

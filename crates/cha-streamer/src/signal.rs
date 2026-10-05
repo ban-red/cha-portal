@@ -43,15 +43,18 @@ struct Args {
     width: u32,
     #[arg(long, default_value_t = 1440)]
     height: u32,
-    /// Encoded (sent) frames per second.
+    /// Encoded (sent) frames per second at the start: 60 (the baseline), 90
+    /// or 120. A page can change it while the stream runs.
     #[arg(long, default_value_t = 60)]
     fps: u32,
-    /// Frame callbacks per second; apps draw at this rate. Higher cuts input
-    /// latency (S2: 240 Hz halves click -> screen); only `--fps` of them are
-    /// composited and encoded.
+    /// Frame callbacks per second, at least; apps draw at this rate. Higher
+    /// cuts input latency (S2: 240 Hz halves click -> screen); only `--fps`
+    /// of them are composited and encoded. Rounded up to a multiple of
+    /// `--fps`, so each encoded frame falls on a tick (270 for 90).
     #[arg(long, default_value_t = 240)]
     compositor_fps: u32,
-    /// Video bitrate in Mbit/s.
+    /// The NVENC codecs' bitrate in Mbit/s at 60 fps: their starting and
+    /// target rate, scaled by (fps / 60)^0.75 at other rates.
     #[arg(long, default_value_t = 40)]
     mbps: u32,
     /// Codecs offered. PyroWave (WebTransport only) needs libpyrowave and is
@@ -62,8 +65,9 @@ struct Args {
         default_value = "hevc,h264,av1,pyrowave420,pyrowave444"
     )]
     codecs: Vec<String>,
-    /// PyroWave's budget at 4:2:0, 1440p and `--fps` (4:4:4 gets twice as
-    /// much); scaled with the picture's area.
+    /// PyroWave's budget at 4:2:0, 1440p and 60 fps (4:4:4 gets twice as
+    /// much); scaled with the picture's area. It is per frame, so the rate
+    /// grows with the frame rate, to at most 600 Mbit/s.
     #[arg(long, default_value_t = 290)]
     pyrowave_mbps: u32,
     /// The Wayland socket's name in $XDG_RUNTIME_DIR.
@@ -158,8 +162,6 @@ struct AppState {
     auth: Auth,
     /// The sessions watching, and which one has the controls (plan §3.4).
     viewers: Arc<Viewers>,
-    mbps: u32,
-    fps: u32,
     webrtc_port: u16,
     hosts: Vec<IpAddr>,
     public: Vec<IpAddr>,
@@ -185,12 +187,9 @@ pub fn main() -> Result<()> {
         .map(|c| VideoCodec::from_name(c).ok_or_else(|| anyhow!("unknown codec {c}")))
         .collect::<Result<Vec<_>>>()?;
     let pyrowave = match (cha_pyrowave::available(), pci_ids(&args.render_node)) {
-        (Ok(()), Some((vendor, device))) => Some(PyroSettings::new(
-            vendor,
-            device,
-            args.pyrowave_mbps,
-            args.fps,
-        )),
+        (Ok(()), Some((vendor, device))) => {
+            Some(PyroSettings::new(vendor, device, args.pyrowave_mbps))
+        }
         (Err(err), _) => {
             info!("no PyroWave: {err}");
             None
@@ -215,15 +214,16 @@ pub fn main() -> Result<()> {
     ensure_runtime_dir(&runtime_dir, args.app_uid)?;
     let (width, height) = fit_size(args.width, args.height);
 
-    let cuda =
-        CudaContext::new(pci_slot(&args.render_node).as_deref()).map_err(|e| anyhow!("{e}"))?;
+    let gpu_slot = pci_slot(&args.render_node);
+    crate::system::set_gpu_slot(gpu_slot.clone());
+    let cuda = CudaContext::new(gpu_slot.as_deref()).map_err(|e| anyhow!("{e}"))?;
     let hub = Arc::new(FrameHub::default());
     let handle = compositor::spawn(
         compositor::Config {
             render_node: args.render_node.clone(),
             width,
             height,
-            compositor_fps: args.compositor_fps.max(args.fps),
+            compositor_fps: args.compositor_fps,
             encode_fps: args.fps,
             socket_name: args.socket.clone(),
         },
@@ -352,8 +352,6 @@ pub fn main() -> Result<()> {
         gamepads,
         auth,
         viewers,
-        mbps: args.mbps,
-        fps: args.fps,
         webrtc_port: args.webrtc_port,
         hosts,
         public: args.public_address.clone(),
@@ -472,6 +470,7 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "width": width,
         "height": height,
         "resize": true,
+        "fps": state.media.fps(),
         "wt_port": state.wt_port,
         "cert_hash_hex": state.cert_hash_hex,
         "addresses": state.hosts.iter().chain(&state.public).collect::<Vec<_>>(),
@@ -498,8 +497,8 @@ async fn streams_handler(State(state): State<Arc<AppState>>) -> Json<Vec<Value>>
                     "width": width,
                     "height": height,
                     "chroma": "420",
-                    "fps": state.fps,
-                    "bitrateMbps": state.mbps,
+                    "fps": state.media.fps(),
+                    "bitrateMbps": state.media.bitrate_bps() / 1_000_000,
                     "frames": 0,
                     "content": "cha-streamer (live)",
                 })

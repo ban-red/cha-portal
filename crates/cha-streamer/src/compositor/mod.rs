@@ -99,9 +99,11 @@ pub struct Config {
     pub render_node: PathBuf,
     pub width: u32,
     pub height: u32,
-    /// Frame callbacks per second (≥ `encode_fps`).
+    /// Frame callbacks per second, at least: rounded up to a multiple of
+    /// the encode rate ([`tick_rate`]), so also ≥ `encode_fps`.
     pub compositor_fps: u32,
-    /// Composited (and encoded) frames per second, at most.
+    /// Composited (and encoded) frames per second, at most; [`Command::SetFps`]
+    /// changes it.
     pub encode_fps: u32,
     /// The Wayland socket's name in `$XDG_RUNTIME_DIR`.
     pub socket_name: String,
@@ -122,6 +124,17 @@ pub enum Command {
     SetClipboard(Arc<str>),
     /// The page draws the cursor (desktop mode) or wants it in the picture.
     ClientCursor(bool),
+    /// Encode this many frames a second from now on; the tick rate follows.
+    SetFps(u32),
+}
+
+/// The compositor's tick rate for an encode rate: the lowest multiple of
+/// `fps` that reaches `at_least` Hz, so every encoded frame falls on a tick
+/// (90 fps on a 240 Hz clock would alternate 2 and 3 ticks between frames,
+/// a judder; 270 Hz doesn't).
+pub fn tick_rate(at_least: u32, fps: u32) -> u32 {
+    let fps = fps.max(1);
+    fps * at_least.div_ceil(fps).max(1)
 }
 
 pub struct Handle {
@@ -170,7 +183,16 @@ fn run(
         cursor,
         pointer,
     };
-    let mut state = State::new(&config, cuda, hub, published, &mut event_loop, display)?;
+    let timer = Ticker::new(tick_rate(config.compositor_fps, config.encode_fps))?;
+    let mut state = State::new(
+        &config,
+        cuda,
+        hub,
+        published,
+        timer.clone(),
+        &mut event_loop,
+        display,
+    )?;
 
     let (commands, command_rx): (channel::Sender<Command>, Channel<Command>) = channel::channel();
     event_loop
@@ -182,7 +204,6 @@ fn run(
         })
         .map_err(|e| anyhow!("command channel: {e}"))?;
 
-    let timer = Ticker::new(config.compositor_fps)?;
     event_loop
         .handle()
         .insert_source(
@@ -199,7 +220,7 @@ fn run(
         socket = ?state.socket_name,
         width = config.width,
         height = config.height,
-        compositor_fps = config.compositor_fps,
+        compositor_fps = tick_rate(config.compositor_fps, config.encode_fps),
         encode_fps = config.encode_fps,
         gpu = state.pool.gpu_name(),
         "compositor up"
@@ -218,7 +239,11 @@ fn run(
 
 /// A periodic timerfd: microsecond-accurate, unlike calloop's timers, which
 /// round to the event loop's millisecond timeouts.
-struct Ticker(OwnedFd);
+///
+/// Clones share the timer: the event loop owns one, the state keeps another
+/// to retime it when the frame rate changes.
+#[derive(Clone)]
+struct Ticker(Arc<OwnedFd>);
 
 impl Ticker {
     fn new(hz: u32) -> Result<Self> {
@@ -226,20 +251,27 @@ impl Ticker {
             TimerfdClockId::Monotonic,
             TimerfdFlags::NONBLOCK | TimerfdFlags::CLOEXEC,
         )?;
+        let ticker = Self(Arc::new(fd));
+        ticker.retime(hz)?;
+        Ok(ticker)
+    }
+
+    /// Ticks at `hz` from now on.
+    fn retime(&self, hz: u32) -> Result<()> {
         let period = Duration::from_secs(1) / hz.max(1);
         let spec = Timespec {
             tv_sec: 0,
             tv_nsec: period.as_nanos() as _,
         };
         timerfd_settime(
-            &fd,
+            &*self.0,
             TimerfdTimerFlags::empty(),
             &Itimerspec {
                 it_interval: spec,
                 it_value: spec,
             },
         )?;
-        Ok(Self(fd))
+        Ok(())
     }
 
     /// Reads the expiration count so the fd stops being readable.
@@ -341,6 +373,10 @@ pub struct State {
     force_frame: bool,
     encode_period: Duration,
     tick_period: Duration,
+    /// `--compositor-fps`: the tick rate is the lowest multiple of the
+    /// encode rate at or above it.
+    min_tick_hz: u32,
+    ticker: Ticker,
     ticks: u64,
     next_encode: Instant,
     pub stats: Stats,
@@ -352,6 +388,7 @@ impl State {
         cuda: Arc<CudaContext>,
         hub: Arc<FrameHub>,
         published: Published,
+        ticker: Ticker,
         event_loop: &mut EventLoop<State>,
         display: Display<State>,
     ) -> Result<Self> {
@@ -419,9 +456,10 @@ impl State {
             },
         );
         let _global = output.create_global::<State>(&dh);
+        let tick_hz = tick_rate(config.compositor_fps, config.encode_fps);
         let mode = OutputMode {
             size: (config.width as i32, config.height as i32).into(),
-            refresh: (config.compositor_fps * 1000) as i32,
+            refresh: (tick_hz * 1000) as i32,
         };
         output.change_current_state(
             Some(mode),
@@ -508,7 +546,9 @@ impl State {
             dirty: true,
             force_frame: false,
             encode_period,
-            tick_period: Duration::from_secs(1) / config.compositor_fps.max(1),
+            tick_period: Duration::from_secs(1) / tick_hz,
+            min_tick_hz: config.compositor_fps,
+            ticker,
             ticks: 0,
             next_encode: Instant::now(),
             stats: Stats::default(),
@@ -520,6 +560,7 @@ impl State {
             Command::Input(input) => self.input(input),
             Command::Resize { width, height } => self.resize(width, height),
             Command::ForceFrame => self.force_frame = true,
+            Command::SetFps(fps) => self.set_fps(fps),
             Command::ClientCursor(on) => {
                 if self.client_cursor != on {
                     self.client_cursor = on;
@@ -603,6 +644,29 @@ impl State {
         self.stats.maybe_log(&self.pool, windows);
     }
 
+    /// Encodes at `fps` from now on, with the clock (and the refresh rate
+    /// apps see) a multiple of it.
+    fn set_fps(&mut self, fps: u32) {
+        let hz = tick_rate(self.min_tick_hz, fps);
+        if let Err(err) = self.ticker.retime(hz) {
+            warn!("retiming the compositor's clock: {err:#}");
+            return;
+        }
+        info!(fps, tick_hz = hz, "changing the frame rate");
+        self.encode_period = Duration::from_secs(1) / fps.max(1);
+        self.tick_period = Duration::from_secs(1) / hz;
+        self.next_encode = Instant::now();
+        if let Some(mode) = self.output.current_mode() {
+            let mode = OutputMode {
+                refresh: (hz * 1000) as i32,
+                ..mode
+            };
+            self.output
+                .change_current_state(Some(mode), None, None, None);
+            self.output.set_preferred(mode);
+        }
+    }
+
     fn resize(&mut self, width: u32, height: u32) {
         let (width, height) = fit_size(width, height);
         let current = self.output.current_mode().map(|m| m.size);
@@ -651,5 +715,23 @@ impl State {
             .elements()
             .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
             .cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_clock_is_a_multiple_of_the_encode_rate() {
+        assert_eq!(tick_rate(240, 60), 240);
+        assert_eq!(tick_rate(240, 120), 240);
+        assert_eq!(tick_rate(240, 90), 270);
+        // Never below the encode rate.
+        assert_eq!(tick_rate(60, 120), 120);
+        assert_eq!(tick_rate(0, 90), 90);
+        for fps in [60, 90, 120] {
+            assert_eq!(tick_rate(240, fps) % fps, 0);
+        }
     }
 }

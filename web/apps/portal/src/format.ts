@@ -17,6 +17,12 @@ export function megabytes(mb: number): string {
   return mb >= 1024 ? `${Math.round(mb / 1024)} GB` : `${mb} MB`;
 }
 
+/** Bytes as "8.2 GB" (or "512 MB" below a gigabyte). */
+export function gigabytes(bytes: number): string {
+  const gb = bytes / 2 ** 30;
+  return gb >= 1 ? `${gb.toFixed(gb >= 100 ? 0 : 1)} GB` : `${Math.round(bytes / 2 ** 20)} MB`;
+}
+
 export function clockTime(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }

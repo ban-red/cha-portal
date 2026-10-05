@@ -1,0 +1,13 @@
+[package]
+name = "cha-sysinfo"
+version = "0.1.0"
+description = "A machine's CPU, RAM and NVIDIA GPU use, read from /proc and NVML"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Linux only; on other targets every reading is "unavailable".
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+tracing = "0.1"

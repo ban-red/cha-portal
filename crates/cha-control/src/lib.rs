@@ -4,9 +4,10 @@
 //! and serving the portal SPA. P1.2: node enrollment and the node channel.
 //! P1.4: the catalog and environments. Session brokering follows (docs/PLAN.md,
 //! Phase 1 delivery plan). App data (Phase 3): what apps keep and share.
-//! Controllers: which virtual gamepad an app gets.
+//! Controllers: which virtual gamepad an app gets. Apps: the frame rate it runs at.
 
 pub mod api;
+pub mod apps;
 pub mod auth;
 pub mod controllers;
 pub mod db;

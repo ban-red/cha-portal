@@ -18,6 +18,12 @@ pub const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
 
 /// What [`Docker::exec`] keeps of a command's output.
 pub const EXEC_OUTPUT_LIMIT: usize = 256 * 1024;
+/// What [`Docker::logs_tail`] reads off the engine before it gives up on the
+/// rest, and what it keeps of a line.
+pub const LOGS_READ_LIMIT: usize = 4 * 1024 * 1024;
+pub const LOG_LINE_LIMIT: usize = 2000;
+/// How long [`Docker::logs_tail`] waits for the engine.
+pub const LOGS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long [`Docker::exec`] waits for a command to end.
 pub const EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -219,6 +225,44 @@ impl Docker {
             .as_i64()
             .unwrap_or(-1);
         Ok((code, String::from_utf8_lossy(&output).into_owned()))
+    }
+
+    /// The last `tail` lines a container wrote (stdout and stderr, each led by
+    /// its timestamp), alive or dead. Our containers have no TTY, so the
+    /// engine frames the stream (see [`demux`]); one with a TTY gives it raw,
+    /// and that reads as well. At most [`LOGS_READ_LIMIT`] bytes are read and
+    /// each line is cut at [`LOG_LINE_LIMIT`] characters.
+    pub async fn logs_tail(&self, container: &str, tail: usize) -> Result<Vec<String>> {
+        let path = format!(
+            "/containers/{}/logs?stdout=1&stderr=1&tail={tail}&timestamps=1",
+            encode(container)
+        );
+        let raw = tokio::time::timeout(LOGS_TIMEOUT, async {
+            let res = self.open(Method::GET, &path, None).await?;
+            if !res.status().is_success() {
+                bail!("reading the logs of {container}: {}", res.status());
+            }
+            let mut body = res.into_body();
+            let mut raw = Vec::new();
+            while let Some(frame) = body.frame().await {
+                if let Ok(data) = frame?.into_data() {
+                    raw.extend_from_slice(&data);
+                    if raw.len() >= LOGS_READ_LIMIT {
+                        break;
+                    }
+                }
+            }
+            Ok(raw)
+        })
+        .await
+        .context("timed out reading the logs")??;
+        let text = demux(&raw);
+        let lines: Vec<&str> = text.lines().collect();
+        let skip = lines.len().saturating_sub(tail);
+        Ok(lines[skip..]
+            .iter()
+            .map(|l| l.chars().take(LOG_LINE_LIMIT).collect())
+            .collect())
     }
 
     pub async fn image_exists(&self, image: &str) -> Result<bool> {
@@ -482,10 +526,14 @@ fn parse_event(line: &[u8]) -> Option<ContainerEvent> {
     })
 }
 
-/// The engine's error message from a JSON error body.
-/// A container's log stream as text: without a TTY, the engine frames each
-/// chunk with an 8-byte header (stream, 0, 0, 0, big-endian length).
+/// A container's log stream as text. Without a TTY the engine frames each
+/// chunk with an 8-byte header (stream, 0, 0, 0, big-endian length); with one
+/// the stream is raw. Text never starts with a 0, 1 or 2 followed by three
+/// zero bytes, so that tells them apart.
 fn demux(raw: &[u8]) -> String {
+    if !(raw.len() >= 8 && raw[0] <= 2 && raw[1..4] == [0, 0, 0]) {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
     let mut text = Vec::new();
     let mut rest = raw;
     while rest.len() >= 8 {
@@ -497,6 +545,7 @@ fn demux(raw: &[u8]) -> String {
     String::from_utf8_lossy(&text).into_owned()
 }
 
+/// The engine's error message from a JSON error body.
 fn engine_message(body: &[u8]) -> String {
     serde_json::from_slice::<Value>(body)
         .ok()
@@ -528,6 +577,20 @@ mod tests {
         raw.extend([2, 0, 0, 0, 0, 0, 0, 4]);
         raw.extend(b"err\n");
         assert_eq!(demux(&raw), "ok\nerr\n");
+    }
+
+    #[test]
+    fn reads_a_terminals_logs_raw() {
+        assert_eq!(demux(b"one\r\ntwo\r\n"), "one\r\ntwo\r\n");
+        assert_eq!(demux(b""), "");
+        assert_eq!(demux(b"short"), "short");
+    }
+
+    #[test]
+    fn demuxes_a_frame_cut_short() {
+        let mut raw = vec![1, 0, 0, 0, 0, 0, 0, 9];
+        raw.extend(b"cut");
+        assert_eq!(demux(&raw), "cut");
     }
 
     #[test]

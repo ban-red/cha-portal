@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  FRAME_RATES,
   Player,
   supportedCodecs,
   supportsPyroWave,
@@ -7,6 +8,7 @@ import {
   isPyroWave,
   hidUnavailableReason,
   type Codec,
+  type FrameRate,
   type ManagedController,
   type PlayerState,
   type ProbeResult,
@@ -19,6 +21,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 
 import { ApiError, api } from "../api";
+import EnvironmentLog from "../components/EnvironmentLog.vue";
 import WarningNote from "../components/WarningNote.vue";
 
 // The environment, full screen. The portal brokers the connection; the picture
@@ -125,6 +128,28 @@ function noteClipboard(written: boolean) {
   clearTimeout(clipboardNoteTimer);
   clipboardNoteTimer = setTimeout(() => (clipboardNote.value = null), written ? 1500 : 4000);
 }
+/**
+ * The frame rate the environment encodes at (the stream's, whoever set it), and
+ * whether this page is changing it. An app whose display has a fixed size
+ * (gamescope's) can't change refresh while it runs: no choice then.
+ */
+const fps = ref<number | null>(null);
+const fpsSwitching = ref(false);
+const fixedSize = ref(false);
+async function setFps(rate: FrameRate, select: HTMLSelectElement) {
+  if (!player || fpsSwitching.value) return;
+  fpsSwitching.value = true;
+  problem.value = null;
+  try {
+    await player.setFps(rate);
+  } catch (err) {
+    problem.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    fpsSwitching.value = false;
+    // Show what runs, if the streamer refused.
+    select.value = String(fps.value ?? rate);
+  }
+}
 /** The controllers this page sends, and the menu to add one (WebHID needs a click). */
 const controllers = ref<ManagedController[]>([]);
 const controllerMenu = ref(false);
@@ -198,6 +223,7 @@ async function connect() {
   if (!video.value) return;
   problem.value = null;
   setup.value = null;
+  fps.value = null;
   const mine = ++attempt;
   // Fresh TURN credentials each time; a portal without TURN returns none.
   const iceServers = await api
@@ -205,16 +231,17 @@ async function connect() {
     .then((r) => r.iceServers)
     .catch(() => []);
   // Whether its display has a fixed size (Steam's), which the picture then keeps.
-  const fixedSize = await Promise.all([
+  const fixed = await Promise.all([
     queryClient.fetchQuery({ queryKey: ["environment", id], queryFn: () => api.environment(id.value), staleTime: 5000 }),
     queryClient.fetchQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 }),
   ])
     .then(([e, templates]) => !!templates.find((t) => t.id === e.templateId)?.fixedSize)
     .catch(() => false);
   if (leaving || mine !== attempt || !video.value) return;
+  fixedSize.value = fixed;
   const p = new Player({
     video: video.value,
-    fixedSize,
+    fixedSize: fixed,
     codec: codec.value,
     iceServers,
     transport: transportChoice.value,
@@ -240,6 +267,9 @@ async function connect() {
     },
     onStatus: (status) => {
       if (player === p) setup.value = status;
+    },
+    onFps: (rate) => {
+      if (player === p) fps.value = rate;
     },
     onControllers: (list) => {
       if (player === p) controllers.value = list;
@@ -325,6 +355,12 @@ const statsTimer = setInterval(async () => {
 }, 1000);
 const fmt = (v: number | null, digits = 1, unit = "") => (v === null || Number.isNaN(v) ? "–" : `${v.toFixed(digits)}${unit}`);
 
+/** Bytes as GB, one decimal. */
+const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+const pct = (used: number, total: number) => (total > 0 ? (used / total) * 100 : 0);
+/** Amber for a value at or over `limit` percent (°C for the temperature). */
+const hot = (v: number, limit = 90) => (v >= limit ? "text-warn" : "");
+
 const probing = ref(false);
 const probe = ref<ProbeResult | null>(null);
 async function runProbe() {
@@ -382,6 +418,17 @@ const STATUS: Record<PlayerState, string> = {
         @change="setCodec(($event.target as HTMLSelectElement).value as Codec)"
       >
         <option v-for="c in codecs" :key="c" :value="c">{{ CODEC_LABEL[c] ?? c.toUpperCase() }}</option>
+      </select>
+      <select
+        v-if="!fixedSize && fps !== null"
+        :disabled="fpsSwitching || !hasControl || state !== 'connected'"
+        class="rounded-lg border border-line bg-canvas px-2 py-1 text-xs text-ink-2"
+        :value="fps"
+        :title="hasControl ? 'Frame rate' : 'Only the session with the controls changes the frame rate'"
+        aria-label="Frame rate"
+        @change="setFps(Number(($event.target as HTMLSelectElement).value) as FrameRate, $event.target as HTMLSelectElement)"
+      >
+        <option v-for="rate in FRAME_RATES" :key="rate" :value="rate">{{ rate }} fps</option>
       </select>
       <select
         v-if="wtSupported"
@@ -490,11 +537,39 @@ const STATUS: Record<PlayerState, string> = {
       v-if="showStats"
       class="absolute top-3 left-3 z-10 rounded-lg border border-line bg-panel/90 px-3 py-2 font-mono text-[11px] leading-5 text-ink-2 backdrop-blur"
     >
-      <div>{{ stats?.codec ?? codec.toUpperCase() }} · {{ stats?.width ?? "–" }}×{{ stats?.height ?? "–" }} · {{ fmt(stats?.fps ?? null, 0) }} fps</div>
+      <div>{{ stats?.codec ?? codec.toUpperCase() }} · {{ stats?.width ?? "–" }}×{{ stats?.height ?? "–" }} · {{ fmt(stats?.fps ?? null, 0) }}{{ stats?.targetFps ? ` of ${stats.targetFps}` : "" }} fps</div>
       <div>{{ fmt(stats?.mbps ?? null, 1, " Mbit/s") }} · RTT {{ fmt(stats?.rttMs ?? null, 1, " ms") }}</div>
       <div class="text-ink">send → shown {{ fmt(stats?.latencyMs ?? null, 1, " ms") }}</div>
       <div>decode {{ fmt(stats?.decodeMs ?? null, 2, " ms") }} · jitter buf {{ fmt(stats?.jitterMs ?? null, 2, " ms") }}</div>
       <div>lost {{ stats?.packetsLost ?? 0 }} · dropped {{ stats?.framesDropped ?? 0 }} · audio buf {{ fmt(stats?.audioJitterMs ?? null, 0, " ms") }}</div>
+      <div v-if="stats?.node" class="mt-1 border-t border-line pt-1">
+        <div>
+          CPU <span :class="hot(stats.node.cpu)">{{ fmt(stats.node.cpu, 0, "%") }}</span>
+          <template v-if="stats.node.cores"> ({{ stats.node.cores }} cores)</template> · load {{ fmt(stats.node.load1, 1) }}
+        </div>
+        <div>
+          RAM <span :class="hot(pct(stats.node.memUsed, stats.node.memTotal))">{{ gb(stats.node.memUsed) }}</span> / {{ gb(stats.node.memTotal) }} GB
+        </div>
+        <div v-if="stats.node.gpu !== undefined || stats.node.vramTotal !== undefined">
+          GPU
+          <template v-if="stats.node.gpu !== undefined"><span :class="hot(stats.node.gpu)">{{ fmt(stats.node.gpu, 0, "%") }}</span></template>
+          <template v-if="stats.node.vramUsed !== undefined && stats.node.vramTotal !== undefined">
+            · VRAM <span :class="hot(pct(stats.node.vramUsed, stats.node.vramTotal))">{{ gb(stats.node.vramUsed) }}</span> / {{ gb(stats.node.vramTotal) }} GB
+          </template>
+          <template v-if="stats.node.temp !== undefined"> · <span :class="hot(stats.node.temp, 85)">{{ stats.node.temp }} °C</span></template>
+          <template v-if="stats.node.power !== undefined">
+            · <span :class="stats.node.powerLimit ? hot(pct(stats.node.power, stats.node.powerLimit)) : ''">{{ fmt(stats.node.power, 0) }}</span
+            ><template v-if="stats.node.powerLimit">/{{ fmt(stats.node.powerLimit, 0) }}</template> W
+          </template>
+          <template v-if="stats.node.clock !== undefined"> · {{ stats.node.clock }} MHz</template>
+        </div>
+        <div v-if="stats.node.enc !== undefined || stats.node.dec !== undefined">
+          <template v-if="stats.node.enc !== undefined">NVENC <span :class="hot(stats.node.enc)">{{ fmt(stats.node.enc, 0, "%") }}</span></template>
+          <template v-if="stats.node.enc !== undefined && stats.node.dec !== undefined"> · </template>
+          <template v-if="stats.node.dec !== undefined">NVDEC <span :class="hot(stats.node.dec)">{{ fmt(stats.node.dec, 0, "%") }}</span></template>
+        </div>
+        <div>streamer CPU {{ fmt(stats.node.streamerCpu, 0, "%") }}</div>
+      </div>
       <div v-if="probe" class="mt-1 border-t border-line pt-1 text-accent">
         click → shown {{ fmt(probe.clickToPresentedMs.p50) }} / {{ fmt(probe.clickToPresentedMs.p95) }} ms
         ({{ probe.samples }}, {{ probe.missed }} missed)
@@ -554,6 +629,7 @@ const STATUS: Record<PlayerState, string> = {
         <p v-if="env.data.value && env.data.value.state !== 'running'" class="mt-2 text-sm text-ink-2">
           The environment is {{ env.data.value.state }}<template v-if="env.data.value.detail">: {{ env.data.value.detail }}</template>.
         </p>
+        <EnvironmentLog v-if="env.data.value?.log" :log="env.data.value.log" class="mt-3" />
         <button v-if="state === 'failed' || problem" class="btn-primary mt-4" @click="(retries = 0), connect()">Reconnect</button>
       </div>
     </div>

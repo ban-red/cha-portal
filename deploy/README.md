@@ -76,6 +76,16 @@ The stream goes straight from the node to the browser; the portal only brokers i
 | `CHA_NVIDIA_WINE_DIR` | `/usr/lib/x86_64-linux-gnu/nvidia/wine` | The driver's `nvngx.dll` and `_nvngx.dll`, which Proton copies into its prefixes for DLSS and the CDI spec leaves out. Bound read-only into apps at the same path when the host has it (the agent asks the engine; nothing to mount into the agent); empty goes without |
 | `CHA_SHARED_DIRS` | | Keeps an app's shared directory elsewhere, `app=/absolute/path`, comma-separated (`steam=/mnt/games/steam`, a NAS). Bind each into the agent read-only at that path |
 
+### When an environment dies
+
+The agent removes an environment's containers when one dies on its own or a start fails, and their logs go with them. So it first reads the last 200 lines of each and keeps them in its state volume, `/var/lib/cha-node/logs/<environment id>-streamer.log` and `-app.log` (with the engine's timestamps), for the newest 50 environments. Read them from the agent's container (`docker compose exec node less /var/lib/cha-node/logs/<id>-app.log`), or from the state volume.
+
+The same tails reach the portal: a failed environment says why in a sentence (the GPU is out of memory, with who holds it; gamescope crashed; a mount, port, `/dev/uinput` or AppArmor problem; else the last error line) and its owner and admins can open "Show log" under it. A node on an older portal still keeps the files.
+
+### Live usage
+
+The Nodes page shows each online node's CPU, RAM and GPUs, refreshed every few seconds. The agent reads the host's `/proc` (which its container shares) and every NVIDIA GPU through NVML (`libnvidia-ml.so.1`, which the `nvidia.com/gpu=all` CDI device brings, like `nvidia-smi`); without NVML the GPU rows are left out. The portal keeps only the latest reading in memory, so it shows nothing for a node that is offline or has been quiet for 15 seconds. An agent sends it only to a portal that says it reads it, so either can be updated first.
+
 ## Portal settings
 
 | Variable | Default | What |

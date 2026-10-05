@@ -11,7 +11,7 @@
 import { ControllerManager, type ManagedController } from "./controllers";
 import { InputCapture } from "./input";
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
-import { StatsReader, type StatsSnapshot } from "./stats";
+import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
 import { PyroPresenter } from "./pyro";
 import type { FromWorker, ToWorker } from "./wt-worker";
 
@@ -107,6 +107,11 @@ export interface PlayerOptions {
    * session gets it, watching ones too; a late joiner is told at once.
    */
   onStatus?: (status: SetupStatus | null) => void;
+  /**
+   * The frame rate the environment encodes at (60, 90 or 120), when the
+   * streamer first says and whenever it changes, whoever changed it.
+   */
+  onFps?: (fps: number) => void;
   /** The controllers this page sends (Gamepad API or WebHID), now and whenever one arrives or leaves. */
   onControllers?: (controllers: ManagedController[]) => void;
 }
@@ -163,6 +168,8 @@ interface ServerMessage {
   b?: number;
   mask?: number;
   effect?: unknown;
+  /** Fps: the frame rate now; stats carry it too. */
+  fps?: number;
 }
 
 /** A status message as a status: none without a label, and only the numbers it has. */
@@ -196,6 +203,12 @@ interface VideoPipeline {
 
 /** How long a codec switch may take before the player reconnects instead. */
 const SWITCH_TIMEOUT_MS = 3000;
+/** How long a frame rate change may take to be answered. */
+const FPS_TIMEOUT_MS = 3000;
+
+/** The frame rates a page may ask the streamer for. */
+export const FRAME_RATES = [60, 90, 120] as const;
+export type FrameRate = (typeof FRAME_RATES)[number];
 
 export class Player {
   state: PlayerState = "idle";
@@ -217,10 +230,16 @@ export class Player {
   /** WebRTC: frames' send → complete (their last packet in), for the streamer's rate control. */
   private readonly rtcDelivery: { at: number; ms: number }[] = [];
   private lastSize = "";
+  /** The frame rate the streamer encodes at, once it has said. */
+  private streamFps: number | null = null;
+  /** A frame rate change asked for, waiting for the streamer's answer. */
+  private fpsChange: { done: (fps: number) => void; fail: (err: Error) => void } | null = null;
   /** This page has the controls (streamers before P2.6 don't say: assume so). */
   private hasControl = true;
   /** Where a viewer's page draws the controller's pointer. */
   private pointerEl: HTMLElement | null = null;
+  /** The node's latest resource report, and when it came. */
+  private nodeStats: { stats: Omit<NodeStats, "ageMs">; at: number } | null = null;
   private pointerSpot: { x: number; y: number; drawn: boolean } | null = null;
   /** The environment's latest cursor, and the images seen so far by id. */
   private cursor: ServerMessage | null = null;
@@ -263,6 +282,7 @@ export class Player {
 
   async connect(): Promise<void> {
     this.close();
+    this.streamFps = null;
     this.setState("connecting");
     const want = isPyroWave(this.codec) ? "webtransport" : (this.options.transport ?? "auto");
     if (this.options.webTransport && want !== "webrtc" && supportsWebTransport()) {
@@ -280,6 +300,46 @@ export class Player {
       }
     }
     await this.connectWebRtc();
+  }
+
+  /** The frame rate the streamer encodes at, once it has said. */
+  get fps(): number | null {
+    return this.streamFps;
+  }
+
+  /**
+   * Changes the frame rate (60, 90 or 120) for the environment's stream: the
+   * streamer reconfigures its encoder in place and scales the bitrate, with
+   * no gap in the picture. Resolves with the rate now; rejects if this page
+   * doesn't have the controls, or the streamer refuses or doesn't answer in
+   * 3 s. Not for apps whose display can't change refresh (`fixedSize`).
+   */
+  setFps(fps: FrameRate): Promise<number> {
+    if (this.state !== "connected") return Promise.reject(new Error("not connected"));
+    if (!this.hasControl) return Promise.reject(new Error("this page doesn't have the controls"));
+    if (fps === this.streamFps) return Promise.resolve(fps);
+    this.fpsChange?.fail(new Error("another change replaced it"));
+    return new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => finish(() => reject(new Error("the streamer didn't answer"))), FPS_TIMEOUT_MS);
+      const finish = (settle: () => void) => {
+        clearTimeout(timer);
+        if (this.fpsChange === change) this.fpsChange = null;
+        settle();
+      };
+      const change = {
+        done: (now: number) => finish(() => resolve(now)),
+        fail: (err: Error) => finish(() => reject(err)),
+      };
+      this.fpsChange = change;
+      this.send({ t: "fps", fps });
+    });
+  }
+
+  /** Records the frame rate the streamer reports (hello, stats, or the answer to `setFps`). */
+  private noteFps(fps: number | undefined): void {
+    if (typeof fps !== "number" || !Number.isFinite(fps) || fps <= 0 || fps === this.streamFps) return;
+    this.streamFps = fps;
+    this.options.onFps?.(fps);
   }
 
   /**
@@ -389,6 +449,8 @@ export class Player {
     this.pads?.stop();
     this.pads = null;
     this.options.onControllers?.([]);
+    this.nodeStats = null;
+    this.fpsChange?.fail(new Error("the session closed"));
     this.control?.close();
     this.pc?.close();
     this.pc = this.control = null;
@@ -429,10 +491,15 @@ export class Player {
   }
 
   async readStats(): Promise<StatsSnapshot | null> {
-    const latencyMs = percentile(this.latencies.slice(-60), 0.5);
-    if (this.wt) return this.webTransportStats(latencyMs);
-    if (!this.pc) return null;
-    return this.stats.read(this.pc, latencyMs);
+    const latencyMs = percentile(this.latencies.slice(-(this.streamFps ?? 60)), 0.5);
+    let snapshot: StatsSnapshot;
+    if (this.wt) snapshot = this.webTransportStats(latencyMs);
+    else if (this.pc) snapshot = await this.stats.read(this.pc, latencyMs);
+    else return null;
+    const ageMs = this.nodeStats ? performance.now() - this.nodeStats.at : Infinity;
+    snapshot.targetFps = this.streamFps;
+    snapshot.node = this.nodeStats && ageMs <= NODE_STATS_FRESH_MS ? { ...this.nodeStats.stats, ageMs } : null;
+    return snapshot;
   }
 
   /** Click → screen, `count` synthetic clicks (use with the test pattern). */
@@ -680,6 +747,11 @@ export class Player {
         this.options.onFloor?.(this.hasControl, msg.viewers ?? 1);
         break;
       }
+      case "system": {
+        const stats = toNodeStats(msg as unknown as Record<string, unknown>);
+        this.nodeStats = stats ? { stats, at: performance.now() } : null;
+        break;
+      }
       case "status":
         this.options.onStatus?.(toStatus(msg));
         break;
@@ -708,6 +780,22 @@ export class Player {
         this.pointerSpot = { x: msg.x ?? 0, y: msg.y ?? 0, drawn: !!msg.drawn };
         this.placePointer();
         break;
+      case "hello":
+        this.noteFps((msg.stream as unknown as { fps?: number } | undefined)?.fps);
+        break;
+      case "stats":
+        this.noteFps(msg.fps);
+        break;
+      case "fps": {
+        // The answer to `setFps`: the rate now, with an `error` if it didn't change.
+        this.noteFps(msg.fps);
+        const change = this.fpsChange;
+        if (change) {
+          if (msg.error) change.fail(new Error(msg.error));
+          else change.done(msg.fps ?? this.streamFps ?? 0);
+        }
+        break;
+      }
       case "codec": {
         // The answer to a switch: it completes with the new stream's first
         // frame, unless it failed or nothing changed.
@@ -1106,6 +1194,7 @@ export class Player {
       width: video.videoWidth || null,
       height: video.videoHeight || null,
       fps: wt.shown.length,
+      targetFps: null,
       mbps: wt.mbps,
       decodeMs: decode,
       jitterMs: null,
@@ -1116,6 +1205,7 @@ export class Player {
       latencyMs,
       ...this.deliveryStats(wt),
       frameGapMs: this.frameGap(wt),
+      node: null,
       audioJitterMs: null,
     };
   }

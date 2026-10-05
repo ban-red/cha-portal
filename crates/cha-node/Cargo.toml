@@ -11,6 +11,7 @@ publish = false
 anyhow = "1"
 base64 = "0.22"
 bytes = "1"
+cha-sysinfo = { path = "../cha-sysinfo" }
 cha-wire = { path = "../cha-wire" }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

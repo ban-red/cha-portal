@@ -37,9 +37,11 @@ use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace};
 use crate::rate::{MIN_BPS, RateControl, Report, Sample, VIDEO_SHARE, Verdict, parse_report};
 use crate::status::StatusWatch;
+use crate::system::Sampler;
 use crate::viewers::Seat;
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
+const SYSTEM_INTERVAL: Duration = Duration::from_secs(1);
 const DRAIN: Duration = Duration::from_secs(1);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -157,6 +159,8 @@ struct Session {
     /// Rate control (P2.5) from the page's reports, as over WebTransport,
     /// and the encoder's rate it sets; bytes sent at the last report.
     rate: RateControl,
+    /// The frame rate the ceiling was last set for.
+    fps: u32,
     pace: Option<Arc<Pace>>,
     rate_mark: Option<(Instant, u64)>,
     rate_logged: Instant,
@@ -177,6 +181,9 @@ struct Session {
     finished_at: Option<Instant>,
     stopped: oneshot::Receiver<()>,
     next_stats_at: Instant,
+    /// The node's resource use, sampled once a second.
+    system: Sampler,
+    next_system_at: Instant,
     frame_id: u32,
     stats: StreamerStats,
     encode_ms: Vec<f64>,
@@ -199,6 +206,7 @@ impl Session {
         let clipboard = Some(params.media.clipboard());
         let rumble = PadFeed::new(params.gamepads.as_deref());
         let rate = RateControl::new(MIN_BPS, params.media.bitrate_bps());
+        let fps = params.media.fps();
         let handler = Control {
             epoch,
             codec: VideoCodec::Hw(params.codec),
@@ -220,6 +228,7 @@ impl Session {
             connected: false,
             frames: None,
             rate,
+            fps,
             pace: None,
             rate_mark: None,
             rate_logged: epoch,
@@ -235,6 +244,8 @@ impl Session {
             finished_at: None,
             stopped,
             next_stats_at: epoch + STATS_INTERVAL,
+            system: Sampler::new(),
+            next_system_at: epoch,
             frame_id: 0,
             stats: StreamerStats::default(),
             encode_ms: Vec::new(),
@@ -271,12 +282,22 @@ impl Session {
                 let stats = self.summary();
                 self.send_control(&ServerMsg::Stats { elapsed_ms, stats });
             }
+            if now >= self.next_system_at {
+                self.next_system_at = now + SYSTEM_INTERVAL;
+                if self.control.is_some()
+                    && let Some(sample) = self.system.sample()
+                {
+                    self.send_control(&ServerMsg::System(sample));
+                }
+            }
 
             let Some(rtc_deadline) = self.drive()? else {
                 return Ok(());
             };
             self.maybe_subscribe()?;
-            let mut deadline = rtc_deadline.min(self.next_stats_at);
+            let mut deadline = rtc_deadline
+                .min(self.next_stats_at)
+                .min(self.next_system_at);
             if let Some(until) = self.sending_until.filter(|_| self.finished_at.is_none()) {
                 deadline = deadline.min(until);
             }
@@ -481,6 +502,7 @@ impl Session {
 
     fn summary(&self) -> StreamerStats {
         let mut stats = self.stats.clone();
+        stats.fps = Some(self.params.media.fps());
         let mut encode = self.encode_ms.clone();
         encode.sort_by(f64::total_cmp);
         stats.composite_to_encoded_ms_p50 = percentile(&encode, 0.5);
@@ -544,6 +566,7 @@ impl Session {
                     "input": true,
                     "audio": self.audio_mid.is_some() && self.params.audio.is_some(),
                     "gamepads": self.params.gamepads.is_some(),
+                    "fps": media.fps(),
                 });
                 self.send_control(&ServerMsg::Hello { stream });
                 let floor = floor_msg(&self.handler.seat);
@@ -593,6 +616,13 @@ impl Session {
             loss: report.loss.unwrap_or(0.0),
             tx_bps: sent.saturating_sub(before) as f64 * 8.0 / secs,
         };
+        // A frame rate change moves the ceiling (with the NVENC codecs'
+        // bitrate); rate control's own signals are in time, so they stay.
+        let fps = self.params.media.fps();
+        if fps != self.fps {
+            self.fps = fps;
+            self.rate.rescale(self.params.media.bitrate_bps());
+        }
         let verdict = self.rate.update(now, &sample);
         let target = f64::from(self.rate.target()) * VIDEO_SHARE;
         if let Some(pace) = &self.pace {

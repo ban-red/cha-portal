@@ -34,6 +34,12 @@
 //!   mounts every [`OVERLAY_CHECK`], and a warning goes to the portal when
 //!   some are gone. The app is told them in `CHA_PER_USER_DIRS`.
 //!
+//! A container that dies on its own, or a start that fails, takes its logs
+//! with it when the agent removes it, so the agent reads the tail of each first
+//! ([`crate::crashlog`]): the exit it reports says why in a sentence, carries
+//! the last lines for the owner, and the node keeps them under its state
+//! directory (`logs/<environment>-<role>.log`).
+//!
 //! The agent is never in the media path: containers outlive agent restarts,
 //! and the agent finds them again by label.
 
@@ -56,6 +62,7 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
+use crate::crashlog::{self, Tail};
 use crate::docker::{ContainerEvent, ContainerMount, Docker, encode};
 use crate::storage::{DataRoot, Seed, plan_seed};
 
@@ -98,6 +105,9 @@ pub struct Exit {
     pub id: String,
     pub detail: String,
     pub failed: bool,
+    /// What its containers last logged ([`crashlog::report`]); empty when
+    /// there was nothing to read.
+    pub log: Vec<String>,
 }
 
 /// What a starting environment is doing, when it's worth telling the user.
@@ -203,6 +213,9 @@ pub struct DockerConfig {
     /// which Proton copies into its prefixes and the CDI spec leaves out:
     /// bound into apps read-only at the same path. `None` goes without.
     pub nvidia_wine_dir: Option<PathBuf>,
+    /// Where the logs of environments that died are kept (the agent's state
+    /// directory's `logs`); `None` keeps none.
+    pub log_dir: Option<PathBuf>,
 }
 
 pub struct DockerRuntime {
@@ -445,6 +458,12 @@ impl DockerRuntime {
             self.state.lock().expect("state lock").ports.remove(&id);
             self.state.lock().expect("state lock").homes.remove(&id);
             self.state.lock().expect("state lock").overlays.remove(&id);
+            // Nobody to tell yet (the portal finds it gone when we connect),
+            // but the logs are kept, and the log says what they showed.
+            let tails = self.capture(&id).await;
+            if let Some(why) = self.explain(&tails, None, ("streamer", None)).await {
+                info!(%id, "it had ended: {why}");
+            }
             let _ = self.remove(&id).await;
         }
         let adopted = self.state.lock().expect("state lock").ports.len();
@@ -562,12 +581,27 @@ impl DockerRuntime {
             Some(code) => format!("the {role} exited with code {code}"),
             None => format!("the {role} stopped"),
         };
+        let failed = role != "app" || event.exit_code.is_some_and(|c| c != 0);
+        let (detail, log) = if failed {
+            let tails = self.capture(&id).await;
+            let why = self.explain(&tails, None, (role, event.exit_code)).await;
+            (
+                crashlog::detail(&detail, why.as_deref()),
+                self.report(&tails, (role, event.exit_code)),
+            )
+        } else {
+            (detail, Vec::new())
+        };
         info!(%id, %detail, "environment ended on its own");
         if let Err(err) = self.stop_environment(&id).await {
             warn!(%id, "cleaning up: {err:#}");
         }
-        let failed = role != "app" || event.exit_code.is_some_and(|c| c != 0);
-        let _ = self.exits.send(Exit { id, detail, failed });
+        let _ = self.exits.send(Exit {
+            id,
+            detail,
+            failed,
+            log,
+        });
     }
 
     async fn start_environment(&self, mut spec: EnvironmentSpec) -> Result<StreamerEndpoint> {
@@ -606,12 +640,30 @@ impl DockerRuntime {
                 Ok(endpoint(port))
             }
             Err(err) => {
+                // What the containers said, before they go. The portal gets
+                // the error as the answer to its request, and this alongside.
+                let tails = self.capture(&spec.id).await;
+                let said = format!("{err:#}");
+                let why = self.explain(&tails, Some(&said), ("streamer", None)).await;
                 {
                     let mut state = self.state.lock().expect("state lock");
                     state.ports.remove(&spec.id);
                     state.homes.remove(&spec.id);
                 }
                 let _ = self.remove(&spec.id).await;
+                if let Some(why) = why
+                    && tails.iter().any(|t| !t.lines.is_empty())
+                {
+                    let _ = self.exits.send(Exit {
+                        id: spec.id.clone(),
+                        detail: crashlog::detail(
+                            &format!("it failed to start: {}", crashlog::shorten(&said, 120)),
+                            Some(&why),
+                        ),
+                        failed: true,
+                        log: self.report(&tails, ("streamer", None)),
+                    });
+                }
                 warn!(id = %spec.id, image = %spec.image, "environment failed to start: {err:#}");
                 if spec.security == SecurityProfile::Steam
                     && format!("{err:#}").contains("apparmor")
@@ -624,6 +676,81 @@ impl DockerRuntime {
                 Err(err)
             }
         }
+    }
+
+    /// Reads the tail of each of the environment's containers (running or
+    /// dead) and keeps it in the log directory. What can't be read is left out.
+    async fn capture(&self, id: &str) -> Vec<Tail> {
+        let containers = match self.docker.list(&format!("{LABEL_ENV}={id}")).await {
+            Ok(containers) => containers,
+            Err(err) => {
+                warn!(%id, "listing containers to read their logs: {err:#}");
+                return Vec::new();
+            }
+        };
+        let mut tails = Vec::new();
+        for container in containers {
+            let role = container
+                .labels
+                .get(LABEL_ROLE)
+                .map_or("container", String::as_str)
+                .to_string();
+            match self
+                .docker
+                .logs_tail(&container.id, crashlog::TAIL_LINES)
+                .await
+            {
+                Ok(lines) => tails.push(Tail { role, lines }),
+                Err(err) => warn!(%id, %role, "reading the container's logs: {err:#}"),
+            }
+        }
+        tails.sort_by(|a, b| a.role.cmp(&b.role).reverse());
+        if let Some(dir) = &self.config.log_dir {
+            for tail in tails.iter().filter(|t| !t.lines.is_empty()) {
+                if let Err(err) = crashlog::keep(dir, id, tail) {
+                    warn!(%id, role = %tail.role, "keeping the log in {}: {err}", dir.display());
+                }
+            }
+        }
+        tails
+    }
+
+    /// Why it ended, from the tails (the container that `died` leading) and
+    /// `extra`, what a failed start said, which is looked at last. For a GPU
+    /// out of memory, with who holds it.
+    async fn explain(
+        &self,
+        tails: &[Tail],
+        extra: Option<&str>,
+        died: (&str, Option<i64>),
+    ) -> Option<String> {
+        let said = extra.map(|text| Tail {
+            role: "error".into(),
+            lines: text.lines().map(str::to_string).collect(),
+        });
+        let mut order: Vec<&Tail> = tails.iter().collect();
+        order.sort_by_key(|t| t.role != died.0);
+        order.extend(said.as_ref());
+        let reason = crashlog::reason(&order, died)?;
+        if !reason.gpu_memory {
+            return Some(reason.text);
+        }
+        let now = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(crashlog::vram_now),
+        )
+        .await;
+        match now {
+            Ok(Ok(Some(context))) => Some(format!("{}: {context}", reason.text)),
+            _ => Some(reason.text),
+        }
+    }
+
+    /// The lines for the portal, the container that `died` first.
+    fn report(&self, tails: &[Tail], died: (&str, Option<i64>)) -> Vec<String> {
+        let mut order: Vec<&Tail> = tails.iter().collect();
+        order.sort_by_key(|t| t.role != died.0);
+        crashlog::report(&order)
     }
 
     async fn ensure_image(&self, image: &str) -> Result<()> {
@@ -1680,6 +1807,7 @@ mod tests {
                 data_root: root.clone(),
                 shared_dirs,
                 nvidia_wine_dir: None,
+                log_dir: None,
             },
             render_gid: Some(992),
             data: DataRoot::new(root, owner.0, owner.1).unwrap(),
@@ -2073,6 +2201,8 @@ mod tests {
         exec_exit: Mutex<i64>,
         /// Host paths that don't exist: creating a container that binds one fails.
         missing_paths: Mutex<HashSet<String>>,
+        /// What a container's log reads as (the engine's framed stream).
+        logs: Mutex<Vec<u8>>,
     }
 
     impl Engine {
@@ -2170,7 +2300,9 @@ mod tests {
                 }
                 Json(json!({ "StatusCode": code })).into_response()
             }
-            ("GET", p) if p.ends_with("/logs") => StatusCode::OK.into_response(),
+            ("GET", p) if p.ends_with("/logs") => {
+                engine.logs.lock().unwrap().clone().into_response()
+            }
             ("POST", p) if p.ends_with("/exec") => {
                 (StatusCode::CREATED, Json(json!({ "Id": "x1" }))).into_response()
             }
@@ -2809,6 +2941,111 @@ mod tests {
             .await
             .unwrap();
         assert!(n.engine.copies().is_empty());
+    }
+
+    /// The engine's framing of `lines` as stdout, each with a timestamp.
+    fn framed(lines: &[&str]) -> Vec<u8> {
+        let text: String = lines
+            .iter()
+            .map(|l| format!("2026-10-05T12:00:00.000000001Z {l}\n"))
+            .collect();
+        let mut raw = vec![1, 0, 0, 0];
+        raw.extend((text.len() as u32).to_be_bytes());
+        raw.extend(text.as_bytes());
+        raw
+    }
+
+    fn died(id: &str, role: &str, code: i64) -> ContainerEvent {
+        ContainerEvent {
+            action: "die".into(),
+            id: format!("cha-env-{id}-{role}"),
+            labels: [(LABEL_ENV, id), (LABEL_ROLE, role)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            exit_code: Some(code),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_container_that_dies_is_read_before_it_is_removed() {
+        let mut n = node(&[]);
+        let logs = tempfile::tempdir().unwrap();
+        n.rt.config.log_dir = Some(logs.path().to_path_buf());
+        let spec = app_data_spec("e1", "steam", Some(steam_storage(true, None)));
+        n.rt.start_environment(spec).await.unwrap();
+        *n.engine.logs.lock().unwrap() = framed(&[
+            "starting",
+            "Error: cuDevicePrimaryCtxRetain failed: out of memory",
+        ]);
+        let mut exits = n.rt.exits.subscribe();
+        let before = n.engine.requests.lock().unwrap().len();
+        n.rt.on_event(died("e1", "streamer", 1)).await;
+        let exit = exits.try_recv().unwrap();
+        assert!(exit.failed);
+        assert!(
+            exit.detail
+                .starts_with("The node's GPU is out of memory (VRAM)"),
+            "{}",
+            exit.detail
+        );
+        assert!(exit.detail.ends_with("(the streamer exited with code 1)"));
+        assert!(exit.detail.chars().count() <= 300);
+        assert_eq!(exit.log[0], "--- streamer ---");
+        assert_eq!(
+            exit.log[2],
+            "Error: cuDevicePrimaryCtxRetain failed: out of memory"
+        );
+        // The logs were read from the engine, then the containers went.
+        let requests = n.engine.requests.lock().unwrap()[before..].to_vec();
+        let read = requests
+            .iter()
+            .position(|(m, u, _)| {
+                m == "GET" && u.contains("/logs?stdout=1&stderr=1&tail=200&timestamps=1")
+            })
+            .unwrap();
+        let removed = requests
+            .iter()
+            .position(|(m, u, _)| m == "DELETE" && u.starts_with("/containers/"))
+            .unwrap();
+        assert!(read < removed);
+        // And are kept on the node.
+        let kept = std::fs::read_to_string(logs.path().join("e1-streamer.log")).unwrap();
+        assert!(kept.contains("cuDevicePrimaryCtxRetain"));
+        assert!(logs.path().join("e1-app.log").is_file());
+    }
+
+    #[tokio::test]
+    async fn an_app_that_quits_cleanly_is_not_read() {
+        let n = node(&[]);
+        let spec = app_data_spec("e1", "steam", Some(steam_storage(true, None)));
+        n.rt.start_environment(spec).await.unwrap();
+        let mut exits = n.rt.exits.subscribe();
+        let before = n.engine.requests.lock().unwrap().len();
+        n.rt.on_event(died("e1", "app", 0)).await;
+        let exit = exits.try_recv().unwrap();
+        assert!(!exit.failed && exit.log.is_empty());
+        assert_eq!(exit.detail, "the app exited");
+        assert!(
+            !n.engine.requests.lock().unwrap()[before..]
+                .iter()
+                .any(|(_, u, _)| u.contains("/logs"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_start_that_fails_before_any_container_says_nothing_more() {
+        let n = node(&[]);
+        let mut exits = n.rt.exits.subscribe();
+        *n.engine.copy_exit.lock().unwrap() = 1;
+        n.engine
+            .volumes
+            .lock()
+            .unwrap()
+            .insert(home_volume_name(USER, "steam"));
+        let spec = app_data_spec("e1", "steam", Some(steam_storage(true, None)));
+        assert!(n.rt.start_environment(spec).await.is_err());
+        assert!(exits.try_recv().is_err());
     }
 
     #[tokio::test]
