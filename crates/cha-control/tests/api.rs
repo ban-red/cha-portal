@@ -556,7 +556,7 @@ impl TestPortal {
         .await
         .unwrap();
         let id = db::new_id();
-        db::insert_environment(&self.db, &id, user_id, template, &node_id, "running")
+        db::insert_environment(&self.db, &id, user_id, template, &node_id, None, "running")
             .await
             .unwrap();
         (node_id, id)

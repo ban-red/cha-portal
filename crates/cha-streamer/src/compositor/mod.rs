@@ -7,8 +7,10 @@
 //!   changed, the scene is composited into a free buffer of the output pool and
 //!   published to the encoders. Nothing is composited that won't be encoded.
 //!
-//! Output buffers are GBM dmabufs registered with CUDA once, so the encoders
-//! read them in place.
+//! On a GPU the output buffers are GBM dmabufs, registered with CUDA once on
+//! NVIDIA, so the encoders read them in place. On the CPU device the scene is
+//! drawn by Mesa's software renderer (llvmpipe) and read back to memory as
+//! planar YUV for x264.
 
 mod clipboard;
 mod cursor;
@@ -18,13 +20,11 @@ mod output;
 
 use std::ffi::OsString;
 use std::os::fd::{AsFd, OwnedFd};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use cha_nvenc::CudaContext;
 use smithay::backend::drm::DrmNode;
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::renderer::ImportDma;
@@ -65,6 +65,7 @@ use smithay::wayland::viewporter::ViewporterState;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
+use crate::device::{Device, DeviceKind};
 use crate::input::Input;
 use crate::media::FrameHub;
 use clipboard::{Clipboard, TEXT_MIMES};
@@ -96,7 +97,9 @@ pub fn fit_size(width: u32, height: u32) -> (u32, u32) {
 }
 
 pub struct Config {
-    pub render_node: PathBuf,
+    /// What it draws on: the device's render node, or Mesa's software
+    /// renderer for the CPU device.
+    pub device: Arc<Device>,
     pub width: u32,
     pub height: u32,
     /// Frame callbacks per second, at least: rounded up to a multiple of
@@ -151,12 +154,12 @@ pub struct Handle {
 }
 
 /// Starts the compositor thread; returns once its socket is listening.
-pub fn spawn(config: Config, cuda: Arc<CudaContext>, hub: Arc<FrameHub>) -> Result<Handle> {
+pub fn spawn(config: Config, hub: Arc<FrameHub>) -> Result<Handle> {
     let (ready_tx, ready_rx) = std_mpsc::channel();
     std::thread::Builder::new()
         .name("compositor".into())
         .spawn(move || {
-            if let Err(err) = run(config, cuda, hub, &ready_tx) {
+            if let Err(err) = run(config, hub, &ready_tx) {
                 warn!("compositor stopped: {err:#}");
                 let _ = ready_tx.send(Err(err));
             }
@@ -166,12 +169,7 @@ pub fn spawn(config: Config, cuda: Arc<CudaContext>, hub: Arc<FrameHub>) -> Resu
         .map_err(|_| anyhow!("the compositor thread died during startup"))?
 }
 
-fn run(
-    config: Config,
-    cuda: Arc<CudaContext>,
-    hub: Arc<FrameHub>,
-    ready: &std_mpsc::Sender<Result<Handle>>,
-) -> Result<()> {
+fn run(config: Config, hub: Arc<FrameHub>, ready: &std_mpsc::Sender<Result<Handle>>) -> Result<()> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
     let (clipboard, clipboard_watch) = Clipboard::new();
@@ -186,7 +184,6 @@ fn run(
     let timer = Ticker::new(tick_rate(config.compositor_fps, config.encode_fps))?;
     let mut state = State::new(
         &config,
-        cuda,
         hub,
         published,
         timer.clone(),
@@ -315,7 +312,8 @@ impl ClientData for ClientState {
 #[allow(dead_code)]
 struct Globals {
     xdg_decoration: XdgDecorationState,
-    dmabuf: DmabufGlobal,
+    /// Not on the CPU device: software clients use shm.
+    dmabuf: Option<DmabufGlobal>,
     output_manager: OutputManagerState,
     viewporter: ViewporterState,
     presentation: PresentationState,
@@ -382,10 +380,38 @@ pub struct State {
     pub stats: Stats,
 }
 
+/// The EGL display to draw on: the render node's device on a GPU, Mesa's
+/// software device (llvmpipe) for the CPU. Also the node, for dmabuf
+/// feedback, where there is one.
+fn egl_display(device: &Device) -> Result<(EGLDisplay, Option<DrmNode>)> {
+    let devices = EGLDevice::enumerate().context("enumerating EGL devices")?;
+    if device.kind() == DeviceKind::Cpu {
+        let software = devices
+            .into_iter()
+            .find(EGLDevice::is_software)
+            .context("no software EGL device (Mesa's EGL: libegl-mesa0, libgl1-mesa-dri)")?;
+        // SAFETY: the device outlives the display (EGLDisplay keeps it).
+        let egl =
+            unsafe { EGLDisplay::new(software) }.context("creating the software EGL display")?;
+        return Ok((egl, None));
+    }
+    let path = device
+        .render_node()
+        .context("a GPU device needs a render node")?;
+    let node = DrmNode::from_path(path)
+        .with_context(|| format!("{} is not a DRM node", path.display()))?;
+    let found = devices
+        .into_iter()
+        .find(|d| d.try_get_render_node().ok().flatten() == Some(node))
+        .with_context(|| format!("no EGL device for {}", path.display()))?;
+    // SAFETY: the device outlives the display (EGLDisplay keeps it).
+    let egl = unsafe { EGLDisplay::new(found) }.context("creating the EGL display")?;
+    Ok((egl, Some(node)))
+}
+
 impl State {
     fn new(
         config: &Config,
-        cuda: Arc<CudaContext>,
         hub: Arc<FrameHub>,
         published: Published,
         ticker: Ticker,
@@ -396,24 +422,13 @@ impl State {
         let clock = Clock::<Monotonic>::new();
 
         // The GPU: an EGL display on the render node's device (no GBM platform
-        // needed to render), and GBM only to allocate the output buffers.
-        let render_node = DrmNode::from_path(&config.render_node)
-            .with_context(|| format!("{} is not a DRM node", config.render_node.display()))?;
-        let device = EGLDevice::enumerate()
-            .context("enumerating EGL devices")?
-            .find(|d| d.try_get_render_node().ok().flatten() == Some(render_node))
-            .with_context(|| format!("no EGL device for {}", config.render_node.display()))?;
-        // SAFETY: the device outlives the display (EGLDisplay keeps it).
-        let egl = unsafe { EGLDisplay::new(device) }.context("creating the EGL display")?;
+        // needed to render), and GBM only to allocate the output buffers. The
+        // CPU device has Mesa's software device instead.
+        let (egl, render_node) = egl_display(&config.device)?;
         let context = EGLContext::new(&egl).context("creating the EGL context")?;
         // SAFETY: the context is only used on this thread.
         let renderer = unsafe { GlesRenderer::new(context) }.context("creating the renderer")?;
-        let pool = OutputPool::new(
-            &config.render_node,
-            egl.clone(),
-            cuda,
-            (config.width, config.height),
-        )?;
+        let pool = OutputPool::new(&config.device, egl, (config.width, config.height))?;
 
         let compositor_state = CompositorState::new_v6::<State>(&dh);
         let xdg_shell_state = XdgShellState::new::<State>(&dh);
@@ -430,14 +445,19 @@ impl State {
         let cursor_shape_state = CursorShapeManagerState::new::<State>(&dh);
 
         // Clients allocate on our GPU and hand us dmabufs (Chrome, Firefox,
-        // Xwayland's glamor); the feedback names the render node.
+        // Xwayland's glamor); the feedback names the render node. There is no
+        // GPU on the CPU device: its clients draw into shm.
         let mut dmabuf_state = DmabufState::new();
-        let formats = renderer.dmabuf_formats();
-        let feedback = DmabufFeedbackBuilder::new(render_node.dev_id(), formats.clone())
-            .build()
-            .context("building dmabuf feedback")?;
-        let dmabuf_global =
-            dmabuf_state.create_global_with_default_feedback::<State>(&dh, &feedback);
+        let dmabuf_global = match render_node {
+            Some(node) => {
+                let formats = renderer.dmabuf_formats();
+                let feedback = DmabufFeedbackBuilder::new(node.dev_id(), formats.clone())
+                    .build()
+                    .context("building dmabuf feedback")?;
+                Some(dmabuf_state.create_global_with_default_feedback::<State>(&dh, &feedback))
+            }
+            None => None,
+        };
 
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");

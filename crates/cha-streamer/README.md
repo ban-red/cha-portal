@@ -18,6 +18,46 @@ app ─Wayland─▶ compositor (Smithay, GLES on the render node)
                  └── input (control DataChannel) → the seat: pointer, relative motion, buttons, wheel, keys
 ```
 
+## Devices (`--device nvidia|vaapi|cpu`)
+
+What composites and encodes (`device.rs`; the portal side is `docs/devices.md`). The default is `nvidia`, as before.
+
+| Device | Composites on | Encodes with | Codecs |
+|---|---|---|---|
+| `nvidia` | EGL on `--render-node` | NVENC through CUDA, zero-copy | H.264, HEVC, AV1, PyroWave |
+| `vaapi` | EGL on `--render-node` (Mesa: iris, radeonsi) | VA-API: **not built yet** | what the driver encodes |
+| `cpu` | Mesa's llvmpipe (software EGL; no render node, no `/dev/dri`) | x264, SVT-AV1 | H.264, AV1 (when SVT-AV1 loads) |
+
+- **One encoder trait** (`encoder/mod.rs`, `VideoEncoder`): encode a frame (keyframe on request), resize, change the bitrate or frame rate in place, reference invalidation where the encoder has it, and its frame index and timings. The media code (`media.rs`) is the same for every device. An encoder that can't invalidate references says so and the caller sends a keyframe. `Device::encoder` picks the implementation (`device::backend`: kind and codec).
+- **Codecs offered** are `--codecs` (in its order) intersected with what the device makes; `hello`, `/streams` and the pages see only those. PyroWave stays NVIDIA-only (it is Vulkan and could run on Intel and AMD later).
+- **`--probe-device <kind>[:<render node>]`** prints `{"kind","name","vendor"?,"renderNode"?,"codecs":[…],"cores"?}` on stdout and exits, before logging starts, so the last stdout line is the JSON; a failure exits non-zero. `nvidia` opens a session per codec to see which this GPU takes; `vaapi` asks libva (`vaQueryConfigEntrypoints`: a codec counts with an `EncSlice` or `EncSliceLP` entrypoint on a profile of it); `cpu` is x264 present (it is needed to start), SVT-AV1 if it loads (then `av1` follows `h264`), and the core count. It needs nothing writable. The node asks for `cpu` as it does for VA-API, in the same throwaway container (no device), and keeps `h264` only when the image doesn't answer.
+
+**The CPU device.**
+- **Compositing:** Smithay's `GlesRenderer` on Mesa's software EGL device (`EGL_MESA_device_software`, found by enumeration). No dmabuf global: software clients draw into shm. The scene goes into one renderbuffer (so only what changed is repainted, as the damage tracker sees an age of 1), is read back with `glReadPixels` (a PBO, mapped) and converted to planar 4:2:0 straight from the mapping into a free buffer of the pool: no extra copy. The pool's buffers are plain memory; a slot frees when the encoder lets go, as on a GPU.
+- **Conversion** (`encoder/i420.rs`): BT.709, limited range (what NVENC signals), integers; the luma loop is a plain map that the compiler vectorises, chroma averages each 2×2 block, and bands of row pairs run on up to 4 scoped threads.
+- **x264** (`encoder/x264.rs`) is opened with `dlopen` (`libx264.so.165` on Ubuntu 26.04; 160 to 165 and the unversioned name are tried) and set with option strings, so none of its parameter struct is mirrored except the size at the front (checked against the defaults). x264 is GPL-2.0-or-later, compatible with this project's AGPL-3.0; it is not linked, and the image installs the distro's package.
+  - `zerolatency` (no B-frames, no lookahead, sliced threads, so all cores work on one frame), no scene-cut keyframes, infinite GOP: a keyframe (IDR) only when asked, intra refresh off, headers repeated on every keyframe, a one-frame VBV at the bitrate (`bitrate / fps`), BT.709 signalled.
+  - Preset `superfast` up to 1080p60, `ultrafast` above it (`CHA_X264_PRESET` overrides, for measuring); threads are the cores the container may use, at most 16.
+  - A bitrate change is a `x264_encoder_reconfig` in place. A new size or frame rate is a new session (x264 takes both at open), so it starts with a keyframe; no reference invalidation (a keyframe instead).
+  - Above 1080p60 a warning says the CPU will struggle. The size comes from the page, so nothing is capped.
+- **SVT-AV1** (`encoder/svtav1.rs`) is opened with `dlopen` (`libSvtAv1Enc.so.2` on Ubuntu 26.04, which ships 2.3.0; `.4`, `.3` and the unversioned name are tried first, and a library older than 2.x is refused) and set by name through `svt_av1_enc_parse_parameter`, so none of `EbSvtAv1EncConfiguration`'s layout (it changes with the release) is mirrored: the struct is room the library fills with its defaults. Only the picture and packet headers are mirrored (v2.3.0's layout, checked by a test). SVT-AV1 is BSD-3-Clause-Clear with the AOM patent licence, compatible with AGPL-3.0; the image installs the distro's `libsvtav1enc2`, `SVT_LOG=2` keeps its banner out of the logs, and without the library the device offers H.264 only.
+  - Low-delay prediction structure (a picture in, a packet out), no lookahead, CBR with a buffer of one frame (at least the library's 20 ms) and at most two, infinite GOP: a keyframe (IDR) only when asked, no scene-cut ones, a sequence header on every keyframe. **Screen content mode is forced on** (palette and intra block copy; on synthetic flat blocks it halved both the time and the bits of mode off at the same target, and the quality at equal bits wasn't compared). BT.709 limited, 8-bit 4:2:0, level 5.1 and main tier forced, so the stream is the `av01.0.13M.08` that `/streams` announces (the NVENC stream's too); a test reads the sequence header back.
+  - Preset 11, the fastest in low delay in 2.3 (12 and 13 are mapped to it; 10 costs about twice as much); `CHA_SVTAV1_PRESET` overrides it. Threads are the library's own: it picks its level of parallelism from the cores the process may use (6 of 6 on 16 cores).
+  - The packets are temporal units in the low-overhead format (a temporal delimiter OBU, then the sequence header on a keyframe, then the frame), what WebCodecs' AV1 decoder takes; dav1d decodes the whole stream, and from any keyframe on.
+  - **Bitrate** takes effect on a keyframe in 2.3 (a rate-change event with the picture), so a new target is held for the next keyframe, and a cut of a fifth or more, or a rise of half or more, asks for one at once (not more than one a second for that). Smaller moves wait: the rate control's 1/32 steps would otherwise be a keyframe each. A new size or frame rate is a new session (a keyframe); no reference invalidation (a keyframe instead).
+- **Measured** (the dev machine's i7-13700K, 16 threads, shared with other work, release build, llvmpipe drawing 2400 changing blocks, `cargo test -p cha-streamer --release -- --ignored --nocapture cpu_device_cost`; "busy" is a moving gradient with noise on every pixel; the same target for both codecs, 22.5 Mbit/s at 1080p and 40 at 1440p; "cores" is the encoder alone at 60 fps):
+
+| Size | Draw and read back | Convert (4 threads) | x264 (p50, cores, Mbit/s) | SVT-AV1 (p50, p99, cores, Mbit/s) |
+|---|---|---|---|---|
+| 1080p60, blocks | 10 ms | 1.4 ms | 2.4 ms (`superfast`), 1.0–1.4, 17 | 11 ms, 59 ms, 1.8, 22 |
+| 1080p60, busy | 11 ms | 1.0 ms | 2.0 ms, 0.9, 19.5 | 7–8 ms, 125 ms, 5.6, 26 |
+| 1440p60, blocks | 8 ms | 1.9 ms | 2.0 ms (`ultrafast`), 0.7–0.9, 30 | 16 ms, 63 ms, 2.4, 38 |
+| 1440p60, busy | 14 ms | 1.6 ms | 2.1 ms, 0.9, 36 | 11 ms, 196 ms, 9.3, 47 |
+
+  The p99 of 120 frames here is a keyframe (two in the run): AV1's costs 60 ms at 1080p, 125 to 200 ms on a busy picture, against x264's 4 to 35 ms. On the busy picture AV1's mean is 25 ms at 1080p and 40 at 1440p, so it doesn't hold 60 fps there; on a desktop picture it holds 1080p60 with room (11 ms of 16.7) and 1440p60 at the edge (16 ms). **AV1 on the CPU costs about 4 to 8 times x264's time and 2 to 3 times its cores on a desktop picture, for the same bit rate at much better quality (screen content tools); use it where the browser or the link wants AV1, not for the CPU's sake.** Drawing here is mostly llvmpipe filling thousands of rectangles; a real desktop repaints far less. On a machine with fewer cores the encoders and llvmpipe compete for them.
+
+**VA-API** is structured, not finished: the compositor path for a non-NVIDIA render node exists (a GBM dmabuf output pool with no CUDA), the probe works, and the encoder (`encoder/vaapi.rs`) says "isn't built yet", so `--device vaapi` stops at start with that message. The module's header lists what the encoder needs (dmabuf import as a VA surface, low-latency CBR, per-codec parameter buffers).
+
 ## How it works
 
 - **Two clocks.**

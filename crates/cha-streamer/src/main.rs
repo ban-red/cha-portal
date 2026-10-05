@@ -1,9 +1,10 @@
 //! `cha-streamer`: one environment's media engine.
 //!
-//! - Our headless Wayland compositor (Smithay) runs on the GPU; the app is its
-//!   client.
+//! - Our headless Wayland compositor (Smithay) runs on the GPU (or, on the CPU
+//!   device, in Mesa's software renderer); the app is its client.
 //! - Composited frames go zero-copy into NVENC through our own binding
-//!   (`cha-nvenc`); there is no GStreamer or FFmpeg.
+//!   (`cha-nvenc`), or are read back and encoded by x264 or SVT-AV1 on the CPU device;
+//!   VA-API (Intel, AMD) is next (`device.rs`). There is no GStreamer or FFmpeg.
 //! - Apps play sound into our PulseAudio-protocol server; it is mixed and
 //!   Opus-encoded every 10 ms (libopus, our binding).
 //! - Chromium can take the same media as `cha-stream/1` datagrams over
@@ -32,7 +33,11 @@ mod congestion;
 #[cfg(target_os = "linux")]
 mod control;
 #[cfg(target_os = "linux")]
+mod device;
+#[cfg(target_os = "linux")]
 mod dualsense;
+#[cfg(target_os = "linux")]
+mod encoder;
 #[cfg(target_os = "linux")]
 mod framerate;
 #[cfg(target_os = "linux")]

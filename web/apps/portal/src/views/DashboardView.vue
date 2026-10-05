@@ -2,14 +2,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, ref } from "vue";
 
-import { ApiError, api, type Environment, type EnvironmentState, type Template } from "../api";
+import { ApiError, api, type Environment, type EnvironmentState, type PlacementChoice, type Template } from "../api";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import FormError from "../components/FormError.vue";
+import LaunchButton from "../components/LaunchButton.vue";
 import WarningNote from "../components/WarningNote.vue";
 import { ago, dateTime } from "../format";
 import { useSession } from "../stores/session";
 import { FPS_CHOICES, useAppFps } from "../appFps";
 import { KINDS, kindLabel, useControllerApps } from "../controllerKinds";
+import { PLACEMENTS_KEY, usePlacements } from "../placements";
 import { STORAGE_KEY } from "../storage";
 
 const session = useSession();
@@ -36,6 +38,10 @@ const controllerApps = useControllerApps();
 // And the frame rate it runs at, the same way.
 const appFps = useAppFps();
 
+// Where each app would run, and the best place: refreshed with the nodes' live
+// usage while the page is visible. Guests can't launch, so they ask for none.
+const placements = usePlacements(computed(() => session.user?.role !== "guest"));
+
 const live = computed(() =>
   (environments.data.value ?? []).filter((e) => e.state !== "destroyed" && e.state !== "failed"),
 );
@@ -47,9 +53,14 @@ const error = ref<string | null>(null);
 const message = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
 
 const launch = useMutation({
-  mutationFn: (t: Template) => api.launch(t.id),
+  mutationFn: (v: { template: Template; choice: PlacementChoice | null }) =>
+    api.launch(v.template.id, v.choice ?? undefined),
   onMutate: () => (error.value = null),
-  onSuccess: () => queryClient.invalidateQueries({ queryKey: ["environments"] }),
+  onSuccess: () => {
+    void queryClient.invalidateQueries({ queryKey: ["environments"] });
+    // The new environment changes what each device is worth.
+    void queryClient.invalidateQueries({ queryKey: PLACEMENTS_KEY });
+  },
   onError: (err) => (error.value = message(err, "Couldn't launch it.")),
 });
 
@@ -141,13 +152,13 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             <FormError v-if="controllerApps.errors[t.id]" polite class="mt-1" :message="controllerApps.errors[t.id] ?? null" />
             <FormError v-if="appFps.errors[t.id]" polite class="mt-1" :message="appFps.errors[t.id] ?? null" />
           </div>
-          <button
-            class="btn-primary mt-4"
-            :disabled="session.user?.role === 'guest' || (launch.isPending.value && launch.variables.value?.id === t.id)"
-            @click="launch.mutate(t)"
-          >
-            {{ launch.isPending.value && launch.variables.value?.id === t.id ? "Launching…" : "Launch" }}
-          </button>
+          <LaunchButton
+            :id="t.id"
+            :placements="placements.missing.value ? undefined : placements.byTemplate.value[t.id]"
+            :busy="launch.isPending.value && launch.variables.value?.template.id === t.id"
+            :disabled="session.user?.role === 'guest'"
+            @launch="(choice) => launch.mutate({ template: t, choice })"
+          />
         </article>
       </div>
     </section>

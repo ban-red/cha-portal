@@ -380,11 +380,14 @@ pub struct EnvironmentRow {
     pub log: Option<String>,
     pub http_port: Option<i64>,
     pub webrtc_port: Option<i64>,
+    /// The id of the node's device it runs on; `None` is the NVIDIA GPU, from
+    /// before devices.
+    pub device: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, log, http_port, webrtc_port, created_at, updated_at";
+const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, log, http_port, webrtc_port, device, created_at, updated_at";
 
 pub async fn insert_environment(
     db: &SqlitePool,
@@ -392,17 +395,19 @@ pub async fn insert_environment(
     owner_id: &str,
     template_id: &str,
     node_id: &str,
+    device: Option<&str>,
     state: &str,
 ) -> Result<(), sqlx::Error> {
     let now = now();
     sqlx::query(
-        "INSERT INTO environments (id, owner_id, template_id, node_id, state, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO environments (id, owner_id, template_id, node_id, device, state, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(owner_id)
     .bind(template_id)
     .bind(node_id)
+    .bind(device)
     .bind(state)
     .bind(now)
     .bind(now)
@@ -461,6 +466,20 @@ pub async fn count_live_environments(db: &SqlitePool, owner_id: &str) -> Result<
     )
     .bind(owner_id)
     .fetch_one(db)
+    .await
+}
+
+/// Environments starting or running, per node and device (`None`: the
+/// NVIDIA GPU, from before devices).
+pub async fn running_by_device(
+    db: &SqlitePool,
+) -> Result<Vec<(String, Option<String>, i64)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT node_id, device, COUNT(*) FROM environments \
+         WHERE node_id IS NOT NULL AND state IN ('starting', 'running') \
+         GROUP BY node_id, device",
+    )
+    .fetch_all(db)
     .await
 }
 

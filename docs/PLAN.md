@@ -235,6 +235,24 @@ Rules carried in from the research (Nestri `media-transport.md`, Punktfunk, Vibe
 5. **Interop.** `cha-gateway` implements **Vibepollo's PyroWave-over-GameStream contract** (capability bits, `bitStreamFormat=3`, record framing, critical-band FEC). A Vibepollo or Polaris host on the LAN can then be played in the **browser** with PyroWave, which nobody offers today.
 6. **Upstream relations.** Ask Themaister for a bitstream version field. Coordinate capability-bit registration with Nonary and LizardByte.
 
+### 3.3a JPEG XS: a CPU LAN tier (planned)
+
+What PyroWave is to GPU nodes, JPEG XS (ISO/IEC 21122) could be to CPU-only nodes (docs/devices.md): a wavelet codec built for latency over fast networks rather than for bitrate. Every frame is coded on its own, line by line, so latency is a fraction of a frame and a lost packet costs a slice of one frame, never later frames. It is visually lossless at about 4–10:1, roughly 200–500 Mbit/s at 1440p60: a fit for 1 GbE, and much lighter on the CPU than any motion-compensated codec.
+
+- **Why.** CPU nodes have only x264 and SVT-AV1 (which spends its cycles on motion search to save bitrate a LAN doesn't need). A JPEG XS tier would give them PyroWave's trade on a LAN: sharp text, the lowest latency, loss-tolerant, at the cost of bandwidth.
+- **Encoder.** Intel's SVT-JPEG-XS (BSD-2-Clause-Patent), loaded at run time like x264, behind the streamer's encoder trait. Input from the CPU readback path (planar YUV 4:2:0, and 4:4:4 for desktops); slice-based output, a frame's byte budget from rate control, no references (so no RFI and no keyframe requests).
+- **Wire.** Like PyroWave's: slices fragmented into WebTransport datagrams with `cha-proto` framing and FEC sized to loss; the page decodes what arrived by a deadline and repeats the previous frame's missing slices.
+- **Browser decode.** No browser decodes JPEG XS. Its entropy coding is simple (no arithmetic coding), and the inverse wavelet is the shape PyroWave's WebGPU decoder already runs, so the decoder would be ours: WebGPU compute, unpacking and dequantisation then the inverse 5/3 wavelet and colour conversion straight into a GPUTexture, with a WebAssembly SIMD fallback where WebGPU is missing. Validated bit-exact against SVT-JPEG-XS's decoder in CI.
+- **Licensing first.** JPEG XS carries declared essential patents (ISO's patent database; a licensing pool exists). Before any code: confirm what an AGPL, self-hosted, non-commercial-by-default project owes, and whether SVT-JPEG-XS's patent grant covers our use. If it doesn't fit, the tier doesn't happen; the alternative is PyroWave's CPU port.
+- **Spike S9, before committing to it** (on gpu-node.lan's CPU path and the baseline M4 in Chrome):
+  1. Encode cost on the node's CPU at 1080p60 and 1440p60, 4:2:0 and 4:4:4, single- and multi-threaded, against x264 and SVT-AV1 on the same frames.
+  2. A minimal WebGPU decoder prototype: decode time per 1440p frame on the M4 at a 60 fps duty cycle (as S1b did for PyroWave).
+  3. Bitrate against picture quality (PSNR/SSIM on S6's docs page) at the rates 1 GbE can carry, against PyroWave 4:2:0/4:4:4.
+  4. Send → shown latency end to end against CPU H.264.
+
+  Gate: it beats CPU H.264 on latency and text sharpness at a CPU cost a 4–8 core node can carry for one 1440p60 stream, and the browser decodes it in under ~4 ms per frame.
+- **If it passes:** a codec in `@cha/player` (`jpegxs420`/`jpegxs444`, WebTransport only), offered by CPU devices whose image has the library, chosen by tier selection on LAN like PyroWave (§3.2).
+
 ### 3.4 Multi-viewer and sharing
 
 - **Producer/consumer.** There is one compositor/capture producer per environment. Each viewer gets its own encoder instance, so viewers can differ in codec, tier and resolution. Viewers with identical parameters share one encoder.
@@ -704,6 +722,7 @@ If S1 fails, Phase 4 starts in parallel with Phase 2.
 
 ### Later / backlog
 
+- JPEG XS as a CPU LAN tier (§3.3a): licensing, then spike S9.
 - Moonlight *host* façade inside `cha-streamer`, so stock Moonlight/Artemis clients can play our environments (adopt Vibepollo's PyroWave contract there too).
 - End-to-end HDR10.
 - Pre-warmed pools; mic, webcam and file transfer; recording.

@@ -11,7 +11,9 @@ use anyhow::Result;
 use cha_control::{AppState, Config, app, db};
 use cha_node::environments::{Connect, Exit, Progress, Runtime};
 use cha_node::{Agent, Identity, enroll, init_tls};
-use cha_wire::{EnvironmentSpec, Gpu, Inventory, SecurityProfile, StreamerEndpoint, close};
+use cha_wire::{
+    Device, DeviceKind, EnvironmentSpec, Gpu, Inventory, SecurityProfile, StreamerEndpoint, close,
+};
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, broadcast};
@@ -271,6 +273,40 @@ fn test_inventory() -> Inventory {
         // The agent adds these.
         data_root: None,
         shared_dirs: Default::default(),
+        // An older node's: the portal reads its GPU as the one device.
+        devices: None,
+    }
+}
+
+/// A node that lists its devices: the GPU, an Intel one through VA-API, the CPU.
+fn device_inventory() -> Inventory {
+    let device = |id: &str, kind, name: &str, codecs: &[&str]| Device {
+        id: id.into(),
+        kind,
+        name: name.into(),
+        render_node: (kind != DeviceKind::Cpu)
+            .then(|| format!("/dev/dri/{}", &id[id.find(':').unwrap_or(0) + 1..])),
+        vendor: None,
+        codecs: codecs.iter().map(|c| c.to_string()).collect(),
+        cores: (kind == DeviceKind::Cpu).then_some(16),
+    };
+    Inventory {
+        devices: Some(vec![
+            device(
+                "nvidia:0",
+                DeviceKind::Nvidia,
+                "NVIDIA GeForce RTX 4090",
+                &["h264", "hevc", "av1"],
+            ),
+            device(
+                "vaapi:renderD129",
+                DeviceKind::Vaapi,
+                "Intel Arc A380",
+                &["h264", "hevc"],
+            ),
+            device("cpu", DeviceKind::Cpu, "CPU", &["h264"]),
+        ]),
+        ..test_inventory()
     }
 }
 
@@ -523,13 +559,21 @@ async fn environments_launch_stop_fail_and_reconcile() {
 
 /// A portal with a node running `runtime`, and the admin's user id.
 async fn portal_with_node(runtime: &Arc<FakeRuntime>) -> (Portal, String) {
+    portal_with_inventory(runtime, test_inventory).await
+}
+
+/// [`portal_with_node`], for a node with this inventory.
+async fn portal_with_inventory(
+    runtime: &Arc<FakeRuntime>,
+    inventory: fn() -> Inventory,
+) -> (Portal, String) {
     let p = portal().await;
     let identity = enroll(&p.url, &p.join_token().await, "gpu-box")
         .await
         .unwrap();
     let agent = Agent::new(identity.clone())
         .unwrap()
-        .with_inventory(test_inventory)
+        .with_inventory(inventory)
         .with_runtime(runtime.clone());
     tokio::spawn(async move { agent.run().await });
     p.wait_for_node(&identity.node_id, |n| {
@@ -542,20 +586,14 @@ async fn portal_with_node(runtime: &Arc<FakeRuntime>) -> (Portal, String) {
 }
 
 impl Portal {
-    /// Launches `template` and lets it start; returns the spec the node got.
-    async fn launch(
+    /// Launches with `body` and lets it start; returns the spec the node got.
+    async fn launch_body(
         &self,
         runtime: &FakeRuntime,
-        template: &str,
+        body: Value,
     ) -> (u16, Value, Option<EnvironmentSpec>) {
         let before = runtime.started.lock().unwrap().len();
-        let (status, env) = self
-            .admin(
-                "POST",
-                "/api/environments",
-                Some(json!({ "templateId": template })),
-            )
-            .await;
+        let (status, env) = self.admin("POST", "/api/environments", Some(body)).await;
         if status != 200 {
             return (status, env, None);
         }
@@ -564,6 +602,16 @@ impl Portal {
         self.wait_for_env(&id, |e| e["state"] == "running").await;
         let spec = runtime.started.lock().unwrap()[before].clone();
         (status, env, Some(spec))
+    }
+
+    /// Launches `template` and lets it start; returns the spec the node got.
+    async fn launch(
+        &self,
+        runtime: &FakeRuntime,
+        template: &str,
+    ) -> (u16, Value, Option<EnvironmentSpec>) {
+        self.launch_body(runtime, json!({ "templateId": template }))
+            .await
     }
 
     async fn stop(&self, id: &str) {
@@ -740,7 +788,14 @@ async fn a_node_that_predates_app_data_isnt_sent_any() {
     // Steam would keep nothing and share nothing: refused, not run without.
     let (status, body, _) = p.launch(&runtime, "steam").await;
     assert_eq!(status, 409, "{body}");
-    assert_eq!(body["error"], "node_needs_update");
+    assert_eq!(body["error"], "no_node");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("needs an update"),
+        "{body}"
+    );
     assert!(runtime.started.lock().unwrap().is_empty());
     // What needs no storage still runs.
     let (status, _, spec) = p.launch(&runtime, "chrome").await;
@@ -955,4 +1010,150 @@ async fn a_nodes_usage_shows_on_the_nodes_page_while_it_is_connected() {
         .wait_for_node(&identity.node_id, |n| n["online"] == false)
         .await;
     assert!(node["usage"].is_null());
+}
+
+// ---- Devices ----
+
+#[tokio::test]
+async fn a_node_that_lists_no_devices_is_one_nvidia_gpu() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, _) = portal_with_node(&runtime).await;
+    let (status, nodes) = p.admin("GET", "/api/nodes", None).await;
+    assert_eq!(status, 200);
+    assert!(nodes[0]["inventory"].get("devices").is_none());
+
+    let (status, placements) = p
+        .admin("GET", "/api/placements?template=chrome", None)
+        .await;
+    assert_eq!(status, 200, "{placements}");
+    let options = placements["options"].as_array().unwrap();
+    assert_eq!(options.len(), 1, "{placements}");
+    assert_eq!(options[0]["device"], "nvidia:0");
+    assert_eq!(options[0]["kind"], "nvidia");
+    assert_eq!(options[0]["label"], "RTX 4090");
+    assert_eq!(options[0]["nodeName"], "gpu-box");
+    assert_eq!(placements["auto"]["device"], "nvidia:0");
+
+    // It launches as it always did, now saying what it runs on.
+    let (status, _, spec) = p.launch(&runtime, "chrome").await;
+    assert_eq!(status, 200);
+    let device = spec.unwrap().device.expect("the device is said");
+    assert_eq!(
+        (device.id.as_str(), device.kind),
+        ("nvidia:0", DeviceKind::Nvidia)
+    );
+    assert_eq!(device.render_node.as_deref(), Some("/dev/dri/renderD128"));
+}
+
+#[tokio::test]
+async fn placements_offer_every_device_and_launches_take_the_choice() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, _) = portal_with_inventory(&runtime, device_inventory).await;
+
+    let (_, nodes) = p.admin("GET", "/api/nodes", None).await;
+    assert_eq!(
+        nodes[0]["inventory"]["devices"][1]["id"],
+        "vaapi:renderD129"
+    );
+
+    let (status, chrome) = p
+        .admin("GET", "/api/placements?template=chrome", None)
+        .await;
+    assert_eq!(status, 200, "{chrome}");
+    let kinds: Vec<&str> = chrome["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["kind"].as_str().unwrap())
+        .collect();
+    // VA-API is listed but not launchable until the streamer encodes on it.
+    assert_eq!(kinds, ["nvidia", "cpu", "vaapi"]);
+    assert!(
+        chrome["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["allowed"] == (o["kind"] != "vaapi"))
+    );
+    assert_eq!(chrome["auto"]["device"], "nvidia:0");
+    let node = chrome["auto"]["node"].as_str().unwrap().to_string();
+
+    // Steam can't use the CPU: the option is there, with why.
+    let (_, steam) = p.admin("GET", "/api/placements?template=steam", None).await;
+    let cpu = steam["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["kind"] == "cpu")
+        .unwrap();
+    assert_eq!(cpu["allowed"], false);
+    assert_eq!(cpu["reason"], "it needs a GPU");
+    assert_eq!(steam["options"][2]["kind"], "cpu", "disallowed last");
+
+    // Every template at once.
+    let (status, all) = p.admin("GET", "/api/placements", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(all["templates"]["chrome"], chrome);
+    assert_eq!(all["templates"]["steam"], steam);
+    let (status, _) = p.admin("GET", "/api/placements?template=nope", None).await;
+    assert_eq!(status, 404);
+
+    // Refused, with the reason.
+    let before = runtime.started.lock().unwrap().len();
+    let (status, body, _) = p
+        .launch_body(
+            &runtime,
+            json!({ "templateId": "steam", "node": node, "device": "cpu" }),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"], "placement_not_allowed");
+    assert!(
+        body["message"].as_str().unwrap().contains("it needs a GPU"),
+        "{body}"
+    );
+    for bad in [
+        json!({ "templateId": "chrome", "node": node, "device": "vaapi:renderD999" }),
+        json!({ "templateId": "chrome", "node": "nope" }),
+    ] {
+        let (status, body, _) = p.launch_body(&runtime, bad).await;
+        assert_eq!((status, &body["error"]), (400, &json!("unknown_placement")));
+    }
+    let (status, body, _) = p
+        .launch_body(&runtime, json!({ "templateId": "chrome", "device": "cpu" }))
+        .await;
+    assert_eq!((status, &body["error"]), (400, &json!("bad_placement")));
+    assert_eq!(runtime.started.lock().unwrap().len(), before);
+
+    // Without a choice: the auto one.
+    let (status, _, spec) = p.launch(&runtime, "chrome").await;
+    assert_eq!(status, 200);
+    assert_eq!(spec.unwrap().device.unwrap().id, "nvidia:0");
+
+    // Asking for VA-API is refused for now, with the reason.
+    let (status, env, _) = p
+        .launch_body(
+            &runtime,
+            json!({ "templateId": "xfce", "node": node, "device": "vaapi:renderD129" }),
+        )
+        .await;
+    assert_eq!(status, 400, "{env}");
+    assert_eq!(env["error"], "placement_not_allowed");
+    let (status, _, spec) = p
+        .launch_body(
+            &runtime,
+            json!({ "templateId": "kde", "node": node, "device": "cpu" }),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let device = spec.unwrap().device.unwrap();
+    assert_eq!((device.kind, device.render_node), (DeviceKind::Cpu, None));
+    // A node alone is its best device.
+    let (_, _, spec) = p
+        .launch_body(
+            &runtime,
+            json!({ "templateId": "test-pattern", "node": node }),
+        )
+        .await;
+    assert_eq!(spec.unwrap().device.unwrap().id, "nvidia:0");
 }

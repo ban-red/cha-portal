@@ -8,6 +8,7 @@
 //! keeping and deleting the data users keep for apps ([`storage`]).
 
 pub mod crashlog;
+pub mod devices;
 pub mod docker;
 pub mod doctor;
 pub mod environments;
@@ -220,6 +221,23 @@ impl Agent {
         self
     }
 
+    /// The inventory as it is now: the probe's, plus the VA-API devices the
+    /// runtime finds and the CPU's codecs (it asks the streamer image, so
+    /// this can take a moment).
+    async fn inventory_now(
+        &self,
+        collect: impl FnOnce() -> Inventory + Send + 'static,
+    ) -> Result<Inventory> {
+        let mut inventory = tokio::task::spawn_blocking(collect).await?;
+        if let Some(runtime) = &self.runtime {
+            inventory::add_vaapi(&mut inventory, runtime.vaapi_devices().await);
+            if let Some(codecs) = runtime.cpu_codecs().await {
+                inventory::set_cpu_codecs(&mut inventory, codecs);
+            }
+        }
+        Ok(inventory)
+    }
+
     /// Stays connected, reconnecting with backoff, until the portal says this
     /// node no longer exists; that's the only way it returns.
     pub async fn run(&self) -> Result<()> {
@@ -311,7 +329,7 @@ impl Agent {
             shared_dirs: shared_dirs.clone(),
             ..probe()
         };
-        let mut inventory = tokio::task::spawn_blocking(collect.clone()).await?;
+        let mut inventory = self.inventory_now(collect.clone()).await?;
         sink.send(encode(&ToPortal::Inventory {
             inventory: inventory.clone(),
         })?)
@@ -386,7 +404,7 @@ impl Agent {
                     }
                 }
                 _ = refresh.tick() => {
-                    let fresh = tokio::task::spawn_blocking(collect.clone()).await?;
+                    let fresh = self.inventory_now(collect.clone()).await?;
                     if fresh != inventory {
                         inventory = fresh;
                         sink.send(encode(&ToPortal::Inventory { inventory: inventory.clone() })?).await?;

@@ -267,7 +267,10 @@ impl PyroWorker {
         let index = match images.iter().position(|i| i.slot == slot) {
             Some(index) => index,
             None => {
-                let dmabuf = frame.slot.dmabuf();
+                let dmabuf = frame
+                    .slot
+                    .dmabuf()
+                    .context("PyroWave needs GPU output buffers")?;
                 let image = Image::import(
                     device,
                     &Dmabuf {

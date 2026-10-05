@@ -15,8 +15,8 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cha_wire::{
-    EnvironmentSpec, GamepadKind, Inventory, MediaClaims, NodeRequest, NodeResponse,
-    SecurityProfile, sign_media_token,
+    Device, DeviceChoice, DeviceKind, EnvironmentSpec, GamepadKind, Inventory, MediaClaims,
+    NodeRequest, NodeResponse, SecurityProfile, sign_media_token,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -28,6 +28,7 @@ use crate::auth::{ClientInfo, CurrentUser};
 use crate::controllers;
 use crate::db::{self, EnvironmentRow, NodeRow, Role, User};
 use crate::error::{ApiError, ApiResult};
+use crate::placement;
 use crate::storage::{self, SharedDefaults};
 
 /// The first start may pull images, and the first with a user's data under
@@ -90,6 +91,10 @@ pub struct Template {
     /// absent is 60 (`crate::apps`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<u32>,
+    /// It needs real 3D (Steam, games): it never runs on the CPU
+    /// (`crate::placement`).
+    #[serde(default)]
+    pub needs_gpu: bool,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +136,9 @@ struct EnvironmentView {
     warning: Option<String>,
     /// What its containers last logged when it died, for its owner and admins.
     log: Option<Vec<String>>,
+    /// The codecs its device encodes (from its node's inventory), so the page
+    /// asks only for those; `None` when the node doesn't say.
+    codecs: Option<Vec<String>>,
     created_at: i64,
     updated_at: i64,
     /// Where the streamer listens, while it runs (the portal brokers
@@ -148,10 +156,19 @@ struct StreamerView {
 
 fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>, viewer: &User) -> EnvironmentView {
     let node = row.node_id.as_ref().and_then(|id| nodes.get(id));
-    let host = node
+    let inventory = node
         .and_then(|n| n.inventory.as_deref())
-        .and_then(|j| serde_json::from_str::<Inventory>(j).ok())
-        .and_then(|inv| inv.addresses.into_iter().next());
+        .and_then(|j| serde_json::from_str::<Inventory>(j).ok());
+    // Its device; environments from before devices ran on the NVIDIA GPU.
+    let codecs = inventory.as_ref().and_then(|inv| {
+        let devices = inv.devices_or_derived();
+        let device = match row.device.as_deref() {
+            Some(id) => devices.into_iter().find(|d| d.id == id),
+            None => devices.into_iter().find(|d| d.kind == DeviceKind::Nvidia),
+        };
+        device.map(|d| d.codecs)
+    });
+    let host = inventory.and_then(|inv| inv.addresses.into_iter().next());
     let streamer = match (row.state.as_str(), row.http_port, row.webrtc_port) {
         ("running", Some(http_port), Some(webrtc_port)) => Some(StreamerView {
             host,
@@ -176,6 +193,7 @@ fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>, viewer: &User) ->
         detail: row.detail,
         warning: row.warning,
         log,
+        codecs,
         created_at: row.created_at,
         updated_at: row.updated_at,
         streamer,
@@ -224,6 +242,13 @@ async fn show(
 #[serde(rename_all = "camelCase")]
 struct LaunchRequest {
     template_id: String,
+    /// Where to run it: a node's id, and one of its devices' ids (from
+    /// `GET /api/placements`). Neither is the automatic choice; a node alone
+    /// is its best device.
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(default)]
+    device: Option<String>,
 }
 
 async fn launch(
@@ -263,10 +288,11 @@ async fn launch(
     }
     let gamepad = controllers::effective_for(&state, &user.id, template).await?;
     let fps = apps::fps_for(&state, &user.id, template).await?;
-    let node = place(&state).await?;
+    let (node, device) = place(&state, &user.id, template, &req).await?;
     let app_data = storage::spec_storage(&user.id, template, settings);
     // A node that predates app data would drop what it can't read, and the
-    // user's data would quietly not be kept (or shared).
+    // user's data would quietly not be kept (or shared). Placement leaves
+    // such nodes out; this is for one that changed since.
     if app_data.is_some() && !storage::node_has_storage(&node) {
         return Err(ApiError::conflict(
             "node_needs_update",
@@ -277,31 +303,51 @@ async fn launch(
         ));
     }
     let id = db::new_id();
-    db::insert_environment(&state.db, &id, &user.id, &template.id, &node.id, "starting").await?;
+    db::insert_environment(
+        &state.db,
+        &id,
+        &user.id,
+        &template.id,
+        &node.id,
+        Some(&device.id),
+        "starting",
+    )
+    .await?;
     db::audit(
         &state.db,
         Some(&user.id),
         "environment.launched",
         Some(&id),
-        Some(json!({ "template": template.id, "node": node.name })),
+        Some(json!({ "template": template.id, "node": node.name, "device": device.id })),
         client.ip.as_deref(),
     )
     .await?;
-    info!(%id, template = %template.id, node = %node.name, user = %user.username, "launching");
+    info!(%id, template = %template.id, node = %node.name, device = %device.id, user = %user.username, "launching");
     let spec = environment_spec(
         id.clone(),
         &user.id,
         template,
         state.media_key.public_b64(),
         app_data.map(Box::new),
-        gamepad,
-        fps,
+        Settings {
+            gamepad,
+            fps,
+            device,
+        },
     );
     tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
     let row = db::environment_by_id(&state.db, &id)
         .await?
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the new environment vanished")))?;
     Ok(Json(view(row, &nodes_by_id(&state).await?, &user)))
+}
+
+/// What a launch settles besides the app: the user's controller and frame rate
+/// and the device it runs on.
+struct Settings {
+    gamepad: GamepadKind,
+    fps: u32,
+    device: Device,
 }
 
 /// What a node runs for `owner`'s launch of `template`, with the app data
@@ -312,9 +358,13 @@ fn environment_spec(
     template: &Template,
     portal_key: String,
     storage: Option<Box<cha_wire::Storage>>,
-    gamepad: GamepadKind,
-    fps: u32,
+    settings: Settings,
 ) -> EnvironmentSpec {
+    let Settings {
+        gamepad,
+        fps,
+        device,
+    } = settings;
     EnvironmentSpec {
         id,
         image: template.image.clone(),
@@ -334,6 +384,13 @@ fn environment_spec(
         storage,
         // Left out for the default, so an older node reads what it always did.
         gamepad: (gamepad != GamepadKind::default()).then_some(gamepad),
+        // An older node ignores it and uses its NVIDIA GPU, which is all it
+        // offered.
+        device: Some(Box::new(DeviceChoice {
+            id: device.id,
+            kind: device.kind,
+            render_node: device.render_node,
+        })),
     }
 }
 
@@ -550,29 +607,74 @@ async fn connect(
     Ok(Json(response))
 }
 
-/// Placement v0: the first connected node with an NVIDIA GPU that can encode.
-async fn place(state: &AppState) -> ApiResult<NodeRow> {
-    for node in db::list_nodes(&state.db).await? {
-        if state.nodes.connected_since(&node.id).await.is_none() {
-            continue;
+/// Where a launch runs: the device the request names, or the best one
+/// ([`placement`]), and the node it is on.
+async fn place(
+    state: &AppState,
+    user_id: &str,
+    template: &Template,
+    req: &LaunchRequest,
+) -> ApiResult<(NodeRow, Device)> {
+    let nodes = placement::online_nodes(state).await?;
+    let placements = placement::for_template(state, user_id, template, &nodes).await?;
+    let wanted = match (&req.node, &req.device) {
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(ApiError::bad_request(
+                "bad_placement",
+                "a device is chosen with its node",
+            ));
         }
-        let capable = node
-            .inventory
-            .as_deref()
-            .and_then(|j| serde_json::from_str::<Inventory>(j).ok())
-            .is_some_and(|inv| {
-                inv.gpus
-                    .iter()
-                    .any(|g| g.vendor == "nvidia" && !g.encoders.is_empty())
-            });
-        if capable {
-            return Ok(node);
+        (Some(node), device) => Some((node, device.as_deref())),
+    };
+    let chosen = match wanted {
+        None => placement::best(&placements.options).ok_or_else(|| {
+            ApiError::conflict(
+                "no_node",
+                format!(
+                    "no online node can run {}: {}",
+                    template.name,
+                    placement::nothing_allowed(&placements.options)
+                ),
+            )
+        })?,
+        Some((node, device)) => {
+            // Best first, so a node alone is its best device.
+            let chosen = placements
+                .options
+                .iter()
+                .find(|o| o.node == *node && device.is_none_or(|d| o.device == d));
+            let chosen = chosen.ok_or_else(|| {
+                ApiError::bad_request(
+                    "unknown_placement",
+                    "that node or device isn't available (it may be offline)",
+                )
+            })?;
+            if !chosen.allowed {
+                return Err(ApiError::bad_request(
+                    "placement_not_allowed",
+                    format!(
+                        "{} on {} can't run {}: {}",
+                        chosen.label,
+                        chosen.node_name,
+                        template.name,
+                        chosen.reason.as_deref().unwrap_or("not allowed")
+                    ),
+                ));
+            }
+            chosen
         }
-    }
-    Err(ApiError::conflict(
-        "no_node",
-        "no online node can run it: environments need a node with an NVIDIA GPU that has a video encoder",
-    ))
+    };
+    let view = nodes
+        .iter()
+        .find(|n| n.id == chosen.node)
+        .and_then(|n| n.devices.iter().find(|d| d.id == chosen.device))
+        .cloned()
+        .ok_or_else(|| ApiError::conflict("no_node", "the node changed; try again"))?;
+    let node = db::node_by_id(&state.db, &chosen.node)
+        .await?
+        .ok_or_else(|| ApiError::conflict("no_node", "the node was removed"))?;
+    Ok((node, view))
 }
 
 // ---- Talking to nodes ----
@@ -719,6 +821,8 @@ fn bounded_log(log: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use cha_wire::DeviceKind;
+
     use super::*;
 
     #[test]
@@ -740,6 +844,14 @@ mod tests {
         assert_eq!(chrome.security, SecurityProfile::Browser);
         assert!(chrome.shm_mb >= 512);
         assert!(template("steam").unwrap().persistent);
+        // Games need a GPU; browsers and desktops make do without.
+        assert!(template("steam").unwrap().needs_gpu);
+        assert!(
+            catalog()
+                .iter()
+                .filter(|t| t.id != "steam")
+                .all(|t| !t.needs_gpu)
+        );
     }
 
     #[test]
@@ -765,8 +877,11 @@ mod tests {
             steam,
             "k".into(),
             storage::spec_storage(owner, steam, settings).map(Box::new),
-            GamepadKind::Xbox360,
-            60,
+            Settings {
+                gamepad: GamepadKind::Xbox360,
+                fps: 60,
+                device: test_device(DeviceKind::Nvidia),
+            },
         );
         assert_eq!(spec.home, None);
         assert_eq!(spec.fps, 60);
@@ -789,14 +904,33 @@ mod tests {
             chrome,
             "k".into(),
             None,
-            GamepadKind::Dualsense,
-            120,
+            Settings {
+                gamepad: GamepadKind::Dualsense,
+                fps: 120,
+                device: test_device(DeviceKind::Vaapi),
+            },
         );
+        let device = plain.device.as_ref().expect("a device is always said");
+        assert_eq!(device.kind, DeviceKind::Vaapi);
+        assert_eq!(device.render_node.as_deref(), Some("/dev/dri/renderD129"));
+        assert_eq!(spec.device.as_ref().unwrap().render_node, None);
         assert_eq!(plain.gamepad, Some(GamepadKind::Dualsense));
         assert_eq!(plain.fps, 120);
         assert_eq!(spec.gamepad, None);
         assert_eq!(plain.storage, None);
         assert_eq!(plain.home, None);
+    }
+
+    fn test_device(kind: DeviceKind) -> Device {
+        Device {
+            id: format!("{}:0", kind.as_str()),
+            kind,
+            name: "d".into(),
+            render_node: (kind == DeviceKind::Vaapi).then(|| "/dev/dri/renderD129".into()),
+            vendor: None,
+            codecs: vec!["h264".into()],
+            cores: None,
+        }
     }
 
     #[test]

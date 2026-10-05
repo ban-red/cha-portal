@@ -1,9 +1,13 @@
 //! Environments on this node (plan §4.2). Each one is:
-//! - a **streamer** container (`cha-streamer`): our compositor, NVENC and
-//!   WebRTC, on the host network so its WebRTC port is the node's;
+//! - a **streamer** container (`cha-streamer`): our compositor, NVENC (or
+//!   VA-API, or x264 in software) and WebRTC, on the host network so its WebRTC
+//!   port is the node's;
 //! - an **app** container from the template's image: uid 1000 plus the render
 //!   node's group, no capabilities, no privilege gain, Docker's seccomp profile
 //!   (or the `browser` one, which lets browser sandboxes create namespaces);
+//! - the **device** it runs on (`docs/devices.md`, [`EnvironmentSpec::device`]):
+//!   `nvidia` (the default) gives both containers the GPU through CDI; `vaapi`
+//!   gives both one render node and its group instead; `cpu` gives them no GPU.
 //! - a volume both mount at `/run/cha`, holding the Wayland and sound
 //!   sockets;
 //! - with gamepads (`/dev/uinput` on the host, and `/dev/uhid` for the kinds
@@ -51,8 +55,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use cha_wire::{
-    EnvironmentSpec, PER_USER_DIR, SHARED_MOUNT_ROOT, SecurityProfile, StreamerEndpoint,
-    home_volume_name, is_home_volume_name, valid_template_id, valid_user_id,
+    DeviceKind, EnvironmentSpec, PER_USER_DIR, SHARED_MOUNT_ROOT, SecurityProfile,
+    StreamerEndpoint, home_volume_name, is_home_volume_name, valid_template_id, valid_user_id,
 };
 use futures_util::future::BoxFuture;
 use http_body_util::{BodyExt, Full};
@@ -63,6 +67,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::crashlog::{self, Tail};
+use crate::devices::DeviceProbes;
 use crate::docker::{ContainerEvent, ContainerMount, Docker, encode};
 use crate::storage::{DataRoot, Seed, plan_seed};
 
@@ -168,6 +173,16 @@ pub trait Runtime: Send + Sync + 'static {
     fn warnings_now(&self) -> Vec<Warning> {
         Vec::new()
     }
+    /// VA-API devices on this machine: Intel and AMD render nodes the
+    /// streamer image can encode with. Empty from a runtime that can't ask.
+    fn vaapi_devices(&self) -> BoxFuture<'_, Vec<cha_wire::Device>> {
+        Box::pin(async { Vec::new() })
+    }
+    /// The codecs the CPU device makes, as the streamer image says; `None`
+    /// when a runtime can't ask (the inventory keeps H.264).
+    fn cpu_codecs(&self) -> BoxFuture<'_, Option<Vec<String>>> {
+        Box::pin(async { None })
+    }
     /// Where this runtime keeps app data; `None` if it keeps none.
     fn data_root(&self) -> Option<String> {
         None
@@ -223,6 +238,9 @@ pub struct DockerRuntime {
     config: DockerConfig,
     /// The render node's group, so the app's user can open it.
     render_gid: Option<u32>,
+    /// What the streamer image said about each Intel or AMD render node, and
+    /// about the CPU.
+    probes: DeviceProbes,
     data: DataRoot,
     state: Mutex<State>,
     exits: broadcast::Sender<Exit>,
@@ -378,6 +396,7 @@ impl DockerRuntime {
             docker,
             config,
             render_gid,
+            probes: DeviceProbes::default(),
             data,
             state: Mutex::default(),
             exits,
@@ -606,6 +625,7 @@ impl DockerRuntime {
 
     async fn start_environment(&self, mut spec: EnvironmentSpec) -> Result<StreamerEndpoint> {
         check_storage(&spec)?;
+        check_device(&spec)?;
         if let Some(port) = self
             .state
             .lock()
@@ -1129,8 +1149,42 @@ impl DockerRuntime {
         self.config.uinput.is_some() || self.config.uhid.is_some()
     }
 
-    fn gpu(&self) -> Value {
-        json!([{ "Driver": "cdi", "DeviceIDs": [self.config.gpu_device] }])
+    /// What GPU access `spec`'s containers get through Docker's device
+    /// requests: the CDI device for `nvidia`, nothing for the others (`vaapi`
+    /// gets a device node, [`Self::gpu_devices`]).
+    fn gpu(&self, spec: &EnvironmentSpec) -> Value {
+        match device_kind(spec) {
+            DeviceKind::Nvidia => {
+                json!([{ "Driver": "cdi", "DeviceIDs": [self.config.gpu_device] }])
+            }
+            DeviceKind::Vaapi | DeviceKind::Cpu => json!([]),
+        }
+    }
+
+    /// The render node a `vaapi` environment's containers get, as Docker's
+    /// `Devices` take it.
+    fn gpu_devices(&self, spec: &EnvironmentSpec) -> Vec<Value> {
+        vaapi_node(spec)
+            .map(|node| {
+                json!({
+                    "PathOnHost": node,
+                    "PathInContainer": node,
+                    "CgroupPermissions": "rw",
+                })
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// The group that lets the app open its GPU's render node: the configured
+    /// one's for `nvidia` (CDI passes the node through with the host's
+    /// ownership), the chosen node's for `vaapi`, none for `cpu`.
+    fn app_render_gid(&self, spec: &EnvironmentSpec) -> Option<u32> {
+        match device_kind(spec) {
+            DeviceKind::Nvidia => self.render_gid,
+            DeviceKind::Vaapi => vaapi_node(spec).and_then(render_gid),
+            DeviceKind::Cpu => None,
+        }
     }
 
     /// The volumes, as the streamer or the app (`app`) mounts them.
@@ -1157,8 +1211,6 @@ impl DockerRuntime {
 
     fn streamer_config(&self, spec: &EnvironmentSpec, port: u16) -> Value {
         let mut cmd: Vec<String> = [
-            "--render-node",
-            &self.config.render_node,
             "--width",
             &spec.width.to_string(),
             "--height",
@@ -1187,7 +1239,24 @@ impl DockerRuntime {
         if let Some(public) = &self.config.public_address {
             cmd.extend(["--public-address".to_string(), public.clone()]);
         }
-        let mut devices = Vec::new();
+        // `nvidia` is what a streamer without `--device` does, so an older
+        // image still starts those.
+        match device_kind(spec) {
+            DeviceKind::Nvidia => {
+                cmd.extend(["--render-node", &self.config.render_node].map(String::from));
+            }
+            DeviceKind::Vaapi => cmd.extend(
+                [
+                    "--device",
+                    "vaapi",
+                    "--render-node",
+                    vaapi_node(spec).unwrap_or_default(),
+                ]
+                .map(String::from),
+            ),
+            DeviceKind::Cpu => cmd.extend(["--device", "cpu"].map(String::from)),
+        }
+        let mut devices = self.gpu_devices(spec);
         if self.has_pads() {
             cmd.extend(["--input-dir", INPUT_DIR].map(String::from));
         }
@@ -1220,7 +1289,7 @@ impl DockerRuntime {
             "HostConfig": {
                 "NetworkMode": "host",
                 "Mounts": self.mounts(&spec.id, false),
-                "DeviceRequests": self.gpu(),
+                "DeviceRequests": self.gpu(spec),
                 "Devices": devices,
                 "RestartPolicy": { "Name": "no" },
                 "Init": true,
@@ -1242,13 +1311,23 @@ impl DockerRuntime {
         if spec.security == SecurityProfile::Steam {
             security.push(format!("apparmor={SANDBOX_APPARMOR}"));
         }
-        let groups: Vec<String> = self.render_gid.iter().map(|g| g.to_string()).collect();
+        let groups: Vec<String> = self
+            .app_render_gid(spec)
+            .iter()
+            .map(|g| g.to_string())
+            .collect();
         let mut mounts = self.mounts(&spec.id, true);
         let list = mounts.as_array_mut().expect("mounts are a list");
         list.extend(self.storage_mounts(spec));
         list.extend(hidraw.iter().map(|node| hidraw_mount(&spec.id, node)));
         // Proton copies nvngx.dll from here into its prefixes; CDI doesn't bring it.
-        if let Some(dir) = &self.config.nvidia_wine_dir {
+        // Only NVIDIA's driver has it.
+        if let Some(dir) = self
+            .config
+            .nvidia_wine_dir
+            .as_ref()
+            .filter(|_| device_kind(spec) == DeviceKind::Nvidia)
+        {
             let dir = dir.to_string_lossy();
             list.push(json!({
                 "Type": "bind",
@@ -1285,7 +1364,7 @@ impl DockerRuntime {
             let targets: Vec<&str> = overlays.iter().map(|o| o.target.as_str()).collect();
             env.push(format!("CHA_PER_USER_DIRS={}", targets.join(":")));
         }
-        json!({
+        let mut config = json!({
             "Image": spec.image,
             "User": format!("{APP_UID}:{APP_UID}"),
             "Env": env,
@@ -1295,7 +1374,7 @@ impl DockerRuntime {
                 "Ulimits": ulimits,
                 // Input devices: the gamepads' nodes, the only ones it has.
                 "DeviceCgroupRules": self.device_cgroup_rules(hidraw),
-                "DeviceRequests": self.gpu(),
+                "DeviceRequests": self.gpu(spec),
                 "GroupAdd": groups,
                 "CapDrop": ["ALL"],
                 "SecurityOpt": security,
@@ -1303,7 +1382,14 @@ impl DockerRuntime {
                 "RestartPolicy": { "Name": "no" },
                 "Init": true,
             },
-        })
+        });
+        // Only a render node; the app's input devices come through the cgroup
+        // rules and the volumes.
+        let devices = self.gpu_devices(spec);
+        if !devices.is_empty() {
+            config["HostConfig"]["Devices"] = json!(devices);
+        }
+        config
     }
 
     /// What the app's devices may be opened: input devices, and exactly the
@@ -1402,6 +1488,22 @@ impl Runtime for DockerRuntime {
 
     fn running(&self) -> BoxFuture<'_, Result<Vec<String>>> {
         Box::pin(self.running_ids())
+    }
+
+    fn vaapi_devices(&self) -> BoxFuture<'_, Vec<cha_wire::Device>> {
+        Box::pin(async {
+            self.probes
+                .devices(&self.docker, &self.config.streamer_image)
+                .await
+        })
+    }
+
+    fn cpu_codecs(&self) -> BoxFuture<'_, Option<Vec<String>>> {
+        Box::pin(async {
+            self.probes
+                .cpu_codecs(&self.docker, &self.config.streamer_image)
+                .await
+        })
     }
 
     fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Value>> {
@@ -1644,6 +1746,35 @@ pub(crate) fn nvidia_present() -> bool {
         .any(|g| g.vendor == "nvidia")
 }
 
+/// What `spec` runs on; `nvidia` when it says nothing, as before devices.
+fn device_kind(spec: &EnvironmentSpec) -> DeviceKind {
+    spec.device.as_ref().map_or(DeviceKind::Nvidia, |d| d.kind)
+}
+
+/// The render node a `vaapi` spec names, if it is a usable one.
+fn vaapi_node(spec: &EnvironmentSpec) -> Option<&str> {
+    spec.device
+        .as_ref()
+        .filter(|d| d.kind == DeviceKind::Vaapi)
+        .and_then(|d| d.render_node.as_deref())
+        .filter(|n| valid_render_node(n))
+}
+
+/// Whether `path` is a DRM render node (`/dev/dri/renderD128`). Docker is
+/// handed it as a device to give the app, so nothing else will do.
+pub(crate) fn valid_render_node(path: &str) -> bool {
+    path.strip_prefix("/dev/dri/renderD")
+        .is_some_and(|n| (1..=4).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Refuses a `vaapi` spec without a render node of the host's DRM kind.
+fn check_device(spec: &EnvironmentSpec) -> Result<()> {
+    if device_kind(spec) == DeviceKind::Vaapi && vaapi_node(spec).is_none() {
+        bail!("a vaapi environment needs a render node like /dev/dri/renderD128");
+    }
+    Ok(())
+}
+
 /// The render node's group id, from the device node (CDI passes it through
 /// with the host's ownership).
 fn render_gid(render_node: &str) -> Option<u32> {
@@ -1810,6 +1941,7 @@ mod tests {
                 log_dir: None,
             },
             render_gid: Some(992),
+            probes: DeviceProbes::default(),
             data: DataRoot::new(root, owner.0, owner.1).unwrap(),
             state: Mutex::default(),
             exits,
@@ -1833,6 +1965,7 @@ mod tests {
             template: "chrome".into(),
             storage: None,
             gamepad: None,
+            device: None,
         }
     }
 
@@ -1931,6 +2064,146 @@ mod tests {
             "nvidia.com/gpu=all"
         );
         assert_eq!(s["Labels"]["sh.cha.http-port"], "47002");
+    }
+
+    fn device_spec(kind: DeviceKind, render_node: Option<&str>) -> EnvironmentSpec {
+        EnvironmentSpec {
+            device: Some(Box::new(cha_wire::DeviceChoice {
+                id: kind.as_str().into(),
+                kind,
+                render_node: render_node.map(String::from),
+            })),
+            ..steam_spec()
+        }
+    }
+
+    fn cmd_of(config: &Value) -> Vec<&str> {
+        config["Cmd"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect()
+    }
+
+    fn mounts_wine_dir(app: &Value) -> bool {
+        app["HostConfig"]["Mounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["Target"] == "/usr/lib/nvidia/wine")
+    }
+
+    #[test]
+    fn nvidia_is_the_default_device_and_goes_through_cdi() {
+        let mut rt = runtime();
+        rt.config.nvidia_wine_dir = Some("/usr/lib/nvidia/wine".into());
+        for spec in [
+            steam_spec(),
+            device_spec(DeviceKind::Nvidia, Some("/dev/dri/renderD130")),
+        ] {
+            let s = rt.streamer_config(&spec, 47000);
+            let cmd = cmd_of(&s);
+            // What a streamer from before devices is started with.
+            assert!(!cmd.contains(&"--device"));
+            let at = cmd.iter().position(|a| *a == "--render-node").unwrap();
+            assert_eq!(cmd[at + 1], "/dev/dri/renderD128");
+            assert_eq!(
+                s["HostConfig"]["DeviceRequests"][0]["DeviceIDs"][0],
+                "nvidia.com/gpu=all"
+            );
+            let app = rt.app_config(&spec, 47000, &[]);
+            assert_eq!(app["HostConfig"]["DeviceRequests"][0]["Driver"], "cdi");
+            assert_eq!(app["HostConfig"]["GroupAdd"], json!(["992"]));
+            assert!(app["HostConfig"].get("Devices").is_none());
+            assert!(mounts_wine_dir(&app));
+        }
+    }
+
+    #[test]
+    fn vaapi_gives_the_streamer_and_the_app_one_render_node() {
+        let mut rt = runtime();
+        rt.config.nvidia_wine_dir = Some("/usr/lib/nvidia/wine".into());
+        let spec = device_spec(DeviceKind::Vaapi, Some("/dev/dri/renderD129"));
+        let s = rt.streamer_config(&spec, 47000);
+        let cmd = cmd_of(&s);
+        let at = cmd.iter().position(|a| *a == "--device").unwrap();
+        assert_eq!(
+            &cmd[at..at + 4],
+            ["--device", "vaapi", "--render-node", "/dev/dri/renderD129"]
+        );
+        assert_eq!(cmd.iter().filter(|a| **a == "--render-node").count(), 1);
+        assert_eq!(s["HostConfig"]["DeviceRequests"], json!([]));
+        let node = |c: &Value| {
+            c["HostConfig"]["Devices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["PathOnHost"] == "/dev/dri/renderD129")
+                .cloned()
+        };
+        let streamer_node = node(&s).expect("the streamer gets the render node");
+        assert_eq!(streamer_node["PathInContainer"], "/dev/dri/renderD129");
+        let app = rt.app_config(&spec, 47000, &[]);
+        assert_eq!(app["HostConfig"]["DeviceRequests"], json!([]));
+        assert_eq!(
+            app["HostConfig"]["Devices"],
+            json!([{
+                "PathOnHost": "/dev/dri/renderD129",
+                "PathInContainer": "/dev/dri/renderD129",
+                "CgroupPermissions": "rw",
+            }])
+        );
+        // Not the NVIDIA card's group, and nothing of NVIDIA's.
+        assert_ne!(app["HostConfig"]["GroupAdd"], json!(["992"]));
+        assert!(!mounts_wine_dir(&app));
+    }
+
+    #[test]
+    fn cpu_gives_no_gpu_at_all() {
+        let mut rt = runtime();
+        rt.config.nvidia_wine_dir = Some("/usr/lib/nvidia/wine".into());
+        let spec = device_spec(DeviceKind::Cpu, None);
+        let s = rt.streamer_config(&spec, 47000);
+        let cmd = cmd_of(&s);
+        assert!(cmd.windows(2).any(|w| w == ["--device", "cpu"]));
+        assert!(!cmd.contains(&"--render-node"));
+        assert_eq!(s["HostConfig"]["DeviceRequests"], json!([]));
+        assert!(
+            !s["HostConfig"]["Devices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["PathOnHost"]
+                    .as_str()
+                    .is_some_and(|p| p.contains("/dev/dri")))
+        );
+        let app = rt.app_config(&spec, 47000, &[]);
+        assert_eq!(app["HostConfig"]["DeviceRequests"], json!([]));
+        assert!(app["HostConfig"].get("Devices").is_none());
+        assert_eq!(app["HostConfig"]["GroupAdd"], json!([]));
+        assert!(!mounts_wine_dir(&app));
+    }
+
+    #[test]
+    fn a_vaapi_environment_needs_a_render_node_of_the_hosts() {
+        assert!(check_device(&steam_spec()).is_ok());
+        assert!(check_device(&device_spec(DeviceKind::Cpu, None)).is_ok());
+        assert!(check_device(&device_spec(DeviceKind::Vaapi, Some("/dev/dri/renderD129"))).is_ok());
+        for bad in [
+            None,
+            Some("/dev/sda"),
+            Some("/dev/dri/card0"),
+            Some("/dev/dri/renderD"),
+            Some("/dev/dri/renderD1/../x"),
+        ] {
+            assert!(
+                check_device(&device_spec(DeviceKind::Vaapi, bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(valid_render_node("/dev/dri/renderD128"));
+        assert!(!valid_render_node("/dev/dri/renderD12a"));
     }
 
     #[test]

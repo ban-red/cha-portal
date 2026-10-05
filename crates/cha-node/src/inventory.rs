@@ -6,10 +6,10 @@ use std::fs;
 use std::net::{IpAddr, Ipv6Addr};
 use std::process::Command;
 
-use cha_wire::{Gpu, Inventory};
+use cha_wire::{Device, DeviceKind, Gpu, Inventory};
 
 pub fn collect() -> Inventory {
-    Inventory {
+    let mut inventory = Inventory {
         hostname: hostname(),
         os: os_name(),
         arch: std::env::consts::ARCH.into(),
@@ -20,7 +20,74 @@ pub fn collect() -> Inventory {
         // Only the agent knows it: it adds this when it reports.
         data_root: None,
         shared_dirs: Default::default(),
+        devices: None,
+    };
+    // NVIDIA and the CPU; the agent adds the VA-API devices it probes.
+    let mut devices = inventory.devices_or_derived();
+    devices.push(cpu_device(inventory.cpus));
+    inventory.devices = Some(devices);
+    inventory
+}
+
+/// Puts `vaapi` devices into an inventory's device list, ahead of the CPU.
+pub fn add_vaapi(inventory: &mut Inventory, vaapi: Vec<Device>) {
+    let Some(devices) = &mut inventory.devices else {
+        return;
+    };
+    let at = devices
+        .iter()
+        .position(|d| d.kind == DeviceKind::Cpu)
+        .unwrap_or(devices.len());
+    devices.splice(at..at, vaapi);
+}
+
+/// Sets the codecs of the CPU device, from what the streamer image says it
+/// makes (`devices::DeviceProbes::cpu_codecs`).
+pub fn set_cpu_codecs(inventory: &mut Inventory, codecs: Vec<String>) {
+    let cpu = inventory
+        .devices
+        .iter_mut()
+        .flatten()
+        .find(|d| d.kind == DeviceKind::Cpu);
+    if let Some(cpu) = cpu {
+        cpu.codecs = codecs;
     }
+}
+
+/// The machine's processor as a device: x264 in software, so H.264 until the
+/// streamer image says more (SVT-AV1 adds AV1).
+fn cpu_device(cores: u32) -> Device {
+    let name = fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|text| cpu_model(&text))
+        .unwrap_or_else(|| "CPU".into());
+    Device {
+        id: "cpu".into(),
+        kind: DeviceKind::Cpu,
+        name,
+        render_node: None,
+        vendor: None,
+        codecs: vec!["h264".into()],
+        cores: Some(cores),
+    }
+}
+
+fn cpu_model(cpuinfo: &str) -> Option<String> {
+    cpuinfo
+        .lines()
+        .find_map(|l| l.strip_prefix("model name"))
+        .and_then(|l| l.split_once(':'))
+        .map(|(_, name)| name.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|name| !name.is_empty())
+}
+
+/// Render nodes that might do VA-API: every one whose driver isn't NVIDIA's.
+pub fn vaapi_candidates() -> Vec<String> {
+    render_nodes()
+        .into_iter()
+        .filter(|n| n.vendor_id != 0x10de && n.driver.as_deref() != Some("nvidia"))
+        .map(|n| n.path)
+        .collect()
 }
 
 fn command(program: &str, args: &[&str]) -> Option<String> {
@@ -96,6 +163,8 @@ struct RenderNode {
     device_id: u16,
     /// e.g. `0000:01:00.0`.
     pci_slot: Option<String>,
+    /// The kernel driver bound to it (`i915`, `amdgpu`, `nvidia`).
+    driver: Option<String>,
 }
 
 fn render_nodes() -> Vec<RenderNode> {
@@ -126,6 +195,9 @@ fn render_nodes() -> Vec<RenderNode> {
                 vendor_id: hex("vendor")?,
                 device_id: hex("device").unwrap_or(0),
                 pci_slot,
+                driver: fs::read_link(device.join("driver"))
+                    .ok()
+                    .and_then(|d| d.file_name()?.to_str().map(str::to_string)),
             })
         })
         .collect();
@@ -295,6 +367,55 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_cpu_model() {
+        let text = "processor\t: 0\nmodel name\t: Intel(R)  Core(TM) i9\nflags\t: x\n";
+        assert_eq!(cpu_model(text).as_deref(), Some("Intel(R) Core(TM) i9"));
+        assert_eq!(cpu_model("processor : 0\n"), None);
+    }
+
+    #[test]
+    fn vaapi_devices_go_before_the_cpu() {
+        let mut inv = collect();
+        let vaapi = Device {
+            id: "vaapi:renderD129".into(),
+            kind: DeviceKind::Vaapi,
+            name: "Arc".into(),
+            render_node: Some("/dev/dri/renderD129".into()),
+            vendor: Some("intel".into()),
+            codecs: vec!["h264".into()],
+            cores: None,
+        };
+        add_vaapi(&mut inv, vec![vaapi]);
+        let devices = inv.devices.unwrap();
+        let kinds: Vec<_> = devices.iter().map(|d| d.kind).collect();
+        assert_eq!(kinds.last(), Some(&DeviceKind::Cpu));
+        assert!(kinds.contains(&DeviceKind::Vaapi));
+    }
+
+    #[test]
+    fn the_cpu_offers_what_the_image_says() {
+        let mut inv = collect();
+        let codecs = |inv: &Inventory| inv.devices.as_ref().unwrap().last().unwrap().codecs.clone();
+        // Until it is asked: H.264.
+        assert_eq!(codecs(&inv), ["h264"]);
+        set_cpu_codecs(&mut inv, vec!["h264".into(), "av1".into()]);
+        assert_eq!(codecs(&inv), ["h264", "av1"]);
+        // Only the CPU's.
+        let others: Vec<_> = inv
+            .devices
+            .iter()
+            .flatten()
+            .filter(|d| d.kind != DeviceKind::Cpu)
+            .collect();
+        assert!(others.iter().all(|d| d.codecs != ["h264", "av1"]));
+        // No devices (an old inventory): nothing to set, nothing broken.
+        let mut bare = collect();
+        bare.devices = None;
+        set_cpu_codecs(&mut bare, vec!["av1".into()]);
+        assert!(bare.devices.is_none());
+    }
+
+    #[test]
     fn spots_rotating_ipv6_addresses() {
         let table = "\
 2001056a7ce6550041545b8b8c56d3f0 02 40 00 01    ens18
@@ -312,5 +433,8 @@ mod tests {
         let inv = collect();
         assert!(!inv.hostname.is_empty());
         assert!(inv.cpus >= 1);
+        let devices = inv.devices.expect("lists devices");
+        let cpu = devices.last().expect("the cpu is always one");
+        assert_eq!((cpu.kind, cpu.cores), (DeviceKind::Cpu, Some(inv.cpus)));
     }
 }

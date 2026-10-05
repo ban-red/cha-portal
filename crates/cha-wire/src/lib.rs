@@ -43,6 +43,12 @@
 //! The gamepad kind ([`EnvironmentSpec::gamepad`]) is one more optional field:
 //! a node that predates it ignores it and makes Xbox 360 pads, which is what
 //! a spec without it means, so an older portal's launches are unchanged.
+//!
+//! Devices (`docs/devices.md`) are two more optional fields:
+//! [`Inventory::devices`] and [`EnvironmentSpec::device`]. A node that predates
+//! them reports none, and [`Inventory::devices_or_derived`] reads its NVIDIA
+//! GPU as the one `nvidia` device it always ran on; a spec without a device
+//! means `nvidia`, which an older node does whatever the spec says.
 
 mod storage;
 
@@ -291,6 +297,57 @@ pub struct EnvironmentSpec {
     /// node that predates it makes Xbox 360 pads whatever this says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamepad: Option<GamepadKind>,
+    /// What it runs on; `None` is `nvidia`. A node that predates it always
+    /// uses the NVIDIA GPU. Boxed, like `storage`: the spec is inside every
+    /// start request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<Box<DeviceChoice>>,
+}
+
+/// What kind of device an environment runs on (`docs/devices.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceKind {
+    /// An NVIDIA GPU: NVENC, and the app gets it through CDI.
+    #[default]
+    Nvidia,
+    /// An Intel or AMD GPU: VA-API, and the app gets its render node.
+    Vaapi,
+    /// No GPU: software rendering and x264.
+    Cpu,
+}
+
+impl DeviceKind {
+    /// The name on the wire and as the streamer's `--device`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nvidia => "nvidia",
+            Self::Vaapi => "vaapi",
+            Self::Cpu => "cpu",
+        }
+    }
+
+    /// The kind named `s`, if it is one.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "nvidia" => Some(Self::Nvidia),
+            "vaapi" => Some(Self::Vaapi),
+            "cpu" => Some(Self::Cpu),
+            _ => None,
+        }
+    }
+}
+
+/// The device a launch picked, as the spec carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceChoice {
+    /// The inventory device's id (`nvidia:0`, `vaapi:renderD129`, `cpu`).
+    pub id: String,
+    pub kind: DeviceKind,
+    /// The render node a `vaapi` environment gets, e.g. `/dev/dri/renderD129`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_node: Option<String>,
 }
 
 /// A virtual controller an environment's streamer makes (`docs/controllers.md`).
@@ -433,6 +490,59 @@ pub struct Inventory {
     /// path on the node, and in the app's container too.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shared_dirs: BTreeMap<String, String>,
+    /// What environments can run on here. Absent from nodes that predate
+    /// devices: [`Self::devices_or_derived`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devices: Option<Vec<Device>>,
+}
+
+impl Inventory {
+    /// The devices this node offers: what it reported, or, for a node that
+    /// predates them, one `nvidia` device for its first NVIDIA GPU with
+    /// encoders (what it always ran on: CDI gives environments all of them
+    /// and the streamer composites on one) and none otherwise.
+    pub fn devices_or_derived(&self) -> Vec<Device> {
+        if let Some(devices) = &self.devices {
+            return devices.clone();
+        }
+        self.gpus
+            .iter()
+            .filter(|g| g.vendor == "nvidia")
+            .enumerate()
+            .filter(|(_, g)| !g.encoders.is_empty())
+            .take(1)
+            .map(|(i, g)| Device {
+                id: format!("nvidia:{i}"),
+                kind: DeviceKind::Nvidia,
+                name: g.name.clone(),
+                render_node: g.render_node.clone(),
+                vendor: Some("nvidia".into()),
+                codecs: g.encoders.clone(),
+                cores: None,
+            })
+            .collect()
+    }
+}
+
+/// Something an environment can run on (`docs/devices.md`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Device {
+    /// Stable on the node: `nvidia:<index>`, `vaapi:renderD<N>`, `cpu`.
+    pub id: String,
+    pub kind: DeviceKind,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_node: Option<String>,
+    /// `intel`, `amd` or `nvidia`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    /// What it encodes: `h264`, `hevc`, `av1`, …
+    #[serde(default)]
+    pub codecs: Vec<String>,
+    /// The core count, for `cpu`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cores: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -784,6 +894,7 @@ mod tests {
                 template: "chrome".into(),
                 storage: None,
                 gamepad: None,
+                device: None,
             },
         })
         .unwrap();
@@ -858,6 +969,7 @@ mod tests {
             template: String::new(),
             storage: None,
             gamepad,
+            device: None,
         };
         // Absent when unset, so an older node reads what it always did.
         let json = serde_json::to_value(spec(None)).unwrap();
@@ -921,6 +1033,7 @@ mod tests {
                 legacy_volume: Some(home_volume_name(user, "steam")),
             })),
             gamepad: None,
+            device: None,
         };
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(
@@ -1034,6 +1147,84 @@ mod tests {
         assert_eq!(json["dataRoot"], "/srv/cha-portal");
         assert_eq!(json["sharedDirs"]["steam"], "/mnt/games/steam");
         assert_eq!(serde_json::from_value::<Inventory>(json).unwrap(), with);
+    }
+
+    #[test]
+    fn devices_are_optional_and_an_older_nodes_gpu_is_one() {
+        let old = serde_json::json!({
+            "hostname": "h", "os": "o", "arch": "a", "cpus": 8, "memoryMb": 2,
+            "gpus": [
+                { "vendor": "intel", "name": "i", "memoryMb": null, "driver": null,
+                  "renderNode": "/dev/dri/renderD128", "encoders": [] },
+                { "vendor": "nvidia", "name": "RTX 4090", "memoryMb": 24564, "driver": "570",
+                  "renderNode": "/dev/dri/renderD129", "encoders": ["h264", "hevc", "av1"] },
+            ],
+            "addresses": [],
+        });
+        let inv: Inventory = serde_json::from_value(old).unwrap();
+        assert_eq!(inv.devices, None);
+        assert!(serde_json::to_value(&inv).unwrap().get("devices").is_none());
+        let derived = inv.devices_or_derived();
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0].id, "nvidia:0");
+        assert_eq!(derived[0].kind, DeviceKind::Nvidia);
+        assert_eq!(derived[0].codecs, ["h264", "hevc", "av1"]);
+        // A GPU without encoders is no device; reported devices win.
+        let none = Inventory {
+            gpus: vec![Gpu {
+                encoders: Vec::new(),
+                ..inv.gpus[1].clone()
+            }],
+            ..inv.clone()
+        };
+        assert!(none.devices_or_derived().is_empty());
+        let cpu = Device {
+            id: "cpu".into(),
+            kind: DeviceKind::Cpu,
+            name: "CPU".into(),
+            render_node: None,
+            vendor: None,
+            codecs: vec!["h264".into()],
+            cores: Some(8),
+        };
+        let reported = Inventory {
+            devices: Some(vec![cpu.clone()]),
+            ..inv
+        };
+        let json = serde_json::to_value(&reported).unwrap();
+        assert_eq!(json["devices"][0]["kind"], "cpu");
+        assert_eq!(json["devices"][0]["cores"], 8);
+        assert!(json["devices"][0].get("renderNode").is_none());
+        assert_eq!(reported.devices_or_derived(), [cpu]);
+    }
+
+    #[test]
+    fn a_specs_device_is_optional() {
+        let spec: EnvironmentSpec = serde_json::from_value(serde_json::json!({
+            "id": "e", "image": "i", "security": "standard", "shmMb": 1,
+            "width": 1, "height": 1, "fps": 1, "portalKey": "k",
+        }))
+        .unwrap();
+        assert_eq!(spec.device, None);
+        let with = EnvironmentSpec {
+            device: Some(Box::new(DeviceChoice {
+                id: "vaapi:renderD129".into(),
+                kind: DeviceKind::Vaapi,
+                render_node: Some("/dev/dri/renderD129".into()),
+            })),
+            ..spec
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(
+            json["device"],
+            serde_json::json!({
+                "id": "vaapi:renderD129", "kind": "vaapi", "renderNode": "/dev/dri/renderD129"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<EnvironmentSpec>(json).unwrap(),
+            with
+        );
     }
 
     #[test]

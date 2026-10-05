@@ -16,7 +16,7 @@
    ```
 
    It listens on `127.0.0.1:8080`. Serve it over HTTPS: browsers only give gamepads, keyboard lock and audio worklets to secure pages. On a tailnet, run `sudo tailscale serve --bg 8080` ([guide](../docs/guides/tailscale.md)). With public DNS, set `CHA_DOMAIN` and add `--profile tls` (Caddy). The first start logs a one-time setup token for the first admin.
-2. **The node**, on the GPU server (NVIDIA with the Container Toolkit's CDI spec). Build the images it runs:
+2. **The node**, on the GPU server (NVIDIA with the Container Toolkit's CDI spec; or an Intel or AMD GPU, or no GPU at all: *Devices*, below). Build the images it runs:
 
    ```bash
    docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
@@ -85,6 +85,20 @@ The same tails reach the portal: a failed environment says why in a sentence (th
 ### Live usage
 
 The Nodes page shows each online node's CPU, RAM and GPUs, refreshed every few seconds. The agent reads the host's `/proc` (which its container shares) and every NVIDIA GPU through NVML (`libnvidia-ml.so.1`, which the `nvidia.com/gpu=all` CDI device brings, like `nvidia-smi`); without NVML the GPU rows are left out. The portal keeps only the latest reading in memory, so it shows nothing for a node that is offline or has been quiet for 15 seconds. An agent sends it only to a portal that says it reads it, so either can be updated first.
+
+## Devices
+
+An environment runs on one **device** of a node (`docs/devices.md`), and the user picks it from the Launch menu on the app's card; Launch itself takes the best one the nodes offer, naming it under the button ("on gpu-node · RTX 4090"). The agent reports what it finds, at start and every five minutes:
+
+- **`nvidia`**: an NVIDIA GPU with NVENC, through CDI as before. Nothing to set up beyond the Container Toolkit's CDI spec.
+- **`vaapi`**: an Intel GPU (an iGPU's QuickSync, or Arc) or an AMD one, composited on its render node with Mesa and encoded through VA-API. Nothing to install on the host but the kernel driver (`i915`/`xe`, `amdgpu`) and `/dev/dri/renderD*`; the streamer image carries the user-space drivers. The agent finds every render node whose driver isn't NVIDIA's from `/sys/class/drm` (which its container sees as it is, so the compose file needs no `/dev/dri` mount) and asks the streamer image what each can encode, in a throwaway container with no network that gets only that node (`cha-streamer --probe-device vaapi:/dev/dri/renderD129`). A node that encodes nothing (a virtual GPU, a driver the image lacks) isn't offered, and a streamer image that predates the probe offers no VA-API at all: rebuild it. The environment's streamer and app get that render node and its group, and nothing of NVIDIA's.
+- **`cpu`**: always there. Mesa's software renderer composites and x264 encodes, H.264 only, with no GPU for the streamer or the app. It suits a desktop or a browser at modest sizes and frame rates, and costs the node's cores while it runs (the portal counts that against the node); it can't run what needs 3D, so apps marked `needsGpu` in the catalog (Steam) never run on it.
+
+`--doctor` lists them, one line each, and says why a render node isn't one. A node whose agent predates devices is read as one `nvidia` device, so an older agent keeps working with a newer portal (and the reverse: it ignores the device a launch names and uses its NVIDIA GPU).
+
+### Where a launch goes
+
+`GET /api/placements` (all apps, or `?template=<id>` for one) lists every device of every online node as an option, best first, with its score and a reason when it isn't allowed. A device scores by its kind (NVIDIA 100, VA-API 60, CPU 20), less for the node's live usage (the CPU's use, and for NVIDIA the GPU's utilisation and VRAM in use) and 10 for each environment already running on it. A GPU with under 2 GB of VRAM free stays choosable, with a warning, but is never picked automatically. Not allowed: the CPU for an app that needs a GPU, a device that offers no codec browsers play, and a node whose agent can't keep the app's data. `POST /api/environments` takes an optional `node` and `device` from that list (a node alone means its best device) and refuses a choice that isn't allowed with a 400 and the reason; without them it takes the best option, or answers 409 `no_node` saying what stood in each device's way.
 
 ## Portal settings
 

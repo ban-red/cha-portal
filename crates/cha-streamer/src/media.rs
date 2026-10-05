@@ -18,16 +18,17 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bytes::Bytes;
-use cha_nvenc::{Codec, CudaContext, Encoder, EncoderConfig};
+use cha_nvenc::Codec;
 use smithay::reexports::calloop::channel;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::codec::VideoCodec;
 use crate::compositor::{
-    CLIPBOARD_MAX_BYTES, ClipboardWatch, Command, CursorWatch, Handle, MAX_SIZE, PointerWatch,
-    Slot, fit_size,
+    CLIPBOARD_MAX_BYTES, ClipboardWatch, Command, CursorWatch, Handle, PointerWatch, Slot, fit_size,
 };
+use crate::device::Device;
+use crate::encoder::{Params, VideoEncoder};
 use crate::framerate;
 use crate::input::Input;
 use crate::pyro::{PyroSettings, PyroWorker};
@@ -292,7 +293,7 @@ pub struct EncodeSettings {
 pub struct Media {
     hub: Arc<FrameHub>,
     compositor: channel::Sender<Command>,
-    cuda: Arc<CudaContext>,
+    device: Arc<Device>,
     settings: EncodeSettings,
     /// The current frame rate: the compositor, every encoder and every
     /// session follow it.
@@ -315,7 +316,7 @@ impl Media {
     pub fn new(
         hub: Arc<FrameHub>,
         compositor: &Handle,
-        cuda: Arc<CudaContext>,
+        device: Arc<Device>,
         settings: EncodeSettings,
         codecs: Vec<VideoCodec>,
         pyrowave: Option<PyroSettings>,
@@ -325,7 +326,7 @@ impl Media {
         Self {
             hub,
             compositor: compositor.commands.clone(),
-            cuda,
+            device,
             settings,
             pyrowave: pyrowave.map(|p| p.following(Arc::clone(&fps))),
             fps,
@@ -507,7 +508,7 @@ impl Media {
             (VideoCodec::Hw(codec), _) => {
                 let worker = EncoderWorker {
                     codec,
-                    cuda: Arc::clone(&self.cuda),
+                    device: Arc::clone(&self.device),
                     fps: Arc::clone(&self.fps),
                     mailbox: Arc::clone(&mailbox),
                     subscribers: Arc::clone(&subscribers),
@@ -538,7 +539,7 @@ impl Media {
 
 struct EncoderWorker {
     codec: Codec,
-    cuda: Arc<CudaContext>,
+    device: Arc<Device>,
     fps: Arc<AtomicU32>,
     mailbox: Arc<Mailbox>,
     subscribers: Subscribers,
@@ -558,8 +559,6 @@ struct EncodeStats {
     rfi_keyframes: u64,
     /// Composited → the encoder picked the frame up.
     queue_us: Vec<u64>,
-    /// The CUDA view of the buffer.
-    surface_us: Vec<u64>,
     map_us: Vec<u64>,
     submit_us: Vec<u64>,
     wait_us: Vec<u64>,
@@ -634,7 +633,7 @@ fn percentile(values: &mut [u64], q: f64) -> Option<u64> {
 impl EncoderWorker {
     fn run(self) {
         // The encoder, and the output buffers' generation it registered.
-        let mut encoder: Option<(Encoder, u64)> = None;
+        let mut encoder: Option<(Box<dyn VideoEncoder>, u64)> = None;
         let mut last: Option<Frame> = None;
         let mut out = Vec::with_capacity(1 << 20);
         let mut stats = EncodeStats::default();
@@ -753,7 +752,7 @@ impl EncoderWorker {
 
     fn encode(
         &self,
-        encoder: &mut Option<(Encoder, u64)>,
+        encoder: &mut Option<(Box<dyn VideoEncoder>, u64)>,
         frame: &Frame,
         want: Want,
         target_bps: u32,
@@ -765,20 +764,13 @@ impl EncoderWorker {
             Some((encoder, generation)) => (encoder, generation),
             None => {
                 let started = Instant::now();
-                let created = Encoder::new(
-                    Arc::clone(&self.cuda),
-                    EncoderConfig {
-                        codec: self.codec,
-                        input: cha_nvenc::InputFormat::Argb,
-                        width: frame.width,
-                        height: frame.height,
-                        max_width: MAX_SIZE.0,
-                        max_height: MAX_SIZE.1,
-                        fps,
-                        bitrate_bps: target_bps,
-                    },
-                )
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let created = self.device.encoder(Params {
+                    codec: self.codec,
+                    width: frame.width,
+                    height: frame.height,
+                    fps,
+                    bitrate_bps: target_bps,
+                })?;
                 info!(
                     codec = self.codec.name(),
                     width = frame.width,
@@ -799,43 +791,26 @@ impl EncoderWorker {
         // Follow the frame rate (with the rate asked for: its VBV and timing
         // are per frame), and the subscribers' bitrate; small wobbles aren't
         // worth a change.
-        let current = encoder.bitrate();
-        if encoder.config().fps != fps {
-            encoder
-                .set_frame_rate(fps, target_bps)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let current = encoder.params().bitrate_bps;
+        if encoder.params().fps != fps {
+            encoder.set_frame_rate(fps, target_bps)?;
             stats.rate_changes += 1;
         } else if target_bps.abs_diff(current) > current / 32 {
-            encoder
-                .set_bitrate(target_bps)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            encoder.set_bitrate(target_bps)?;
             stats.rate_changes += 1;
         }
-        if (encoder.config().width, encoder.config().height) != (frame.width, frame.height) {
-            encoder
-                .resize(frame.width, frame.height)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let params = encoder.params();
+        if (params.width, params.height) != (frame.width, frame.height) {
+            encoder.resize(frame.width, frame.height)?;
             key = true;
         }
-        let surface_started = Instant::now();
-        let (surface, _, _) = frame
-            .slot
-            .image
-            .surface()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        stats
-            .surface_us
-            .push(surface_started.elapsed().as_micros() as u64);
         // Frames were lost: refer around them, or start over where that
         // can't be.
         let mut recovery = None;
         if let Some(from) = want.invalidate
             && !key
         {
-            if encoder
-                .invalidate_from(from)
-                .map_err(|e| anyhow::anyhow!("{e}"))?
-            {
+            if encoder.invalidate_from(from)? {
                 recovery = Some(from);
                 stats.recoveries += 1;
             } else {
@@ -843,9 +818,7 @@ impl EncoderWorker {
                 stats.rfi_keyframes += 1;
             }
         }
-        let key = encoder
-            .encode(surface, key, out)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let key = encoder.encode(frame, key, out)?;
         Ok((key, recovery.filter(|_| !key)))
     }
 
@@ -873,9 +846,8 @@ impl EncoderWorker {
             rate_changes = stats.rate_changes,
             recoveries = stats.recoveries,
             rfi_keyframes = stats.rfi_keyframes,
-            "encoder µs p50/p99: queue {} surface {} map {} submit {} wait {} total {}",
+            "encoder µs p50/p99: queue {} map {} submit {} wait {} total {}",
             p(&mut stats.queue_us),
-            p(&mut stats.surface_us),
             p(&mut stats.map_us),
             p(&mut stats.submit_us),
             p(&mut stats.wait_us),

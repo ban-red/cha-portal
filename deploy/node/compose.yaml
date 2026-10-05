@@ -52,6 +52,10 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
     # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi
     # and the render node (whose group the apps get).
+    # Intel and AMD GPUs need nothing here: the agent reads their names and
+    # drivers from /sys/class/drm, which every container sees, and probes each
+    # render node in a throwaway container of the streamer image. A node with no
+    # NVIDIA GPU can drop this `devices:` section.
     devices:
       - nvidia.com/gpu=all
     volumes:

@@ -11,7 +11,7 @@ use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use cha_nvenc::{Codec, CudaContext};
+use cha_nvenc::Codec;
 use clap::Parser;
 use serde_json::{Value, json};
 use str0m::change::{SdpAnswer, SdpOffer};
@@ -21,6 +21,7 @@ use tracing::{info, warn};
 use crate::audio::Audio;
 use crate::codec::VideoCodec;
 use crate::compositor::{self, fit_size};
+use crate::device::{self, Device, DeviceKind};
 use crate::gamepad::{GamepadKind, Gamepads};
 use crate::media::{EncodeSettings, FrameHub, Media};
 use crate::net;
@@ -34,9 +35,15 @@ use crate::x11_clipboard::X11Clipboard;
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "One environment's media engine: compositor -> NVENC -> WebRTC"
+    about = "One environment's media engine: compositor -> encoder -> WebRTC"
 )]
 struct Args {
+    /// What composites and encodes: `nvidia` (the GPU: NVENC, zero-copy),
+    /// `vaapi` (an Intel or AMD GPU; encoding isn't built yet) or `cpu`
+    /// (Mesa's llvmpipe, x264 and SVT-AV1: H.264 and AV1, for desktops at modest sizes).
+    #[arg(long, value_enum, default_value_t = DeviceKind::Nvidia)]
+    device: DeviceKind,
+    /// The GPU's render node (`nvidia` and `vaapi`).
     #[arg(long, default_value = "/dev/dri/renderD128")]
     render_node: PathBuf,
     #[arg(long, default_value_t = 2560)]
@@ -57,8 +64,10 @@ struct Args {
     /// target rate, scaled by (fps / 60)^0.75 at other rates.
     #[arg(long, default_value_t = 40)]
     mbps: u32,
-    /// Codecs offered. PyroWave (WebTransport only) needs libpyrowave and is
-    /// left out without it.
+    /// Codecs offered, of those the device can make: H.264, HEVC and AV1 on
+    /// NVIDIA (VA-API: what its driver encodes), H.264 on the CPU. PyroWave
+    /// (NVIDIA, WebTransport only) needs libpyrowave and is left out without
+    /// it.
     #[arg(
         long,
         value_delimiter = ',',
@@ -145,6 +154,11 @@ struct Args {
     /// went and exit (the node doctor runs this).
     #[arg(long)]
     probe_pyrowave: bool,
+    /// Print what a device offers as JSON (`{kind, name, vendor?, renderNode?,
+    /// codecs, cores?}`) and exit, for `nvidia`, `vaapi:/dev/dri/renderD129` or
+    /// `cpu` (the node runs this to find a machine's devices).
+    #[arg(long, value_name = "KIND[:RENDER NODE]")]
+    probe_device: Option<String>,
 }
 
 /// Who may start a stream.
@@ -171,6 +185,11 @@ struct AppState {
 }
 
 pub fn main() -> Result<()> {
+    let args = Args::parse();
+    // Before logging starts: stdout is the JSON and nothing else.
+    if let Some(spec) = &args.probe_device {
+        return device::probe(spec, cha_pyrowave::available().is_ok());
+    }
     tracing_subscriber::fmt()
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_env_filter(
@@ -179,22 +198,28 @@ pub fn main() -> Result<()> {
         )
         .init();
     str0m::crypto::from_feature_flags().install_process_default();
-    let args = Args::parse();
 
     let mut codecs = args
         .codecs
         .iter()
         .map(|c| VideoCodec::from_name(c).ok_or_else(|| anyhow!("unknown codec {c}")))
         .collect::<Result<Vec<_>>>()?;
-    let pyrowave = match (cha_pyrowave::available(), pci_ids(&args.render_node)) {
-        (Ok(()), Some((vendor, device))) => {
+    // Only NVIDIA has PyroWave; the other devices don't look at the render
+    // node for it (the CPU device touches no GPU files at all).
+    let pyro_ids = (args.device == DeviceKind::Nvidia).then(|| pci_ids(&args.render_node));
+    let pyrowave = match (cha_pyrowave::available(), pyro_ids) {
+        (_, None) => {
+            info!("no PyroWave: it needs the NVIDIA device");
+            None
+        }
+        (Ok(()), Some(Some((vendor, device)))) => {
             Some(PyroSettings::new(vendor, device, args.pyrowave_mbps))
         }
         (Err(err), _) => {
             info!("no PyroWave: {err}");
             None
         }
-        (_, None) => {
+        (_, Some(None)) => {
             info!("no PyroWave: the render node's PCI ids are unknown");
             None
         }
@@ -214,20 +239,52 @@ pub fn main() -> Result<()> {
     ensure_runtime_dir(&runtime_dir, args.app_uid)?;
     let (width, height) = fit_size(args.width, args.height);
 
-    let gpu_slot = pci_slot(&args.render_node);
-    crate::system::set_gpu_slot(gpu_slot.clone());
-    let cuda = CudaContext::new(gpu_slot.as_deref()).map_err(|e| anyhow!("{e}"))?;
+    if args.device == DeviceKind::Nvidia {
+        crate::system::set_gpu_slot(device::pci_slot(&args.render_node));
+    }
+    let device = Device::open(
+        args.device,
+        (args.device != DeviceKind::Cpu).then_some(args.render_node.as_path()),
+    )?;
+    anyhow::ensure!(
+        device.encodes(),
+        "--device {}: encoding on {} isn't built yet (the compositor and the probe are)",
+        args.device.name(),
+        device.name()
+    );
+    codecs = device::intersect(args.device, device.codecs(), &codecs, pyrowave.is_some());
+    anyhow::ensure!(
+        !codecs.is_empty(),
+        "none of --codecs can be made on the {} device ({}; it makes {})",
+        args.device.name(),
+        device.name(),
+        device
+            .codecs()
+            .iter()
+            .map(|c| c.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    info!(
+        device = args.device.name(),
+        name = device.name(),
+        codecs = codecs
+            .iter()
+            .map(|c| c.name())
+            .collect::<Vec<_>>()
+            .join(","),
+        "device ready"
+    );
     let hub = Arc::new(FrameHub::default());
     let handle = compositor::spawn(
         compositor::Config {
-            render_node: args.render_node.clone(),
+            device: Arc::clone(&device),
             width,
             height,
             compositor_fps: args.compositor_fps,
             encode_fps: args.fps,
             socket_name: args.socket.clone(),
         },
-        Arc::clone(&cuda),
         Arc::clone(&hub),
     )?;
     if let Some(uid) = args.app_uid {
@@ -252,7 +309,7 @@ pub fn main() -> Result<()> {
         Media::new(
             hub,
             &handle,
-            cuda,
+            device,
             EncodeSettings {
                 fps: args.fps,
                 bitrate_bps: args.mbps * 1_000_000,
@@ -402,16 +459,6 @@ fn ensure_runtime_dir(dir: &Path, app_uid: Option<u32>) -> Result<()> {
     }
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     Ok(())
-}
-
-/// The render node's PCI slot, so CUDA picks the same GPU.
-fn pci_slot(render_node: &Path) -> Option<String> {
-    let name = render_node.file_name()?.to_str()?;
-    let uevent = std::fs::read_to_string(format!("/sys/class/drm/{name}/device/uevent")).ok()?;
-    uevent
-        .lines()
-        .find_map(|l| l.strip_prefix("PCI_SLOT_NAME="))
-        .map(|s| s.trim().to_string())
 }
 
 /// The render node's PCI vendor and device ids (PyroWave picks its GPU by them).

@@ -32,6 +32,20 @@ export interface Gpu {
   encoders: string[];
 }
 
+/** What an environment can run on (`docs/devices.md`). */
+export type DeviceKind = "nvidia" | "vaapi" | "cpu";
+
+export interface Device {
+  /** Stable on the node: "nvidia:0", "vaapi:renderD129", "cpu". */
+  id: string;
+  kind: DeviceKind;
+  name: string;
+  renderNode?: string;
+  vendor?: string;
+  codecs: string[];
+  cores?: number;
+}
+
 export interface Inventory {
   hostname: string;
   os: string;
@@ -40,6 +54,8 @@ export interface Inventory {
   memoryMb: number;
   gpus: Gpu[];
   addresses: string[];
+  /** Absent from nodes that predate devices. */
+  devices?: Device[];
 }
 
 /** A machine that runs environments (named to stay clear of the DOM's `Node`). */
@@ -100,8 +116,35 @@ export interface Template {
   shmMb: number;
   /** Its display has a fixed size: the page never asks for a resize. */
   fixedSize?: boolean;
+  /** It needs real 3D (Steam, games): it never runs on the CPU. */
+  needsGpu?: boolean;
   /** What the app shares across users by default, and the parts each user keeps apart. */
   shared?: { access: SharedAccess; perUser: string[] } | null;
+}
+
+/** A device on a node, as a launch names it. */
+export interface PlacementChoice {
+  node: string;
+  device: string;
+}
+
+/** One place a template could run, from `GET /api/placements`. */
+export interface PlacementOption extends PlacementChoice {
+  nodeName: string;
+  kind: DeviceKind;
+  /** The GPU's name, or "CPU only". */
+  label: string;
+  allowed: boolean;
+  /** Why it isn't allowed, or what to know before choosing it anyway. */
+  reason?: string;
+  score: number;
+}
+
+export interface Placements {
+  /** What Launch does; null when nothing is allowed. */
+  auto: PlacementChoice | null;
+  /** Best first, the allowed ones ahead of the others. */
+  options: PlacementOption[];
 }
 
 export type EnvironmentState = "starting" | "running" | "stopping" | "destroyed" | "failed";
@@ -120,6 +163,8 @@ export interface Environment {
   warning: string | null;
   /** The last lines its containers logged when it died (its owner and admins; null: none kept). */
   log: string[] | null;
+  /** The codecs its device encodes (a CPU one: H.264 only); absent from older portals. */
+  codecs?: string[] | null;
   createdAt: number;
   updatedAt: number;
   /** Where its streamer listens while it runs. */
@@ -246,7 +291,11 @@ export const api = {
   pingNode: (id: string) => request<{ rttMs: number; nodeUnixMs: number }>("POST", `/nodes/${encodeURIComponent(id)}/ping`, {}),
   catalog: () => request<Template[]>("GET", "/catalog"),
   environments: () => request<Environment[]>("GET", "/environments"),
-  launch: (templateId: string) => request<Environment>("POST", "/environments", { templateId }),
+  /** Without a choice, the server picks the best place (what `placements` calls `auto`). */
+  launch: (templateId: string, choice?: PlacementChoice) =>
+    request<Environment>("POST", "/environments", { templateId, ...choice }),
+  /** Where every template could run, with live node usage. 404 until the server supports it. */
+  placements: () => request<{ templates: Record<string, Placements> }>("GET", "/placements"),
   stopEnvironment: (id: string) => request<Environment>("DELETE", `/environments/${encodeURIComponent(id)}`),
   environment: (id: string) => request<Environment>("GET", `/environments/${encodeURIComponent(id)}`),
   /** Per-app data settings for the signed-in user. 404 until the server supports them. */

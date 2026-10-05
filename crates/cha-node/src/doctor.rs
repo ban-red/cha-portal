@@ -71,6 +71,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
     if engine.is_ok() {
         checks.push(images(docker, config).await);
         checks.push(gpu(docker, config).await);
+        checks.extend(devices(docker, config).await);
         checks.push(pyrowave(docker, config).await);
         checks.push(gamepads(docker, config).await);
         checks.push(uhid_pads(docker, config).await);
@@ -180,6 +181,68 @@ async fn gpu(docker: &Docker, config: &DockerConfig) -> Check {
          sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml (device {})",
         config.gpu_device
     ))
+}
+
+/// The devices environments can run on (`docs/devices.md`), one line each:
+/// NVIDIA from the inventory, VA-API ones as the streamer image probes them,
+/// and the CPU (its codecs probed the same way). A render node that isn't NVIDIA's and can't encode says why.
+async fn devices(docker: &Docker, config: &DockerConfig) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let mut inventory = crate::inventory::collect();
+    // The CPU's codecs are the image's to say (AV1 needs SVT-AV1 in it).
+    if let Ok(codecs) = crate::devices::probe_cpu(docker, &config.streamer_image).await {
+        crate::inventory::set_cpu_codecs(&mut inventory, codecs);
+    }
+    let line = |d: &cha_wire::Device| {
+        let what = match (d.kind, d.cores) {
+            (cha_wire::DeviceKind::Cpu, Some(cores)) => format!("{}, {cores} cores", d.name),
+            _ => d.name.clone(),
+        };
+        format!(
+            "{}: {what} ({})",
+            d.kind.as_str(),
+            if d.codecs.is_empty() {
+                "no encoder".to_string()
+            } else {
+                d.codecs.join(", ")
+            }
+        )
+    };
+    for device in inventory
+        .devices
+        .iter()
+        .flatten()
+        .filter(|d| d.kind == cha_wire::DeviceKind::Nvidia)
+    {
+        checks.push(check(Level::Ok, "Device", line(device)));
+    }
+    for node in crate::inventory::vaapi_candidates() {
+        match crate::devices::probe(docker, &config.streamer_image, &node).await {
+            Ok(Some(device)) => checks.push(check(Level::Ok, "Device", line(&device))),
+            Ok(None) => {}
+            Err(err) => checks.push(
+                check(
+                    Level::Info,
+                    "Device",
+                    format!("{node}: no VA-API ({err:#})"),
+                )
+                .fix(
+                    "an Intel or AMD GPU needs the host's VA-API driver in the streamer image \
+                     (intel-media-va-driver, or Mesa's for AMD) and a streamer image that knows \
+                     --probe-device; rebuild it, or ignore this if the GPU isn't for streaming",
+                ),
+            ),
+        }
+    }
+    for device in inventory
+        .devices
+        .iter()
+        .flatten()
+        .filter(|d| d.kind == cha_wire::DeviceKind::Cpu)
+    {
+        checks.push(check(Level::Ok, "Device", line(device)));
+    }
+    checks
 }
 
 /// NVIDIA's Wine DLLs (`nvngx.dll`) on the host, which Proton games need for

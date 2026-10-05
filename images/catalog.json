@@ -55,6 +55,7 @@
       "shmMb": 2048,
       "persistent": true,
       "fixedSize": true,
+      "needsGpu": true,
       "shared": {
         "access": "write",
         "perUser": ["steamapps/compatdata", "steamapps/shadercache"]

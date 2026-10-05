@@ -45,6 +45,12 @@ if (wtSupported) {
     if (ok) codecs.value = [...codecs.value, ...PYROWAVE];
   });
 }
+/** The codecs the environment's device encodes, once known (null: any). */
+const deviceCodecs = ref<string[] | null>(null);
+/** What the codec menu offers: what this browser decodes and the device encodes. */
+const availableCodecs = computed(() =>
+  deviceCodecs.value ? codecs.value.filter((c) => deviceCodecs.value!.includes(c)) : codecs.value,
+);
 // PyroWave 4:4:4 is the LAN quality mode: near-lossless text, but ~580 Mbit/s
 // and slower to the screen than the hardware codecs on 1 GbE (spike S6).
 const CODEC_LABEL: Partial<Record<Codec, string>> = {
@@ -230,15 +236,24 @@ async function connect() {
     .iceServers()
     .then((r) => r.iceServers)
     .catch(() => []);
-  // Whether its display has a fixed size (Steam's), which the picture then keeps.
-  const fixed = await Promise.all([
+  // Whether its display has a fixed size (Steam's), which the picture then
+  // keeps, and which codecs its device encodes (a CPU one only H.264).
+  const { fixed, offered } = await Promise.all([
     queryClient.fetchQuery({ queryKey: ["environment", id], queryFn: () => api.environment(id.value), staleTime: 5000 }),
     queryClient.fetchQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 }),
   ])
-    .then(([e, templates]) => !!templates.find((t) => t.id === e.templateId)?.fixedSize)
-    .catch(() => false);
+    .then(([e, templates]) => ({
+      fixed: !!templates.find((t) => t.id === e.templateId)?.fixedSize,
+      offered: e.codecs ?? null,
+    }))
+    .catch(() => ({ fixed: false, offered: null }));
   if (leaving || mine !== attempt || !video.value) return;
   fixedSize.value = fixed;
+  deviceCodecs.value = offered;
+  // A choice its device can't encode falls back to the first it can.
+  if (offered && !offered.includes(codec.value)) {
+    codec.value = availableCodecs.value[0] ?? (offered[0] as Codec | undefined) ?? "h264";
+  }
   const p = new Player({
     video: video.value,
     fixedSize: fixed,
@@ -315,23 +330,27 @@ async function setCodec(c: Codec) {
   }
 }
 
-// ---- Toolbar: shown near the top edge, or while not connected ----
+// ---- Toolbar: collapses into a thin bar at the top; hover or click it back ----
 
 const hover = ref(false);
-const nearTop = ref(true);
+/** Open: shown in full. Closed, it's a thin bar at the top centre. */
+const expanded = ref(true);
 let hideTimer: ReturnType<typeof setTimeout> | undefined;
-function onPointerMove(e: PointerEvent) {
-  if (document.pointerLockElement) return;
-  const top = e.clientY < 72;
-  if (top) {
-    clearTimeout(hideTimer);
-    nearTop.value = true;
-  } else if (nearTop.value && !hover.value) {
-    clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => (nearTop.value = false), 1200);
-  }
+function collapseSoon() {
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => (expanded.value = false), 1200);
 }
-const toolbar = computed(() => state.value !== "connected" || nearTop.value || hover.value);
+function expand() {
+  clearTimeout(hideTimer);
+  expanded.value = true;
+}
+function onPointerMove(e: PointerEvent) {
+  if (document.pointerLockElement || !expanded.value || hover.value) return;
+  // Near the top it stays; away from it, it folds up shortly.
+  if (e.clientY < 72) clearTimeout(hideTimer);
+  else collapseSoon();
+}
+const toolbar = computed(() => state.value !== "connected" || expanded.value || hover.value || controllerMenu.value);
 
 const fullscreen = ref(false);
 async function toggleFullscreen() {
@@ -402,12 +421,32 @@ const STATUS: Record<PlayerState, string> = {
   <div class="fixed inset-0 bg-black select-none" @pointermove="onPointerMove">
     <video ref="video" class="absolute inset-0 size-full object-contain outline-none" autoplay muted playsinline />
 
+    <!-- The toolbar, folded: a thin bar to hover or click -->
+    <button
+      type="button"
+      class="absolute top-0 left-1/2 z-30 -translate-x-1/2 px-6 pt-1.5 pb-3 transition-opacity duration-200"
+      :class="toolbar ? 'pointer-events-none opacity-0' : 'opacity-100'"
+      :tabindex="toolbar ? -1 : 0"
+      aria-label="Show the toolbar"
+      title="Show the toolbar"
+      @pointerenter="expand"
+      @click="expand"
+      @focus="expand"
+    >
+      <span class="block h-1.5 w-24 rounded-full border border-line bg-panel/80 shadow backdrop-blur" />
+    </button>
+
     <!-- Toolbar -->
     <div
-      class="absolute top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 whitespace-nowrap shadow-lg backdrop-blur transition-opacity duration-200"
-      :class="toolbar ? 'opacity-100' : 'pointer-events-none opacity-0'"
+      class="absolute top-3 left-1/2 z-30 flex origin-top -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 whitespace-nowrap shadow-lg backdrop-blur transition duration-200"
+      :class="toolbar ? 'opacity-100' : 'pointer-events-none -translate-y-3 scale-y-50 opacity-0'"
+      :inert="!toolbar"
       @pointerenter="hover = true"
-      @pointerleave="hover = false"
+      @pointerleave="
+        hover = false;
+        collapseSoon();
+      "
+      @focusin="expand"
     >
       <RouterLink to="/" class="btn-ghost border-0 px-3 py-1.5 text-xs" title="Back to the dashboard (it keeps running)">← Back</RouterLink>
       <span class="max-w-48 truncate px-2 text-sm font-medium">{{ env.data.value?.templateName ?? "…" }}</span>
@@ -417,7 +456,7 @@ const STATUS: Record<PlayerState, string> = {
         title="Video codec"
         @change="setCodec(($event.target as HTMLSelectElement).value as Codec)"
       >
-        <option v-for="c in codecs" :key="c" :value="c">{{ CODEC_LABEL[c] ?? c.toUpperCase() }}</option>
+        <option v-for="c in availableCodecs" :key="c" :value="c">{{ CODEC_LABEL[c] ?? c.toUpperCase() }}</option>
       </select>
       <select
         v-if="!fixedSize && fps !== null"

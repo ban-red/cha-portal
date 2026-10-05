@@ -11,14 +11,27 @@
 # libXext are there because NVIDIA's Vulkan driver, libGLX_nvidia, links
 # them). libpyrowave (PyroWave, MIT) is built from upstream at the commit
 # the browser decoder is pinned to.
+#
+# The other devices (`--device vaapi|cpu`) bring their own pieces:
+#   cpu    Mesa's software EGL (llvmpipe: libegl-mesa0, libgl1-mesa-dri) draws,
+#          libx264 (GPL-2.0-or-later) and libsvtav1enc2 (SVT-AV1, BSD-3-Clause-Clear
+#          with the AOM patent licence) encode, H.264 and AV1; both are opened
+#          at run time, not linked (without SVT-AV1 the device offers H.264
+#          only; SVT_LOG=2 keeps its banner out of the logs);
+#   vaapi  Mesa draws on the render node (iris, radeonsi: libgl1-mesa-dri),
+#          libva talks to the driver: Intel's iHD (the non-free build, which
+#          has the encode firmware paths the free one lacks) or Mesa's radeonsi.
 FROM ubuntu:26.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libglvnd0 libegl1 libgles2 libgbm1 libxkbcommon0 libopus0 libvulkan1 \
       libx11-6 libxext6 \
+      libegl-mesa0 libgl1-mesa-dri libx264-165 libsvtav1enc2 \
+      libva2 libva-drm2 intel-media-va-driver-non-free mesa-va-drivers \
     && rm -rf /var/lib/apt/lists/*
 ENV NVIDIA_DRIVER_CAPABILITIES=all \
-    XDG_RUNTIME_DIR=/run/cha
+    XDG_RUNTIME_DIR=/run/cha \
+    SVT_LOG=2
 
 FROM base AS pyrowave
 RUN apt-get update && apt-get install -y --no-install-recommends git cmake ninja-build g++ \
