@@ -1,10 +1,18 @@
-//! Gamepads: the browser's Gamepad API state → virtual Xbox 360 controllers
-//! (uinput), the pad every game and SDL know.
+//! Gamepads: the browser's Gamepad API state → virtual controllers of the
+//! kind chosen for the environment (`--pad-kind`):
+//! - `xbox360` (uinput): the pad every game and SDL know;
+//! - `dualsense` and `steam` (uhid): a DualSense or a Steam Controller (the
+//!   2026 one, over Bluetooth), bound by the host's `hid-playstation` or, for the Steam
+//!   Controller, `hid-generic` ([`crate::dualsense`],
+//!   [`crate::steam_controller`], over [`crate::uhid`]); both have a `hidraw`
+//!   node.
 //!
 //! The kernel makes the devices on the host, outside the app's container, so
 //! the app gets them through two volumes this streamer fills:
 //! - `<input-dir>/dev`, the app's `/dev/input`: the pads' `eventN`/`jsN`
-//!   nodes (the app's device cgroup allows input devices);
+//!   nodes (the app's device cgroup allows input devices), and for uhid pads
+//!   their `hidraw` nodes in `hidraw/` (the node mounts each of those into the
+//!   app at `/dev/<name>`);
 //! - `<input-dir>/udev`, the app's `/run/udev`: udev's database entries
 //!   marking them joysticks (Chrome, Firefox and Wine find pads through udev).
 //!
@@ -12,14 +20,16 @@
 //! made ahead (`--gamepads`) and kept for the streamer's life; SDL, told to
 //! skip udev, also watches `/dev/input` and sees later ones.
 //!
-//! Rumble goes the other way: the pads advertise force feedback, a thread per
-//! pad answers the kernel's uinput upload/erase requests for the app's
-//! effects, and the play/stop events become [`Rumble`]s on a broadcast channel
-//! for the sessions to forward to the page.
+//! What apps do to the pads goes the other way, as [`PadEvent`]s on a
+//! broadcast channel for the sessions to forward to the page. The Xbox pads
+//! advertise force feedback: a thread per pad answers the kernel's uinput
+//! upload/erase requests for the app's effects, and the play/stop events
+//! become [`Rumble`]s. The uhid pads' output reports (rumble, lightbar, player
+//! LEDs, adaptive triggers, trackpad haptics) are parsed by their protocols.
 
 use std::ffi::{CStr, c_int};
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::hash::{Hash, Hasher};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -28,9 +38,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Deserializer};
+use clap::ValueEnum;
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
+
+use crate::dualsense::{self, DualSense};
+use crate::steam_controller::{self, SteamController};
+use crate::uhid::{self, Device, Node};
 
 /// Pads one environment can have (the Gamepad API's usual four).
 pub const MAX_PADS: usize = 4;
@@ -200,7 +215,7 @@ struct UinputFfErase {
 /// Those extras are optional and kept for the DualSense and Steam Controller
 /// devices to come (uhid); the Xbox 360 pad has no use for them, and a field
 /// the page gets wrong never costs the buttons.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[allow(dead_code)]
 pub struct PadState {
     pub i: usize,
@@ -271,15 +286,163 @@ pub struct Rumble {
 
 /// How long an effect with no length (it plays until stopped) is announced
 /// for; the stop comes when the app sends it.
-const ENDLESS_MS: u32 = 60_000;
+pub const ENDLESS_MS: u32 = 60_000;
+
+/// Which of a controller's two sides (triggers, trackpads).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    /// As the control channel spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Side::Left => "left",
+            Side::Right => "right",
+        }
+    }
+}
+
+/// A trackpad pulse train an app asked for (Steam Controller haptics): `count`
+/// pulses of `on_us` microseconds, `off_us` apart, at `amp` (0..1); a count of
+/// 0 stops it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Haptic {
+    pub slot: usize,
+    pub side: Side,
+    pub amp: f32,
+    pub on_us: u32,
+    pub off_us: u32,
+    pub count: u32,
+}
+
+/// The lightbar's color (DualSense).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Led {
+    pub slot: usize,
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+/// The player LEDs, bits 0..5 (DualSense).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Players {
+    pub slot: usize,
+    pub mask: u8,
+}
+
+/// An adaptive trigger effect (DualSense): the output report's block, the
+/// effect's type and its ten parameters, as the game wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Trigger {
+    pub slot: usize,
+    pub side: Side,
+    pub effect: [u8; 11],
+}
+
+/// What an app does to a pad that the person holding the controller should
+/// feel or see.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PadEvent {
+    Rumble(Rumble),
+    Haptic(Haptic),
+    Led(Led),
+    Players(Players),
+    Trigger(Trigger),
+}
+
+/// How many kinds of [`PadEvent`] a pad has that supersede each other.
+pub const EVENT_CLASSES: usize = 7;
+
+impl PadEvent {
+    pub fn slot(&self) -> usize {
+        match self {
+            PadEvent::Rumble(e) => e.slot,
+            PadEvent::Haptic(e) => e.slot,
+            PadEvent::Led(e) => e.slot,
+            PadEvent::Players(e) => e.slot,
+            PadEvent::Trigger(e) => e.slot,
+        }
+    }
+
+    /// What this replaces: a newer one of the same class (on a pad) makes it
+    /// stale.
+    pub fn class(&self) -> usize {
+        match self {
+            PadEvent::Rumble(_) => 0,
+            PadEvent::Haptic(e) => 1 + usize::from(e.side == Side::Right),
+            PadEvent::Led(_) => 3,
+            PadEvent::Players(_) => 4,
+            PadEvent::Trigger(e) => 5 + usize::from(e.side == Side::Right),
+        }
+    }
+
+    /// Whether it ends something, and so must not wait behind a newer one.
+    pub fn is_stop(&self) -> bool {
+        match self {
+            PadEvent::Rumble(e) => e.ms == 0,
+            PadEvent::Haptic(e) => e.count == 0,
+            _ => false,
+        }
+    }
+}
+
+/// The virtual controller an environment's pads are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GamepadKind {
+    /// An Xbox 360 pad (uinput).
+    #[value(name = "xbox360")]
+    #[serde(rename = "xbox360")]
+    Xbox360,
+    /// A wired DualSense (uhid).
+    #[value(name = "dualsense")]
+    DualSense,
+    /// A Bluetooth Steam Controller, the 2026 one (uhid).
+    #[value(name = "steam")]
+    Steam,
+}
+
+impl GamepadKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            GamepadKind::Xbox360 => "xbox360",
+            GamepadKind::DualSense => "dualsense",
+            GamepadKind::Steam => "steam",
+        }
+    }
+}
+
+/// A `hidraw` node of a uhid pad, in `<input-dir>/dev/hidraw/<name>`: what the
+/// node mounts into the app at `/dev/<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HidrawNode {
+    pub name: String,
+    pub major: u32,
+    pub minor: u32,
+}
 
 pub struct Gamepads {
+    kind: GamepadKind,
     uinput: PathBuf,
+    uhid: PathBuf,
     dev_dir: PathBuf,
+    hidraw_dir: PathBuf,
     udev_dir: PathBuf,
     app_uid: Option<u32>,
-    pads: Mutex<Vec<Pad>>,
-    rumble: broadcast::Sender<Rumble>,
+    /// Makes this run's devices' MAC addresses and serials its own.
+    seed: u64,
+    pads: Mutex<Vec<Slot>>,
+    events: broadcast::Sender<PadEvent>,
+}
+
+/// One pad: a uinput device, or a uhid one.
+enum Slot {
+    Xbox(Pad),
+    Hid(HidPad),
 }
 
 struct Pad {
@@ -290,27 +453,112 @@ struct Pad {
     sent: Vec<(u16, u16, i32)>,
 }
 
+struct HidPad {
+    device: Arc<Device>,
+    hidraw: Vec<HidrawNode>,
+}
+
+impl Drop for HidPad {
+    fn drop(&mut self) {
+        self.device.destroy();
+    }
+}
+
+/// What udev's database says about a device: how the app tells the pads from
+/// other devices.
+struct Identity {
+    /// udev's `ID_BUS`.
+    bus: &'static str,
+    vendor: &'static str,
+    product: &'static str,
+    serial: &'static str,
+}
+
+const XBOX_360: Identity = Identity {
+    bus: "usb",
+    vendor: "045e",
+    product: "028e",
+    serial: "Microsoft_X-Box_360_pad",
+};
+
+const DUALSENSE: Identity = Identity {
+    bus: "usb",
+    vendor: "054c",
+    product: "0ce6",
+    serial: "Sony_Interactive_Entertainment_DualSense_Wireless_Controller",
+};
+
+const STEAM_CONTROLLER: Identity = Identity {
+    bus: "bluetooth",
+    vendor: "28de",
+    product: "1303",
+    serial: "Valve_Software_Steam_Controller",
+};
+
+/// What a node is, for its udev entry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Class {
+    Joystick,
+    Touchpad,
+    Accelerometer,
+    Hidraw,
+}
+
+/// How long the host's driver gets to bind a uhid device and make its nodes
+/// (it may have to load the module first).
+const BIND_WAIT: Duration = Duration::from_secs(5);
+
 impl Gamepads {
-    /// Checks `/dev/uinput`, clears what an earlier run left in `input_dir`,
-    /// and makes `ahead` pads.
+    /// Checks the device files the kind needs, clears what an earlier run left
+    /// in `input_dir`, and makes `ahead` pads. A DualSense or Steam Controller
+    /// kind without a usable `uhid` is an Xbox 360 one, with a warning.
     pub fn new(
         uinput: &Path,
+        uhid: &Path,
+        mut kind: GamepadKind,
         input_dir: &Path,
         app_uid: Option<u32>,
         ahead: usize,
     ) -> Result<Self> {
-        OpenOptions::new()
-            .write(true)
-            .open(uinput)
-            .with_context(|| format!("opening {}", uinput.display()))?;
+        if kind != GamepadKind::Xbox360 {
+            let usable = if uhid.as_os_str().is_empty() {
+                Err(anyhow::anyhow!("no --uhid"))
+            } else {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(uhid)
+                    .map(drop)
+                    .with_context(|| format!("opening {}", uhid.display()))
+            };
+            if let Err(err) = usable {
+                warn!(
+                    "{} pads need uhid, using Xbox 360 ones: {err:#}",
+                    kind.name()
+                );
+                kind = GamepadKind::Xbox360;
+            }
+        }
+        if kind == GamepadKind::Xbox360 {
+            OpenOptions::new()
+                .write(true)
+                .open(uinput)
+                .with_context(|| format!("opening {}", uinput.display()))?;
+        }
         let pads = Self {
+            kind,
             uinput: uinput.to_path_buf(),
+            uhid: uhid.to_path_buf(),
             dev_dir: input_dir.join("dev"),
+            hidraw_dir: input_dir.join("dev/hidraw"),
             udev_dir: input_dir.join("udev/data"),
             app_uid,
+            seed: run_seed(),
             pads: Mutex::default(),
-            rumble: broadcast::channel(64).0,
+            events: broadcast::channel(64).0,
         };
+        // A stale `hidraw/` goes first, whole.
+        let _ = std::fs::remove_dir_all(&pads.hidraw_dir);
         for dir in [&pads.dev_dir, &pads.udev_dir] {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
             for entry in std::fs::read_dir(dir)?.flatten() {
@@ -324,9 +572,25 @@ impl Gamepads {
         Ok(pads)
     }
 
-    /// What the apps ask the pads' motors to do.
-    pub fn rumble(&self) -> broadcast::Receiver<Rumble> {
-        self.rumble.subscribe()
+    pub fn kind(&self) -> GamepadKind {
+        self.kind
+    }
+
+    /// What the apps do to the pads: motors, lightbars, triggers, haptics.
+    pub fn events(&self) -> broadcast::Receiver<PadEvent> {
+        self.events.subscribe()
+    }
+
+    /// The `hidraw` nodes of the pads made so far (uhid kinds only).
+    pub fn hidraw(&self) -> Vec<HidrawNode> {
+        let pads = self.pads.lock().expect("pads lock");
+        pads.iter()
+            .filter_map(|slot| match slot {
+                Slot::Hid(pad) => Some(pad.hidraw.clone()),
+                Slot::Xbox(_) => None,
+            })
+            .flatten()
+            .collect()
     }
 
     /// Applies one state message from the page, making the pad if needed.
@@ -339,9 +603,13 @@ impl Gamepads {
             return;
         }
         let mut pads = self.pads.lock().expect("pads lock");
-        let pad = &mut pads[state.i];
-        if let Err(err) = pad.apply(&events(state)) {
-            warn!("gamepad {}: {err:#}", state.i);
+        match &mut pads[state.i] {
+            Slot::Xbox(pad) => {
+                if let Err(err) = pad.apply(&events(state)) {
+                    warn!("gamepad {}: {err:#}", state.i);
+                }
+            }
+            Slot::Hid(pad) => pad.device.update(state),
         }
     }
 
@@ -349,12 +617,147 @@ impl Gamepads {
         let mut pads = self.pads.lock().expect("pads lock");
         while pads.len() <= index {
             let n = pads.len();
-            pads.push(self.create(n)?);
+            pads.push(match self.kind {
+                GamepadKind::Xbox360 => Slot::Xbox(self.create_xbox(n)?),
+                GamepadKind::DualSense | GamepadKind::Steam => Slot::Hid(self.create_hid(n)?),
+            });
         }
         Ok(())
     }
 
-    fn create(&self, index: usize) -> Result<Pad> {
+    /// A number for this run's pad `index`, stable for the run.
+    fn pad_hash(&self, index: usize) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (self.seed, index).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// A uhid pad: the device, and once the host's driver has bound it, its
+    /// nodes shared with the app.
+    fn create_hid(&self, index: usize) -> Result<HidPad> {
+        let hash = self.pad_hash(index);
+        let bytes = hash.to_be_bytes();
+        // The DualSense's "MAC address", which the kernel insists be one of a
+        // kind among the host's pads: locally administered (02), our prefix (so
+        // a host udev rule can tell our pads by their `uniq`), then three
+        // bytes of the run's. A Steam Controller's `uniq` is one too (it is
+        // Bluetooth); its serial is made as Valve formats them, from the run's.
+        let mac = [0x02, 0xca, 0xfe, bytes[5], bytes[6], bytes[7]];
+        let serial = steam_controller::serial_for(steam_controller::VARIANT, hash);
+        let tag = format!("{hash:016x}");
+        // What the kernel keeps as the device's `phys` (and finds it by here).
+        let phys = format!("cha/pad{index}/{tag}");
+        let (name, bus, vendor, product, version, descriptor, uniq): (_, _, _, _, _, &[u8], _) =
+            match self.kind {
+                GamepadKind::DualSense => (
+                    dualsense::NAME,
+                    uhid::BUS_USB,
+                    dualsense::VENDOR,
+                    dualsense::PRODUCT,
+                    dualsense::VERSION,
+                    &dualsense::DESCRIPTOR,
+                    mac.iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(":"),
+                ),
+                _ => (
+                    steam_controller::VARIANT.name(),
+                    steam_controller::VARIANT.bus(),
+                    steam_controller::VENDOR,
+                    steam_controller::VARIANT.product(),
+                    steam_controller::VERSION,
+                    steam_controller::VARIANT.descriptor(),
+                    // The Bluetooth controller's `uniq` is its address.
+                    mac.iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(":"),
+                ),
+            };
+        let (protocol, driver, inputs, identity, label): (Box<dyn uhid::Protocol>, _, _, _, _) =
+            match self.kind {
+                GamepadKind::DualSense => (
+                    Box::new(DualSense::new(index, mac)),
+                    "playstation",
+                    3,
+                    &DUALSENSE,
+                    "virtual DualSense",
+                ),
+                _ => (
+                    Box::new(SteamController::new(
+                        steam_controller::VARIANT,
+                        index,
+                        &serial,
+                    )),
+                    steam_controller::VARIANT.driver(),
+                    steam_controller::VARIANT.inputs(),
+                    &STEAM_CONTROLLER,
+                    "virtual Steam Controller",
+                ),
+            };
+        let params = uhid::Params {
+            name,
+            phys: &phys,
+            uniq: &uniq,
+            bus,
+            vendor,
+            product,
+            version,
+            descriptor,
+        };
+        let device = Device::create(
+            &self.uhid,
+            &params,
+            protocol,
+            self.events.clone(),
+            format!("pad{index}-uhid"),
+        )?;
+        let found = match uhid::wait_for_nodes(&phys, driver, inputs, BIND_WAIT) {
+            Ok(found) => found,
+            Err(err) => {
+                device.destroy();
+                return Err(err);
+            }
+        };
+        let mut pad = HidPad {
+            device,
+            hidraw: Vec::new(),
+        };
+        // The pad owns the device from here, so a failure destroys it.
+        for input in &found.inputs {
+            let class = if input.accelerometer {
+                Class::Accelerometer
+            } else if input.touch {
+                Class::Touchpad
+            } else {
+                Class::Joystick
+            };
+            for node in &input.nodes {
+                self.install(&self.dev_dir, node, class, identity)?;
+            }
+        }
+        for node in &found.hidraw {
+            std::fs::create_dir_all(&self.hidraw_dir)?;
+            std::fs::set_permissions(&self.hidraw_dir, std::fs::Permissions::from_mode(0o755))?;
+            self.install(&self.hidraw_dir, node, Class::Hidraw, identity)?;
+            pad.hidraw.push(HidrawNode {
+                name: node.name.clone(),
+                major: node.major,
+                minor: node.minor,
+            });
+        }
+        info!(
+            pad = index,
+            driver = ?found.driver,
+            hidraw = ?pad.hidraw,
+            inputs = ?found.inputs.iter().map(|i| &i.name).collect::<Vec<_>>(),
+            "gamepad: {label}"
+        );
+        Ok(pad)
+    }
+
+    fn create_xbox(&self, index: usize) -> Result<Pad> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -459,7 +862,7 @@ impl Gamepads {
         }
         // SAFETY: just made, and nothing else owns it.
         let reader = unsafe { OwnedFd::from_raw_fd(reader) };
-        let (tx, flag) = (self.rumble.clone(), Arc::clone(&stop));
+        let (tx, flag) = (self.events.clone(), Arc::clone(&stop));
         std::thread::Builder::new()
             .name(format!("pad{index}-ff"))
             .spawn(move || serve_force_feedback(reader, index, &tx, &flag))
@@ -471,7 +874,7 @@ impl Gamepads {
         })
     }
 
-    /// Mirrors the device's nodes and udev entries into the app's volumes.
+    /// Mirrors a uinput device's nodes and udev entries into the app's volumes.
     fn share(&self, sysname: &str) -> Result<Vec<String>> {
         let sys = Path::new("/sys/devices/virtual/input").join(sysname);
         // The evdev and joydev handlers attach as the device registers;
@@ -490,10 +893,6 @@ impl Gamepads {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        let initialized = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros();
         for node in &nodes {
             let dev = std::fs::read_to_string(sys.join(node).join("dev"))?;
             let (major, minor) = dev
@@ -501,36 +900,86 @@ impl Gamepads {
                 .split_once(':')
                 .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
                 .context("parsing the device number")?;
-            let path = self.dev_dir.join(node);
-            let _ = std::fs::remove_file(&path);
-            let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
-            // SAFETY: a valid path; mknod creates a character device node.
-            if unsafe {
-                libc::mknod(
-                    c_path.as_ptr(),
-                    libc::S_IFCHR | 0o660,
-                    libc::makedev(major, minor),
-                )
-            } < 0
-            {
-                return Err(std::io::Error::last_os_error())
-                    .with_context(|| format!("mknod {}", path.display()));
-            }
-            if let Some(uid) = self.app_uid {
-                std::os::unix::fs::chown(&path, Some(uid), Some(uid))?;
-            }
-            // Past the umask.
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
-            let mut db = std::fs::File::create(self.udev_dir.join(format!("c{major}:{minor}")))?;
-            write!(
-                db,
-                "I:{initialized}\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nE:ID_BUS=usb\n\
-                 E:ID_VENDOR_ID=045e\nE:ID_MODEL_ID=028e\nE:ID_SERIAL=Microsoft_X-Box_360_pad\n\
-                 G:seat\nG:uaccess\nQ:seat\nQ:uaccess\nV:1\n"
-            )?;
+            let node = Node {
+                name: node.clone(),
+                major,
+                minor,
+            };
+            self.install(&self.dev_dir, &node, Class::Joystick, &XBOX_360)?;
         }
         Ok(nodes)
     }
+
+    /// Makes a device node in `dir` for the app, and its udev entry.
+    fn install(&self, dir: &Path, node: &Node, class: Class, identity: &Identity) -> Result<()> {
+        let path = dir.join(&node.name);
+        let _ = std::fs::remove_file(&path);
+        let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
+        // SAFETY: a valid path; mknod creates a character device node.
+        if unsafe {
+            libc::mknod(
+                c_path.as_ptr(),
+                libc::S_IFCHR | 0o660,
+                libc::makedev(node.major, node.minor),
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("mknod {}", path.display()));
+        }
+        if let Some(uid) = self.app_uid {
+            std::os::unix::fs::chown(&path, Some(uid), Some(uid))?;
+        }
+        // Past the umask.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
+        let initialized = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros();
+        std::fs::write(
+            self.udev_dir
+                .join(format!("c{}:{}", node.major, node.minor)),
+            udev_entry(initialized, class, identity),
+        )?;
+        Ok(())
+    }
+}
+
+/// A node's entry in udev's database, as the app's libudev (Chrome, Wine,
+/// SDL, hidapi) reads it: what the device is, and that it is the seat's.
+fn udev_entry(initialized: u128, class: Class, identity: &Identity) -> String {
+    let what = match class {
+        Class::Joystick => "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n",
+        Class::Touchpad => "E:ID_INPUT=1\nE:ID_INPUT_TOUCHPAD=1\n",
+        Class::Accelerometer => "E:ID_INPUT=1\nE:ID_INPUT_ACCELEROMETER=1\n",
+        Class::Hidraw => "",
+    };
+    format!(
+        "I:{initialized}\n{what}E:ID_BUS={}\nE:ID_VENDOR_ID={}\nE:ID_MODEL_ID={}\n\
+         E:ID_SERIAL={}\nG:seat\nG:uaccess\nQ:seat\nQ:uaccess\nV:1\n",
+        identity.bus, identity.vendor, identity.product, identity.serial
+    )
+}
+
+/// Something that differs between runs, between streamers on one host (their
+/// hostnames are their containers'), and between a streamer's restarts.
+fn run_seed() -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for file in [
+        "/proc/sys/kernel/hostname",
+        "/proc/sys/kernel/random/boot_id",
+    ] {
+        std::fs::read_to_string(file)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+    }
+    std::process::id().hash(&mut hasher);
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
 impl Drop for Pad {
@@ -700,7 +1149,7 @@ impl Effects {
 fn serve_force_feedback(
     fd: OwnedFd,
     slot: usize,
-    tx: &broadcast::Sender<Rumble>,
+    tx: &broadcast::Sender<PadEvent>,
     stop: &AtomicBool,
 ) {
     let raw = fd.as_raw_fd();
@@ -777,7 +1226,7 @@ fn serve_force_feedback(
             };
             if let Some(rumble) = rumble {
                 // No session listening is fine.
-                let _ = tx.send(rumble);
+                let _ = tx.send(PadEvent::Rumble(rumble));
             }
         }
     }
@@ -1001,5 +1450,296 @@ mod tests {
             ..state
         };
         assert!(events(&gone).iter().all(|(_, _, v)| *v == 0));
+    }
+
+    #[test]
+    fn udev_entries_say_what_each_node_is() {
+        assert_eq!(
+            udev_entry(5, Class::Joystick, &XBOX_360),
+            "I:5\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nE:ID_BUS=usb\nE:ID_VENDOR_ID=045e\n\
+             E:ID_MODEL_ID=028e\nE:ID_SERIAL=Microsoft_X-Box_360_pad\nG:seat\nG:uaccess\n\
+             Q:seat\nQ:uaccess\nV:1\n"
+        );
+        let touchpad = udev_entry(5, Class::Touchpad, &DUALSENSE);
+        assert!(touchpad.contains("E:ID_INPUT_TOUCHPAD=1\n") && !touchpad.contains("JOYSTICK"));
+        assert!(touchpad.contains("E:ID_VENDOR_ID=054c\nE:ID_MODEL_ID=0ce6\n"));
+        let sensors = udev_entry(5, Class::Accelerometer, &STEAM_CONTROLLER);
+        assert!(sensors.contains("E:ID_INPUT_ACCELEROMETER=1\n"));
+        let hidraw = udev_entry(5, Class::Hidraw, &STEAM_CONTROLLER);
+        assert!(hidraw.contains("E:ID_BUS=bluetooth\nE:ID_VENDOR_ID=28de\nE:ID_MODEL_ID=1303\n"));
+        assert_eq!(
+            STEAM_CONTROLLER.product,
+            format!("{:04x}", steam_controller::VARIANT.product())
+        );
+        let hidraw = udev_entry(5, Class::Hidraw, &DUALSENSE);
+        assert!(!hidraw.contains("ID_INPUT"));
+        assert!(hidraw.starts_with("I:5\nE:ID_BUS=usb\n") && hidraw.ends_with("V:1\n"));
+    }
+
+    #[test]
+    fn pad_events_supersede_by_kind_and_side() {
+        let trigger = |side| {
+            PadEvent::Trigger(Trigger {
+                slot: 0,
+                side,
+                effect: [0; 11],
+            })
+        };
+        assert_ne!(trigger(Side::Left).class(), trigger(Side::Right).class());
+        let classes: Vec<usize> = [
+            PadEvent::Led(Led {
+                slot: 0,
+                r: 0,
+                g: 0,
+                b: 0,
+            }),
+            PadEvent::Players(Players { slot: 0, mask: 0 }),
+            trigger(Side::Left),
+            trigger(Side::Right),
+        ]
+        .iter()
+        .map(PadEvent::class)
+        .collect();
+        assert!(classes.iter().all(|c| *c < EVENT_CLASSES));
+        assert_eq!(GamepadKind::DualSense.name(), "dualsense");
+    }
+
+    /// Makes one pad of a uhid kind on a host with the driver, holds it for
+    /// `CHA_LIVE_SECS` and says what the kernel and the apps' side saw. Run by
+    /// hand with `--ignored --nocapture` where `/dev/uhid` is.
+    fn live(kind: GamepadKind) {
+        let _ = tracing_subscriber::fmt().try_init();
+        let dir = std::env::temp_dir().join(format!("cha-live-{}", kind.name()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pads = Gamepads::new(
+            Path::new("/dev/uinput"),
+            Path::new("/dev/uhid"),
+            kind,
+            &dir,
+            None,
+            0,
+        )
+        .unwrap();
+        assert_eq!(pads.kind(), kind);
+        let mut events = pads.events();
+        let mut b = vec![0.0; 24];
+        b[0] = 1.0;
+        let state = PadState {
+            i: 0,
+            b,
+            a: vec![0.5, -0.5, 0.0, 0.0],
+            gyro: Some([0.1, 0.2, 0.3]),
+            accel: Some([0.0, 9.8, 0.0]),
+            touch: vec![Touch {
+                id: 0,
+                x: 0.25,
+                y: 0.75,
+                down: true,
+            }],
+            ..PadState::default()
+        };
+        // Makes the pad (and waits for the driver).
+        pads.update(&state);
+        println!("hidraw: {:?}", pads.hidraw());
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let sub = entry.path();
+            for node in std::fs::read_dir(&sub).into_iter().flatten().flatten() {
+                println!("{}", node.path().display());
+            }
+        }
+        let secs: u64 = std::env::var("CHA_LIVE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        let end = Instant::now() + Duration::from_secs(secs);
+        // The app's side: the event nodes, and the hidraw node.
+        let open = |path: &Path| {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path)
+        };
+        let mut evdevs: Vec<(String, std::fs::File)> = std::fs::read_dir(dir.join("dev"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("event"))
+            .map(|e| {
+                let file = open(&e.path()).unwrap();
+                (e.file_name().to_string_lossy().into_owned(), file)
+            })
+            .collect();
+        evdevs.sort_by(|a, b| a.0.cmp(&b.0));
+        let hidraw_path = dir.join("dev/hidraw").join(&pads.hidraw()[0].name);
+        let hidraw = open(&hidraw_path).unwrap();
+        // What the apps ask: rumble and a trigger on a DualSense (an output
+        // report written to hidraw), a pulse on a Steam Controller (a feature
+        // report set, then the reply read back).
+        let fd = hidraw.as_raw_fd();
+        let hid_ioctl = |nr: u64, buf: &mut [u8]| {
+            let request = (3u64 << 30) | ((buf.len() as u64) << 16) | (0x48 << 8) | nr;
+            // SAFETY: HIDIOC[SG]FEATURE on a hidraw descriptor with a buffer of the length asked.
+            unsafe { libc::ioctl(fd, request as libc::c_ulong, buf.as_mut_ptr()) }
+        };
+        if kind == GamepadKind::DualSense {
+            let mut out = [0u8; 63];
+            out[0] = 0x02;
+            out[1] = 0x01 | 0x02 | 0x04;
+            out[2] = 0x04;
+            out[3] = 100;
+            out[4] = 200;
+            out[11..22].copy_from_slice(&[2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+            // SAFETY: a valid descriptor and buffer.
+            let n = unsafe { libc::write(fd, out.as_ptr().cast(), out.len()) };
+            println!("hidraw write: {n}");
+            let mut cal = [0u8; 41];
+            cal[0] = 0x05;
+            println!("get feature 0x05: {}", hid_ioctl(0x07, &mut cal));
+            let mut fw = [0u8; 64];
+            fw[0] = 0x20;
+            println!(
+                "get feature 0x20: {} {:02x?}",
+                hid_ioctl(0x07, &mut fw),
+                &fw[..4]
+            );
+        } else if steam_controller::VARIANT == steam_controller::Variant::Triton {
+            // The 2026 controller: feature report 1 (the id and 63 bytes) both
+            // ways, and output reports 0x80 (rumble) and 0x81 (a pulse).
+            let command = |msg: &[u8]| {
+                let mut buf = [0u8; 64];
+                buf[0] = 1;
+                buf[1..=msg.len()].copy_from_slice(msg);
+                let set = hid_ioctl(0x06, &mut buf);
+                let mut reply = [0u8; 64];
+                reply[0] = 1;
+                let got = hid_ioctl(0x07, &mut reply);
+                println!(
+                    "command {:02x?}: set {set}, get {got} {:02x?}",
+                    msg,
+                    &reply[..8]
+                );
+                reply
+            };
+            command(&[0x87, 3, 0x09, 0, 0]);
+            command(&[0x83, 0]);
+            let serial = command(&[0xae, 21, 1]);
+            println!("serial: {:?}", String::from_utf8_lossy(&serial[4..17]));
+            let rumble = [0x80u8, 0, 0, 0, 0xff, 0xff, 0, 0x00, 0x80, 0];
+            // SAFETY: a valid descriptor and buffer.
+            let n = unsafe { libc::write(fd, rumble.as_ptr().cast(), rumble.len()) };
+            println!("hidraw write 0x80: {n}");
+            let pulse = [0x81u8, 1, 0x90, 0x01, 100, 0, 3, 0];
+            // SAFETY: as above.
+            let n = unsafe { libc::write(fd, pulse.as_ptr().cast(), pulse.len()) };
+            println!("hidraw write 0x81: {n}");
+        } else if steam_controller::VARIANT == steam_controller::Variant::Ble {
+            // Bluetooth framing: report 3, a header and 18 bytes, both ways.
+            let send = |msg: &[u8]| {
+                let mut buf = [0u8; 20];
+                buf[0] = 3;
+                buf[1] = 0xc0;
+                buf[2..2 + msg.len()].copy_from_slice(msg);
+                hid_ioctl(0x06, &mut buf)
+            };
+            let read = || {
+                let mut out = Vec::new();
+                for _ in 0..4 {
+                    let mut buf = [0u8; 20];
+                    buf[0] = 3;
+                    let n = hid_ioctl(0x07, &mut buf);
+                    println!("get feature: {n} {:02x?}", &buf[..20]);
+                    out.extend_from_slice(&buf[2..]);
+                    if n < 0 || buf[1] & 0x40 != 0 {
+                        break;
+                    }
+                }
+                out
+            };
+            println!(
+                "set feature 0x8f: {}",
+                send(&[0x8f, 8, 1, 0x90, 1, 0, 0, 1, 0, 0])
+            );
+            println!("set feature 0x83: {}", send(&[0x83, 0]));
+            // The attributes take two segments (the first has no last flag).
+            let attributes = read();
+            println!("attributes: {:02x?}", &attributes[..32]);
+            println!("set feature 0xae: {}", send(&[0xae, 11, 1]));
+            let serial = read();
+            println!("serial: {:?}", String::from_utf8_lossy(&serial[3..13]));
+        } else {
+            let mut cmd = [0u8; 65];
+            cmd[1..11].copy_from_slice(&[0x8f, 8, 1, 0x90, 1, 0, 0, 1, 0, 0]);
+            println!("set feature 0x8f: {}", hid_ioctl(0x06, &mut cmd));
+            let mut get = [0u8; 65];
+            cmd[1..3].copy_from_slice(&[0x83, 0]);
+            println!("set feature 0x83: {}", hid_ioctl(0x06, &mut cmd));
+            println!(
+                "get feature: {} {:02x?}",
+                hid_ioctl(0x07, &mut get),
+                &get[..20]
+            );
+            let mut get = [0u8; 65];
+            cmd[1..4].copy_from_slice(&[0xae, 11, 1]);
+            hid_ioctl(0x06, &mut cmd);
+            println!(
+                "serial: {} {:?}",
+                hid_ioctl(0x07, &mut get),
+                String::from_utf8_lossy(&get[..16])
+            );
+        }
+        // Changed after the nodes were opened, so the drivers report them.
+        let state = PadState {
+            a: vec![0.6, -0.5, 0.0, 0.0],
+            gyro: Some([0.15, 0.25, 0.35]),
+            accel: Some([0.5, 9.8, -0.5]),
+            ..state
+        };
+        let mut last: std::collections::BTreeMap<(String, u16, u16), i32> = Default::default();
+        let mut report = [0u8; 80];
+        let mut reports = 0;
+        while Instant::now() < end {
+            pads.update(&state);
+            std::thread::sleep(Duration::from_millis(10));
+            for (name, file) in &mut evdevs {
+                let mut buf = [0u8; 24 * 32];
+                while let Ok(n) = std::io::Read::read(file, &mut buf) {
+                    for ev in buf[..n].chunks_exact(24) {
+                        let (t, c) = (
+                            u16::from_ne_bytes([ev[16], ev[17]]),
+                            u16::from_ne_bytes([ev[18], ev[19]]),
+                        );
+                        let v = i32::from_ne_bytes([ev[20], ev[21], ev[22], ev[23]]);
+                        if t == EV_ABS || t == EV_KEY {
+                            last.insert((name.clone(), t, c), v);
+                        }
+                    }
+                }
+            }
+            while let Ok(n) = std::io::Read::read(&mut &hidraw, &mut report) {
+                reports += 1;
+                if reports == 1 {
+                    println!("hidraw report ({n} bytes): {:02x?}", &report[..n.min(64)]);
+                }
+            }
+        }
+        println!("hidraw reports read: {reports}");
+        for ((name, t, c), v) in &last {
+            println!("{name}: type {t} code {c:#x} = {v}");
+        }
+        while let Ok(event) = events.try_recv() {
+            println!("event: {event:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs /dev/uhid and the host's hid-playstation"]
+    fn live_dualsense() {
+        live(GamepadKind::DualSense);
+    }
+
+    #[test]
+    #[ignore = "needs /dev/uhid"]
+    fn live_steam_controller() {
+        live(GamepadKind::Steam);
     }
 }

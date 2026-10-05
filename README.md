@@ -54,7 +54,7 @@ To run a dev instance of the portal:
 bun run dev
 ```
 
-It starts `cha-control` on port 8090 (database `data/dev.db`) and the SPA on Vite with hot reload at http://localhost:5190, which proxies `/api` to it. The sign-in page shows **Login as Local Dev** (`--dev-login`): it creates a `dev` admin and signs you in. It only answers requests from this machine, and is not for a real portal. Flags after `--` go to `cha-control` (`bun run dev -- --turn-secret …`); Ctrl-C stops both.
+It starts `cha-control` on port 8090 (database `data/dev.db`) and the SPA on Vite with hot reload at http://localhost:5190, which proxies `/api` to it. The sign-in page shows **Login as Local Dev** (`--dev-login`): it creates a `dev` admin and signs you in, and a **Login as <name>** button per existing admin account signs you in as that account (no password), so a local portal can show your own environments and settings. It only answers requests from this machine, and is not for a real portal. Flags after `--` go to `cha-control` (`bun run dev -- --turn-secret …`); Ctrl-C stops both.
 
 To run the portal as it ships instead, build the SPA and start `cha-control` alone, which serves it on port 8090. On first start, its log prints a one-time setup token for creating the first admin at http://localhost:8090:
 
@@ -86,7 +86,7 @@ docker compose -f images/compose.yaml build
 CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
 ```
 
-Gamepads need the host's `uinput` module (`/dev/uinput`); without it, start the agent with `CHA_UINPUT=` and environments go without. `docker compose -f deploy/node/compose.yaml run --rm agent --doctor` checks the node and says how to fix what it finds; `cha-node --print-inventory` shows what the agent will report. For the portal itself, HTTPS and remote access, see [`deploy/README.md`](deploy/README.md). Once the node is online, **Environments** launches anything in the catalog on it.
+Run `sudo deploy/node/host/install.sh` once on the node: it installs the udev rules, the Steam sandbox's AppArmor profile and the module list (`--check` only reports). Gamepads need the host's `uinput` module (`/dev/uinput`); without it, start the agent with `CHA_UINPUT=` and environments go without. The DualSense and Steam Controller kinds also need `uhid` (`/dev/uhid`; `CHA_UHID=` goes without, and they fall back to an Xbox 360 pad). `docker compose -f deploy/node/compose.yaml run --rm agent --doctor` checks the node and says how to fix what it finds; `cha-node --print-inventory` shows what the agent will report. For the portal itself, HTTPS and remote access, see [`deploy/README.md`](deploy/README.md). Once the node is online, **Environments** launches anything in the catalog on it.
 
 ## License
 

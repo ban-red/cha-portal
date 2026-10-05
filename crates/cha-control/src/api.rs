@@ -22,6 +22,7 @@ pub fn routes() -> Router<AppState> {
         .route("/setup", get(setup_status).post(setup))
         .route("/auth/login", post(login))
         .route("/auth/dev-login", post(dev_login))
+        .route("/auth/dev-accounts", get(dev_accounts))
         .route("/auth/logout", post(logout))
         .route("/me", get(me))
         .route("/users", get(list_users).post(create_user))
@@ -30,6 +31,7 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::environments::routes())
         .merge(crate::ice::routes())
         .merge(crate::storage::routes())
+        .merge(crate::controllers::routes())
         .fallback(|| async { ApiError::NotFound("no such API".into()) })
 }
 
@@ -175,15 +177,8 @@ async fn login(
 
 const DEV_USERNAME: &str = "dev";
 
-/// "Login as Local Dev": with `--dev-login`, signs a loopback client in as the
-/// `dev` admin, creating it (with an unusable random password) on first use.
-/// Closes first-run setup, since the portal then has an account.
-async fn dev_login(
-    State(state): State<AppState>,
-    client: ClientInfo,
-    jar: CookieJar,
-    Json(_): Json<Value>,
-) -> ApiResult<(CookieJar, Json<User>)> {
+/// Dev login is off without `--dev-login`, and only for loopback clients.
+fn require_dev_login(state: &AppState, client: &ClientInfo) -> ApiResult<()> {
     if !state.config.dev_login {
         return Err(ApiError::NotFound("no such API".into()));
     }
@@ -197,6 +192,82 @@ async fn dev_login(
             "dev_login_loopback_only",
             "dev login only works from this machine",
         ));
+    }
+    Ok(())
+}
+
+/// The enabled admins other than `dev`, for dev login to sign in as.
+async fn dev_accounts(State(state): State<AppState>, client: ClientInfo) -> ApiResult<Json<Value>> {
+    require_dev_login(&state, &client)?;
+    let mut accounts: Vec<User> = db::list_users(&state.db)
+        .await?
+        .into_iter()
+        .filter(|u| u.role == Role::Admin && !u.disabled && u.username != DEV_USERNAME)
+        .collect();
+    accounts.sort_by(|a, b| a.username.cmp(&b.username));
+    let accounts: Vec<Value> = accounts
+        .iter()
+        .map(|u| json!({ "username": u.username, "displayName": u.display_name }))
+        .collect();
+    Ok(Json(json!({ "accounts": accounts })))
+}
+
+/// "Login as Local Dev": with `--dev-login`, signs a loopback client in as the
+/// `dev` admin, creating it (with an unusable random password) on first use.
+/// Closes first-run setup, since the portal then has an account. With a
+/// `username`, signs in as that existing, enabled admin instead (never
+/// creating it), so local development sees the owner's own data.
+async fn dev_login(
+    State(state): State<AppState>,
+    client: ClientInfo,
+    jar: CookieJar,
+    Json(req): Json<Value>,
+) -> ApiResult<(CookieJar, Json<User>)> {
+    require_dev_login(&state, &client)?;
+    let target = match req.get("username") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(name)) => Some(name.trim().to_string()),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "invalid_username",
+                "username must be a string",
+            ));
+        }
+    };
+    if let Some(username) = target.filter(|name| name != DEV_USERNAME) {
+        let user = match db::user_for_login(&state.db, &username).await? {
+            Some(row) => row.user,
+            None => return Err(ApiError::NotFound(format!("no account named {username}"))),
+        };
+        if user.disabled {
+            return Err(ApiError::forbidden("disabled", "this account is disabled"));
+        }
+        if user.role != Role::Admin {
+            return Err(ApiError::forbidden(
+                "dev_login_admin_only",
+                "dev login only signs in as admins",
+            ));
+        }
+        let cookie = auth::start_session(&state, &user, &client).await?;
+        db::audit(
+            &state.db,
+            Some(&user.id),
+            "dev.login_as",
+            Some(&user.id),
+            Some(json!({ "username": user.username })),
+            client.ip.as_deref(),
+        )
+        .await?;
+        db::audit(
+            &state.db,
+            Some(&user.id),
+            "login.dev",
+            None,
+            None,
+            client.ip.as_deref(),
+        )
+        .await?;
+        return Ok((jar.add(cookie), Json(user)));
     }
     let mut setup_token = state.setup_token.lock().await;
     let user = match db::user_for_login(&state.db, DEV_USERNAME).await? {

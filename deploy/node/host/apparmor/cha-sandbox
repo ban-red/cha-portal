@@ -9,8 +9,7 @@
 # namespace the app creates and owns, as under Podman's defaults.
 #
 # Install on the node (root), then check with `cha-node --doctor`:
-#   sudo install -m 644 deploy/node/host/apparmor/cha-sandbox /etc/apparmor.d/cha-sandbox
-#   sudo apparmor_parser -r -W /etc/apparmor.d/cha-sandbox
+#   sudo deploy/node/host/install.sh
 # Environments with the `steam` security profile run under it.
 
 #include <tunables/global>

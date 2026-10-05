@@ -6,6 +6,7 @@
 import { GamepadApiBackend } from "./gamepad-api";
 import { WebHidBackend } from "./webhid";
 import {
+  hapticAsRumble,
   neutralState,
   round3,
   type BackendController,
@@ -13,6 +14,7 @@ import {
   type ControllerInfo,
   type ControllerState,
   type RawReport,
+  type Side,
 } from "./types";
 
 export const MAX_SLOTS = 4;
@@ -49,7 +51,8 @@ export function padMessage(slot: number, info: ControllerInfo, s: ControllerStat
   msg.ty = info.type;
   if (s.gyro) msg.gyro = s.gyro.map((v) => Math.round(v * 1000) / 1000);
   if (s.accel) msg.accel = s.accel.map((v) => Math.round(v * 1000) / 1000);
-  if (s.touch) msg.touch = s.touch.map((p) => ({ id: p.id, x: round3(p.x), y: round3(p.y), down: p.down }));
+  // Only fingers on a pad are there; a lifted one is gone.
+  if (s.touch) msg.touch = s.touch.filter((p) => p.down).map((p) => ({ id: p.id, x: round3(p.x), y: round3(p.y), down: p.down }));
   if (s.battery !== undefined) msg.bat = Math.round(s.battery * 100) / 100;
   return msg;
 }
@@ -145,6 +148,44 @@ export class ControllerManager {
   rumble(slot: number, lo: number, hi: number, ms: number): void {
     const mine = this.visible.find((c) => c.slot === slot);
     if (mine) this.rumbleController(mine.id, clampUnit(lo), clampUnit(hi), Math.max(0, ms));
+  }
+
+  /** One pad, for what the page does to it itself (the Controllers page's tests). */
+  pad(id: string): BackendController | null {
+    return this.all.get(id)?.pad ?? null;
+  }
+
+  private padInSlot(slot: number): BackendController | null {
+    const mine = this.visible.find((c) => c.slot === slot);
+    return mine ? this.pad(mine.id) : null;
+  }
+
+  /** The streamer's trackpad pulse for a slot: played on a pad that has trackpads, else as a short rumble. */
+  haptic(slot: number, side: Side, amp: number, onUs: number, offUs: number, count: number): void {
+    const pad = this.padInSlot(slot);
+    if (!pad) return;
+    const a = clampUnit(amp);
+    const on = Math.max(0, num(onUs));
+    const off = Math.max(0, num(offUs));
+    const n = Math.max(1, Math.round(num(count)));
+    if (pad.haptic) pad.haptic(side, a, on, off, n);
+    else if (a > 0 && pad.info.capabilities.rumble) pad.rumble(...hapticAsRumble(a, on, off, n));
+  }
+
+  /** The streamer's lightbar colour for a slot, 0..255. */
+  led(slot: number, r: number, g: number, b: number): void {
+    this.padInSlot(slot)?.led?.(byte(r), byte(g), byte(b));
+  }
+
+  /** The streamer's player LEDs for a slot, bits 0–4. */
+  players(slot: number, mask: number): void {
+    this.padInSlot(slot)?.players?.(byte(mask) & 0x1f);
+  }
+
+  /** The streamer's adaptive trigger effect for a slot: 11 bytes. */
+  trigger(slot: number, side: Side, effect: number[]): void {
+    if (effect.length !== 11) return;
+    this.padInSlot(slot)?.trigger?.(side, effect.map(byte));
   }
 
   /** The WebHID backend, when this page has one. */
@@ -249,4 +290,6 @@ export class ControllerManager {
   }
 }
 
+const num = (v: number) => (Number.isFinite(v) ? v : 0);
+const byte = (v: number) => Math.round(Math.min(255, Math.max(0, num(v))));
 const clampUnit = (v: number) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0);

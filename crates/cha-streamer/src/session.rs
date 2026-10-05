@@ -30,8 +30,8 @@ use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorWatch, PointerWatch};
 use crate::control::{
-    Control, RumbleFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard,
-    next_cursor, next_pointer, next_status, percentile,
+    Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
+    next_pointer, next_status, percentile,
 };
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace};
@@ -171,7 +171,7 @@ struct Session {
     pointer: Option<PointerWatch>,
     /// What the app's setup is doing, once the control channel is open.
     status: Option<StatusWatch>,
-    rumble: RumbleFeed,
+    rumble: PadFeed,
     subscribed_at: Option<Instant>,
     sending_until: Option<Instant>,
     finished_at: Option<Instant>,
@@ -197,7 +197,7 @@ impl Session {
     ) -> Self {
         let epoch = Instant::now();
         let clipboard = Some(params.media.clipboard());
-        let rumble = RumbleFeed::new(params.gamepads.as_deref());
+        let rumble = PadFeed::new(params.gamepads.as_deref());
         let rate = RateControl::new(MIN_BPS, params.media.bitrate_bps());
         let handler = Control {
             epoch,
@@ -305,7 +305,7 @@ impl Session {
                     let msg = floor_msg(&self.handler.seat);
                     self.send_control(&msg);
                 }
-                // The apps' rumble is the controller's alone.
+                // What the apps do to the pads (rumble, lightbar, ...) is the controller's alone.
                 msg = self.rumble.next() => {
                     if self.handler.seat.has_control() {
                         self.send_control(&msg);

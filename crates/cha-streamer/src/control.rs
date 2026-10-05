@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorShape, CursorWatch, PointerSpot, PointerWatch};
-use crate::gamepad::{Gamepads, MAX_PADS, PadState, Rumble};
+use crate::gamepad::{EVENT_CLASSES, Gamepads, MAX_PADS, PadEvent, PadState};
 use crate::input::BrowserInput;
 use crate::media::Media;
 use crate::status::{Status, StatusWatch};
@@ -63,6 +63,35 @@ pub enum ServerMsg {
         lo: f32,
         hi: f32,
         ms: u32,
+    },
+    /// An app pulsed a trackpad of pad `i`'s (Steam Controller): `count`
+    /// pulses of `on_us`, `off_us` apart, at `amp` (0..1); 0 stops them.
+    Haptic {
+        i: usize,
+        side: &'static str,
+        amp: f32,
+        on_us: u32,
+        off_us: u32,
+        count: u32,
+    },
+    /// An app set the lightbar of pad `i` (DualSense), 0..255.
+    Led {
+        i: usize,
+        r: u8,
+        g: u8,
+        b: u8,
+    },
+    /// An app set the player LEDs of pad `i`, bits 0..5 (DualSense).
+    Players {
+        i: usize,
+        mask: u8,
+    },
+    /// An app set an adaptive trigger effect on pad `i` (DualSense): the
+    /// output report's block, the type and ten parameters.
+    Trigger {
+        i: usize,
+        side: &'static str,
+        effect: [u8; 11],
     },
     /// An app copied this text (P2.6).
     Clipboard {
@@ -336,36 +365,37 @@ pub async fn next_status(watch: &mut Option<StatusWatch>) -> Option<ServerMsg> {
     }
 }
 
-/// Rumble goes out at most this often per pad.
-const RUMBLE_INTERVAL: Duration = Duration::from_millis(16);
+/// What the pads' apps do goes out at most this often per pad and kind.
+const PAD_EVENT_INTERVAL: Duration = Duration::from_millis(16);
 
-/// Keeps rumble to about 60 messages a second per pad: the newest of what
-/// comes in between waits for its turn, and a stop never waits.
+/// Keeps pad events to about 60 messages a second per pad and kind (motors,
+/// each trackpad, the lightbar, ...): the newest of what comes in between waits
+/// for its turn, and a stop never waits.
 #[derive(Default)]
-struct RumbleLimit {
-    slots: [RumbleSlot; MAX_PADS],
+struct PadLimit {
+    slots: [[PadSlot; EVENT_CLASSES]; MAX_PADS],
 }
 
 #[derive(Default)]
-struct RumbleSlot {
+struct PadSlot {
     sent: Option<Instant>,
-    waiting: Option<Rumble>,
+    waiting: Option<PadEvent>,
 }
 
-impl RumbleLimit {
+impl PadLimit {
     /// The message to send now, if any.
-    fn push(&mut self, rumble: Rumble, now: Instant) -> Option<Rumble> {
-        let slot = self.slots.get_mut(rumble.slot)?;
-        if rumble.ms == 0 {
-            *slot = RumbleSlot::default();
-            return Some(rumble);
+    fn push(&mut self, event: PadEvent, now: Instant) -> Option<PadEvent> {
+        let slot = self.slots.get_mut(event.slot())?.get_mut(event.class())?;
+        if event.is_stop() {
+            *slot = PadSlot::default();
+            return Some(event);
         }
-        if slot.sent.is_none_or(|at| now >= at + RUMBLE_INTERVAL) {
+        if slot.sent.is_none_or(|at| now >= at + PAD_EVENT_INTERVAL) {
             slot.sent = Some(now);
             slot.waiting = None;
-            return Some(rumble);
+            return Some(event);
         }
-        slot.waiting = Some(rumble);
+        slot.waiting = Some(event);
         None
     }
 
@@ -373,36 +403,38 @@ impl RumbleLimit {
     fn due(&self) -> Option<Instant> {
         self.slots
             .iter()
+            .flatten()
             .filter(|s| s.waiting.is_some())
-            .filter_map(|s| s.sent.map(|at| at + RUMBLE_INTERVAL))
+            .filter_map(|s| s.sent.map(|at| at + PAD_EVENT_INTERVAL))
             .min()
     }
 
     /// A waiting message whose time has come.
-    fn take_due(&mut self, now: Instant) -> Option<Rumble> {
-        let slot = self.slots.iter_mut().find(|s| {
-            s.waiting.is_some() && s.sent.is_some_and(|at| now >= at + RUMBLE_INTERVAL)
+    fn take_due(&mut self, now: Instant) -> Option<PadEvent> {
+        let slot = self.slots.iter_mut().flatten().find(|s| {
+            s.waiting.is_some() && s.sent.is_some_and(|at| now >= at + PAD_EVENT_INTERVAL)
         })?;
         slot.sent = Some(now);
         slot.waiting.take()
     }
 }
 
-/// A session's view of the pads' rumble, rate-limited.
-pub struct RumbleFeed {
-    rx: Option<broadcast::Receiver<Rumble>>,
-    limit: RumbleLimit,
+/// A session's view of what apps do to the pads, rate-limited.
+pub struct PadFeed {
+    rx: Option<broadcast::Receiver<PadEvent>>,
+    limit: PadLimit,
 }
 
-impl RumbleFeed {
+impl PadFeed {
     pub fn new(gamepads: Option<&Gamepads>) -> Self {
         Self {
-            rx: gamepads.map(Gamepads::rumble),
-            limit: RumbleLimit::default(),
+            rx: gamepads.map(Gamepads::events),
+            limit: PadLimit::default(),
         }
     }
 
-    /// The next rumble message; never resolves without pads.
+    /// The next message (rumble, haptics, lightbar, ...); never resolves
+    /// without pads.
     pub async fn next(&mut self) -> ServerMsg {
         loop {
             let due = self.limit.due();
@@ -412,7 +444,7 @@ impl RumbleFeed {
             let mut closed = false;
             let ready = tokio::select! {
                 got = rx.recv() => match got {
-                    Ok(rumble) => self.limit.push(rumble, Instant::now()),
+                    Ok(event) => self.limit.push(event, Instant::now()),
                     Err(broadcast::error::RecvError::Lagged(_)) => None,
                     Err(broadcast::error::RecvError::Closed) => {
                         closed = true;
@@ -426,15 +458,45 @@ impl RumbleFeed {
             if closed {
                 self.rx = None;
             }
-            if let Some(r) = ready {
-                return ServerMsg::Rumble {
-                    i: r.slot,
-                    lo: r.lo,
-                    hi: r.hi,
-                    ms: r.ms,
-                };
+            if let Some(event) = ready {
+                return pad_msg(event);
             }
         }
+    }
+}
+
+/// An event for the page.
+fn pad_msg(event: PadEvent) -> ServerMsg {
+    match event {
+        PadEvent::Rumble(r) => ServerMsg::Rumble {
+            i: r.slot,
+            lo: r.lo,
+            hi: r.hi,
+            ms: r.ms,
+        },
+        PadEvent::Haptic(h) => ServerMsg::Haptic {
+            i: h.slot,
+            side: h.side.name(),
+            amp: h.amp,
+            on_us: h.on_us,
+            off_us: h.off_us,
+            count: h.count,
+        },
+        PadEvent::Led(l) => ServerMsg::Led {
+            i: l.slot,
+            r: l.r,
+            g: l.g,
+            b: l.b,
+        },
+        PadEvent::Players(p) => ServerMsg::Players {
+            i: p.slot,
+            mask: p.mask,
+        },
+        PadEvent::Trigger(t) => ServerMsg::Trigger {
+            i: t.slot,
+            side: t.side.name(),
+            effect: t.effect,
+        },
     }
 }
 
@@ -486,6 +548,7 @@ pub fn percentile<T: Copy>(sorted: &[T], q: f64) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gamepad::{Haptic, Led, Players, Rumble, Side, Trigger};
 
     fn line(msg: &ServerMsg) -> String {
         serde_json::to_string(msg).unwrap()
@@ -502,13 +565,19 @@ mod tests {
             }),
             r#"{"t":"rumble","i":1,"lo":1.0,"hi":0.5,"ms":200}"#
         );
-        let r = |slot, lo, ms| Rumble {
-            slot,
-            lo,
-            hi: 0.0,
-            ms,
+        let r = |slot, lo, ms| {
+            PadEvent::Rumble(Rumble {
+                slot,
+                lo,
+                hi: 0.0,
+                ms,
+            })
         };
-        let mut limit = RumbleLimit::default();
+        let lo_of = |e: PadEvent| match e {
+            PadEvent::Rumble(r) => r.lo,
+            other => panic!("{other:?}"),
+        };
+        let mut limit = PadLimit::default();
         let t0 = Instant::now();
         assert!(limit.push(r(0, 0.1, 100), t0).is_some());
         // Within the interval the newest waits; another pad is its own.
@@ -527,15 +596,80 @@ mod tests {
                 .push(r(1, 0.9, 100), t0 + Duration::from_millis(4))
                 .is_some()
         );
-        assert_eq!(limit.due(), Some(t0 + RUMBLE_INTERVAL));
+        assert_eq!(limit.due(), Some(t0 + PAD_EVENT_INTERVAL));
         assert!(limit.take_due(t0 + Duration::from_millis(8)).is_none());
-        assert_eq!(limit.take_due(t0 + RUMBLE_INTERVAL).unwrap().lo, 0.3);
+        assert_eq!(lo_of(limit.take_due(t0 + PAD_EVENT_INTERVAL).unwrap()), 0.3);
         assert!(limit.due().is_none());
         // A stop goes at once and cancels what waited.
-        assert!(limit.push(r(0, 0.4, 100), t0 + RUMBLE_INTERVAL).is_none());
-        let stop = limit.push(r(0, 0.0, 0), t0 + RUMBLE_INTERVAL).unwrap();
-        assert_eq!(stop.ms, 0);
+        assert!(
+            limit
+                .push(r(0, 0.4, 100), t0 + PAD_EVENT_INTERVAL)
+                .is_none()
+        );
+        let stop = limit.push(r(0, 0.0, 0), t0 + PAD_EVENT_INTERVAL).unwrap();
+        assert!(stop.is_stop());
         assert!(limit.due().is_none());
+    }
+
+    #[test]
+    fn the_other_pad_messages_serialize_and_are_limited_per_kind() {
+        let events = [
+            PadEvent::Haptic(Haptic {
+                slot: 0,
+                side: Side::Left,
+                amp: 0.5,
+                on_us: 100,
+                off_us: 200,
+                count: 3,
+            }),
+            PadEvent::Led(Led {
+                slot: 2,
+                r: 1,
+                g: 2,
+                b: 3,
+            }),
+            PadEvent::Players(Players { slot: 1, mask: 4 }),
+            PadEvent::Trigger(Trigger {
+                slot: 0,
+                side: Side::Right,
+                effect: [2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            }),
+        ];
+        let lines: Vec<String> = events.iter().map(|e| line(&pad_msg(*e))).collect();
+        assert_eq!(
+            lines,
+            [
+                r#"{"t":"haptic","i":0,"side":"left","amp":0.5,"on_us":100,"off_us":200,"count":3}"#,
+                r#"{"t":"led","i":2,"r":1,"g":2,"b":3}"#,
+                r#"{"t":"players","i":1,"mask":4}"#,
+                r#"{"t":"trigger","i":0,"side":"right","effect":[2,1,2,3,4,5,6,7,8,9,10]}"#,
+            ]
+        );
+        // Each kind (and each side) keeps its own newest; none holds back another.
+        let mut limit = PadLimit::default();
+        let t0 = Instant::now();
+        for e in events {
+            assert!(limit.push(e, t0).is_some());
+        }
+        assert!(
+            limit
+                .push(events[1], t0 + Duration::from_millis(1))
+                .is_none()
+        );
+        assert!(
+            limit
+                .push(events[0], t0 + Duration::from_millis(1))
+                .is_none()
+        );
+        // A haptic stop goes at once.
+        let stop = PadEvent::Haptic(Haptic {
+            count: 0,
+            ..match events[0] {
+                PadEvent::Haptic(h) => h,
+                _ => unreachable!(),
+            }
+        });
+        assert!(limit.push(stop, t0 + Duration::from_millis(2)).is_some());
     }
 
     #[test]

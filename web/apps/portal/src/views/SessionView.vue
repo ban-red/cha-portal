@@ -100,6 +100,18 @@ const muted = ref(
     }
   })(),
 );
+const VOLUME_KEY = "cha.player.volume";
+/** Sound's level on this page, 0..100. */
+const volume = ref(
+  (() => {
+    try {
+      const v = Number(localStorage.getItem(VOLUME_KEY) ?? "100");
+      return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 100;
+    } catch {
+      return 100;
+    }
+  })(),
+);
 /** The browser holds sound back until a click or key press. */
 const audioBlocked = ref(false);
 /** Whether this page has the controls, and how many sessions watch (P2.6). */
@@ -156,6 +168,17 @@ function toggleSound() {
   }
   player?.setMuted(muted.value);
 }
+function onVolume(e: Event) {
+  volume.value = Number((e.target as HTMLInputElement).value);
+  try {
+    localStorage.setItem(VOLUME_KEY, String(volume.value));
+  } catch {
+    // Private mode: just this session.
+  }
+  player?.setVolume(volume.value / 100);
+  // Turning it up is asking for sound.
+  if (muted.value && volume.value > 0) toggleSound();
+}
 function onSoundButton() {
   // Blocked: this click is the gesture the browser waits for.
   if (audioBlocked.value && !muted.value) player?.setMuted(false);
@@ -203,6 +226,7 @@ async function connect() {
       if (player === p) transport.value = t;
     },
     muted: muted.value,
+    volume: volume.value / 100,
     onAudioBlocked: (blocked) => {
       if (player === p) audioBlocked.value = blocked;
     },
@@ -344,7 +368,7 @@ const STATUS: Record<PlayerState, string> = {
 
     <!-- Toolbar -->
     <div
-      class="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 whitespace-nowrap shadow-lg backdrop-blur transition-opacity duration-200"
+      class="absolute top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 whitespace-nowrap shadow-lg backdrop-blur transition-opacity duration-200"
       :class="toolbar ? 'opacity-100' : 'pointer-events-none opacity-0'"
       @pointerenter="hover = true"
       @pointerleave="hover = false"
@@ -393,6 +417,18 @@ const STATUS: Record<PlayerState, string> = {
       >
         {{ muted ? "Sound off" : audioBlocked ? "Enable sound" : "Sound on" }}
       </button>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        step="5"
+        class="w-20 accent-accent"
+        :value="muted ? 0 : volume"
+        :aria-valuetext="muted ? 'Sound off' : `${volume}%`"
+        :title="muted ? 'Sound off' : `Volume ${volume}%`"
+        aria-label="Volume"
+        @input="onVolume"
+      />
       <div class="relative" @keydown.esc="closeControllerMenu">
         <button
           class="btn-ghost border-0 px-3 py-1.5 text-xs"

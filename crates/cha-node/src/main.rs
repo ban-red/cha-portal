@@ -5,7 +5,7 @@ use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime};
 use cha_node::storage::{DataRoot, parse_shared_dirs};
 use cha_node::{
-    Agent, Identity, check_portal_transport, doctor, enroll, init_tls, inventory,
+    Agent, Identity, check_portal_transport, doctor, enroll, hostfiles, init_tls, inventory,
     normalize_portal_url,
 };
 use clap::Parser;
@@ -64,6 +64,11 @@ struct Args {
     /// Empty goes without gamepads (e.g. no `uinput` module).
     #[arg(long, env = "CHA_UINPUT", default_value = "/dev/uinput")]
     uinput: String,
+    /// The host's uhid device: streamers make virtual DualSense and Steam
+    /// Controllers with it. Empty goes without them (those fall back to an
+    /// Xbox 360 pad).
+    #[arg(long, env = "CHA_UHID", default_value = "/dev/uhid")]
+    uhid: String,
     /// The router's public IP, if it forwards the streamers' UDP ports here
     /// (WAN without a mesh or TURN).
     #[arg(long, env = "CHA_PUBLIC_ADDRESS")]
@@ -152,6 +157,7 @@ async fn main() -> Result<()> {
         }
     };
 
+    hostfiles::warn_if_stale();
     check_portal_transport(&identity.portal_url, args.allow_insecure_portal)?;
     if identity.portal_url.starts_with("http://") && args.allow_insecure_portal {
         warn!(portal = %identity.portal_url, "plain HTTP to the portal (CHA_ALLOW_INSECURE_PORTAL): for development only");
@@ -188,6 +194,7 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
         render_node,
         gpu_device: args.gpu_device.clone(),
         uinput: Some(args.uinput.trim().to_string()).filter(|u| !u.is_empty()),
+        uhid: Some(args.uhid.trim().to_string()).filter(|u| !u.is_empty()),
         public_address: args
             .public_address
             .clone()

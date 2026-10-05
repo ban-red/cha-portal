@@ -31,6 +31,10 @@
 //! portal says in its welcome that it understands them
 //! ([`ToNode::Welcome::environment_warnings`]), and a node sends none until it
 //! does; an older node never sends one.
+//!
+//! The gamepad kind ([`EnvironmentSpec::gamepad`]) is one more optional field:
+//! a node that predates it ignores it and makes Xbox 360 pads, which is what
+//! a spec without it means, so an older portal's launches are unchanged.
 
 mod storage;
 
@@ -259,6 +263,49 @@ pub struct EnvironmentSpec {
     /// are that of their largest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<Box<Storage>>,
+    /// The kind of virtual controller the app gets; `None` is `xbox360`. A
+    /// node that predates it makes Xbox 360 pads whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamepad: Option<GamepadKind>,
+}
+
+/// A virtual controller an environment's streamer makes (`docs/controllers.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GamepadKind {
+    /// An Xbox 360 pad over uinput: what every game and SDL know.
+    #[default]
+    Xbox360,
+    /// A wired DualSense over uhid.
+    Dualsense,
+    /// A wired Steam Controller over uhid.
+    Steam,
+}
+
+impl GamepadKind {
+    /// The name on the wire, in the catalog and as the streamer's `--pad-kind`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Xbox360 => "xbox360",
+            Self::Dualsense => "dualsense",
+            Self::Steam => "steam",
+        }
+    }
+
+    /// The kind named `s`, if it is one.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "xbox360" => Some(Self::Xbox360),
+            "dualsense" => Some(Self::Dualsense),
+            "steam" => Some(Self::Steam),
+            _ => None,
+        }
+    }
+
+    /// Whether the streamer makes it through uhid (the others use uinput).
+    pub fn needs_uhid(self) -> bool {
+        !matches!(self, Self::Xbox360)
+    }
 }
 
 /// What every legacy home volume's name starts with.
@@ -591,6 +638,7 @@ mod tests {
                 owner: "u1".into(),
                 template: "chrome".into(),
                 storage: None,
+                gamepad: None,
             },
         })
         .unwrap();
@@ -650,6 +698,60 @@ mod tests {
     }
 
     #[test]
+    fn gamepad_kinds_are_optional_and_lowercase() {
+        let spec = |gamepad| EnvironmentSpec {
+            id: "e1".into(),
+            image: "i".into(),
+            security: SecurityProfile::Standard,
+            shm_mb: 64,
+            width: 1,
+            height: 1,
+            fps: 1,
+            portal_key: "k".into(),
+            home: None,
+            owner: String::new(),
+            template: String::new(),
+            storage: None,
+            gamepad,
+        };
+        // Absent when unset, so an older node reads what it always did.
+        let json = serde_json::to_value(spec(None)).unwrap();
+        assert!(json.get("gamepad").is_none());
+        assert_eq!(
+            serde_json::from_value::<EnvironmentSpec>(json)
+                .unwrap()
+                .gamepad,
+            None
+        );
+        for (kind, name) in [
+            (GamepadKind::Xbox360, "xbox360"),
+            (GamepadKind::Dualsense, "dualsense"),
+            (GamepadKind::Steam, "steam"),
+        ] {
+            let json = serde_json::to_value(spec(Some(kind))).unwrap();
+            assert_eq!(json["gamepad"], name);
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(GamepadKind::parse(name), Some(kind));
+            assert_eq!(
+                serde_json::from_value::<EnvironmentSpec>(json)
+                    .unwrap()
+                    .gamepad,
+                Some(kind)
+            );
+        }
+        assert_eq!(GamepadKind::default(), GamepadKind::Xbox360);
+        assert_eq!(GamepadKind::parse("ps5"), None);
+        assert!(GamepadKind::Steam.needs_uhid() && !GamepadKind::Xbox360.needs_uhid());
+        // A newer portal's spec with a kind this build doesn't know is refused,
+        // rather than quietly given the wrong pad.
+        let bad = serde_json::json!({
+            "id": "e1", "image": "i", "security": "standard", "shmMb": 64,
+            "width": 1, "height": 1, "fps": 1, "portalKey": "k", "gamepad": "ps5",
+        });
+        assert!(serde_json::from_value::<EnvironmentSpec>(bad).is_err());
+    }
+
+    #[test]
     fn storage_specs_round_trip_and_old_ones_have_none() {
         let user = "01a10527-f79f-761b-962f-4b26924a2e68";
         let spec = EnvironmentSpec {
@@ -673,6 +775,7 @@ mod tests {
                 }),
                 legacy_volume: Some(home_volume_name(user, "steam")),
             })),
+            gamepad: None,
         };
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(

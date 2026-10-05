@@ -18,6 +18,7 @@ use crate::environments::{
     APP_UID, DockerConfig, SANDBOX_APPARMOR, browser_seccomp, catalog_images, catalog_per_user,
     nvidia_present,
 };
+use crate::hostfiles;
 use crate::storage::DataRoot;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -72,6 +73,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
         checks.push(gpu(docker, config).await);
         checks.push(pyrowave(docker, config).await);
         checks.push(gamepads(docker, config).await);
+        checks.push(uhid_pads(docker, config).await);
         checks.push(sandboxes(docker, config).await);
         checks.push(nvidia_wine(docker, config).await);
     }
@@ -83,6 +85,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
         checks.push(legacy_homes(docker, config).await);
     }
     checks.push(render_node(&config.render_node));
+    checks.push(pad_modules(&PAD_MODULES));
     checks.push(user_namespaces());
     checks.push(match identity {
         Some(identity) => clock(&identity.portal_url).await,
@@ -91,17 +94,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
         ),
     });
     checks.push(ports(config));
-    checks.push(
-        check(
-            Level::Info,
-            "Host input",
-            "virtual gamepads also appear on this machine's own input stack",
-        )
-        .fix(
-            "on a desktop host, keep them out of your session: sudo install -m 644 \
-             deploy/node/host/72-cha-virtual-pads.rules /etc/udev/rules.d/ && sudo udevadm control --reload",
-        ),
-    );
+    checks.push(host_files(Path::new(hostfiles::HOST_ETC)));
 
     println!("cha-node doctor\n");
     for c in &checks {
@@ -265,12 +258,143 @@ async fn gamepads(docker: &Docker, config: &DockerConfig) -> Check {
     });
     match docker.run("cha-doctor-uinput", &probe, PROBE_TIMEOUT).await {
         Ok((0, _)) => check(Level::Ok, "Gamepads", format!("{uinput} reaches streamers")),
-        Ok((code, out)) => check(Level::Fail, "Gamepads", format!("probe exited {code}: {}", out.trim())),
+        Ok((code, out)) => check(
+            Level::Fail,
+            "Gamepads",
+            format!("probe exited {code}: {}", out.trim()),
+        ),
         Err(err) => check(Level::Fail, "Gamepads", format!("{err:#}")),
     }
-    .fix(
-        "load the module: sudo modprobe uinput && echo uinput | sudo tee /etc/modules-load.d/uinput.conf \
-         (or run the agent with CHA_UINPUT= to go without gamepads)",
+    .fix(format!(
+        "load the module: {} (or run the agent with CHA_UINPUT= to go without gamepads)",
+        hostfiles::FIX
+    ))
+}
+
+/// `/dev/uhid` as a streamer gets it: what the DualSense and Steam Controller
+/// are made with. Without it those fall back to an Xbox 360 pad, so this
+/// warns rather than fails.
+async fn uhid_pads(docker: &Docker, config: &DockerConfig) -> Check {
+    let name = "DualSense/Steam";
+    let Some(uhid) = &config.uhid else {
+        return check(
+            Level::Info,
+            name,
+            "off (CHA_UHID is empty): they fall back to an Xbox 360 pad",
+        );
+    };
+    let probe = json!({
+        "Image": config.streamer_image,
+        "Entrypoint": ["sh", "-c", "test -c /dev/uhid"],
+        "HostConfig": {
+            "Devices": [{ "PathOnHost": uhid, "PathInContainer": "/dev/uhid", "CgroupPermissions": "rw" }],
+            "NetworkMode": "none",
+        },
+    });
+    match docker.run("cha-doctor-uhid", &probe, PROBE_TIMEOUT).await {
+        Ok((0, _)) => check(Level::Ok, name, format!("{uhid} reaches streamers")),
+        Ok((code, out)) => check(
+            Level::Warn,
+            name,
+            format!("probe exited {code}: {}", out.trim()),
+        ),
+        Err(err) => check(Level::Warn, name, format!("{err:#}")),
+    }
+    .fix(format!(
+        "load the module: {} (or run the agent with CHA_UHID= to go without)",
+        hostfiles::FIX
+    ))
+}
+
+/// The host kernel modules that turn a virtual DualSense and Steam Controller
+/// into the evdev devices apps read: (module, what for).
+const PAD_MODULES: [(&str, &str); 3] = [
+    ("uhid", "virtual DualSense and Steam Controller"),
+    (
+        "hid_playstation",
+        "the DualSense's gamepad, touchpad and motion nodes",
+    ),
+    ("hid_steam", "the Steam Controller's input nodes"),
+];
+
+/// Whether each of `modules` is in this kernel. The agent's container shares
+/// the host's kernel, so `/proc/modules` and `/sys/module` (loaded or built
+/// in) are the host's; the modules on disk (`/lib/modules`) aren't visible
+/// from there, so one that isn't loaded can't be told from one that is
+/// missing. The kernel loads these when the first virtual device appears
+/// (`uhid` itself when `/dev/uhid` is opened, if the host's udev makes the
+/// device), so that is fine; a node that wants them there from boot lists
+/// them in `/etc/modules-load.d`.
+fn pad_modules(modules: &[(&str, &str)]) -> Check {
+    let loaded = std::fs::read_to_string("/proc/modules").unwrap_or_default();
+    let present =
+        |name: &str| module_loaded(&loaded, name) || Path::new("/sys/module").join(name).exists();
+    let (up, down): (Vec<_>, Vec<_>) = modules.iter().partition(|(name, _)| present(name));
+    let names = |list: &[&(&str, &str)]| {
+        list.iter()
+            .map(|(name, _)| name.replace('_', "-"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if down.is_empty() {
+        return check(Level::Ok, "Pad modules", format!("{} loaded", names(&up)));
+    }
+    let detail = if up.is_empty() {
+        format!(
+            "{} aren't loaded; the kernel loads them on demand",
+            names(&down)
+        )
+    } else {
+        format!(
+            "{} loaded; {} not yet, the kernel loads them on demand",
+            names(&up),
+            names(&down)
+        )
+    };
+    check(Level::Info, "Pad modules", detail).fix(format!(
+        "to have uhid from boot: {} (a kernel without hid-playstation or hid-steam can't make \
+         those pads: apps get the Xbox 360 pad)",
+        hostfiles::FIX
+    ))
+}
+
+/// Whether `/proc/modules`' text lists the module `name` (underscores and
+/// hyphens are the same in module names).
+fn module_loaded(proc_modules: &str, name: &str) -> bool {
+    let want = name.replace('-', "_");
+    proc_modules
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .any(|m| m.replace('-', "_") == want)
+}
+
+/// The host files only the owner can install (udev rules that keep virtual
+/// pads off the desktop's seat, the Steam sandbox's AppArmor profile, the
+/// module list), against the copies this agent was built with. Never a
+/// failure: the runtime checks above say whether things work.
+fn host_files(etc: &Path) -> Check {
+    const NAME: &str = "Host files";
+    let report = hostfiles::compare(etc);
+    if report.stale() {
+        return check(Level::Warn, NAME, report.describe()).fix(hostfiles::FIX);
+    }
+    if !report.unknown.is_empty() {
+        return check(
+            Level::Info,
+            NAME,
+            "can't tell: the host's /etc/udev/rules.d, /etc/apparmor.d and /etc/modules-load.d \
+             aren't bound into the agent",
+        )
+        .fix(format!(
+            "to check from here, bind them in (deploy/node/compose.yaml, under /run/host/etc) and \
+             recreate the agent; to install: {}",
+            hostfiles::FIX
+        ));
+    }
+    check(
+        Level::Ok,
+        NAME,
+        "udev rules, AppArmor profile and module list are current",
     )
 }
 
@@ -288,10 +412,7 @@ async fn sandboxes(docker: &Docker, config: &DockerConfig) -> Check {
             "NetworkMode": "none",
         },
     });
-    let fix = format!(
-        "load the profile on the node: sudo install -m 644 deploy/node/host/apparmor/{SANDBOX_APPARMOR} \
-         /etc/apparmor.d/ && sudo apparmor_parser -r -W /etc/apparmor.d/{SANDBOX_APPARMOR}"
-    );
+    let fix = format!("load the profile on the node: {}", hostfiles::FIX);
     match docker
         .run("cha-doctor-sandbox", &probe, PROBE_TIMEOUT)
         .await
@@ -793,6 +914,22 @@ fn ports(config: &DockerConfig) -> Check {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modules_are_found_by_name_with_either_dash() {
+        let proc_modules = "\
+hid_playstation 36864 0 - Live 0x0000000000000000
+uhid 24576 2 - Live 0x0000000000000000
+ff_memless 20480 1 hid_playstation, Live 0x0000000000000000
+";
+        assert!(module_loaded(proc_modules, "uhid"));
+        assert!(module_loaded(proc_modules, "hid_playstation"));
+        assert!(module_loaded(proc_modules, "hid-playstation"));
+        // Only the name column counts, not a module that lists it as a user.
+        assert!(!module_loaded(proc_modules, "hid_steam"));
+        assert!(!module_loaded(proc_modules, "hid"));
+        assert!(!module_loaded("", "uhid"));
+    }
 
     /// The agent's view of the node: the container's root, and `/mnt/games/steam`
     /// bound in from the host's NFS mount of `/mnt/games`.

@@ -2,8 +2,10 @@ export { ControllerManager, MAX_SLOTS, goneMessage, padMessage, type ManagedCont
 export { hidUnavailableReason } from "./hid-types";
 export { GamepadApiBackend, parseGamepadId } from "./gamepad-api";
 export { WebHidBackend } from "./webhid";
+export { DualSenseDriver } from "./dualsense";
 export {
   BTN,
+  EXTRA,
   type BackendController,
   type BackendName,
   type Capabilities,
@@ -12,5 +14,6 @@ export {
   type ControllerState,
   type ControllerType,
   type RawReport,
+  type Side,
   type TouchPoint,
 } from "./types";

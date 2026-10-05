@@ -16,6 +16,19 @@ class FakePad implements BackendController {
   readonly info: ControllerInfo;
   readonly s: ControllerState = neutralState();
   rumbled: number[][] = [];
+  calls: unknown[][] = [];
+  haptic?: BackendController["haptic"];
+  led?: BackendController["led"];
+  players?: BackendController["players"];
+  trigger?: BackendController["trigger"];
+  /** Makes the pad do the feedback the streamer can send: recorded in `calls`. */
+  feedback() {
+    this.haptic = (...a) => void this.calls.push(["haptic", ...a]);
+    this.led = (...a) => void this.calls.push(["led", ...a]);
+    this.players = (...a) => void this.calls.push(["players", ...a]);
+    this.trigger = (...a) => void this.calls.push(["trigger", ...a]);
+    return this;
+  }
   constructor(
     readonly key: string,
     backend: BackendName,
@@ -175,14 +188,17 @@ describe("wire messages", () => {
       ...neutralState(),
       gyro: [0.1234567, 0, 0],
       accel: [0, 9.80665, 0],
-      touch: [{ id: 0, x: 0.12345, y: 0.5, down: true }],
+      touch: [
+        { id: 0, x: 0.12345, y: 0.5, down: true },
+        { id: 1, x: 0.5, y: 0.5, down: false },
+      ],
       battery: 0.756,
     });
     expect(rich.gyro).toEqual([0.123, 0, 0]);
     expect(rich.accel).toEqual([0, 9.807, 0]);
     expect(rich.touch).toEqual([{ id: 0, x: 0.123, y: 0.5, down: true }]);
     expect(rich.bat).toBe(0.76);
-    expect((rich.b as number[]).length).toBe(17);
+    expect((rich.b as number[]).length).toBe(24);
     expect((rich.a as number[]).length).toBe(4);
     // `t` is the control channel's message type: a pad's type can't use it.
     expect("t" in rich).toBe(false);
@@ -272,5 +288,41 @@ describe("WebHID availability", () => {
       Object.defineProperty(globalThis, "navigator", { value: saved.navigator, configurable: true });
       Object.defineProperty(globalThis, "isSecureContext", { value: saved.isSecureContext, configurable: true });
     }
+  });
+});
+
+describe("feedback from the streamer", () => {
+  test("goes to the pad in the slot that can do it, and is cleaned up", () => {
+    const { gamepad, manager } = setup();
+    const a = new FakePad("a", "gamepad");
+    const b = new FakePad("b", "gamepad").feedback();
+    gamepad.add(a);
+    gamepad.add(b);
+    manager.led(1, 300, -5, 12.4);
+    manager.players(1, 0xff);
+    manager.trigger(1, "right", [2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    manager.trigger(1, "left", [1, 2]);
+    manager.haptic(1, "left", 2, 100, 200, 0);
+    manager.led(0, 1, 2, 3);
+    manager.led(3, 1, 2, 3);
+    expect(b.calls).toEqual([
+      ["led", 255, 0, 12],
+      ["players", 0x1f],
+      ["trigger", "right", [2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
+      ["haptic", "left", 1, 100, 200, 1],
+    ]);
+    manager.stop();
+  });
+
+  test("a pulse without trackpads is a short rumble", () => {
+    const { gamepad, manager } = setup();
+    const a = new FakePad("a", "gamepad");
+    gamepad.add(a);
+    manager.haptic(0, "right", 1, 1000, 1000, 5);
+    // Weak motor for the tick, 10 ms of train stretched to the shortest rumble.
+    expect(a.rumbled).toEqual([[0.4, 1, 20]]);
+    manager.haptic(0, "left", 0, 1000, 1000, 5);
+    expect(a.rumbled).toHaveLength(1);
+    manager.stop();
   });
 });

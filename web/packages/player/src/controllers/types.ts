@@ -25,12 +25,28 @@ export const BTN = {
   right: 15,
   guide: 16,
 } as const;
-export const BUTTON_COUNT = 17;
+/** The Gamepad API's standard 17. */
+export const STANDARD_BUTTON_COUNT = 17;
+/** What pads have beyond the standard layout (docs/controllers.md); the ones a pad lacks stay released. */
+export const EXTRA = {
+  /** A DualSense's touchpad click, or a Steam Controller's right trackpad click. */
+  touchpadClick: 17,
+  /** A Steam Controller's left trackpad click. */
+  leftPadClick: 18,
+  /** Back paddles or grips: left and right (L4, R4), then the second pair (L5, R5). */
+  l4: 19,
+  r4: 20,
+  l5: 21,
+  r5: 22,
+  /** A DualSense's mute button, or a Steam Controller's quick-access one. */
+  mute: 23,
+} as const;
+export const BUTTON_COUNT = 24;
 /** LX, LY, RX, RY. */
 export const AXIS_COUNT = 4;
 
 export interface TouchPoint {
-  /** Which touchpad: 0 left, 1 right. */
+  /** A Steam Controller's left trackpad is 0 and its right one 1; a DualSense's two finger slots are 0 and 1. */
   id: number;
   /** 0..1 across the pad, from its top left. */
   x: number;
@@ -39,7 +55,7 @@ export interface TouchPoint {
 }
 
 export interface ControllerState {
-  /** 17 values 0..1 (triggers are 6 and 7, analog). */
+  /** 24 values 0..1: the standard 17 (triggers are 6 and 7, analog), then `EXTRA`'s. */
   buttons: number[];
   /** LX, LY, RX, RY in -1..1, down and right positive. */
   axes: number[];
@@ -47,6 +63,7 @@ export interface ControllerState {
   gyro?: [number, number, number];
   /** m/s². */
   accel?: [number, number, number];
+  /** The fingers on a pad or pads: only those touching. */
   touch?: TouchPoint[];
   /** 0..1. */
   battery?: number;
@@ -57,7 +74,13 @@ export interface Capabilities {
   gyro: boolean;
   touchpad: boolean;
   battery: boolean;
+  /** A lightbar to colour (`led`). */
+  lightbar?: boolean;
+  /** Adaptive triggers (`trigger`). */
+  triggers?: boolean;
 }
+
+export type Side = "left" | "right";
 
 export interface ControllerInfo {
   name: string;
@@ -83,6 +106,14 @@ export interface BackendController {
   raw(): RawReport | null;
   /** lo: strong (low-frequency) motor, hi: weak (high-frequency), both 0..1; `ms` 0 stops. */
   rumble(lo: number, hi: number, ms: number): void;
+  /** A trackpad pulse train (Steam Controller haptics). Without it the manager plays a short rumble. */
+  haptic?(side: Side, amp: number, onUs: number, offUs: number, count: number): void;
+  /** The lightbar, 0..255. */
+  led?(r: number, g: number, b: number): void;
+  /** The player LEDs, bits 0–4. */
+  players?(mask: number): void;
+  /** An adaptive trigger effect: the 11 bytes of the DualSense output report's block. */
+  trigger?(side: Side, effect: number[]): void;
 }
 
 export interface BackendListener {
@@ -122,3 +153,10 @@ export function typeFromVendor(vendorId: number | undefined): ControllerType {
 
 export const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 export const round3 = (v: number) => Math.round(v * 1000) / 1000;
+
+/** A trackpad pulse train as a short rumble, for pads without trackpads: a tick is the weak (high-frequency) motor, with a little of the strong one. */
+export function hapticAsRumble(amp: number, onUs: number, offUs: number, count: number): [number, number, number] {
+  const a = clamp(Number.isFinite(amp) ? amp : 0, 0, 1);
+  const ms = clamp(((onUs + offUs) * Math.max(1, count)) / 1000, 20, 500);
+  return [a * 0.4, a, Math.round(ms)];
+}

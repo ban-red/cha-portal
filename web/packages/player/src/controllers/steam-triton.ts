@@ -10,7 +10,8 @@
 // state (buttons, sticks, triggers, both pads, gyro and accelerometer), 0x43
 // the battery, 0x46 and 0x79 a puck's or receiver's wireless status.
 // Rumble is output report 0x80, resent every 40 ms, as the controller's own
-// safety timeout is about 50 ms.
+// safety timeout is about 50 ms. A trackpad pulse is output report 0x81
+// (SDL's MsgHapticPulse).
 
 import type { HidDevice, HidDriver, HidDriverFactory } from "./hid-types";
 import {
@@ -28,7 +29,7 @@ import {
   axis16,
   settingsMessage,
 } from "./steam-protocol";
-import { BTN, clamp, neutralState, type ControllerInfo, type ControllerState, type TouchPoint } from "./types";
+import { BTN, EXTRA, clamp, neutralState, type ControllerInfo, type ControllerState, type Side, type TouchPoint } from "./types";
 
 const REPORT_STATE = 0x42;
 const REPORT_BATTERY = 0x43;
@@ -37,6 +38,7 @@ const REPORT_WIRELESS_X = 0x46;
 const REPORT_STATE_TIMESTAMP = 0x47;
 const REPORT_WIRELESS = 0x79;
 const REPORT_RUMBLE = 0x80;
+const REPORT_HAPTIC_PULSE = 0x81;
 /** Lizard mode and the sensors go in feature report 1. */
 const FEATURE_REPORT = 1;
 const FEATURE_REPORT_BYTES = 63;
@@ -45,6 +47,8 @@ const LIZARD_RESEND_MS = 3000;
 const RUMBLE_RESEND_MS = 40;
 /** The state structs are 45 bytes, with and without the 32-bit timestamp. */
 const STATE_BYTES = 45;
+/** MsgHapticPulse: side 1, on_us 2, off_us 2, repeat_count 2. */
+const HAPTIC_PULSE_BYTES = 7;
 const WIRELESS_DISCONNECT = 1;
 const WIRELESS_CONNECT = 2;
 
@@ -53,8 +57,11 @@ const BTN_A = 0x00000001;
 const BTN_B = 0x00000002;
 const BTN_X = 0x00000004;
 const BTN_Y = 0x00000008;
+const BTN_QAM = 0x00000010;
 const BTN_R3 = 0x00000020;
 const BTN_VIEW = 0x00000040;
+const BTN_R4 = 0x00000080;
+const BTN_R5 = 0x00000100;
 const BTN_R = 0x00000200;
 const BTN_DPAD_DOWN = 0x00000400;
 const BTN_DPAD_RIGHT = 0x00000800;
@@ -63,9 +70,13 @@ const BTN_DPAD_UP = 0x00002000;
 const BTN_MENU = 0x00004000;
 const BTN_L3 = 0x00008000;
 const BTN_STEAM = 0x00010000;
+const BTN_L4 = 0x00020000;
+const BTN_L5 = 0x00040000;
 const BTN_L = 0x00080000;
 const RIGHT_PAD_TOUCH = 0x00200000;
+const RIGHT_PAD_CLICK = 0x00400000;
 const LEFT_PAD_TOUCH = 0x02000000;
+const LEFT_PAD_CLICK = 0x04000000;
 
 export class SteamTritonDriver implements HidDriver {
   connected: boolean;
@@ -196,6 +207,13 @@ export class SteamTritonDriver implements HidDriver {
     s.buttons[BTN.down] = held(BTN_DPAD_DOWN);
     s.buttons[BTN.left] = held(BTN_DPAD_LEFT);
     s.buttons[BTN.right] = held(BTN_DPAD_RIGHT);
+    s.buttons[EXTRA.l4] = held(BTN_L4);
+    s.buttons[EXTRA.r4] = held(BTN_R4);
+    s.buttons[EXTRA.l5] = held(BTN_L5);
+    s.buttons[EXTRA.r5] = held(BTN_R5);
+    s.buttons[EXTRA.mute] = held(BTN_QAM);
+    s.buttons[EXTRA.touchpadClick] = held(RIGHT_PAD_CLICK);
+    s.buttons[EXTRA.leftPadClick] = held(LEFT_PAD_CLICK);
     s.buttons[BTN.leftTrigger] = clamp(d.getInt16(5, true) / 32767, 0, 1);
     s.buttons[BTN.rightTrigger] = clamp(d.getInt16(7, true) / 32767, 0, 1);
     s.axes[0] = axis16(d.getInt16(9, true));
@@ -216,7 +234,7 @@ export class SteamTritonDriver implements HidDriver {
       }
       t.down = !!down;
     }
-    s.touch = this.touch.map((t) => ({ ...t }));
+    s.touch = this.touch.filter((t) => t.down).map((t) => ({ ...t }));
 
     // After both pads and the IMU's timestamp: accelerometer, then gyro, at 33 either way.
     const sensors = 33;
@@ -242,6 +260,22 @@ export class SteamTritonDriver implements HidDriver {
     play();
     this.rumbleTimer = setInterval(play, RUMBLE_RESEND_MS);
     this.rumbleStop = setTimeout(() => this.rumble(0, 0, 0), ms);
+  }
+
+  /**
+   * A trackpad pulse train, output report 0x81 (SDL's MsgHapticPulse: side,
+   * on_us, off_us, repeat_count; no gain). SDL defines the report but never
+   * sends it, and doesn't say how it encodes the side; the Linux kernel's
+   * hid-steam (steam_haptic_pulse) sends 1 left, 0 right, 2 both, which we follow.
+   */
+  haptic(side: Side, amp: number, onUs: number, offUs: number, count: number): void {
+    if (amp <= 0 || this.closed) return;
+    const data = new DataView(new ArrayBuffer(HAPTIC_PULSE_BYTES));
+    data.setUint8(0, side === "left" ? 1 : 0);
+    data.setUint16(1, clamp(Math.round(onUs), 0, 0xffff), true);
+    data.setUint16(3, clamp(Math.round(offUs), 0, 0xffff), true);
+    data.setUint16(5, clamp(Math.round(count), 1, 0xffff), true);
+    void this.device.sendReport(REPORT_HAPTIC_PULSE, data).catch(() => {});
   }
 
   /** Output report 0x80: type 0, intensity 0, then each side's speed (16-bit) and gain (0). */

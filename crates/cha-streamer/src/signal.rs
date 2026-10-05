@@ -21,7 +21,7 @@ use tracing::{info, warn};
 use crate::audio::Audio;
 use crate::codec::VideoCodec;
 use crate::compositor::{self, fit_size};
-use crate::gamepad::Gamepads;
+use crate::gamepad::{GamepadKind, Gamepads};
 use crate::media::{EncodeSettings, FrameHub, Media};
 use crate::net;
 use crate::pyro::PyroSettings;
@@ -125,6 +125,15 @@ struct Args {
     input_dir: Option<PathBuf>,
     #[arg(long, default_value = "/dev/uinput")]
     uinput: PathBuf,
+    /// The virtual controller the pads are. `dualsense` and `steam` need
+    /// `--uhid` and the host's `hid-playstation` or `hid-steam`; without them
+    /// the pads are Xbox 360 ones.
+    #[arg(long, value_enum, default_value_t = GamepadKind::Xbox360)]
+    pad_kind: GamepadKind,
+    /// The uhid device for the DualSense and Steam Controller kinds; empty for
+    /// none.
+    #[arg(long, default_value = "/dev/uhid")]
+    uhid: PathBuf,
     /// Gamepads made at start, for apps that look for pads only once.
     #[arg(long, default_value_t = 1)]
     gamepads: usize,
@@ -268,7 +277,14 @@ pub fn main() -> Result<()> {
         )?)
     };
     let gamepads = args.input_dir.as_ref().and_then(|dir| {
-        match Gamepads::new(&args.uinput, dir, args.app_uid, args.gamepads) {
+        match Gamepads::new(
+            &args.uinput,
+            &args.uhid,
+            args.pad_kind,
+            dir,
+            args.app_uid,
+            args.gamepads,
+        ) {
             Ok(pads) => Some(Arc::new(pads)),
             Err(err) => {
                 warn!("no gamepads: {err:#}");
@@ -449,6 +465,9 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "input": true,
         "audio": state.audio.is_some(),
         "gamepads": state.gamepads.is_some(),
+        "pad_kind": state.gamepads.as_ref().map(|p| p.kind()),
+        // The nodes of the uhid pads, which the node mounts into the app.
+        "hidraw": state.gamepads.as_ref().map(|p| p.hidraw()).unwrap_or_default(),
         "token": true,
         "width": width,
         "height": height,

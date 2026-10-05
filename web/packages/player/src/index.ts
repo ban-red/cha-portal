@@ -17,7 +17,9 @@ export type { StatsSnapshot } from "./stats";
 export type { ProbeResult } from "./probe";
 export {
   ControllerManager,
+  EXTRA,
   hidUnavailableReason,
+  type BackendController,
   type BackendName,
   type Capabilities,
   type ControllerInfo,
@@ -26,5 +28,6 @@ export {
   type ManagedController,
   type ManagerOptions,
   type RawReport,
+  type Side,
   type TouchPoint,
 } from "./controllers";

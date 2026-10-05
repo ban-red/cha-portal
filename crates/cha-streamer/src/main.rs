@@ -10,7 +10,8 @@
 //!   WebTransport (wtransport/quinn), the fast path.
 //! - A browser gets WebRTC video (str0m, playout-delay 0) and audio tracks and
 //!   sends keyboard, mouse and gamepads back on the `control` DataChannel;
-//!   gamepads become virtual Xbox 360 controllers (uinput).
+//!   gamepads become virtual controllers: Xbox 360 (uinput), or a DualSense or
+//!   Steam Controller (uhid).
 //!
 //! Until the portal brokers sessions (P1.5), it speaks the S1/S2 signalling
 //! API so the S1c/S1d page can measure it:
@@ -31,6 +32,8 @@ mod congestion;
 #[cfg(target_os = "linux")]
 mod control;
 #[cfg(target_os = "linux")]
+mod dualsense;
+#[cfg(target_os = "linux")]
 mod gamepad;
 #[cfg(target_os = "linux")]
 mod media;
@@ -46,6 +49,10 @@ mod session;
 mod signal;
 #[cfg(target_os = "linux")]
 mod status;
+#[cfg(target_os = "linux")]
+mod steam_controller;
+#[cfg(target_os = "linux")]
+mod uhid;
 #[cfg(target_os = "linux")]
 mod viewers;
 #[cfg(target_os = "linux")]

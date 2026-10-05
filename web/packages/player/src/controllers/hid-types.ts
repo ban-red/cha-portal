@@ -1,6 +1,6 @@
 // The parts of WebHID the drivers use (TypeScript's DOM library has none).
 
-import type { ControllerInfo, ControllerState } from "./types";
+import type { ControllerInfo, ControllerState, Side } from "./types";
 
 export interface HidReportItem {
   isConstant: boolean;
@@ -47,6 +47,8 @@ export interface HidDevice extends EventTarget {
   close(): Promise<void>;
   sendReport(reportId: number, data: BufferSource): Promise<void>;
   sendFeatureReport(reportId: number, data: BufferSource): Promise<void>;
+  /** The report's data without its id. */
+  receiveFeatureReport(reportId: number): Promise<DataView>;
 }
 
 export interface HidDeviceFilter {
@@ -87,6 +89,10 @@ export interface HidDriver {
   onReport(reportId: number, data: DataView): void;
   state(): ControllerState;
   rumble?(lo: number, hi: number, ms: number): void;
+  haptic?(side: Side, amp: number, onUs: number, offUs: number, count: number): void;
+  led?(r: number, g: number, b: number): void;
+  players?(mask: number): void;
+  trigger?(side: Side, effect: number[]): void;
   /** Tells the backend the pad (dis)connected behind a dongle. */
   onConnection?: () => void;
 }

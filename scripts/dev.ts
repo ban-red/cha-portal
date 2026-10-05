@@ -5,7 +5,8 @@
 //   bun run dev -- --turn-secret …      # extra flags go to cha-control
 //
 // - cha-control on 127.0.0.1:8090 (`cargo run`), database `data/dev.db`,
-//   with `--dev-login`: the sign-in page offers "Login as Local Dev".
+//   with `--dev-login`: the sign-in page offers "Login as Local Dev", and a
+//   button for each existing admin account (to see your own data locally).
 // - The SPA on Vite at http://localhost:5190 (PORT to change), hot reloading,
 //   proxying /api to cha-control (vite.config.ts).
 //

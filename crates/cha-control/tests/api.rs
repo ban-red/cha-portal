@@ -85,15 +85,15 @@ impl TestPortal {
         }
     }
 
-    /// POSTs to dev login as a client at `from`.
-    async fn dev_login(&self, from: &str) -> Reply {
+    /// Calls `path` as a client at `from`, with `body` for a POST.
+    async fn call_from(&self, from: &str, path: &str, body: Option<Value>) -> Reply {
         let addr: std::net::SocketAddr = from.parse().unwrap();
         let req = Request::builder()
-            .method("POST")
-            .uri("/api/auth/dev-login")
+            .method(if body.is_some() { "POST" } else { "GET" })
+            .uri(path)
             .header(header::CONTENT_TYPE, "application/json")
             .extension(ConnectInfo(addr))
-            .body(Body::from("{}"))
+            .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
             .unwrap();
         let res = self.app.clone().oneshot(req).await.unwrap();
         let status = res.status();
@@ -109,6 +109,27 @@ impl TestPortal {
             body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
             cookie,
         }
+    }
+
+    /// POSTs to dev login as a client at `from`.
+    async fn dev_login(&self, from: &str) -> Reply {
+        self.call_from(from, "/api/auth/dev-login", Some(json!({})))
+            .await
+    }
+
+    /// POSTs to dev login as `username`, from loopback.
+    async fn dev_login_as(&self, username: &str) -> Reply {
+        self.call_from(
+            "127.0.0.1:5000",
+            "/api/auth/dev-login",
+            Some(json!({ "username": username })),
+        )
+        .await
+    }
+
+    /// GETs the dev accounts as a client at `from`.
+    async fn dev_accounts(&self, from: &str) -> Reply {
+        self.call_from(from, "/api/auth/dev-accounts", None).await
     }
 
     /// Runs first-run setup and returns the admin's session cookie.
@@ -381,6 +402,120 @@ async fn dev_login_creates_the_dev_admin_for_loopback_only() {
     assert_eq!(again.body["id"], first.body["id"]);
 }
 
+#[tokio::test]
+async fn dev_accounts_lists_enabled_admins_other_than_dev() {
+    let off = portal().await;
+    assert_eq!(
+        off.dev_accounts("127.0.0.1:5000").await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    let p = portal_with(true).await;
+    let admin = p.setup_admin().await;
+    p.account(&admin, "zed", "admin").await;
+    p.account(&admin, "player1", "user").await;
+    let (_, gone) = p.account(&admin, "gone", "admin").await;
+    sqlx::query("UPDATE users SET disabled = 1 WHERE id = ?")
+        .bind(&gone)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    assert_eq!(p.dev_login("127.0.0.1:5000").await.status, StatusCode::OK);
+
+    let remote = p.dev_accounts("192.168.1.20:5000").await;
+    assert_eq!(remote.status, StatusCode::FORBIDDEN);
+    assert_eq!(remote.body["error"], "dev_login_loopback_only");
+
+    let list = p.dev_accounts("127.0.0.1:5000").await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.body);
+    assert_eq!(
+        list.body,
+        json!({ "accounts": [
+            { "username": "admin", "displayName": "admin" },
+            { "username": "zed", "displayName": "zed" },
+        ] })
+    );
+}
+
+#[tokio::test]
+async fn dev_login_can_sign_in_as_an_existing_admin() {
+    let p = portal_with(true).await;
+    let admin = p.setup_admin().await;
+    let me = p.call("GET", "/api/me", Some(&admin), None).await;
+
+    let reply = p.dev_login_as("admin").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["id"], me.body["id"]);
+    let session = p
+        .call("GET", "/api/me", reply.cookie.as_deref(), None)
+        .await;
+    assert_eq!(session.body["username"], "admin");
+
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let row = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "dev.login_as")
+        .expect("dev.login_as is audited");
+    assert_eq!(row["target"], me.body["id"]);
+    let detail: Value = serde_json::from_str(row["detail"].as_str().unwrap()).unwrap();
+    assert_eq!(detail["username"], "admin");
+    assert!(
+        audit
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["action"] == "login.dev")
+    );
+}
+
+#[tokio::test]
+async fn dev_login_as_refuses_what_is_not_an_enabled_admin() {
+    let p = portal_with(true).await;
+    let admin = p.setup_admin().await;
+    p.account(&admin, "player1", "user").await;
+    let (_, gone) = p.account(&admin, "gone", "admin").await;
+    sqlx::query("UPDATE users SET disabled = 1 WHERE id = ?")
+        .bind(&gone)
+        .execute(&p.db)
+        .await
+        .unwrap();
+
+    let non_admin = p.dev_login_as("player1").await;
+    assert_eq!(non_admin.status, StatusCode::FORBIDDEN);
+    assert_eq!(non_admin.body["error"], "dev_login_admin_only");
+    assert!(non_admin.cookie.is_none());
+
+    let unknown = p.dev_login_as("nobody").await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    // Never created on the way.
+    assert!(db::user_for_login(&p.db, "nobody").await.unwrap().is_none());
+
+    let disabled = p.dev_login_as("gone").await;
+    assert_eq!(disabled.status, StatusCode::FORBIDDEN);
+    assert_eq!(disabled.body["error"], "disabled");
+
+    let remote = p
+        .call_from(
+            "192.168.1.20:5000",
+            "/api/auth/dev-login",
+            Some(json!({ "username": "admin" })),
+        )
+        .await;
+    assert_eq!(remote.status, StatusCode::FORBIDDEN);
+    assert_eq!(remote.body["error"], "dev_login_loopback_only");
+
+    let off = portal().await;
+    off.setup_admin().await;
+    assert_eq!(
+        off.dev_login_as("admin").await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
 // ---- App data settings ----
 
 impl TestPortal {
@@ -573,6 +708,148 @@ async fn a_user_chooses_per_app_and_others_are_unaffected() {
         .find(|e| e["action"] == "storage.persistence_set" && e["target"] == "chrome")
         .expect("the choice is audited");
     assert_eq!(entry["detail"], json!({ "persistent": true }).to_string());
+}
+
+#[tokio::test]
+async fn a_user_chooses_a_controller_per_app() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, _) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+
+    let listed = p
+        .call("GET", "/api/controllers/apps", Some(&alice), None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    assert_eq!(
+        app_of(&listed.body, "steam"),
+        &json!({ "template": "steam", "name": "Steam", "kind": null, "default": "xbox360" })
+    );
+
+    let set = p
+        .call(
+            "PUT",
+            "/api/controllers/apps/steam",
+            Some(&alice),
+            Some(json!({ "kind": "dualsense" })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    assert_eq!(set.body["kind"], "dualsense");
+    assert_eq!(set.body["default"], "xbox360");
+
+    // Only alice's own choice, only for steam.
+    let alices = p
+        .call("GET", "/api/controllers/apps", Some(&alice), None)
+        .await
+        .body;
+    assert_eq!(app_of(&alices, "steam")["kind"], "dualsense");
+    assert_eq!(app_of(&alices, "chrome")["kind"], json!(null));
+    let bobs = p
+        .call("GET", "/api/controllers/apps", Some(&bob), None)
+        .await
+        .body;
+    assert_eq!(app_of(&bobs, "steam")["kind"], json!(null));
+
+    // Changing it and clearing it.
+    let steam_pad = p
+        .call(
+            "PUT",
+            "/api/controllers/apps/steam",
+            Some(&alice),
+            Some(json!({ "kind": "steam" })),
+        )
+        .await;
+    assert_eq!(steam_pad.body["kind"], "steam");
+    let cleared = p
+        .call(
+            "PUT",
+            "/api/controllers/apps/steam",
+            Some(&alice),
+            Some(json!({ "kind": null })),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK);
+    assert_eq!(cleared.body["kind"], json!(null));
+
+    let missing = p
+        .call(
+            "PUT",
+            "/api/controllers/apps/nope",
+            Some(&alice),
+            Some(json!({ "kind": "steam" })),
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    for bad in [json!({ "kind": "ps5" }), json!({ "kind": 3 })] {
+        let reply = p
+            .call(
+                "PUT",
+                "/api/controllers/apps/steam",
+                Some(&alice),
+                Some(bad),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    }
+    // Leaving the kind out isn't a reset.
+    let no_kind = p
+        .call(
+            "PUT",
+            "/api/controllers/apps/steam",
+            Some(&alice),
+            Some(json!({})),
+        )
+        .await;
+    assert!(no_kind.status.is_client_error());
+
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let entry = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "controllers.gamepad_set" && e["target"] == "steam")
+        .expect("the choice is audited");
+    assert!(entry["detail"].as_str().unwrap().contains("kind"));
+
+    assert_eq!(
+        p.call("GET", "/api/controllers/apps", None, None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        p.call(
+            "PUT",
+            "/api/controllers/apps/steam",
+            None,
+            Some(json!({ "kind": "steam" })),
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn guests_have_no_controller_settings() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (guest, _) = p.account(&admin, "guest1", "guest").await;
+    let listed = p
+        .call("GET", "/api/controllers/apps", Some(&guest), None)
+        .await;
+    assert_eq!(listed.body["apps"], json!([]));
+    let set = p
+        .call(
+            "PUT",
+            "/api/controllers/apps/chrome",
+            Some(&guest),
+            Some(json!({ "kind": "steam" })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

@@ -4,9 +4,11 @@
 //! and serving the portal SPA. P1.2: node enrollment and the node channel.
 //! P1.4: the catalog and environments. Session brokering follows (docs/PLAN.md,
 //! Phase 1 delivery plan). App data (Phase 3): what apps keep and share.
+//! Controllers: which virtual gamepad an app gets.
 
 pub mod api;
 pub mod auth;
+pub mod controllers;
 pub mod db;
 pub mod environments;
 pub mod error;
@@ -40,7 +42,8 @@ pub struct Config {
     /// STUN and TURN for players.
     pub ice: ice::IceConfig,
     /// Offer "Login as Local Dev" to loopback clients: it creates (or reuses)
-    /// the `dev` admin and signs in without a password. Never for a real portal.
+    /// the `dev` admin and signs in without a password, or signs in as any
+    /// existing enabled admin. Never for a real portal.
     pub dev_login: bool,
 }
 

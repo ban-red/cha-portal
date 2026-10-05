@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import {
   ControllerManager,
+  EXTRA,
   type ControllerState,
+  type ControllerType,
   type ManagedController,
   type RawReport,
 } from "@cha/player";
 import { onBeforeUnmount, onMounted, ref } from "vue";
 
+import AppControllerKinds from "../components/AppControllerKinds.vue";
 import ControllerDiagram from "../components/ControllerDiagram.vue";
 import FormError from "../components/FormError.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
@@ -85,6 +88,37 @@ function rumble(c: ManagedController) {
   manager.rumbleController(c.id, 1, 0.6, 500);
 }
 
+// A DualSense's lightbar and adaptive triggers: a colour each press, and a
+// resistance (the "feedback" effect, mode 0x21: the active-zones mask, then three bits of strength per
+// zone, here all ten zones at 3 of 0..7; SDL itself only documents modes 0x01, 0x05 and 0x06, in
+// test/testcontroller.c) for a few seconds, then mode 0x05, which SDL uses to clear one.
+const LIGHTS: [number, number, number][] = [[255, 40, 40], [40, 255, 40], [60, 60, 255], [255, 255, 255]];
+const lightStep: Record<string, number> = {};
+const FEEDBACK = (() => {
+  let packed = 0;
+  for (let zone = 0; zone < 10; zone++) packed += 3 * 8 ** zone;
+  return [0x21, 0xff, 0x03, packed & 0xff, (packed >>> 8) & 0xff, (packed >>> 16) & 0xff, (packed >>> 24) & 0xff, 0, 0, 0, 0];
+})();
+const triggerTimers = new Map<string, ReturnType<typeof setTimeout>>();
+onBeforeUnmount(() => triggerTimers.forEach(clearTimeout));
+
+function testLight(c: ManagedController) {
+  const step = (lightStep[c.id] = ((lightStep[c.id] ?? -1) + 1) % LIGHTS.length);
+  manager.pad(c.id)?.led?.(...LIGHTS[step]!);
+}
+
+function testTriggers(c: ManagedController) {
+  const pad = manager.pad(c.id);
+  clearTimeout(triggerTimers.get(c.id));
+  for (const side of ["left", "right"] as const) pad?.trigger?.(side, FEEDBACK);
+  triggerTimers.set(
+    c.id,
+    setTimeout(() => {
+      for (const side of ["left", "right"] as const) manager.pad(c.id)?.trigger?.(side, [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }, 3000),
+  );
+}
+
 const BACKEND: Record<string, string> = { gamepad: "Gamepad API", webhid: "WebHID" };
 const TYPE: Record<string, string> = {
   xbox: "Xbox",
@@ -104,6 +138,8 @@ function capabilities(c: ManagedController): string {
     caps.gyro && "gyro",
     caps.touchpad && "touchpad",
     caps.battery && "battery",
+    caps.lightbar && "lightbar",
+    caps.triggers && "adaptive triggers",
   ].filter(Boolean);
   return list.length ? list.join(", ") : "buttons and sticks";
 }
@@ -112,11 +148,52 @@ const BUTTON_NAMES = [
   "South", "East", "West", "North", "Left shoulder", "Right shoulder", "Left trigger", "Right trigger",
   "Back", "Start", "Left stick", "Right stick", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "Guide",
 ];
+// What the buttons past the standard 17 are on each kind of controller.
+const EXTRA_NAMES: Partial<Record<ControllerType, Record<number, string>>> = {
+  steam: {
+    [EXTRA.touchpadClick]: "Right trackpad click",
+    [EXTRA.leftPadClick]: "Left trackpad click",
+    [EXTRA.l4]: "Left grip",
+    [EXTRA.r4]: "Right grip",
+    [EXTRA.l5]: "L5",
+    [EXTRA.r5]: "R5",
+    [EXTRA.mute]: "Quick access",
+  },
+  playstation: {
+    [EXTRA.touchpadClick]: "Touchpad click",
+    [EXTRA.l4]: "Left paddle",
+    [EXTRA.r4]: "Right paddle",
+    [EXTRA.l5]: "Left function",
+    [EXTRA.r5]: "Right function",
+    [EXTRA.mute]: "Mute",
+  },
+};
 /** Which buttons are held, in words (the diagram is only a picture). */
-function pressed(s: ControllerState | undefined): string {
+function pressed(s: ControllerState | undefined, type: ControllerType): string {
   if (!s) return "";
   const names = BUTTON_NAMES.filter((_, i) => (s.buttons[i] ?? 0) > 0.5);
+  for (const [i, name] of Object.entries(EXTRA_NAMES[type] ?? {})) if ((s.buttons[Number(i)] ?? 0) > 0.5) names.push(name);
   return names.length ? names.join(", ") : "nothing";
+}
+
+interface PadArea {
+  label: string;
+  /** Wide, like a DualSense's touchpad; else square. */
+  wide: boolean;
+  clicked: boolean;
+  dots: { x: number; y: number }[];
+}
+/** Where fingers are: a Steam Controller has two trackpads, a DualSense one touchpad for both fingers. */
+function areas(c: ManagedController, s: ControllerState): PadArea[] {
+  const touch = s.touch ?? [];
+  const held = (i: number) => (s.buttons[i] ?? 0) > 0.5;
+  if (c.info.type === "steam") {
+    return [
+      { label: "Left trackpad", wide: false, clicked: held(EXTRA.leftPadClick), dots: touch.filter((t) => t.id === 0) },
+      { label: "Right trackpad", wide: false, clicked: held(EXTRA.touchpadClick), dots: touch.filter((t) => t.id === 1) },
+    ];
+  }
+  return [{ label: "Touchpad", wide: true, clicked: held(EXTRA.touchpadClick), dots: touch }];
 }
 const pct = (v: number | undefined) => `${Math.round((v ?? 0) * 100)}%`;
 const num = (v: number | undefined, digits = 2) => (v ?? 0).toFixed(digits);
@@ -207,14 +284,32 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
               {{ c.slot === null ? "No slot: an environment takes four controllers" : `Slot ${c.slot + 1} in an environment` }}
             </p>
           </div>
-          <button
-            v-if="c.info.capabilities.rumble"
-            class="btn-ghost shrink-0 px-3 py-1 text-xs"
-            :aria-label="`Rumble ${c.info.name}`"
-            @click="rumble(c)"
-          >
-            Test rumble
-          </button>
+          <div class="flex shrink-0 flex-wrap gap-2">
+            <button
+              v-if="c.info.capabilities.rumble"
+              class="btn-ghost px-3 py-1 text-xs"
+              :aria-label="`Rumble ${c.info.name}`"
+              @click="rumble(c)"
+            >
+              Test rumble
+            </button>
+            <button
+              v-if="c.info.capabilities.lightbar"
+              class="btn-ghost px-3 py-1 text-xs"
+              :aria-label="`Change the lightbar colour of ${c.info.name}`"
+              @click="testLight(c)"
+            >
+              Test lightbar
+            </button>
+            <button
+              v-if="c.info.capabilities.triggers"
+              class="btn-ghost px-3 py-1 text-xs"
+              :aria-label="`Make the triggers of ${c.info.name} resist for a few seconds`"
+              @click="testTriggers(c)"
+            >
+              Test triggers
+            </button>
+          </div>
         </div>
 
         <WarningNote
@@ -226,7 +321,7 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
         <div class="mt-4 flex flex-wrap items-start gap-x-8 gap-y-4">
           <div class="min-w-60 flex-1">
             <ControllerDiagram v-if="live[c.id]" :state="live[c.id]!.state" :type="c.info.type" />
-            <p class="mt-2 text-xs text-ink-2">Held: {{ pressed(live[c.id]?.state) }}</p>
+            <p class="mt-2 text-xs text-ink-2">Held: {{ pressed(live[c.id]?.state, c.info.type) }}</p>
           </div>
 
           <div v-if="live[c.id]" class="min-w-52 space-y-3 text-xs text-ink-2">
@@ -259,19 +354,21 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
               </template>
             </dl>
 
-            <div v-if="live[c.id]!.state.touch" class="flex gap-3" aria-hidden="true">
-              <svg
-                v-for="t in live[c.id]!.state.touch"
-                :key="t.id"
-                viewBox="0 0 100 100"
-                class="size-20 rounded-lg border border-line bg-canvas"
-              >
-                <circle v-if="t.down" :cx="t.x * 100" :cy="t.y * 100" r="6" class="fill-accent" />
-              </svg>
-            </div>
-            <p v-if="live[c.id]!.state.touch" class="text-ink-3">
-              Touchpads: {{ live[c.id]!.state.touch!.filter((t) => t.down).length || "none" }} touched
-            </p>
+            <template v-if="c.info.capabilities.touchpad && live[c.id]!.state.touch">
+              <div class="flex flex-wrap items-end gap-3" aria-hidden="true">
+                <figure v-for="a in areas(c, live[c.id]!.state)" :key="a.label" class="space-y-1">
+                  <svg
+                    :viewBox="a.wide ? '0 0 100 56' : '0 0 100 100'"
+                    :class="[a.wide ? 'w-36' : 'size-20', a.clicked ? 'border-accent' : 'border-line']"
+                    class="rounded-lg border bg-canvas"
+                  >
+                    <circle v-for="(d, i) in a.dots" :key="i" :cx="d.x * 100" :cy="d.y * (a.wide ? 56 : 100)" r="5" class="fill-accent" />
+                  </svg>
+                  <figcaption class="text-ink-3">{{ a.label }}</figcaption>
+                </figure>
+              </div>
+              <p class="text-ink-3">Touching: {{ live[c.id]!.state.touch!.length || "nothing" }}</p>
+            </template>
           </div>
         </div>
 
@@ -301,5 +398,7 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
         </div>
       </li>
     </ul>
+
+    <AppControllerKinds />
   </div>
 </template>

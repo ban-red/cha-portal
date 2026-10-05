@@ -30,6 +30,9 @@ services:
       CHA_STREAMER_IMAGE: ${CHA_STREAMER_IMAGE:-cha/streamer:dev}
       # Virtual gamepads; set empty on hosts without the uinput module.
       CHA_UINPUT: ${CHA_UINPUT-/dev/uinput}
+      # Virtual DualSense and Steam Controller; set empty on hosts without the
+      # uhid module (those pads then fall back to an Xbox 360 pad).
+      CHA_UHID: ${CHA_UHID-/dev/uhid}
       # WAN by port-forward: the router's public IP (forward UDP 47000-47047).
       CHA_PUBLIC_ADDRESS: ${CHA_PUBLIC_ADDRESS:-}
       # Where app data lives: each user's home for an app they keep data for
@@ -55,6 +58,13 @@ services:
       - state:/var/lib/cha-node
       # The host's OS name, not the image's.
       - /etc/os-release:/run/host/os-release:ro
+      # The host files deploy/node/host/install.sh puts in these directories,
+      # so `--doctor` and the agent's start can tell when they are missing or
+      # old. Read-only: only the owner, with sudo, changes them. (Docker makes
+      # an empty /etc/apparmor.d on a host without AppArmor; that's fine.)
+      - /etc/udev/rules.d:/run/host/etc/udev/rules.d:ro
+      - /etc/apparmor.d:/run/host/etc/apparmor.d:ro
+      - /etc/modules-load.d:/run/host/etc/modules-load.d:ro
       # App data (CHA_DATA_ROOT above): the agent makes users' and shared
       # directories here, owned by the apps' uid (1000), and deletes a user's
       # on a reset. Mounted at the same path as on the host.

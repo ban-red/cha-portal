@@ -80,6 +80,8 @@ export interface PlayerOptions {
   onState?: (state: PlayerState, detail?: string) => void;
   /** Start with the sound off. */
   muted?: boolean;
+  /** Sound's level, 0..1 (default 1). */
+  volume?: number;
   /** Sound is waiting for a click or key press (the browser's autoplay rule). */
   onAudioBlocked?: (blocked: boolean) => void;
   /** Asks the portal for the streamer's WebTransport URLs; without it, WebRTC only. */
@@ -150,6 +152,17 @@ interface ServerMessage {
   lo?: number;
   hi?: number;
   ms?: number;
+  /** Haptic: the trackpad, its strength, and the pulse train; led: colour; players: LED bits; trigger: which trigger and its 11 bytes. */
+  side?: string;
+  amp?: number;
+  on_us?: number;
+  off_us?: number;
+  count?: number;
+  r?: number;
+  g?: number;
+  b?: number;
+  mask?: number;
+  effect?: unknown;
 }
 
 /** A status message as a status: none without a label, and only the numbers it has. */
@@ -245,6 +258,7 @@ export class Player {
     this.muted = options.muted ?? false;
     this.audio = document.createElement("audio");
     this.audio.muted = this.muted;
+    this.audio.volume = clampVolume(options.volume ?? 1);
   }
 
   async connect(): Promise<void> {
@@ -392,6 +406,11 @@ export class Player {
     this.muted = muted;
     this.audio.muted = muted;
     if (!muted) void this.playAudio();
+  }
+
+  /** Sound's level, 0..1, on this page only (the environment's own volume stays). */
+  setVolume(volume: number): void {
+    this.audio.volume = clampVolume(volume);
   }
 
   private async playAudio(): Promise<void> {
@@ -667,6 +686,23 @@ export class Player {
       // The app rumbles pad `i`: play it on that physical controller.
       case "rumble":
         if (typeof msg.i === "number") this.pads?.rumble(msg.i, msg.lo ?? 0, msg.hi ?? 0, msg.ms ?? 0);
+        break;
+      // The rest of what an app does to a pad (docs/controllers.md): played where the controller can.
+      case "haptic":
+        if (typeof msg.i === "number") {
+          this.pads?.haptic(msg.i, msg.side === "right" ? "right" : "left", msg.amp ?? 0, msg.on_us ?? 0, msg.off_us ?? 0, msg.count ?? 1);
+        }
+        break;
+      case "led":
+        if (typeof msg.i === "number") this.pads?.led(msg.i, msg.r ?? 0, msg.g ?? 0, msg.b ?? 0);
+        break;
+      case "players":
+        if (typeof msg.i === "number") this.pads?.players(msg.i, msg.mask ?? 0);
+        break;
+      case "trigger":
+        if (typeof msg.i === "number" && Array.isArray(msg.effect)) {
+          this.pads?.trigger(msg.i, msg.side === "right" ? "right" : "left", msg.effect.map(Number));
+        }
         break;
       case "pointer":
         this.pointerSpot = { x: msg.x ?? 0, y: msg.y ?? 0, drawn: !!msg.drawn };
@@ -1134,4 +1170,8 @@ export function stereoOpus(sdp: string): string {
   return sdp.replace(new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`), (line, params: string) =>
     /(^|;)\s*stereo=/.test(params) ? line : `${line};stereo=1`,
   );
+}
+
+function clampVolume(v: number): number {
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
 }

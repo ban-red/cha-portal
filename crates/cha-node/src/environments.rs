@@ -6,10 +6,16 @@
 //!   (or the `browser` one, which lets browser sandboxes create namespaces);
 //! - a volume both mount at `/run/cha`, holding the Wayland and sound
 //!   sockets;
-//! - with gamepads (`/dev/uinput` on the host): the streamer makes virtual
-//!   pads and shares their device nodes and udev entries through two more
-//!   volumes, the app's `/dev/input` and `/run/udev` (read-only); the app may
-//!   open input devices (major 13), and only these exist in its `/dev/input`.
+//! - with gamepads (`/dev/uinput` on the host, and `/dev/uhid` for the kinds
+//!   made through it): the streamer makes virtual pads and shares their device
+//!   nodes and udev entries through two more volumes, the app's `/dev/input`
+//!   and `/run/udev` (read-only); the app may open input devices (major 13),
+//!   and only these exist in its `/dev/input`. A DualSense or Steam Controller
+//!   also has `hidraw` nodes, which the streamer makes in that volume under
+//!   `hidraw/` and lists in its `/info`: once it is up, each is mounted into
+//!   the app at `/dev/<name>` (a subpath of the volume) and allowed in its
+//!   device cgroup, and nothing else of `/dev` changes. See
+//!   `docs/controllers.md`.
 //! - **app data** ([`crate::storage`]), when the portal names any: a directory
 //!   under the node's data root mounted as the app's `/home/cha` (the user keeps
 //!   their data for this app), and one shared with other users mounted at
@@ -81,6 +87,10 @@ const EXTERNAL_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const OVERLAY_CHECK: Duration = Duration::from_secs(30);
 /// Each environment's streamer: HTTP (localhost), WebRTC and WebTransport.
 const PORTS_PER_ENVIRONMENT: u16 = 3;
+/// How long a started streamer has to answer `/info` (it makes its virtual
+/// controllers first), and how often it is asked.
+const STREAMER_UP_TIMEOUT: Duration = Duration::from_secs(30);
+const STREAMER_UP_POLL: Duration = Duration::from_millis(200);
 
 /// An environment that stopped on its own.
 #[derive(Debug, Clone)]
@@ -173,6 +183,9 @@ pub struct DockerConfig {
     pub gpu_device: String,
     /// The host's uinput device, for gamepads; `None` goes without.
     pub uinput: Option<String>,
+    /// The host's uhid device, for the DualSense and Steam Controller;
+    /// `None` goes without (the streamer then makes Xbox 360 pads instead).
+    pub uhid: Option<String>,
     /// The router's public address, when it forwards the streamers' UDP ports
     /// (`port_base + 1`, `+ 3`, …) to this node.
     pub public_address: Option<String>,
@@ -846,14 +859,52 @@ impl DockerRuntime {
             )
             .await?;
         self.docker.start(&streamer).await?;
+        let hidraw = self.streamer_hidraw(spec, port).await?;
         let app = self
             .docker
             .create(
                 &container_name(&spec.id, "app"),
-                &self.app_config(spec, port),
+                &self.app_config(spec, port, &hidraw),
             )
             .await?;
         self.docker.start(&app).await
+    }
+
+    /// The `hidraw` nodes the streamer made for `spec`'s controller, once it
+    /// is up (they exist before it answers, `docs/controllers.md`): none for
+    /// the kinds without any, or on a node that goes without uhid.
+    async fn streamer_hidraw(&self, spec: &EnvironmentSpec, port: u16) -> Result<Vec<Hidraw>> {
+        let kind = spec.gamepad.unwrap_or_default();
+        if !kind.needs_uhid() {
+            return Ok(Vec::new());
+        }
+        if self.config.uhid.is_none() {
+            warn!(
+                id = %spec.id,
+                "{} was asked for but this node has no uhid (CHA_UHID is empty): the app gets an Xbox 360 pad",
+                kind.as_str()
+            );
+            return Ok(Vec::new());
+        }
+        let deadline = tokio::time::Instant::now() + STREAMER_UP_TIMEOUT;
+        let info = loop {
+            match local(Method::GET, port, "/info", None).await {
+                Ok(info) => break info,
+                Err(err) if tokio::time::Instant::now() >= deadline => {
+                    return Err(err.context("waiting for the streamer to make the controller"));
+                }
+                Err(_) => tokio::time::sleep(STREAMER_UP_POLL).await,
+            }
+        };
+        let nodes = parse_hidraw(&info)?;
+        if nodes.is_empty() {
+            warn!(
+                id = %spec.id,
+                "the streamer made no hidraw nodes for {} (it has fallen back to an Xbox 360 pad?)",
+                kind.as_str()
+            );
+        }
+        Ok(nodes)
     }
 
     fn labels(&self, id: &str, role: &str, port: u16) -> Value {
@@ -945,6 +996,12 @@ impl DockerRuntime {
             .collect()
     }
 
+    /// Whether environments get gamepads at all: the streamer has a device to
+    /// make them with.
+    fn has_pads(&self) -> bool {
+        self.config.uinput.is_some() || self.config.uhid.is_some()
+    }
+
     fn gpu(&self) -> Value {
         json!([{ "Driver": "cdi", "DeviceIDs": [self.config.gpu_device] }])
     }
@@ -953,7 +1010,7 @@ impl DockerRuntime {
     fn mounts(&self, id: &str, app: bool) -> Value {
         let mut mounts =
             vec![json!({ "Type": "volume", "Source": volume_name(id), "Target": RUNTIME_DIR })];
-        if self.config.uinput.is_some() {
+        if self.has_pads() {
             for (kind, app_target) in [("input", "/dev/input"), ("udev", "/run/udev")] {
                 let target = if app {
                     app_target.to_string()
@@ -1004,13 +1061,29 @@ impl DockerRuntime {
             cmd.extend(["--public-address".to_string(), public.clone()]);
         }
         let mut devices = Vec::new();
+        if self.has_pads() {
+            cmd.extend(["--input-dir", INPUT_DIR].map(String::from));
+        }
         if let Some(uinput) = &self.config.uinput {
-            cmd.extend(["--input-dir", INPUT_DIR, "--uinput", "/dev/uinput"].map(String::from));
+            cmd.extend(["--uinput", "/dev/uinput"].map(String::from));
             devices.push(json!({
                 "PathOnHost": uinput,
                 "PathInContainer": "/dev/uinput",
                 "CgroupPermissions": "rw",
             }));
+        }
+        if let Some(uhid) = &self.config.uhid {
+            cmd.extend(["--uhid", "/dev/uhid"].map(String::from));
+            devices.push(json!({
+                "PathOnHost": uhid,
+                "PathInContainer": "/dev/uhid",
+                "CgroupPermissions": "rw",
+            }));
+        }
+        // Left out for the default, which is what a streamer without the
+        // option makes.
+        if let Some(kind) = spec.gamepad.filter(|_| self.has_pads()) {
+            cmd.extend(["--pad-kind", kind.as_str()].map(String::from));
         }
         json!({
             "Image": self.config.streamer_image,
@@ -1028,7 +1101,10 @@ impl DockerRuntime {
         })
     }
 
-    fn app_config(&self, spec: &EnvironmentSpec, port: u16) -> Value {
+    /// The app's container. `hidraw` are the streamer's hidraw nodes
+    /// ([`Self::streamer_hidraw`]): each is mounted from the input volume and
+    /// allowed in the app's device cgroup.
+    fn app_config(&self, spec: &EnvironmentSpec, port: u16, hidraw: &[Hidraw]) -> Value {
         let mut security = vec!["no-new-privileges".to_string()];
         if matches!(
             spec.security,
@@ -1043,6 +1119,7 @@ impl DockerRuntime {
         let mut mounts = self.mounts(&spec.id, true);
         let list = mounts.as_array_mut().expect("mounts are a list");
         list.extend(self.storage_mounts(spec));
+        list.extend(hidraw.iter().map(|node| hidraw_mount(&spec.id, node)));
         // Proton copies nvngx.dll from here into its prefixes; CDI doesn't bring it.
         if let Some(dir) = &self.config.nvidia_wine_dir {
             let dir = dir.to_string_lossy();
@@ -1090,7 +1167,7 @@ impl DockerRuntime {
                 "Mounts": mounts,
                 "Ulimits": ulimits,
                 // Input devices: the gamepads' nodes, the only ones it has.
-                "DeviceCgroupRules": if self.config.uinput.is_some() { json!(["c 13:* rw"]) } else { json!([]) },
+                "DeviceCgroupRules": self.device_cgroup_rules(hidraw),
                 "DeviceRequests": self.gpu(),
                 "GroupAdd": groups,
                 "CapDrop": ["ALL"],
@@ -1100,6 +1177,21 @@ impl DockerRuntime {
                 "Init": true,
             },
         })
+    }
+
+    /// What the app's devices may be opened: input devices, and exactly the
+    /// streamer's hidraw nodes.
+    fn device_cgroup_rules(&self, hidraw: &[Hidraw]) -> Value {
+        let mut rules = Vec::new();
+        if self.has_pads() {
+            rules.push("c 13:* rw".to_string());
+        }
+        rules.extend(
+            hidraw
+                .iter()
+                .map(|n| format!("c {}:{} rwm", n.major, n.minor)),
+        );
+        json!(rules)
     }
 
     async fn stop_environment(&self, id: &str) -> Result<()> {
@@ -1445,6 +1537,69 @@ fn compact(json: &str) -> String {
 }
 
 /// A request to a streamer's signalling port on this host.
+/// A `hidraw` node the streamer made (its `/info`'s `hidraw`): the device's
+/// kernel name and number, which the app's device cgroup needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Hidraw {
+    name: String,
+    major: u32,
+    minor: u32,
+}
+
+/// Whether `name` is a kernel `hidraw` name, `hidraw<n>`: what the node
+/// mounts under `/dev` and puts into a path, so nothing else is let through.
+fn valid_hidraw_name(name: &str) -> bool {
+    name.strip_prefix("hidraw")
+        .is_some_and(|n| !n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The nodes in a streamer's `/info` (`"hidraw": [{ name, major, minor }]`;
+/// absent is none). One that isn't well formed refuses all: the streamer is
+/// ours, so it is a bug, and a half-made controller is worse than a failed
+/// start.
+fn parse_hidraw(info: &Value) -> Result<Vec<Hidraw>> {
+    let Some(list) = info.get("hidraw") else {
+        return Ok(Vec::new());
+    };
+    let list = list
+        .as_array()
+        .ok_or_else(|| anyhow!("the streamer's hidraw isn't a list"))?;
+    list.iter()
+        .map(|entry| {
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|n| valid_hidraw_name(n))
+                .ok_or_else(|| anyhow!("the streamer named a hidraw node {entry}"))?;
+            let number = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| anyhow!("the streamer gave hidraw node {name} no {key}"))
+            };
+            Ok(Hidraw {
+                name: name.to_string(),
+                major: number("major")?,
+                minor: number("minor")?,
+            })
+        })
+        .collect()
+}
+
+/// The mount that puts `node` at `/dev/<name>` in the app: the file
+/// `hidraw/<name>` of the environment's input volume (the streamer's
+/// `/run/cha-input/dev/hidraw/<name>`), as a volume subpath.
+fn hidraw_mount(id: &str, node: &Hidraw) -> Value {
+    json!({
+        "Type": "volume",
+        "Source": format!("{}-input", volume_name(id)),
+        "Target": format!("/dev/{}", node.name),
+        "ReadOnly": true,
+        "VolumeOptions": { "Subpath": format!("hidraw/{}", node.name) },
+    })
+}
+
 async fn local(method: Method, port: u16, path: &str, body: Option<&Value>) -> Result<Value> {
     let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
@@ -1483,6 +1638,7 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
     use axum::{Json, Router};
+    use cha_wire::GamepadKind;
 
     use super::*;
 
@@ -1517,6 +1673,7 @@ mod tests {
                 render_node: "/dev/dri/renderD128".into(),
                 gpu_device: "nvidia.com/gpu=all".into(),
                 uinput: Some("/dev/uinput".into()),
+                uhid: Some("/dev/uhid".into()),
                 public_address: None,
                 port_base: 47000,
                 max_environments: 2,
@@ -1547,6 +1704,7 @@ mod tests {
             owner: "u1".into(),
             template: "chrome".into(),
             storage: None,
+            gamepad: None,
         }
     }
 
@@ -1563,7 +1721,7 @@ mod tests {
     #[test]
     fn steam_gets_the_sandbox_profile_and_its_home() {
         let rt = runtime();
-        let app = rt.app_config(&steam_spec(), 47000);
+        let app = rt.app_config(&steam_spec(), 47000, &[]);
         let opts = app["HostConfig"]["SecurityOpt"].as_array().unwrap();
         assert!(opts.iter().any(|o| o == "apparmor=cha-sandbox"));
         assert!(
@@ -1577,7 +1735,7 @@ mod tests {
         assert!(home.get("ReadOnly").is_none(), "the app writes its home");
         assert_eq!(app["HostConfig"]["Ulimits"][0]["Name"], "nofile");
         // Others keep Docker's AppArmor profile and no home volume.
-        let chrome = rt.app_config(&spec(SecurityProfile::Browser), 47000);
+        let chrome = rt.app_config(&spec(SecurityProfile::Browser), 47000, &[]);
         let opts = chrome["HostConfig"]["SecurityOpt"].as_array().unwrap();
         assert!(
             !opts
@@ -1601,7 +1759,7 @@ mod tests {
     #[test]
     fn apps_are_confined() {
         let rt = runtime();
-        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000);
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000, &[]);
         assert_eq!(app["User"], "1000:1000");
         assert_eq!(app["HostConfig"]["CapDrop"], json!(["ALL"]));
         assert_eq!(
@@ -1612,7 +1770,7 @@ mod tests {
         assert_eq!(app["HostConfig"]["ShmSize"], 1024 * 1024 * 1024);
         assert!(app["HostConfig"].get("NetworkMode").is_none());
 
-        let browser = rt.app_config(&spec(SecurityProfile::Browser), 47000);
+        let browser = rt.app_config(&spec(SecurityProfile::Browser), 47000, &[]);
         let opts = browser["HostConfig"]["SecurityOpt"].as_array().unwrap();
         let seccomp = opts[1].as_str().unwrap().strip_prefix("seccomp=").unwrap();
         let profile: Value = serde_json::from_str(seccomp).unwrap();
@@ -1661,7 +1819,7 @@ mod tests {
             "/dev/uinput"
         );
         assert!(s["Cmd"].as_array().unwrap().contains(&json!("--input-dir")));
-        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000);
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000, &[]);
         let mounts = app["HostConfig"]["Mounts"].as_array().unwrap();
         let input = mounts.iter().find(|m| m["Target"] == "/dev/input").unwrap();
         assert_eq!(input["Source"], "cha-env-e1-input");
@@ -1676,10 +1834,187 @@ mod tests {
 
         let mut rt = runtime();
         rt.config.uinput = None;
+        rt.config.uhid = None;
         let s = rt.streamer_config(&spec(SecurityProfile::Standard), 47000);
         assert_eq!(s["HostConfig"]["Devices"], json!([]));
-        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000);
+        assert!(!s["Cmd"].as_array().unwrap().contains(&json!("--input-dir")));
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000, &[]);
         assert_eq!(app["HostConfig"]["Mounts"].as_array().unwrap().len(), 1);
+        assert_eq!(app["HostConfig"]["DeviceCgroupRules"], json!([]));
+    }
+
+    fn pad_spec(kind: Option<GamepadKind>) -> EnvironmentSpec {
+        EnvironmentSpec {
+            gamepad: kind,
+            ..spec(SecurityProfile::Standard)
+        }
+    }
+
+    #[test]
+    fn the_streamer_gets_uhid_and_the_pad_kind() {
+        let rt = runtime();
+        let cmd = |spec: &EnvironmentSpec| -> Vec<String> {
+            rt.streamer_config(spec, 47000)["Cmd"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+        let value_of = |cmd: &[String], flag: &str| {
+            cmd.iter()
+                .position(|a| a == flag)
+                .map(|i| cmd[i + 1].clone())
+        };
+        let ds = cmd(&pad_spec(Some(GamepadKind::Dualsense)));
+        assert_eq!(value_of(&ds, "--pad-kind").as_deref(), Some("dualsense"));
+        assert_eq!(value_of(&ds, "--uhid").as_deref(), Some("/dev/uhid"));
+        assert_eq!(value_of(&ds, "--uinput").as_deref(), Some("/dev/uinput"));
+        assert_eq!(value_of(&ds, "--input-dir").as_deref(), Some(INPUT_DIR));
+        let s = rt.streamer_config(&pad_spec(Some(GamepadKind::Steam)), 47000);
+        let devices = s["HostConfig"]["Devices"].as_array().unwrap();
+        assert!(devices.iter().any(|d| d["PathOnHost"] == "/dev/uhid"
+            && d["PathInContainer"] == "/dev/uhid"
+            && d["CgroupPermissions"] == "rw"));
+        assert!(
+            devices
+                .iter()
+                .any(|d| d["PathInContainer"] == "/dev/uinput")
+        );
+
+        // The default is left out, as it is on the wire.
+        assert_eq!(value_of(&cmd(&pad_spec(None)), "--pad-kind"), None);
+
+        // A node with only uhid still has pads, and its own host path.
+        let mut only = runtime();
+        only.config.uinput = None;
+        only.config.uhid = Some("/dev/misc/uhid".into());
+        let s = only.streamer_config(&pad_spec(Some(GamepadKind::Dualsense)), 47000);
+        let cmd = s["Cmd"].as_array().unwrap();
+        assert!(cmd.contains(&json!("--input-dir")) && !cmd.contains(&json!("--uinput")));
+        assert_eq!(
+            s["HostConfig"]["Devices"][0]["PathOnHost"],
+            "/dev/misc/uhid"
+        );
+
+        // Without uhid the streamer is told the kind and falls back itself.
+        let mut none = runtime();
+        none.config.uhid = None;
+        let s = none.streamer_config(&pad_spec(Some(GamepadKind::Dualsense)), 47000);
+        assert!(!s["Cmd"].as_array().unwrap().contains(&json!("--uhid")));
+    }
+
+    #[test]
+    fn hidraw_nodes_are_mounted_from_the_input_volume_and_allowed() {
+        let rt = runtime();
+        let nodes = [
+            Hidraw {
+                name: "hidraw3".into(),
+                major: 240,
+                minor: 3,
+            },
+            Hidraw {
+                name: "hidraw4".into(),
+                major: 240,
+                minor: 4,
+            },
+        ];
+        let app = rt.app_config(&pad_spec(Some(GamepadKind::Dualsense)), 47000, &nodes);
+        let mounts = app["HostConfig"]["Mounts"].as_array().unwrap();
+        assert_eq!(
+            mounts.iter().find(|m| m["Target"] == "/dev/hidraw3"),
+            Some(&json!({
+                "Type": "volume",
+                "Source": "cha-env-e1-input",
+                "Target": "/dev/hidraw3",
+                "ReadOnly": true,
+                "VolumeOptions": { "Subpath": "hidraw/hidraw3" },
+            }))
+        );
+        assert!(
+            mounts.iter().any(|m| m["Target"] == "/dev/hidraw4"
+                && m["VolumeOptions"]["Subpath"] == "hidraw/hidraw4")
+        );
+        // The input volume itself is still all of /dev/input, and nothing else.
+        assert!(mounts.iter().any(|m| m["Target"] == "/dev/input"
+            && m["Source"] == "cha-env-e1-input"
+            && m.get("VolumeOptions").is_none()));
+        assert_eq!(
+            app["HostConfig"]["DeviceCgroupRules"],
+            json!(["c 13:* rw", "c 240:3 rwm", "c 240:4 rwm"])
+        );
+        // No nodes: what an Xbox pad gets.
+        let plain = rt.app_config(&pad_spec(None), 47000, &[]);
+        assert_eq!(
+            plain["HostConfig"]["DeviceCgroupRules"],
+            json!(["c 13:* rw"])
+        );
+        assert!(
+            !plain["HostConfig"]["Mounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["Target"].as_str().unwrap().starts_with("/dev/hidraw"))
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_uhid_kinds_wait_for_the_streamer() {
+        // Nothing listens on the port: asking would fail, so these don't ask.
+        let rt = runtime();
+        for kind in [None, Some(GamepadKind::Xbox360)] {
+            assert_eq!(
+                rt.streamer_hidraw(&pad_spec(kind), 1).await.unwrap(),
+                vec![]
+            );
+        }
+        let mut none = runtime();
+        none.config.uhid = None;
+        let spec = pad_spec(Some(GamepadKind::Steam));
+        assert_eq!(none.streamer_hidraw(&spec, 1).await.unwrap(), vec![]);
+    }
+
+    #[test]
+    fn the_streamers_hidraw_list_is_read_strictly() {
+        assert_eq!(parse_hidraw(&json!({ "port": 1 })).unwrap(), vec![]);
+        assert_eq!(parse_hidraw(&json!({ "hidraw": [] })).unwrap(), vec![]);
+        assert_eq!(
+            parse_hidraw(&json!({ "hidraw": [
+                { "name": "hidraw3", "major": 240, "minor": 3 },
+                { "name": "hidraw12", "major": 240, "minor": 12 },
+            ] }))
+            .unwrap(),
+            vec![
+                Hidraw {
+                    name: "hidraw3".into(),
+                    major: 240,
+                    minor: 3
+                },
+                Hidraw {
+                    name: "hidraw12".into(),
+                    major: 240,
+                    minor: 12
+                },
+            ]
+        );
+        for bad in [
+            json!({ "hidraw": "hidraw3" }),
+            json!({ "hidraw": [{ "name": "hidraw", "major": 1, "minor": 1 }] }),
+            json!({ "hidraw": [{ "name": "hidraw3x", "major": 1, "minor": 1 }] }),
+            json!({ "hidraw": [{ "name": "../hidraw3", "major": 1, "minor": 1 }] }),
+            json!({ "hidraw": [{ "name": "hidraw3/../x", "major": 1, "minor": 1 }] }),
+            json!({ "hidraw": [{ "name": "input0", "major": 1, "minor": 1 }] }),
+            json!({ "hidraw": [{ "name": "hidraw3", "minor": 1 }] }),
+            json!({ "hidraw": [{ "name": "hidraw3", "major": -1, "minor": 1 }] }),
+            json!({ "hidraw": [{ "major": 1, "minor": 1 }] }),
+            // One bad entry refuses the lot.
+            json!({ "hidraw": [
+                { "name": "hidraw3", "major": 240, "minor": 3 },
+                { "name": "x", "major": 240, "minor": 4 },
+            ] }),
+        ] {
+            assert!(parse_hidraw(&bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -1920,10 +2255,10 @@ mod tests {
                 .find(|m| m["Target"] == WINE_DIR)
                 .cloned()
         };
-        assert!(target(&rt.app_config(&steam_spec(), 47000)).is_none());
+        assert!(target(&rt.app_config(&steam_spec(), 47000, &[])).is_none());
 
         rt.config.nvidia_wine_dir = Some(WINE_DIR.into());
-        let mount = target(&rt.app_config(&steam_spec(), 47000)).expect("mounted");
+        let mount = target(&rt.app_config(&steam_spec(), 47000, &[])).expect("mounted");
         assert_eq!(mount["Type"], "bind");
         assert_eq!(mount["Source"], WINE_DIR);
         assert_eq!(mount["ReadOnly"], true);
@@ -2192,7 +2527,7 @@ mod tests {
                     }
                     None => assert_eq!(shared, None, "{label}"),
                 }
-                let app = rt.app_config(&spec, 47000);
+                let app = rt.app_config(&spec, 47000, &[]);
                 let env: Vec<&str> = app["Env"]
                     .as_array()
                     .unwrap()
@@ -2276,7 +2611,7 @@ mod tests {
             mounts[2]["Source"],
             format!("/data/cha/users/{USER}/steam/.cha-shared/{COMPAT}")
         );
-        let app = rt.app_config(&spec, 47000);
+        let app = rt.app_config(&spec, 47000, &[]);
         assert!(
             app["Env"]
                 .as_array()
@@ -2315,10 +2650,10 @@ mod tests {
                 .all(|m| !m["Target"].as_str().unwrap().contains("steam"))
         );
         // The app is labelled with whose home it has.
-        let app = rt.app_config(&spec, 47000);
+        let app = rt.app_config(&spec, 47000, &[]);
         assert_eq!(app["Labels"]["sh.cha.owner"], USER);
         assert_eq!(app["Labels"]["sh.cha.template"], "steam");
-        let plain = rt.app_config(&app_data_spec("e1", "steam", None), 47000);
+        let plain = rt.app_config(&app_data_spec("e1", "steam", None), 47000, &[]);
         assert!(plain["Labels"].get("sh.cha.owner").is_none());
     }
 
@@ -2990,7 +3325,7 @@ mod tests {
     fn the_app_is_told_its_per_user_directories() {
         let rt = mounting(&[("steam", "/mnt/games/steam")]);
         let env_of = |rt: &DockerRuntime, spec: &EnvironmentSpec| -> Vec<String> {
-            rt.app_config(spec, 47000)["Env"]
+            rt.app_config(spec, 47000, &[])["Env"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -3202,7 +3537,7 @@ mod tests {
     /// with what a test machine may not have (the GPU, input devices) taken
     /// out and a script for its command, with only the storage mounts.
     fn probe_config(rt: &DockerRuntime, spec: &EnvironmentSpec, script: &str) -> Value {
-        let mut config = rt.app_config(spec, 47000);
+        let mut config = rt.app_config(spec, 47000, &[]);
         config["Entrypoint"] = json!(["sh", "-c", script]);
         config["Cmd"] = json!([]);
         config["HostConfig"]["Mounts"] = json!(rt.storage_mounts(spec));

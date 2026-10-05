@@ -1,15 +1,29 @@
 # Cha's virtual gamepads belong to environments, not to this machine.
 #
-# cha-streamer creates them through /dev/uinput with phys "cha/padN", so they
-# appear on the host's input stack too. On a desktop host, this keeps them out
-# of the local session: no seat, no ACL for the logged-in user (uaccess), root
-# only, and libinput ignores them. Environments reach them through their own
-# device nodes, which this doesn't touch.
+# cha-streamer creates them in two ways, and they appear on the host's input
+# stack either way. On a desktop host, this keeps them out of the local
+# session: no seat, no ACL for the logged-in user (uaccess), root only, and
+# libinput ignores them. Environments reach them through their own device
+# nodes, which this doesn't touch.
 #
-# Install (root):
-#   sudo install -m 644 deploy/node/host/72-cha-virtual-pads.rules /etc/udev/rules.d/
-#   sudo udevadm control --reload
+# - The Xbox 360 pad goes through /dev/uinput with phys "cha/padN".
+# - The DualSense (054c:0ce6) and the Steam Controller (28de:1102) go through
+#   /dev/uhid, and look like the real thing: bus USB, the vendors' ids. The
+#   host's hid-playstation and hid-steam bind them and make input nodes, and
+#   Steam's own udev rules (60-steam-input.rules) and 70-uaccess would hand
+#   their hidraw nodes to the person at the desk. What tells ours apart from
+#   the real ones is the parent: a uhid device sits under
+#   /devices/virtual/misc/uhid, while a controller on the desk is on a real USB
+#   or Bluetooth path. (A DualSense or Steam Controller that some other program
+#   makes through uhid is treated the same, which is the point: it isn't a
+#   controller this machine's user holds.) The rules match both subsystems:
+#   "input" for the evdev nodes (gamepad, touchpad, motion sensors) and
+#   "hidraw" for the raw one.
+#
+# Install (root), and again after an update that changes this file:
+#   sudo deploy/node/host/install.sh
 #
 # 72: after 70-uaccess and 71-seat tag the device, before 73-seat-late applies
 # the tags.
 SUBSYSTEM=="input", ATTRS{phys}=="cha/pad*", TAG-="uaccess", TAG-="seat", ENV{ID_SEAT}="seat-cha", ENV{LIBINPUT_IGNORE_DEVICE}="1", MODE="0600"
+SUBSYSTEM=="input|hidraw", DEVPATH=="*/virtual/misc/uhid/*", KERNELS=="0003:054C:0CE6.*|0003:28DE:1102.*", TAG-="uaccess", TAG-="seat", ENV{ID_SEAT}="seat-cha", ENV{LIBINPUT_IGNORE_DEVICE}="1", MODE="0600"

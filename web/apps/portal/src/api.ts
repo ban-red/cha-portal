@@ -131,6 +131,20 @@ export interface AdminStorageInfo {
   apps: AdminStorageApp[];
 }
 
+/** The virtual controller an app sees (docs/controllers.md). */
+export type PadKind = "xbox360" | "dualsense" | "steam";
+
+/** One app's virtual controller for the signed-in user (`GET /controllers/apps`). */
+export interface ControllerApp {
+  /** The template id, e.g. "steam". */
+  template: string;
+  name: string;
+  /** The user's choice; null follows the default. */
+  kind: PadKind | null;
+  /** What the app gets when the user hasn't chosen. */
+  default: PadKind;
+}
+
 /** An error the API returned: HTTP status, stable code, readable message. */
 export class ApiError extends Error {
   constructor(
@@ -168,7 +182,9 @@ export const api = {
   setup: (body: { token: string; username: string; displayName?: string; password: string }) =>
     request<User>("POST", "/setup", body),
   login: (body: { username: string; password: string }) => request<User>("POST", "/auth/login", body),
-  devLogin: () => request<User>("POST", "/auth/dev-login", {}),
+  devLogin: (username?: string) => request<User>("POST", "/auth/dev-login", username ? { username } : {}),
+  devAccounts: () =>
+    request<{ accounts: { username: string; displayName: string }[] }>("GET", "/auth/dev-accounts"),
   logout: () => request<null>("POST", "/auth/logout", {}),
   me: () => request<User>("GET", "/me"),
   users: () => request<User[]>("GET", "/users"),
@@ -193,6 +209,11 @@ export const api = {
   /** Deletes the user's saved data for the app: 409 while it runs, 502 if the node failed. */
   resetStorage: (template: string) =>
     request<unknown>("POST", `/storage/${encodeURIComponent(template)}/reset`, {}),
+  /** Which virtual controller each app gets. 404 until the server supports it. */
+  controllerApps: () => request<{ apps: ControllerApp[] }>("GET", "/controllers/apps"),
+  /** `null` goes back to the app's default. Applies from the app's next launch. */
+  setControllerKind: (template: string, kind: PadKind | null) =>
+    request<unknown>("PUT", `/controllers/apps/${encodeURIComponent(template)}`, { kind }),
   adminStorage: () => request<AdminStorageInfo>("GET", "/admin/storage"),
   setAdminStorage: (template: string, body: { defaultPersistent?: boolean; sharedAccess?: SharedAccess }) =>
     request<AdminStorageApp>("PUT", `/admin/storage/${encodeURIComponent(template)}`, body),

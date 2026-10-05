@@ -4,7 +4,8 @@
 
 import {
   AXIS_COUNT,
-  BUTTON_COUNT,
+  STANDARD_BUTTON_COUNT,
+  hapticAsRumble,
   neutralState,
   round3,
   typeFromVendor,
@@ -15,6 +16,7 @@ import {
   type ControllerState,
   type ControllerType,
   type RawReport,
+  type Side,
 } from "./types";
 
 /** The vendor and product id out of a Gamepad `id`: Chrome's "name (Vendor: 045e Product: 028e)", Firefox's "045e-028e-name". */
@@ -66,7 +68,7 @@ class GamepadApiController implements BackendController {
 
   state(): ControllerState {
     const s = neutralState();
-    this.pad.buttons.slice(0, BUTTON_COUNT).forEach((b, i) => (s.buttons[i] = round3(b.value)));
+    this.pad.buttons.slice(0, STANDARD_BUTTON_COUNT).forEach((b, i) => (s.buttons[i] = round3(b.value)));
     this.pad.axes.slice(0, AXIS_COUNT).forEach((a, i) => (s.axes[i] = round3(a)));
     return s;
   }
@@ -90,6 +92,12 @@ class GamepadApiController implements BackendController {
     void actuator
       .playEffect("dual-rumble", { startDelay: 0, duration: ms, strongMagnitude: lo, weakMagnitude: hi })
       .catch(() => {});
+  }
+
+  /** There are no trackpads to pulse: a short rumble instead. The rest (lightbar, triggers) the Gamepad API can't do. */
+  haptic(_side: Side, amp: number, onUs: number, offUs: number, count: number): void {
+    if (amp <= 0) return;
+    this.rumble(...hapticAsRumble(amp, onUs, offUs, count));
   }
 }
 

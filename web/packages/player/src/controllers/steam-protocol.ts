@@ -26,6 +26,7 @@ export const ID_CLEAR_DIGITAL_MAPPINGS = 0x81;
 export const ID_SET_DEFAULT_DIGITAL_MAPPINGS = 0x85;
 export const ID_SET_SETTINGS_VALUES = 0x87;
 export const ID_LOAD_DEFAULT_SETTINGS = 0x8e;
+export const ID_HAPTIC_PULSE = 0x8f;
 export const ID_DONGLE_GET_WIRELESS_STATE = 0xb4;
 
 /** Settings (the ControllerSettings enum). */

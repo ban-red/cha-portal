@@ -17,6 +17,7 @@ import {
   GYRO_SCALE,
   ID_CLEAR_DIGITAL_MAPPINGS,
   ID_DONGLE_GET_WIRELESS_STATE,
+  ID_HAPTIC_PULSE,
   ID_LOAD_DEFAULT_SETTINGS,
   ID_SET_DEFAULT_DIGITAL_MAPPINGS,
   SETTING_IMU_MODE,
@@ -34,7 +35,7 @@ import {
   settingsMessage,
   sleep,
 } from "./steam-protocol";
-import { BTN, clamp, neutralState, type ControllerInfo, type ControllerState, type TouchPoint } from "./types";
+import { BTN, EXTRA, clamp, neutralState, type ControllerInfo, type ControllerState, type Side, type TouchPoint } from "./types";
 
 // ulButtons (the low 24 bits; the next two bytes are the triggers).
 const MASK = {
@@ -51,6 +52,8 @@ const MASK = {
   menu: 0x001000,
   steam: 0x002000,
   escape: 0x004000,
+  leftGrip: 0x008000,
+  rightGrip: 0x010000,
   leftPadClick: 0x020000,
   rightPadClick: 0x040000,
   leftPadDown: 0x080000,
@@ -67,6 +70,8 @@ const ID_STATE = 1;
 const ID_WIRELESS = 3;
 const ID_STATUS = 4;
 const ID_BLE_STATE = 7;
+/** sizeof(MsgFireHapticPulse). */
+const HAPTIC_PULSE_BYTES = 10;
 const BLE_REPORT = 3;
 const BLE_SEGMENT_PAYLOAD = 18;
 /** Dongles answer feature reports "not yet" while the radio round trips: SDL retries for 50 ms. */
@@ -114,6 +119,7 @@ export class SteamControllerDriver implements HidDriver {
   private bleNext = 0;
   private claimed = false;
   private closed = false;
+  /** Where each pad was last touched: a lifted finger isn't sent. */
   private readonly touch: TouchPoint[] = [
     { id: 0, x: 0.5, y: 0.5, down: false },
     { id: 1, x: 0.5, y: 0.5, down: false },
@@ -385,6 +391,11 @@ export class SteamControllerDriver implements HidDriver {
     s.buttons[BTN.left] = held(MASK.left);
     s.buttons[BTN.right] = held(MASK.right);
     s.buttons[BTN.guide] = held(MASK.steam);
+    s.buttons[EXTRA.touchpadClick] = held(MASK.rightPadClick);
+    // The left pad's click is the stick's while the pad is idle (see formatUntilGyro): only a touched pad clicks.
+    s.buttons[EXTRA.leftPadClick] = b & MASK.leftPadDown ? held(MASK.leftPadClick) : 0;
+    s.buttons[EXTRA.l4] = held(MASK.leftGrip);
+    s.buttons[EXTRA.r4] = held(MASK.rightGrip);
     s.axes[0] = axis16(sc.stick[0]);
     s.axes[1] = axis16(~sc.stick[1]);
     s.axes[2] = axis16(sc.padR[0]);
@@ -405,7 +416,20 @@ export class SteamControllerDriver implements HidDriver {
       }
       t.down = down;
     }
-    s.touch = this.touch.map((t) => ({ ...t }));
+    s.touch = this.touch.filter((t) => t.down).map((t) => ({ ...t }));
+  }
+
+  /**
+   * SDL's MsgFireHapticPulse in feature report 0x8F (ID_TRIGGER_HAPTIC_PULSE), a
+   * 10-byte packed payload: which_pad, pulse_duration, pulse_interval and
+   * pulse_count (16-bit µs, µs, count), dBgain (16-bit, here 0) and priority
+   * (here 0). SDL's headers don't say which pad is 0: right is 0 and left 1 here.
+   */
+  haptic(side: Side, amp: number, onUs: number, offUs: number, count: number): void {
+    if (amp <= 0 || !this.claimed || this.closed) return;
+    const u16 = (v: number) => clamp(Math.round(v), 0, 0xffff);
+    const [on, off, n] = [u16(onUs), u16(offUs), u16(count)];
+    void this.send([ID_HAPTIC_PULSE, HAPTIC_PULSE_BYTES, side === "left" ? 1 : 0, on & 0xff, on >> 8, off & 0xff, off >> 8, n & 0xff, n >> 8, 0, 0, 0]).catch(() => {});
   }
 
   state(): ControllerState {

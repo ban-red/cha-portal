@@ -34,8 +34,8 @@ export const useSession = defineStore("session", () => {
     user.value = await api.login({ username, password });
   }
 
-  async function devLogin(): Promise<void> {
-    user.value = await api.devLogin();
+  async function devLogin(username?: string): Promise<void> {
+    user.value = await api.devLogin(username);
     setupNeeded.value = false;
   }
 

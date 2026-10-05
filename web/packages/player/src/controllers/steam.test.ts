@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { HidDevice } from "./hid-types";
 import { SteamControllerDriver } from "./steam-controller";
 import { SteamTritonDriver } from "./steam-triton";
-import { BTN } from "./types";
+import { BTN, EXTRA } from "./types";
 
 interface Fake {
   device: HidDevice;
@@ -95,7 +95,8 @@ describe("Steam Controller (2026)", () => {
       expect(s.touch?.[0]).toMatchObject({ id: 0, down: true });
       expect(s.touch![0]!.x).toBeCloseTo(0.75, 3);
       expect(s.touch![0]!.y).toBeCloseTo(0.75, 3);
-      expect(s.touch?.[1]?.down).toBe(false);
+      // Only the touched pad is there.
+      expect(s.touch).toHaveLength(1);
       // SDL: gyro (x, z, -y) at 2000 deg/s over 16 bits, accel at 2 g.
       const rate = (2000 * Math.PI) / 180 / 2;
       expect(s.gyro![0]).toBeCloseTo(rate, 3);
@@ -105,12 +106,55 @@ describe("Steam Controller (2026)", () => {
     });
   }
 
-  test("a lifted finger keeps its place, not down", () => {
+  test("a lifted finger is gone, and comes back where it lands", () => {
     const driver = new SteamTritonDriver(fake(0x1302).device);
     driver.onReport(0x42, state(false, { buttons: LEFT_PAD_TOUCH, lpx: 8192 }));
-    driver.onReport(0x42, state(false, { buttons: 0, lpx: 0 }));
-    expect(driver.state().touch![0]).toMatchObject({ down: false });
     expect(driver.state().touch![0]!.x).toBeCloseTo(0.625, 3);
+    driver.onReport(0x42, state(false, { buttons: 0, lpx: 0 }));
+    expect(driver.state().touch).toEqual([]);
+    driver.onReport(0x42, state(false, { buttons: 0x02000000 | 0x00200000, lpx: 0, rpx: -16384 }));
+    expect(driver.state().touch!.map((t) => t.id)).toEqual([0, 1]);
+    expect(driver.state().touch![1]!.x).toBeCloseTo(0.25, 3);
+  });
+
+  test("the grips, paddles and quick-access button are the extras", () => {
+    const driver = new SteamTritonDriver(fake(0x1302).device);
+    driver.onReport(0x42, state(false, { buttons: 0x20000 | 0x80 | 0x40000 | 0x100 | 0x10 }));
+    const b = driver.state().buttons;
+    expect([EXTRA.l4, EXTRA.r4, EXTRA.l5, EXTRA.r5, EXTRA.mute].map((i) => b[i])).toEqual([1, 1, 1, 1, 1]);
+    expect(b[BTN.guide]).toBe(0);
+    driver.onReport(0x42, state(false, { buttons: 0 }));
+    expect(driver.state().buttons.slice(17).every((v) => v === 0)).toBe(true);
+  });
+
+  test("both trackpad clicks are extras (SDL's TRITON_RIGHT/LEFT_TOUCHPAD_CLICK, 0x00400000 and 0x04000000)", () => {
+    const driver = new SteamTritonDriver(fake(0x1302).device);
+    driver.onReport(0x42, state(false, { buttons: 0x00400000 }));
+    let b = driver.state().buttons;
+    expect([EXTRA.touchpadClick, EXTRA.leftPadClick].map((i) => b[i])).toEqual([1, 0]);
+    driver.onReport(0x42, state(false, { buttons: 0x04000000 }));
+    b = driver.state().buttons;
+    expect([EXTRA.touchpadClick, EXTRA.leftPadClick].map((i) => b[i])).toEqual([0, 1]);
+    // The touch bits next to them are not clicks.
+    driver.onReport(0x42, state(false, { buttons: 0x00200000 | 0x02000000 }));
+    b = driver.state().buttons;
+    expect([EXTRA.touchpadClick, EXTRA.leftPadClick].map((i) => b[i])).toEqual([0, 0]);
+  });
+
+  test("a haptic pulse is output report 0x81: MsgHapticPulse (side, on_us, off_us, repeat_count)", async () => {
+    const f = fake(0x1302);
+    const driver = new SteamTritonDriver(f.device);
+    drivers.push(driver);
+    driver.haptic("right", 0.5, 2000, 3000, 10);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(f.outputs[0]!.id).toBe(0x81);
+    // side 0 (right, as hid-steam sends it), 2000 = 0x07d0, 3000 = 0x0bb8, 10.
+    expect(f.outputs[0]!.data).toEqual([0, 0xd0, 0x07, 0xb8, 0x0b, 10, 0]);
+    driver.haptic("left", 1, 1, 1, 0);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(f.outputs[1]!.data).toEqual([1, 1, 0, 1, 0, 1, 0]);
+    driver.haptic("left", 0, 1, 1, 1);
+    expect(f.outputs).toHaveLength(2);
   });
 
   test("short reports and battery", () => {
@@ -203,15 +247,45 @@ describe("Steam Controller (original)", () => {
     expect(s.axes[0]).toBe(1);
     // ~32767 is -32768: up.
     expect(s.axes[1]).toBe(-1);
-    expect(s.touch?.[0]?.down).toBe(false);
+    expect(s.touch).toEqual([]);
+  });
+
+  test("grips and pad clicks are the extras; the left click is the stick's while the pad is idle", () => {
+    const driver = new SteamControllerDriver(fake(0x1102).device);
+    driver.onReport(0, state({ packet: 1, buttons: 0x8000 | 0x10000 | STATE.rightPadClick }));
+    let b = driver.state().buttons;
+    expect([EXTRA.touchpadClick, EXTRA.l4, EXTRA.r4, EXTRA.leftPadClick].map((i) => b[i])).toEqual([1, 1, 1, 0]);
+    driver.onReport(0, state({ packet: 2, buttons: 0x20000 }));
+    b = driver.state().buttons;
+    expect(b[BTN.leftStick]).toBe(1);
+    expect(b[EXTRA.leftPadClick]).toBe(0);
+    driver.onReport(0, state({ packet: 3, buttons: 0x20000 | 0x80000 }));
+    b = driver.state().buttons;
+    expect(b[EXTRA.leftPadClick]).toBe(1);
+    expect(driver.state().touch!.map((t) => t.id)).toEqual([0]);
+  });
+
+  test("a haptic pulse is feature report 0x8F: SDL's MsgFireHapticPulse (pad, pulse, gap, count, gain, priority)", async () => {
+    const f = fake(0x1102);
+    const driver = new SteamControllerDriver(f.device);
+    drivers.push(driver);
+    await driver.open();
+    f.features.length = 0;
+    driver.haptic("left", 1, 300, 0x0102, 5);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(f.features[0]!.data.slice(0, 12)).toEqual([0x8f, 10, 1, 0x2c, 0x01, 0x02, 0x01, 5, 0, 0, 0, 0]);
+    driver.haptic("right", 1, 300, 300, 1);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(f.features[1]!.data[2]).toBe(0);
   });
 
   test("the right pad is the right stick, and touches", () => {
     const driver = new SteamControllerDriver(fake(0x1102).device);
     driver.onReport(0, state({ packet: 1, buttons: STATE.rightPadDown | STATE.rightPadClick, rx: 0, ry: 0 }));
     const s = driver.state();
-    expect(s.touch?.[1]?.down).toBe(true);
-    expect(s.touch![1]!.x).toBeCloseTo(0.5, 1);
+    expect(s.touch).toHaveLength(1);
+    expect(s.touch![0]).toMatchObject({ id: 1, down: true });
+    expect(s.touch![0]!.x).toBeCloseTo(0.5, 1);
     expect(s.buttons[BTN.rightStick]).toBe(1);
   });
 

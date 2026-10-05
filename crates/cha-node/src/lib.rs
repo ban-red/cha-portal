@@ -10,6 +10,7 @@
 pub mod docker;
 pub mod doctor;
 pub mod environments;
+pub mod hostfiles;
 pub mod inventory;
 pub mod storage;
 

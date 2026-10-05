@@ -7,6 +7,7 @@ import FormError from "../components/FormError.vue";
 import WarningNote from "../components/WarningNote.vue";
 import { ago, dateTime } from "../format";
 import { useSession } from "../stores/session";
+import { KINDS, kindLabel, useControllerApps } from "../controllerKinds";
 import { STORAGE_KEY } from "../storage";
 
 const session = useSession();
@@ -27,6 +28,9 @@ const storage = useQuery({ queryKey: STORAGE_KEY, queryFn: api.storage, staleTim
 const saved = computed(
   () => new Set((storage.data.value?.apps ?? []).filter((a) => a.persistent).map((a) => a.template)),
 );
+
+// Which controller each app sees, chosen right on its card (from its next launch).
+const controllerApps = useControllerApps();
 
 const live = computed(() =>
   (environments.data.value ?? []).filter((e) => e.state !== "destroyed" && e.state !== "failed"),
@@ -91,6 +95,28 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
           </div>
           <h3 class="font-semibold">{{ t.name }}</h3>
           <p class="mt-1 flex-1 text-sm text-ink-2">{{ t.description }}</p>
+          <div
+            v-if="session.user?.role !== 'guest' && !controllerApps.missing.value && controllerApps.byTemplate.value.get(t.id)"
+            class="mt-3"
+          >
+            <div>
+              <label :for="`${t.id}-controller`" class="mb-1 block text-xs text-ink-3">Controller</label>
+              <select
+                :id="`${t.id}-controller`"
+                :value="controllerApps.byTemplate.value.get(t.id)?.kind ?? ''"
+                class="field w-full py-1 text-xs"
+                title="The controller this app sees, from its next launch"
+                @change="controllerApps.choose(controllerApps.byTemplate.value.get(t.id)!, $event)"
+              >
+                <option value="">Default ({{ kindLabel(controllerApps.byTemplate.value.get(t.id)!.default) }})</option>
+                <option v-for="k in KINDS" :key="k.kind" :value="k.kind">{{ k.label }}</option>
+              </select>
+            </div>
+            <p v-if="live.some((e) => e.templateId === t.id)" class="mt-1 text-[11px] text-ink-3">
+              Running: a change applies when you stop it and launch it again.
+            </p>
+            <FormError v-if="controllerApps.errors[t.id]" polite class="mt-1" :message="controllerApps.errors[t.id] ?? null" />
+          </div>
           <button
             class="btn-primary mt-4"
             :disabled="session.user?.role === 'guest' || (launch.isPending.value && launch.variables.value?.id === t.id)"

@@ -666,6 +666,49 @@ pub async fn set_user_persistent(
     Ok(())
 }
 
+/// The user's own controller choices: template id → a `cha_wire::GamepadKind`'s name.
+pub async fn user_gamepads(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT template_id, kind FROM user_app_gamepad WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(db)
+            .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Sets the user's controller for an app, or clears it (`None`: the app's default).
+pub async fn set_user_gamepad(
+    db: &SqlitePool,
+    user_id: &str,
+    template_id: &str,
+    kind: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    match kind {
+        Some(kind) => {
+            sqlx::query(
+                "INSERT INTO user_app_gamepad (user_id, template_id, kind) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (user_id, template_id) DO UPDATE SET kind = ?3",
+            )
+            .bind(user_id)
+            .bind(template_id)
+            .bind(kind)
+            .execute(db)
+            .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM user_app_gamepad WHERE user_id = ?1 AND template_id = ?2")
+                .bind(user_id)
+                .bind(template_id)
+                .execute(db)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 // ---- Settings (the table is from 0001) ----
 
 pub async fn setting(db: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {

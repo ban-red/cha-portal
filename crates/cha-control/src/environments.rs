@@ -15,8 +15,8 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cha_wire::{
-    EnvironmentSpec, Inventory, MediaClaims, NodeRequest, NodeResponse, SecurityProfile,
-    sign_media_token,
+    EnvironmentSpec, GamepadKind, Inventory, MediaClaims, NodeRequest, NodeResponse,
+    SecurityProfile, sign_media_token,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,6 +24,7 @@ use tracing::{info, warn};
 
 use crate::AppState;
 use crate::auth::{ClientInfo, CurrentUser};
+use crate::controllers;
 use crate::db::{self, EnvironmentRow, NodeRow, Role, User};
 use crate::error::{ApiError, ApiResult};
 use crate::storage::{self, SharedDefaults};
@@ -81,6 +82,10 @@ pub struct Template {
     /// What it shares across users, unless an admin says otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<SharedDefaults>,
+    /// The virtual controller it gets unless the user chooses another; absent
+    /// is `xbox360` (`crate::controllers`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamepad: Option<GamepadKind>,
 }
 
 #[derive(Deserialize)]
@@ -243,6 +248,7 @@ async fn launch(
             ),
         ));
     }
+    let gamepad = controllers::effective_for(&state, &user.id, template).await?;
     let node = place(&state).await?;
     let app_data = storage::spec_storage(&user.id, template, settings);
     // A node that predates app data would drop what it can't read, and the
@@ -274,6 +280,7 @@ async fn launch(
         template,
         state.media_key.public_b64(),
         app_data.map(Box::new),
+        gamepad,
     );
     tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
     let row = db::environment_by_id(&state.db, &id)
@@ -290,6 +297,7 @@ fn environment_spec(
     template: &Template,
     portal_key: String,
     storage: Option<Box<cha_wire::Storage>>,
+    gamepad: GamepadKind,
 ) -> EnvironmentSpec {
     EnvironmentSpec {
         id,
@@ -308,6 +316,8 @@ fn environment_spec(
         // The data lives on the node it was first made on: placement keeps a
         // user on one node while there is one (Phase 3 makes it follow).
         storage,
+        // Left out for the default, so an older node reads what it always did.
+        gamepad: (gamepad != GamepadKind::default()).then_some(gamepad),
     }
 }
 
@@ -707,6 +717,7 @@ mod tests {
             steam,
             "k".into(),
             storage::spec_storage(owner, steam, settings).map(Box::new),
+            GamepadKind::Xbox360,
         );
         assert_eq!(spec.home, None);
         assert_eq!(
@@ -722,7 +733,16 @@ mod tests {
 
         // Nothing kept or shared: nothing sent.
         let chrome = template("chrome").unwrap();
-        let plain = environment_spec("e2".into(), owner, chrome, "k".into(), None);
+        let plain = environment_spec(
+            "e2".into(),
+            owner,
+            chrome,
+            "k".into(),
+            None,
+            GamepadKind::Dualsense,
+        );
+        assert_eq!(plain.gamepad, Some(GamepadKind::Dualsense));
+        assert_eq!(spec.gamepad, None);
         assert_eq!(plain.storage, None);
         assert_eq!(plain.home, None);
     }

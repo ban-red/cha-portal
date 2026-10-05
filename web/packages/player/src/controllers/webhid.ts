@@ -15,19 +15,22 @@ import {
   type HidDriverFactory,
   type HidInputReportEvent,
 } from "./hid-types";
+import { DUALSENSE, DUALSENSE_EDGE, SONY_VENDOR_ID, dualSenseFactory } from "./dualsense";
 import { steamControllerFactory } from "./steam-controller";
 import { steamTritonFactory } from "./steam-triton";
 import { VALVE_VENDOR_ID, sleep } from "./steam-protocol";
 import type { BackendController, BackendListener, ControllerBackend, ControllerInfo, ControllerState, RawReport } from "./types";
 
 /** The drivers, most specific first. */
-const FACTORIES: HidDriverFactory[] = [steamTritonFactory, steamControllerFactory, genericHidFactory];
+const FACTORIES: HidDriverFactory[] = [steamTritonFactory, steamControllerFactory, dualSenseFactory, genericHidFactory];
 
-/** The picker's filters: joysticks and gamepads, and Valve's own (its controllers' interfaces aren't either). */
+/** The picker's filters: joysticks and gamepads, Valve's own (its controllers' interfaces aren't either) and Sony's DualSense and DualSense Edge. */
 const PICKER_FILTERS: HidDeviceFilter[] = [
   { usagePage: 0x01, usage: 0x04 },
   { usagePage: 0x01, usage: 0x05 },
   { vendorId: VALVE_VENDOR_ID },
+  { vendorId: SONY_VENDOR_ID, productId: DUALSENSE },
+  { vendorId: SONY_VENDOR_ID, productId: DUALSENSE_EDGE },
 ];
 
 /** A device and its driver, as a controller of the backend. */
@@ -35,6 +38,10 @@ class HidController implements BackendController {
   private lastReport: { reportId: number; bytes: Uint8Array } | null = null;
   readonly info: ControllerInfo;
   readonly rumble: (lo: number, hi: number, ms: number) => void;
+  readonly haptic?: BackendController["haptic"];
+  readonly led?: BackendController["led"];
+  readonly players?: BackendController["players"];
+  readonly trigger?: BackendController["trigger"];
 
   constructor(
     readonly key: string,
@@ -43,6 +50,11 @@ class HidController implements BackendController {
   ) {
     this.info = driver.info;
     this.rumble = (lo, hi, ms) => driver.rumble?.(lo, hi, ms);
+    // Only what the driver can do: the manager looks at what is there.
+    if (driver.haptic) this.haptic = (...a) => driver.haptic!(...a);
+    if (driver.led) this.led = (...a) => driver.led!(...a);
+    if (driver.players) this.players = (...a) => driver.players!(...a);
+    if (driver.trigger) this.trigger = (...a) => driver.trigger!(...a);
   }
 
   report(reportId: number, data: DataView): void {

@@ -4,7 +4,7 @@
 |---|---|
 | [`portal/`](portal) | The portal's compose stack: `cha-control` (API, SPA, the nodes' WebSocket, SQLite), plus optional Caddy (HTTPS with public DNS) and coturn (TURN) profiles |
 | [`node/`](node) | A node's compose stack: the agent, which starts each environment's streamer and app containers through the Docker socket |
-| [`node/host/`](node/host) | Host files that need root, applied by the owner: the `cha-sandbox` AppArmor profile (Steam environments need it), and the udev rule that keeps virtual gamepads out of a desktop host's own session |
+| [`node/host/`](node/host) | Host files that need root, installed by the owner with `install.sh`: the `cha-sandbox` AppArmor profile (Steam environments need it), the udev rules that keep virtual gamepads (Xbox 360, DualSense, Steam Controller) out of a desktop host's own session, and the `uinput`/`uhid` module list |
 | [`streamer/`](streamer) | The streamer's image (`--target runtime`) and its dev loop on a node |
 
 ## A portal and one node
@@ -32,13 +32,21 @@
    CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
    ```
 
-3. **Check the node**:
+3. **Install the host files** (once, and after an update that changes them), as the machine's owner:
+
+   ```bash
+   sudo deploy/node/host/install.sh
+   ```
+
+   It installs, only where they differ, the udev rules (`/etc/udev/rules.d`), the `cha-sandbox` AppArmor profile (`/etc/apparmor.d`, loaded; skipped on a host without AppArmor) and `/etc/modules-load.d/cha.conf` (`uinput` and `uhid` at boot, and loaded now), prints one line for each, and can be run again safely. `deploy/node/host/install.sh --check` only reports, without root. The agent never writes these: it only reads them, through read-only binds in the compose file.
+
+4. **Check the node**:
 
    ```bash
    CHA_PORTAL_URL=https://portal.example docker compose -f deploy/node/compose.yaml run --rm agent --doctor
    ```
 
-   It checks Docker, the images, the GPU through CDI, NVIDIA's Wine DLLs for DLSS, PyroWave's Vulkan device, `/dev/uinput`, the Steam sandbox, the data root and any shared directories kept outside it, the home volumes left from before app data moved, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
+   It checks Docker, the images, the GPU through CDI, NVIDIA's Wine DLLs for DLSS, PyroWave's Vulkan device, `/dev/uinput` and `/dev/uhid`, the kernel modules for the DualSense and Steam Controller, the Steam sandbox, whether the host files above are installed and current, the data root and any shared directories kept outside it, the home volumes left from before app data moved, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself. The agent also logs a warning when it starts if the host files are missing or old.
 
 ## Reaching nodes
 
@@ -60,6 +68,7 @@ The stream goes straight from the node to the browser; the portal only brokers i
 | `CHA_JOIN_TOKEN` | | One-time, to enroll |
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
+| `CHA_UHID` | `/dev/uhid` | For virtual DualSense and Steam Controllers; empty goes without (no `uhid` module), and those fall back to an Xbox 360 pad |
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |
 | `CHA_PORT_BASE` | `47000` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
 | `CHA_MAX_ENVIRONMENTS` | `16` | |
@@ -120,4 +129,4 @@ and bind it into the agent read-only at the same path, next to the data root in 
 - Behind a proxy, the audit log records the proxy's address, not the client's.
 - Users' app data lives on the node that made it. Nothing backs it up, limits its size or moves it to another node yet; the portal's reset deletes it on every connected node.
 - TURN over TLS on 443 comes later.
-- Steam environments need the `cha-sandbox` AppArmor profile on the node: `sudo install -m 644 deploy/node/host/apparmor/cha-sandbox /etc/apparmor.d/ && sudo apparmor_parser -r -W /etc/apparmor.d/cha-sandbox`. `--doctor` checks it.
+- Steam environments need the `cha-sandbox` AppArmor profile on the node: installed by `sudo deploy/node/host/install.sh` (step 3). `--doctor` checks it.
