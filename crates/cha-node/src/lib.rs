@@ -4,12 +4,14 @@
 //! a state directory, then holds one WebSocket to the portal (ADR 0001):
 //! answering the portal's challenge, reporting inventory and the environments
 //! it runs, sending heartbeats, and serving requests: starting and stopping
-//! environments ([`environments`]) through the Docker engine ([`docker`]).
+//! environments ([`environments`]) through the Docker engine ([`docker`]), and
+//! keeping and deleting the data users keep for apps ([`storage`]).
 
 pub mod docker;
 pub mod doctor;
 pub mod environments;
 pub mod inventory;
+pub mod storage;
 
 use std::fs;
 use std::io::Write;
@@ -30,7 +32,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
-use crate::environments::{Exit, Runtime};
+use crate::environments::{Exit, Progress, Runtime};
 
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const IDENTITY_FILE: &str = "node.json";
@@ -259,8 +261,20 @@ impl Agent {
         *welcomed = true;
         info!(%node_id, portal = %self.identity.portal_url, "connected");
 
+        // What the probe can't know: where this agent keeps app data.
         let probe = self.inventory;
-        let mut inventory = tokio::task::spawn_blocking(probe).await?;
+        let data_root = self.runtime.as_ref().and_then(|r| r.data_root());
+        let shared_dirs = self
+            .runtime
+            .as_ref()
+            .map(|r| r.shared_dirs())
+            .unwrap_or_default();
+        let collect = move || Inventory {
+            data_root: data_root.clone(),
+            shared_dirs: shared_dirs.clone(),
+            ..probe()
+        };
+        let mut inventory = tokio::task::spawn_blocking(collect.clone()).await?;
         sink.send(encode(&ToPortal::Inventory {
             inventory: inventory.clone(),
         })?)
@@ -279,6 +293,7 @@ impl Agent {
         // answer through this channel.
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ToPortal>();
         let mut exits = self.runtime.as_ref().map(|r| r.exits());
+        let mut progress = self.runtime.as_ref().map(|r| r.progress());
 
         let start = tokio::time::Instant::now();
         let mut heartbeats = tokio::time::interval_at(start + heartbeat, heartbeat);
@@ -295,7 +310,7 @@ impl Agent {
                     sink.send(Message::Ping(Default::default())).await?;
                 }
                 _ = refresh.tick() => {
-                    let fresh = tokio::task::spawn_blocking(probe).await?;
+                    let fresh = tokio::task::spawn_blocking(collect.clone()).await?;
                     if fresh != inventory {
                         inventory = fresh;
                         sink.send(encode(&ToPortal::Inventory { inventory: inventory.clone() })?).await?;
@@ -304,9 +319,14 @@ impl Agent {
                 Some(msg) = out_rx.recv() => {
                     sink.send(encode(&msg)?).await?;
                 }
-                exit = next_exit(&mut exits) => {
+                exit = next_event(&mut exits) => {
                     if let Some(Exit { id, detail, failed }) = exit {
                         sink.send(encode(&ToPortal::EnvironmentExited { id, detail, failed })?).await?;
+                    }
+                }
+                said = next_event(&mut progress) => {
+                    if let Some(Progress { id, detail }) = said {
+                        sink.send(encode(&ToPortal::EnvironmentProgress { id, detail })?).await?;
                     }
                 }
                 incoming = stream.next() => {
@@ -381,6 +401,14 @@ async fn handle(
                 .map(|info| NodeResponse::StreamerInfo { info })
                 .map_err(|e| format!("{e:#}"))
         }
+        NodeRequest::DeleteUserData { user, template } => {
+            let runtime = runtime.ok_or(NO_RUNTIME)?;
+            runtime
+                .delete_user_data(user.clone(), template.clone())
+                .await
+                .map(|()| NodeResponse::UserDataDeleted { user, template })
+                .map_err(|e| format!("{e:#}"))
+        }
         NodeRequest::StopEnvironment { id } => {
             let runtime = runtime.ok_or(NO_RUNTIME)?;
             runtime
@@ -392,15 +420,16 @@ async fn handle(
     }
 }
 
-/// The next environment exit, or never without a runtime. A lagging receiver
-/// skips ahead: the portal reconciles on reconnect anyway.
-async fn next_exit(exits: &mut Option<broadcast::Receiver<Exit>>) -> Option<Exit> {
-    let Some(rx) = exits else {
+/// The next event from the runtime (an exit, a progress note), or never
+/// without one. A lagging receiver skips ahead: the portal reconciles on
+/// reconnect anyway, and a progress note is only a note.
+async fn next_event<T: Clone>(events: &mut Option<broadcast::Receiver<T>>) -> Option<T> {
+    let Some(rx) = events else {
         return std::future::pending().await;
     };
     loop {
         match rx.recv().await {
-            Ok(exit) => return Some(exit),
+            Ok(event) => return Some(event),
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return std::future::pending().await,
         }

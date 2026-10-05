@@ -11,6 +11,13 @@ r="${CHA_REFRESH:-60}"
 # start over in each. There is one Steam per home (the portal allows one such
 # environment per user), so none is running now.
 rm -f "$HOME/.steam/steam.pid" "$HOME/.steam/steam.pipe"
+# The node mounts what the admin shares across users and says where in
+# CHA_SHARED_DIR (a library, often on a NAS). It is listed among Steam's library
+# folders now, before Steam starts: Steam rewrites its list from memory while it
+# runs, so a change then is lost. steam-library never writes in that directory.
+if [ -n "${CHA_SHARED_DIR:-}" ]; then
+  steam-library "$CHA_SHARED_DIR" || echo "start-steam: couldn't list the shared library" >&2
+fi
 # GTK 4's Vulkan renderer fails under gamescope's WSI layer (Steam's zenity
 # dialogs crashed): GL instead.
 export GSK_RENDERER=gl

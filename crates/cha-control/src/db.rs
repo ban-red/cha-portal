@@ -476,6 +476,39 @@ pub async fn live_environment_of(
     .await
 }
 
+/// Templates the user has a live environment of.
+pub async fn live_templates(db: &SqlitePool, owner_id: &str) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT template_id FROM environments WHERE owner_id = ? \
+         AND state IN ('starting', 'running', 'stopping')",
+    )
+    .bind(owner_id)
+    .fetch_all(db)
+    .await
+}
+
+/// What a node says a starting environment is doing, as its detail. Only the
+/// environment's own node may, and only while it is starting.
+pub async fn set_environment_progress(
+    db: &SqlitePool,
+    id: &str,
+    node_id: &str,
+    detail: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE environments SET detail = ?, updated_at = ? \
+         WHERE id = ? AND node_id = ? AND state = 'starting'",
+    )
+    .bind(detail)
+    .bind(now())
+    .bind(id)
+    .bind(node_id)
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
 /// Moves an environment to `state`, but only from one of `from`; returns
 /// whether it moved (so concurrent updates can't resurrect a stopped one).
 pub async fn transition_environment(
@@ -537,6 +570,76 @@ pub async fn fail_node_environments(
     .execute(db)
     .await?
     .rows_affected())
+}
+
+// ---- App data settings (0004) ----
+
+/// An admin's settings for one app; `None` where they haven't set it (the
+/// catalog's value applies).
+#[derive(Clone, Debug, FromRow)]
+pub struct AppStorageRow {
+    pub template_id: String,
+    pub default_persistent: Option<bool>,
+    pub shared_access: Option<String>,
+}
+
+pub async fn app_storage(db: &SqlitePool) -> Result<Vec<AppStorageRow>, sqlx::Error> {
+    sqlx::query_as("SELECT template_id, default_persistent, shared_access FROM app_storage")
+        .fetch_all(db)
+        .await
+}
+
+/// Sets what is `Some`; what is `None` stays as it was.
+pub async fn set_app_storage(
+    db: &SqlitePool,
+    template_id: &str,
+    default_persistent: Option<bool>,
+    shared_access: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO app_storage (template_id, default_persistent, shared_access) \
+         VALUES (?1, ?2, ?3) \
+         ON CONFLICT (template_id) DO UPDATE SET \
+           default_persistent = COALESCE(?2, default_persistent), \
+           shared_access = COALESCE(?3, shared_access)",
+    )
+    .bind(template_id)
+    .bind(default_persistent)
+    .bind(shared_access)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// The user's own choices: template id → whether they keep their data.
+pub async fn user_storage(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<std::collections::HashMap<String, bool>, sqlx::Error> {
+    let rows: Vec<(String, bool)> =
+        sqlx::query_as("SELECT template_id, persistent FROM user_app_storage WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(db)
+            .await?;
+    Ok(rows.into_iter().collect())
+}
+
+pub async fn set_user_persistent(
+    db: &SqlitePool,
+    user_id: &str,
+    template_id: &str,
+    persistent: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO user_app_storage (user_id, template_id, persistent) VALUES (?1, ?2, ?3) \
+         ON CONFLICT (user_id, template_id) DO UPDATE SET persistent = ?3",
+    )
+    .bind(user_id)
+    .bind(template_id)
+    .bind(persistent)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 // ---- Settings (the table is from 0001) ----

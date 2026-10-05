@@ -38,7 +38,7 @@
    CHA_PORTAL_URL=https://portal.example docker compose -f deploy/node/compose.yaml run --rm agent --doctor
    ```
 
-   It checks Docker, the images, the GPU through CDI, PyroWave's Vulkan device, `/dev/uinput`, the Steam sandbox, the home volumes kept for persistent templates, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
+   It checks Docker, the images, the GPU through CDI, PyroWave's Vulkan device, `/dev/uinput`, the Steam sandbox, the data root and any shared directories kept outside it, the home volumes left from before app data moved, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
 
 ## Reaching nodes
 
@@ -62,6 +62,8 @@ The stream goes straight from the node to the browser; the portal only brokers i
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |
 | `CHA_PORT_BASE` | `47000` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
 | `CHA_MAX_ENVIRONMENTS` | `16` | |
+| `CHA_DATA_ROOT` | `/srv/cha-portal` | Where app data lives ([below](#app-data)): a host directory the compose file also mounts into the agent at the same path |
+| `CHA_SHARED_DIRS` | | Keeps an app's shared directory elsewhere, `app=/absolute/path`, comma-separated (`steam=/mnt/games/steam`, a NAS). Bind each into the agent read-only at that path |
 
 ## Portal settings
 
@@ -74,9 +76,45 @@ The stream goes straight from the node to the browser; the portal only brokers i
 | `CHA_TURN_URLS`, `CHA_TURN_SECRET` | | TURN for players; the portal mints credentials per connection |
 | `CHA_TURN_PEERS` | | coturn relays only to these addresses (the nodes) |
 
+## App data
+
+What apps keep between launches lives on the node, as plain directories under its **data root**, `CHA_DATA_ROOT` (`/srv/cha-portal`). The user's and the admin's settings are in the portal (each user's own, and an admin's for every app); this is the node's side.
+
+```text
+<root>/users/<user id>/<app>/           the user's home for the app: mounted at /home/cha
+<root>/users/<user id>/<app>.migrated   a marker: the old home volume was copied in once
+<root>/shared/<app>/                    what every user of the app shares
+```
+
+- **Settings.** Per (user, app) the user turns keeping their data on or off, and resets it (the nodes delete the directory). The admin sets, per app, whether users keep their data by default, and how much the app shares: `none`, `read` or `write`. Defaults start from the catalog: Steam keeps data and shares a library (`write`), the others do neither. Changes apply to the next launch; the user's refuse while an environment of the app is live (the mounts are made).
+- **Which node.** A reset reaches every node that is connected, and says so if none is. Placement keeps a user on one node while there is one, so that is where their data is. A node that was offline when a user reset keeps the data until they reset again.
+- **Permissions.** Apps run as uid 1000. The agent, which runs as root in its container, makes the directories apps mount: users' homes `1000:1000` mode 0700, shared directories `1000:1000` mode 0770. The root and the directories above them are the agent's or yours (root-owned 0755); apps never see them. Ids in paths are checked (user ids are UUIDs, app ids are catalog slugs), and the agent never follows a symlink out of the root: an app owns what is inside its mounts and can plant any link there.
+- **Isolation is per mount, not per uid.** Every user's app runs as uid 1000, so a process on the node itself running as uid 1000 (your own login, if it is uid 1000) can read all of the data. Per-user uids are later work.
+- **Space.** Homes and shared libraries grow with use, and nothing limits them yet. `--doctor` shows the free space under the root and warns below 20 GB.
+- **Backups.** Plain directories: back up `<root>/users` with whatever you use (restic, rsync, a snapshot of the disk).
+- **Moving from volumes.** Before app data lived here, Steam's home was a Docker volume per user (`cha-home-<user id>-steam`). On a user's first launch after the update, with their directory missing or empty and their volume present, the agent copies the volume into the directory (the portal shows "Moving your files…" meanwhile) and leaves the volume in place. `--doctor` lists the volumes left and which are copied; remove those with `docker volume rm` once you trust the copy.
+- **Roll-out order.** Update the node's agent first (it keeps working with a portal that predates this), then the portal. A node reports its data root in its inventory; the portal refuses to start an app that needs storage on a node that doesn't (an older agent would quietly drop it).
+
+### A shared directory on a NAS
+
+Steam's library can live on a NAS, so games are installed once for every user and every machine. Mount the share on the node, then tell the agent where each app's shared directory is:
+
+```bash
+CHA_SHARED_DIRS=steam=/mnt/games/steam
+```
+
+and bind it into the agent read-only at the same path, next to the data root in `deploy/node/compose.yaml` (there is a commented example: `- /mnt/games/steam:/mnt/games/steam:ro`). Start the agent after the share is mounted, and restart it if it is mounted again.
+
+- **The agent never creates, changes or removes anything in it.** It isn't the agent's, and other machines use it. Before each launch it only looks, from its read-only bind: the directory is there, and each per-user place in it (Steam: `steamapps/compatdata` and `steamapps/shadercache`) is a real directory, not a symlink. If not (the share isn't mounted and an empty mountpoint is left), the app starts without the shared directory, and with the user's home; the log says why, and Steam shows the library as unavailable. Make the places once, as a user who can write there: `mkdir -p /mnt/games/steam/steamapps/compatdata /mnt/games/steam/steamapps/shadercache` (`--doctor` prints the exact command).
+- **Apps see it at the same path**, `/mnt/games/steam`, and find it in `CHA_SHARED_DIR`.
+- **Ownership.** Apps write it as uid 1000. On an NFS server that maps every user to one (Unraid's `all_squash`: files `nobody:users`, modes 0777/0666) that is fine; otherwise uid 1000 must be able to write there. `--doctor` shows the filesystem (`nfs4`, from the mount table), the mode and owner, and whether uid 1000 can write.
+- **A hard mount blocks.** NFS mounted `hard` (Unraid's default) makes every read and write wait for as long as the NAS is away: Steam, and anything touching the library, stops until it is back. The agent's own check gives up after 10 s and the launch goes without the share.
+- **Per-user parts.** Each user's Proton prefixes and shader caches are their own, mounted over the library's `steamapps/compatdata` and `steamapps/shadercache` from their home on this node. Prefixes already in the library's own `compatdata/` from another Steam client are hidden under them and not migrated: Steam Cloud covers most saves.
+- **Experimental.** Two users updating the same game at once can clash.
+
 ## Known gaps
 
 - Behind a proxy, the audit log records the proxy's address, not the client's.
-- Steam's home volumes (`cha-home-<user>-<template>`) live on the node that made them. Nothing backs them up or moves them yet, and the only reset is `docker volume rm` on the node.
+- Users' app data lives on the node that made it. Nothing backs it up, limits its size or moves it to another node yet; the portal's reset deletes it on every connected node.
 - TURN over TLS on 443 comes later.
 - Steam environments need the `cha-sandbox` AppArmor profile on the node: `sudo install -m 644 deploy/node/host/apparmor/cha-sandbox /etc/apparmor.d/ && sudo apparmor_parser -r -W /etc/apparmor.d/cha-sandbox`. `--doctor` checks it.

@@ -3,7 +3,7 @@
 //! P1.1 (foundation): accounts, browser sessions, first-run setup, audit log,
 //! and serving the portal SPA. P1.2: node enrollment and the node channel.
 //! P1.4: the catalog and environments. Session brokering follows (docs/PLAN.md,
-//! Phase 1 delivery plan).
+//! Phase 1 delivery plan). App data (Phase 3): what apps keep and share.
 
 pub mod api;
 pub mod auth;
@@ -12,6 +12,7 @@ pub mod environments;
 pub mod error;
 pub mod ice;
 pub mod nodes;
+pub mod storage;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

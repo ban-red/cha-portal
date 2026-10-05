@@ -354,6 +354,10 @@ async fn pump(
                             Err(err) => warn!(%node_id, "reconciling: {err}"),
                         }
                     }
+                    ToPortal::EnvironmentProgress { id, detail } => {
+                        let detail: String = detail.chars().take(200).collect();
+                        db::set_environment_progress(&state.db, &id, node_id, &detail).await?;
+                    }
                     ToPortal::EnvironmentExited { id, detail, failed } => {
                         tokio::spawn(crate::environments::exited(state.clone(), id, detail, failed));
                     }

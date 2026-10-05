@@ -66,6 +66,8 @@ export interface Template {
   class: string;
   security: SecurityProfile;
   shmMb: number;
+  /** What the app shares across users by default, and the parts each user keeps apart. */
+  shared?: { access: SharedAccess; perUser: string[] } | null;
 }
 
 export type EnvironmentState = "starting" | "running" | "stopping" | "destroyed" | "failed";
@@ -84,6 +86,45 @@ export interface Environment {
   updatedAt: number;
   /** Where its streamer listens while it runs. */
   streamer: { host: string | null; httpPort: number; webrtcPort: number } | null;
+}
+
+/** How the other users' copies of an app reach the app's shared data. */
+export type SharedAccess = "none" | "read" | "write";
+
+/** One app's data setting for the signed-in user (`GET /storage`). */
+export interface StorageApp {
+  /** The template id, e.g. "steam". */
+  template: string;
+  name: string;
+  /** The user's effective setting. */
+  persistent: boolean;
+  /** The admin's default. */
+  default: boolean;
+  sharedAccess: SharedAccess;
+  /** The user has an environment of this app running. */
+  live: boolean;
+  /** Where the node keeps the shared data, when that's outside the data root (a NAS share). */
+  sharedPath?: string;
+}
+
+export interface StorageInfo {
+  /** Where app data lives on the node, e.g. "/srv/cha-portal". */
+  root: string;
+  apps: StorageApp[];
+}
+
+export interface AdminStorageApp {
+  template: string;
+  name: string;
+  defaultPersistent: boolean;
+  sharedAccess: SharedAccess;
+  /** As in `StorageApp`. */
+  sharedPath?: string;
+}
+
+export interface AdminStorageInfo {
+  root: string;
+  apps: AdminStorageApp[];
 }
 
 /** An error the API returned: HTTP status, stable code, readable message. */
@@ -140,6 +181,17 @@ export const api = {
   launch: (templateId: string) => request<Environment>("POST", "/environments", { templateId }),
   stopEnvironment: (id: string) => request<Environment>("DELETE", `/environments/${encodeURIComponent(id)}`),
   environment: (id: string) => request<Environment>("GET", `/environments/${encodeURIComponent(id)}`),
+  /** Per-app data settings for the signed-in user. 404 until the server supports them. */
+  storage: () => request<StorageInfo>("GET", "/storage"),
+  /** 409 `live` while the user's environment of this app runs. */
+  setStoragePersistent: (template: string, persistent: boolean) =>
+    request<StorageApp>("PUT", `/storage/${encodeURIComponent(template)}`, { persistent }),
+  /** Deletes the user's saved data for the app: 409 while it runs, 502 if the node failed. */
+  resetStorage: (template: string) =>
+    request<unknown>("POST", `/storage/${encodeURIComponent(template)}/reset`, {}),
+  adminStorage: () => request<AdminStorageInfo>("GET", "/admin/storage"),
+  setAdminStorage: (template: string, body: { defaultPersistent?: boolean; sharedAccess?: SharedAccess }) =>
+    request<AdminStorageApp>("PUT", `/admin/storage/${encodeURIComponent(template)}`, body),
   /** STUN and TURN for the next connection (TURN credentials last a day). */
   iceServers: () => request<{ iceServers: RTCIceServer[] }>("GET", "/ice"),
   /** Brokers a WebRTC connection to the environment's streamer. */

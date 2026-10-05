@@ -18,6 +18,9 @@ pub enum ApiError {
     NotFound(String),
     #[error("{1}")]
     Conflict(&'static str, String),
+    /// A node the portal depends on failed or couldn't be reached.
+    #[error("{1}")]
+    BadGateway(&'static str, String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -35,6 +38,18 @@ impl ApiError {
         Self::Conflict(code, message.into())
     }
 
+    /// A node's failure as a 502: what [`crate::nodes::NodeHub`] reports as
+    /// conflicts (`node_error`, `node_offline`, `node_timeout`) when the
+    /// request isn't the user's doing but the node's.
+    pub fn node_failure(self) -> Self {
+        match self {
+            Self::Conflict(code @ ("node_error" | "node_offline" | "node_timeout"), message) => {
+                Self::BadGateway(code, message)
+            }
+            other => other,
+        }
+    }
+
     fn parts(&self) -> (StatusCode, &'static str) {
         match self {
             Self::BadRequest(code, _) => (StatusCode::BAD_REQUEST, code),
@@ -42,6 +57,7 @@ impl ApiError {
             Self::Forbidden(code, _) => (StatusCode::FORBIDDEN, code),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict(code, _) => (StatusCode::CONFLICT, code),
+            Self::BadGateway(code, _) => (StatusCode::BAD_GATEWAY, code),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }

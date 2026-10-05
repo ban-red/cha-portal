@@ -269,6 +269,18 @@ impl Docker {
         }
     }
 
+    /// Whether a volume by this name exists.
+    pub async fn volume_exists(&self, name: &str) -> Result<bool> {
+        let (status, bytes) = self
+            .send(Method::GET, &format!("/volumes/{}", encode(name)), None)
+            .await?;
+        match status {
+            s if s.is_success() => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            s => bail!("inspecting volume {name}: {s}: {}", engine_message(&bytes)),
+        }
+    }
+
     /// The names of the volumes that start with `prefix`, sorted.
     pub async fn volumes_named(&self, prefix: &str) -> Result<Vec<String>> {
         let filters = serde_json::json!({ "name": [prefix] }).to_string();

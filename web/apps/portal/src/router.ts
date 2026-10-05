@@ -21,8 +21,10 @@ export const router = createRouter({
       component: () => import("./components/AppShell.vue"),
       children: [
         { path: "", name: "dashboard", component: () => import("./views/DashboardView.vue"), meta: { title: "Environments" } },
+        { path: "settings/storage", name: "storage", component: () => import("./views/StorageView.vue"), meta: { title: "Storage" } },
         { path: "admin/nodes", name: "nodes", component: () => import("./views/NodesView.vue"), meta: { admin: true, title: "Nodes" } },
         { path: "admin/users", name: "users", component: () => import("./views/UsersView.vue"), meta: { admin: true, title: "Users" } },
+        { path: "admin/storage", name: "admin-storage", component: () => import("./views/AdminStorageView.vue"), meta: { admin: true, title: "App data" } },
         { path: "admin/audit", name: "audit", component: () => import("./views/AuditView.vue"), meta: { admin: true, title: "Audit log" } },
       ],
     },

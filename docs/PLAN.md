@@ -297,7 +297,7 @@ These are targets to validate in Phase 0, not measured facts.
 
 - **Cha container contract** (our own images, in `images/`):
   - Variables: `XDG_RUNTIME_DIR` (a per-environment dir shared with the streamer), `WAYLAND_DISPLAY`, `PULSE_SERVER` (the streamer's socket in that dir), `CHA_WIDTH/HEIGHT/REFRESH`, `CHA_UID/GID`.
-  - Mounts: the runtime dir; a home volume at `/home/cha`; a private `/dev/input` and `/run/udev` that the streamer fills when pads are plugged in.
+  - Mounts: the runtime dir; the user's app data when they keep it (a directory under the node's data root at `/home/cha`) and what the app shares; a private `/dev/input` and `/run/udev` that the streamer fills when pads are plugged in.
   - Devices: GPU render node or NVIDIA CDI, plus device-cgroup rules for the `input`/`hidraw` majors (read from `/proc/devices`).
   - Apps run as an unprivileged user. The image's entrypoint waits for the Wayland socket, then starts the app.
   - Image labels carry the catalog metadata (class, security profile, GPU needs).
@@ -322,13 +322,14 @@ These are targets to validate in Phase 0, not measured facts.
 ### 4.4 Persistence
 
 - **Ephemeral:** the container and an anonymous volume, destroyed on stop or idle timeout. Optionally pre-warmed pools later (Kasm "staging").
-- **Persistent:** a **home volume per (user, template)**, mounted at the image's home (`/home/cha`). The container is *recreated from the image* on every start (Kasm model). This means:
+- **Persistent:** a **home directory per (user, template)**, `users/<user id>/<template id>` under the node's data root (`CHA_DATA_ROOT`, `/srv/cha-portal`), mounted at the image's home (`/home/cha`). On or off per (user, app) by the user, with a default per app from the admin (initially the catalog's: Steam on). The container is *recreated from the image* on every start (Kasm model). This means:
   - image upgrades are free;
-  - a "Reset to template" button just swaps the volume.
-- **Volume drivers:** `dir` by default; `zfs` and `btrfs` give instant clones of golden homes, snapshots, and `send/recv` migration between nodes. Backups via restic/kopia to S3 come later.
-- **Suspend** means stopping the container and keeping the volume. A running GPU session can't be checkpointed.
-- **Shared Steam library** (experimental, Phase 3): a read-only lower layer plus a per-user overlay upper. Concurrency is a known open problem (Wolf #69/#83).
-- **Placement:** a persistent environment sticks to the node holding its volume until it is explicitly migrated.
+  - a "Reset" button deletes the directory and the next launch starts from the image's home again.
+- **Storage drivers:** plain directories now; `zfs` and `btrfs` would give instant clones of golden homes, snapshots, and `send/recv` migration between nodes. Backups via restic/kopia to S3 come later.
+- **Suspend** means stopping the container and keeping the directory. A running GPU session can't be checkpointed.
+- **Shared data** (Phase 3): per app, the admin allows `none`, `read` or `write` access to `shared/<template id>`, mounted into every user's container, or to a directory the node's owner keeps elsewhere (a NAS share). Parts an app keeps per user inside it are laid over by each user's own directories.
+- **Shared Steam library** (experimental): Steam's library as that shared directory (`steamapps/compatdata` and `steamapps/shadercache`, Proton's prefixes and caches, are each user's own, mounted over it), listed in the user's Steam before it starts. This replaces the read-only lower layer plus per-user overlay upper sketched first: a plain shared directory is what Steam can write, and a bind mount per user is all the isolation the prefixes need. Concurrency is a known open problem (Wolf #69/#83): two users updating one game at once can clash.
+- **Placement:** a persistent environment sticks to the node holding its data until it is explicitly migrated.
 
 ---
 
@@ -636,8 +637,8 @@ Delivers **features 4, 6 and 7**, and KDE for feature 3.
 
 | # | Milestone | Delivers | Verified by |
 |---|---|---|---|
-| **P2.1** *(in progress 2026-10-04: Steam runs, signs in and takes input; a game played with a controller and sound still to try)* | Steam | Our `steam` image: the Steam client and gamescope nested in our compositor (`gamescope -e`, Big Picture), 32-bit GPU libraries from CDI. The `steam` security profile: the browser seccomp profile plus a `cha-steam` AppArmor profile that lets pressure-vessel's bubblewrap mount inside its user namespace, loaded on the host by the owner (`deploy/node/host`). Steam's library and login survive a relaunch: a per-(user, template) home volume for templates marked persistent (the first slice of Phase 3's persistence) | A Steam game installed and played with a controller and sound; relaunching keeps the login and the library. **So far:**
-- The image, the profile, persistent homes and a `--doctor` check are built. A persistent template (`"persistent": true` in the catalog) gets a Docker volume per user, `cha-home-<user>-<template>`, labelled and mounted at `/home/cha`. Stopping the environment leaves it, and the portal allows one such environment per user.
+| **P2.1** *(in progress 2026-10-04: Steam runs, signs in and takes input; a game played with a controller and sound still to try)* | Steam | Our `steam` image: the Steam client and gamescope nested in our compositor (`gamescope -e`, Big Picture), 32-bit GPU libraries from CDI. The `steam` security profile: the browser seccomp profile plus a `cha-steam` AppArmor profile that lets pressure-vessel's bubblewrap mount inside its user namespace, loaded on the host by the owner (`deploy/node/host`). Steam's library and login survive a relaunch: a per-(user, template) home directory under the node's data root (the first slice of Phase 3's persistence) | A Steam game installed and played with a controller and sound; relaunching keeps the login and the library. **So far:**
+- The image, the profile, persistent homes and a `--doctor` check are built. Persistence started as a Docker volume per user, `cha-home-<user>-<template>`; it is now a directory under the node's data root (*Phase 3*, below): `users/<user id>/steam`, mounted at `/home/cha`. Stopping the environment leaves it, and the portal allows one such environment per user and app.
 - gamescope runs nested in our compositor: Vulkan on the RTX 4090, its own Xwayland, its window in ours. Steam bootstraps (2.4 GB) and starts its client.
 - pressure-vessel stopped it under Docker's AppArmor profile (`bwrap: Failed to make / slave: Permission denied`, "Steam now requires user namespaces"). The owner loaded `cha-sandbox` on the node (`--doctor`: Sandboxes ok), and Steam's client starts and its Big Picture UI streams. A relaunch keeps the client and the login: nothing downloads again.
 - Input: Big Picture sets gamescope's touch click mode to "passthrough", in which gamescope's Wayland backend drops the pointer's motion, so every click landed in the corner Steam parks the cursor in. `steam-touch-mode` puts the mode back: the pointer follows the page, clicks and typing land. (Our compositor also turns the page's moves into relative motion when an app locks the pointer.)
@@ -671,9 +672,9 @@ Delivers **features 4, 6 and 7**, and KDE for feature 3.
 Delivers **features 5 and 8**.
 
 - Persistent environments:
-  - per-(user, template) home volumes with `dir`/`zfs`/`btrfs` drivers (Steam's home already persists as a Docker named volume since P2.1: node-local, with no reset button, backup or migration yet);
-  - reset/snapshot, suspend/resume, idle timeouts, volume-aware placement;
-  - experimental shared Steam library.
+  - per-(user, template) homes as plain directories under the node's data root (`CHA_DATA_ROOT`), built: on or off per (user, app) by the user, a default per app and shared access (`none`, `read`, `write`) by the admin, a reset button, the old Steam home volumes copied in on the first launch (`deploy/README.md`, *App data*). Open: `zfs`/`btrfs` drivers, size limits and backups;
+  - snapshots, suspend/resume, idle timeouts, placement that follows the data;
+  - experimental shared Steam library, built (a shared directory, local or on a NAS, listed in the user's Steam; each user's Proton prefixes and shader caches apart). Open: a game played from it, and updates by two users at once.
 - WAN hardening: netem suite across the fallback chain (direct → TURN-UDP → TURN-TLS 443 → WebSocket), RTT-based placement, Chrome LNA UX, an optional ACME mode for WebTransport.
 - Sharing: share links (viewer / controller / player-N), control hand-off, multi-viewer encoders.
 - **External GameStream hosts:**

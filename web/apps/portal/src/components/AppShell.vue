@@ -12,8 +12,10 @@ const menuOpen = ref(false);
 
 const nav = computed(() => [
   { to: "/", label: "Environments", show: true },
+  { to: "/settings/storage", label: "Storage", show: true, section: "Settings" },
   { to: "/admin/nodes", label: "Nodes", show: session.isAdmin, section: "Admin" },
   { to: "/admin/users", label: "Users", show: session.isAdmin },
+  { to: "/admin/storage", label: "App data", show: session.isAdmin },
   { to: "/admin/audit", label: "Audit log", show: session.isAdmin },
 ]);
 

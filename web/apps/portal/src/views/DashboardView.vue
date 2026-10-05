@@ -6,6 +6,7 @@ import { ApiError, api, type Environment, type EnvironmentState, type Template }
 import FormError from "../components/FormError.vue";
 import { ago, dateTime } from "../format";
 import { useSession } from "../stores/session";
+import { STORAGE_KEY } from "../storage";
 
 const session = useSession();
 const queryClient = useQueryClient();
@@ -19,6 +20,12 @@ const environments = useQuery({
   queryFn: api.environments,
   refetchInterval: (query) => (busy((query.state.data ?? []).map((e) => e.state)) ? 1000 : 5000),
 });
+
+// Which apps keep the user's data. Where the server can't say yet (404) nothing is marked.
+const storage = useQuery({ queryKey: STORAGE_KEY, queryFn: api.storage, staleTime: 30_000 });
+const saved = computed(
+  () => new Set((storage.data.value?.apps ?? []).filter((a) => a.persistent).map((a) => a.template)),
+);
 
 const live = computed(() =>
   (environments.data.value ?? []).filter((e) => e.state !== "destroyed" && e.state !== "failed"),
@@ -64,8 +71,22 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
       <FormError v-else-if="catalog.isError.value" :message="catalog.error.value?.message ?? 'Failed to load'" />
       <div v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <article v-for="t in catalog.data.value" :key="t.id" class="card flex flex-col p-4">
-          <div class="mb-3 grid size-10 place-items-center rounded-lg border border-line bg-panel-2 text-xl text-accent">
-            {{ glyph(t) }}
+          <div class="mb-3 flex items-start justify-between gap-2">
+            <div class="grid size-10 place-items-center rounded-lg border border-line bg-panel-2 text-xl text-accent">
+              {{ glyph(t) }}
+            </div>
+            <RouterLink
+              v-if="saved.has(t.id)"
+              :to="{ name: 'storage' }"
+              title="Data kept between launches"
+              class="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] text-ink-3 transition hover:border-ink-3 hover:text-ink-2"
+            >
+              <svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <ellipse cx="8" cy="4" rx="5" ry="2" />
+                <path d="M3 4v4c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8v4c0 1.1 2.2 2 5 2s5-.9 5-2V8" />
+              </svg>
+              Saved<span class="sr-only">: data kept between launches. Open storage settings.</span>
+            </RouterLink>
           </div>
           <h3 class="font-semibold">{{ t.name }}</h3>
           <p class="mt-1 flex-1 text-sm text-ink-2">{{ t.description }}</p>

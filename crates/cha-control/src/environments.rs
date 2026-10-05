@@ -3,8 +3,9 @@
 //! nodes actually run.
 //!
 //! States: `starting → running → stopping → destroyed`, or `failed` (with a
-//! reason) from any of them. Environments are ephemeral for now: stopping one
-//! destroys it. Node calls run in the background; the SPA polls.
+//! reason) from any of them. Stopping one destroys it; what an app keeps for a
+//! user between launches is app data ([`crate::storage`]), not the
+//! environment. Node calls run in the background; the SPA polls.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -25,9 +26,12 @@ use crate::AppState;
 use crate::auth::{ClientInfo, CurrentUser};
 use crate::db::{self, EnvironmentRow, NodeRow, Role, User};
 use crate::error::{ApiError, ApiResult};
+use crate::storage::{self, SharedDefaults};
 
-/// The first start may pull images.
-const START_TIMEOUT: Duration = Duration::from_secs(180);
+/// The first start may pull images, and the first with a user's data under
+/// the node's data root copies their old home in (a Steam library is
+/// gigabytes).
+const START_TIMEOUT: Duration = Duration::from_secs(600);
 const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Environments one user may have live at once.
 const MAX_LIVE_PER_USER: i64 = 4;
@@ -65,10 +69,14 @@ pub struct Template {
     pub class: String,
     pub security: SecurityProfile,
     pub shm_mb: u32,
-    /// The user's home in it survives stopping (a volume per user and
-    /// template), so there is at most one of it per user at a time.
+    /// Users keep their data for it between launches (their home in it
+    /// survives stopping), unless they or an admin say otherwise: this is the
+    /// default `crate::storage` starts from.
     #[serde(default)]
     pub persistent: bool,
+    /// What it shares across users, unless an admin says otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<SharedDefaults>,
 }
 
 #[derive(Deserialize)]
@@ -85,7 +93,7 @@ pub fn catalog() -> &'static [Template] {
     })
 }
 
-fn template(id: &str) -> Option<&'static Template> {
+pub(crate) fn template(id: &str) -> Option<&'static Template> {
     catalog().iter().find(|t| t.id == id)
 }
 
@@ -213,7 +221,9 @@ async fn launch(
             format!("you can have {MAX_LIVE_PER_USER} environments at once; stop one first"),
         ));
     }
-    if template.persistent
+    let settings = storage::effective_for(&state, &user.id, template).await?;
+    // Two environments would share one home.
+    if settings.persistent
         && db::live_environment_of(&state.db, &user.id, &template.id)
             .await?
             .is_some()
@@ -227,6 +237,18 @@ async fn launch(
         ));
     }
     let node = place(&state).await?;
+    let app_data = storage::spec_storage(&user.id, template, settings);
+    // A node that predates app data would drop what it can't read, and the
+    // user's data would quietly not be kept (or shared).
+    if app_data.is_some() && !storage::node_has_storage(&node) {
+        return Err(ApiError::conflict(
+            "node_needs_update",
+            format!(
+                "{} can't keep or share app data yet: update its agent (it reports its data root once it can)",
+                node.name
+            ),
+        ));
+    }
     let id = db::new_id();
     db::insert_environment(&state.db, &id, &user.id, &template.id, &node.id, "starting").await?;
     db::audit(
@@ -239,7 +261,13 @@ async fn launch(
     )
     .await?;
     info!(%id, template = %template.id, node = %node.name, user = %user.username, "launching");
-    let spec = environment_spec(id.clone(), &user.id, template, state.media_key.public_b64());
+    let spec = environment_spec(
+        id.clone(),
+        &user.id,
+        template,
+        state.media_key.public_b64(),
+        app_data.map(Box::new),
+    );
     tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
     let row = db::environment_by_id(&state.db, &id)
         .await?
@@ -247,12 +275,14 @@ async fn launch(
     Ok(Json(view(row, &nodes_by_id(&state).await?)))
 }
 
-/// What a node runs for `owner`'s launch of `template`.
+/// What a node runs for `owner`'s launch of `template`, with the app data
+/// ([`storage::spec_storage`]) it mounts.
 fn environment_spec(
     id: String,
     owner: &str,
     template: &Template,
     portal_key: String,
+    storage: Option<Box<cha_wire::Storage>>,
 ) -> EnvironmentSpec {
     EnvironmentSpec {
         id,
@@ -263,13 +293,14 @@ fn environment_spec(
         height: HEIGHT,
         fps: FPS,
         portal_key,
-        // The volume lives on the node it was first made on: placement keeps
-        // a user on one node while there is one (Phase 3 makes it follow).
-        home: template
-            .persistent
-            .then(|| cha_wire::home_volume_name(owner, &template.id)),
+        // Not the old way of keeping a home (a volume the portal named): the
+        // node moves such a volume's files into the new directory itself.
+        home: None,
         owner: owner.to_string(),
         template: template.id.clone(),
+        // The data lives on the node it was first made on: placement keeps a
+        // user on one node while there is one (Phase 3 makes it follow).
+        storage,
     }
 }
 
@@ -656,26 +687,37 @@ mod tests {
     }
 
     #[test]
-    fn only_persistent_templates_get_a_home_volume() {
+    fn a_spec_carries_the_storage_and_never_the_old_home_volume() {
         let owner = "01a10527-f79f-761b-962f-4b26924a2e68";
-        let steam = environment_spec("e1".into(), owner, template("steam").unwrap(), "k".into());
-        assert_eq!(
-            steam.home.as_deref(),
-            Some("cha-home-01a10527-f79f-761b-962f-4b26924a2e68-steam")
+        let settings = storage::Effective {
+            persistent: true,
+            shared_access: storage::SharedAccess::Write,
+        };
+        let steam = template("steam").unwrap();
+        let spec = environment_spec(
+            "e1".into(),
+            owner,
+            steam,
+            "k".into(),
+            storage::spec_storage(owner, steam, settings).map(Box::new),
         );
+        assert_eq!(spec.home, None);
         assert_eq!(
-            (steam.owner.as_str(), steam.template.as_str()),
+            (spec.owner.as_str(), spec.template.as_str()),
             (owner, "steam")
         );
-        for t in catalog().iter().filter(|t| !t.persistent) {
-            let spec = environment_spec("e2".into(), owner, t, "k".into());
-            assert_eq!(spec.home, None, "{} keeps no home", t.id);
-        }
-        // Every persistent template's volume is one the node accepts.
-        for t in catalog().iter().filter(|t| t.persistent) {
-            let spec = environment_spec("e3".into(), owner, t, "k".into());
-            assert!(cha_wire::is_home_volume_name(&spec.home.unwrap()));
-        }
+        let storage = spec.storage.expect("steam keeps and shares");
+        assert_eq!(
+            storage.home.as_deref(),
+            Some("users/01a10527-f79f-761b-962f-4b26924a2e68/steam")
+        );
+        assert_eq!(storage.check(owner, "steam"), Ok(()));
+
+        // Nothing kept or shared: nothing sent.
+        let chrome = template("chrome").unwrap();
+        let plain = environment_spec("e2".into(), owner, chrome, "k".into(), None);
+        assert_eq!(plain.storage, None);
+        assert_eq!(plain.home, None);
     }
 
     #[test]

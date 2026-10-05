@@ -26,6 +26,9 @@ if-addrs = "0.15"
 # (add a homelab CA to the system store).
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# App data directories are walked with openat and changed through descriptors,
+# so a symlink an app plants can't send the agent elsewhere (`src/storage.rs`).
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

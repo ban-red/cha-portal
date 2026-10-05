@@ -17,6 +17,9 @@ pub fn collect() -> Inventory {
         memory_mb: memory_mb().unwrap_or(0),
         gpus: gpus(),
         addresses: addresses(),
+        // Only the agent knows it: it adds this when it reports.
+        data_root: None,
+        shared_dirs: Default::default(),
     }
 }
 

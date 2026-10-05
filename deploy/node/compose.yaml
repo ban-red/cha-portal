@@ -28,6 +28,16 @@ services:
       CHA_UINPUT: ${CHA_UINPUT-/dev/uinput}
       # WAN by port-forward: the router's public IP (forward UDP 47000-47047).
       CHA_PUBLIC_ADDRESS: ${CHA_PUBLIC_ADDRESS:-}
+      # Where app data lives: each user's home for an app they keep data for
+      # (users/<user id>/<app>), and what apps share (shared/<app>). A host
+      # directory, mounted into the agent at the same path below: Docker is
+      # given host paths. Docker makes it, root-owned, if it isn't there.
+      CHA_DATA_ROOT: ${CHA_DATA_ROOT:-/srv/cha-portal}
+      # Keeps an app's shared directory somewhere else, as app=/path, comma
+      # separated: Steam's library on a NAS, say CHA_SHARED_DIRS=steam=/mnt/games/steam.
+      # Apps see it at that same path. Bind each one into the agent below,
+      # read-only: the agent only checks it is there and makes nothing in it.
+      CHA_SHARED_DIRS: ${CHA_SHARED_DIRS:-}
       RUST_LOG: ${RUST_LOG:-info}
     # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi
     # and the render node (whose group the apps get).
@@ -37,6 +47,15 @@ services:
       - state:/var/lib/cha-node
       # The host's OS name, not the image's.
       - /etc/os-release:/run/host/os-release:ro
+      # App data (CHA_DATA_ROOT above): the agent makes users' and shared
+      # directories here, owned by the apps' uid (1000), and deletes a user's
+      # on a reset. Mounted at the same path as on the host.
+      - ${CHA_DATA_ROOT:-/srv/cha-portal}:${CHA_DATA_ROOT:-/srv/cha-portal}
+      # A shared directory kept elsewhere (CHA_SHARED_DIRS above), one line each,
+      # read-only and at the same path. Mount the share on the host first, and
+      # restart the agent if it is mounted again: a bind keeps what was
+      # there when it was made. `--doctor` checks it.
+      # - /mnt/games/steam:/mnt/games/steam:ro
       # Environments are containers the agent creates. This makes the agent
       # root-equivalent on the node (plan §4.2): keep it small and audited.
       - /var/run/docker.sock:/var/run/docker.sock

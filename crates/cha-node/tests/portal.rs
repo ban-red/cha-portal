@@ -2,13 +2,14 @@
 //! handshake, inventory, a request through the node channel, removal, and the
 //! environment lifecycle (with a fake runtime standing in for Docker).
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
 use cha_control::{AppState, Config, app, db};
-use cha_node::environments::{Connect, Exit, Runtime};
+use cha_node::environments::{Connect, Exit, Progress, Runtime};
 use cha_node::{Agent, Identity, enroll, init_tls};
 use cha_wire::{EnvironmentSpec, Gpu, Inventory, SecurityProfile, StreamerEndpoint, close};
 use futures_util::future::BoxFuture;
@@ -138,6 +139,13 @@ struct FakeRuntime {
     stopped: Mutex<Vec<String>>,
     running: Mutex<Vec<String>>,
     exits: broadcast::Sender<Exit>,
+    progress: broadcast::Sender<Progress>,
+    /// Whether this node's agent knows app data: it reports a data root (and
+    /// the share its owner keeps Steam's library on).
+    storage: bool,
+    /// What the portal asked it to delete, and the reason it refuses to, if set.
+    deleted: Mutex<Vec<(String, String)>>,
+    refuse_delete: Mutex<Option<String>>,
     /// Each start waits for a permit: a real one takes seconds, and an instant
     /// one can finish before the launch even answers.
     starts: Semaphore,
@@ -145,12 +153,25 @@ struct FakeRuntime {
 
 impl FakeRuntime {
     fn new(running: &[&str]) -> Arc<Self> {
+        Self::build(running, true)
+    }
+
+    /// A node whose agent predates app data.
+    fn without_storage() -> Arc<Self> {
+        Self::build(&[], false)
+    }
+
+    fn build(running: &[&str], storage: bool) -> Arc<Self> {
         Arc::new(Self {
             started: Mutex::default(),
             connects: Mutex::default(),
             stopped: Mutex::default(),
             running: Mutex::new(running.iter().map(|s| s.to_string()).collect()),
             exits: broadcast::channel(8).0,
+            progress: broadcast::channel(8).0,
+            storage,
+            deleted: Mutex::default(),
+            refuse_delete: Mutex::default(),
             starts: Semaphore::new(0),
         })
     }
@@ -197,6 +218,32 @@ impl Runtime for FakeRuntime {
         self.exits.subscribe()
     }
 
+    fn progress(&self) -> broadcast::Receiver<Progress> {
+        self.progress.subscribe()
+    }
+
+    fn data_root(&self) -> Option<String> {
+        self.storage.then(|| "/srv/cha-portal".to_string())
+    }
+
+    fn shared_dirs(&self) -> BTreeMap<String, String> {
+        if self.storage {
+            BTreeMap::from([("steam".to_string(), "/mnt/games/steam".to_string())])
+        } else {
+            BTreeMap::new()
+        }
+    }
+
+    fn delete_user_data(&self, user: String, template: String) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            if let Some(reason) = self.refuse_delete.lock().unwrap().clone() {
+                anyhow::bail!(reason);
+            }
+            self.deleted.lock().unwrap().push((user, template));
+            Ok(())
+        })
+    }
+
     fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Value>> {
         Box::pin(async move {
             self.connects.lock().unwrap().push(request);
@@ -221,6 +268,9 @@ fn test_inventory() -> Inventory {
             encoders: vec!["h264".into(), "hevc".into(), "av1".into()],
         }],
         addresses: vec!["192.168.1.20".into()],
+        // The agent adds these.
+        data_root: None,
+        shared_dirs: Default::default(),
     }
 }
 
@@ -465,4 +515,332 @@ async fn environments_launch_stop_fail_and_reconcile() {
         )
         .await;
     assert_eq!(status, 400);
+}
+
+// ---- App data ----
+
+/// A portal with a node running `runtime`, and the admin's user id.
+async fn portal_with_node(runtime: &Arc<FakeRuntime>) -> (Portal, String) {
+    let p = portal().await;
+    let identity = enroll(&p.url, &p.join_token().await, "gpu-box")
+        .await
+        .unwrap();
+    let agent = Agent::new(identity.clone())
+        .unwrap()
+        .with_inventory(test_inventory)
+        .with_runtime(runtime.clone());
+    tokio::spawn(async move { agent.run().await });
+    p.wait_for_node(&identity.node_id, |n| {
+        n["online"] == true && !n["inventory"].is_null()
+    })
+    .await;
+    let (_, me) = p.admin("GET", "/api/me", None).await;
+    let user = me["id"].as_str().unwrap().to_string();
+    (p, user)
+}
+
+impl Portal {
+    /// Launches `template` and lets it start; returns the spec the node got.
+    async fn launch(
+        &self,
+        runtime: &FakeRuntime,
+        template: &str,
+    ) -> (u16, Value, Option<EnvironmentSpec>) {
+        let before = runtime.started.lock().unwrap().len();
+        let (status, env) = self
+            .admin(
+                "POST",
+                "/api/environments",
+                Some(json!({ "templateId": template })),
+            )
+            .await;
+        if status != 200 {
+            return (status, env, None);
+        }
+        runtime.starts.add_permits(1);
+        let id = env["id"].as_str().unwrap().to_string();
+        self.wait_for_env(&id, |e| e["state"] == "running").await;
+        let spec = runtime.started.lock().unwrap()[before].clone();
+        (status, env, Some(spec))
+    }
+
+    async fn stop(&self, id: &str) {
+        self.admin("DELETE", &format!("/api/environments/{id}"), None)
+            .await;
+        self.wait_for_env(id, |e| e["state"] == "destroyed").await;
+    }
+}
+
+#[tokio::test]
+async fn the_node_reports_where_it_keeps_app_data() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, _) = portal_with_node(&runtime).await;
+    let (status, nodes) = p.admin("GET", "/api/nodes", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(nodes[0]["inventory"]["dataRoot"], "/srv/cha-portal");
+    assert_eq!(
+        nodes[0]["inventory"]["sharedDirs"]["steam"],
+        "/mnt/games/steam"
+    );
+
+    // So the settings say where the data is, and Steam's library is the NAS's.
+    let (_, user) = p.admin("GET", "/api/storage", None).await;
+    assert_eq!(user["root"], "/srv/cha-portal");
+    let steam = user["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["template"] == "steam")
+        .unwrap();
+    assert_eq!(steam["sharedPath"], "/mnt/games/steam");
+    let chrome = user["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["template"] == "chrome")
+        .unwrap();
+    assert!(chrome.get("sharedPath").is_none(), "kept under the root");
+    let (_, admin) = p.admin("GET", "/api/admin/storage", None).await;
+    assert_eq!(admin["root"], "/srv/cha-portal");
+    let steam = admin["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["template"] == "steam")
+        .unwrap();
+    assert_eq!(steam["sharedPath"], "/mnt/games/steam");
+    let (_, updated) = p
+        .admin(
+            "PUT",
+            "/api/admin/storage/steam",
+            Some(json!({ "sharedAccess": "read" })),
+        )
+        .await;
+    assert_eq!(updated["sharedPath"], "/mnt/games/steam");
+}
+
+#[tokio::test]
+async fn launches_carry_the_users_directories_and_one_environment_per_home() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, user) = portal_with_node(&runtime).await;
+
+    // Steam keeps the user's data and shares its library, from the catalog.
+    let (status, env, spec) = p.launch(&runtime, "steam").await;
+    assert_eq!(status, 200, "{env}");
+    let spec = spec.unwrap();
+    assert_eq!(spec.home, None, "not the old way of keeping a home");
+    assert_eq!(
+        (spec.owner.as_str(), spec.template.as_str()),
+        (user.as_str(), "steam")
+    );
+    let storage = spec.storage.clone().expect("steam keeps and shares");
+    assert_eq!(storage.home, Some(format!("users/{user}/steam")));
+    assert_eq!(
+        storage.legacy_volume,
+        Some(cha_wire::home_volume_name(&user, "steam"))
+    );
+    let shared = storage.shared.clone().unwrap();
+    assert_eq!(shared.path, "shared/steam");
+    assert!(shared.writable);
+    assert_eq!(
+        shared.per_user,
+        ["steamapps/compatdata", "steamapps/shadercache"]
+    );
+    assert_eq!(storage.check(&user, "steam"), Ok(()));
+
+    // Two would share one home.
+    let (status, again) = p
+        .admin(
+            "POST",
+            "/api/environments",
+            Some(json!({ "templateId": "steam" })),
+        )
+        .await;
+    assert_eq!(status, 409, "{again}");
+    assert_eq!(again["error"], "already_running");
+    let (_, listed) = p.admin("GET", "/api/storage", None).await;
+    let steam = listed["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["template"] == "steam")
+        .unwrap();
+    assert_eq!(steam["live"], true);
+
+    // The setting is shut while it runs, and then it is the user's call: with
+    // nothing kept (and a library whose per-user parts need a home), a Steam
+    // gets no storage at all, and any number of them can run.
+    let (status, blocked) = p
+        .admin(
+            "PUT",
+            "/api/storage/steam",
+            Some(json!({ "persistent": false })),
+        )
+        .await;
+    assert_eq!((status, blocked["error"].as_str()), (409, Some("live")));
+    p.stop(env["id"].as_str().unwrap()).await;
+    let (status, off) = p
+        .admin(
+            "PUT",
+            "/api/storage/steam",
+            Some(json!({ "persistent": false })),
+        )
+        .await;
+    assert_eq!(status, 200, "{off}");
+    let (_, _, first) = p.launch(&runtime, "steam").await;
+    assert_eq!(first.unwrap().storage, None);
+    let (status, _, second) = p.launch(&runtime, "steam").await;
+    assert_eq!(status, 200, "no home to share, so no limit");
+    assert_eq!(second.unwrap().storage, None);
+
+    // Chrome keeps and shares nothing, until the admin and the user say so.
+    let (_, first, chrome) = p.launch(&runtime, "chrome").await;
+    assert_eq!(chrome.unwrap().storage, None);
+    p.stop(first["id"].as_str().unwrap()).await;
+    let (status, _) = p
+        .admin(
+            "PUT",
+            "/api/admin/storage/chrome",
+            Some(json!({ "defaultPersistent": true, "sharedAccess": "read" })),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let (_, _, chrome) = p.launch(&runtime, "chrome").await;
+    let storage = chrome.unwrap().storage.expect("kept and shared now");
+    assert_eq!(storage.home, Some(format!("users/{user}/chrome")));
+    let shared = storage.shared.unwrap();
+    assert_eq!(
+        (shared.path.as_str(), shared.writable),
+        ("shared/chrome", false)
+    );
+    assert!(shared.per_user.is_empty());
+    // And now Chrome keeps one home too.
+    let (status, again) = p
+        .admin(
+            "POST",
+            "/api/environments",
+            Some(json!({ "templateId": "chrome" })),
+        )
+        .await;
+    assert_eq!(
+        (status, again["error"].as_str()),
+        (409, Some("already_running"))
+    );
+}
+
+#[tokio::test]
+async fn a_node_that_predates_app_data_isnt_sent_any() {
+    let runtime = FakeRuntime::without_storage();
+    let (p, _) = portal_with_node(&runtime).await;
+    let (_, nodes) = p.admin("GET", "/api/nodes", None).await;
+    assert!(nodes[0]["inventory"].get("dataRoot").is_none());
+
+    // Steam would keep nothing and share nothing: refused, not run without.
+    let (status, body, _) = p.launch(&runtime, "steam").await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"], "node_needs_update");
+    assert!(runtime.started.lock().unwrap().is_empty());
+    // What needs no storage still runs.
+    let (status, _, spec) = p.launch(&runtime, "chrome").await;
+    assert_eq!(status, 200);
+    assert_eq!(spec.unwrap().storage, None);
+    // The settings fall back to the default root.
+    let (_, user) = p.admin("GET", "/api/storage", None).await;
+    assert_eq!(user["root"], "/srv/cha-portal");
+}
+
+#[tokio::test]
+async fn a_reset_reaches_the_node_and_its_refusal_comes_back() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, user) = portal_with_node(&runtime).await;
+
+    let (status, reply) = p.admin("POST", "/api/storage/steam/reset", None).await;
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["template"], "steam");
+    assert_eq!(
+        runtime.deleted.lock().unwrap().clone(),
+        [(user.clone(), "steam".to_string())]
+    );
+
+    // The node's own reason, as a 502.
+    *runtime.refuse_delete.lock().unwrap() =
+        Some("an environment of theirs for this app is running on this node".into());
+    let (status, reply) = p.admin("POST", "/api/storage/steam/reset", None).await;
+    assert_eq!(status, 502, "{reply}");
+    assert_eq!(reply["error"], "node_error");
+    assert!(
+        reply["message"]
+            .as_str()
+            .unwrap()
+            .contains("running on this node")
+    );
+    assert_eq!(runtime.deleted.lock().unwrap().len(), 1);
+
+    // Not while one is live, and audited when it happens.
+    *runtime.refuse_delete.lock().unwrap() = None;
+    let (_, _, _) = p.launch(&runtime, "steam").await;
+    let (status, reply) = p.admin("POST", "/api/storage/steam/reset", None).await;
+    assert_eq!((status, reply["error"].as_str()), (409, Some("live")));
+    assert_eq!(runtime.deleted.lock().unwrap().len(), 1);
+    let (_, audit) = p.admin("GET", "/api/audit", None).await;
+    let reset: Vec<&Value> = audit
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "storage.reset")
+        .collect();
+    assert_eq!(reset.len(), 1);
+    assert_eq!(reset[0]["target"], "steam");
+}
+
+#[tokio::test]
+async fn what_the_node_says_while_starting_shows_until_it_runs() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, _) = portal_with_node(&runtime).await;
+    let (_, env) = p
+        .admin(
+            "POST",
+            "/api/environments",
+            Some(json!({ "templateId": "steam" })),
+        )
+        .await;
+    let id = env["id"].as_str().unwrap().to_string();
+    runtime
+        .progress
+        .send(Progress {
+            id: id.clone(),
+            detail: "Moving your files to the new storage (this happens once)".into(),
+        })
+        .unwrap();
+    let env = p.wait_for_env(&id, |e| !e["detail"].is_null()).await;
+    assert_eq!(env["state"], "starting");
+    assert!(
+        env["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("Moving your files")
+    );
+    // Someone else's id, or an environment that isn't starting, is not news.
+    runtime
+        .progress
+        .send(Progress {
+            id: "no-such-environment".into(),
+            detail: "x".into(),
+        })
+        .unwrap();
+    runtime.starts.add_permits(1);
+    let env = p.wait_for_env(&id, |e| e["state"] == "running").await;
+    assert!(env["detail"].is_null(), "the note goes when it runs");
+    runtime
+        .progress
+        .send(Progress {
+            id: id.clone(),
+            detail: "late".into(),
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (_, env) = p
+        .admin("GET", &format!("/api/environments/{id}"), None)
+        .await;
+    assert!(env["detail"].is_null());
 }

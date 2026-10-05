@@ -9,14 +9,19 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use cha_wire::HOME_VOLUME_PREFIX;
+use cha_wire::{HOME_VOLUME_PREFIX, parse_home_volume_name};
 use serde_json::json;
 
 use crate::Identity;
 use crate::docker::Docker;
-use crate::environments::{DockerConfig, SANDBOX_APPARMOR, browser_seccomp, catalog_images};
+use crate::environments::{
+    APP_UID, DockerConfig, SANDBOX_APPARMOR, browser_seccomp, catalog_images, catalog_per_user,
+};
+use crate::storage::DataRoot;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Below this much free space under the data root, the doctor warns.
+const LOW_SPACE_BYTES: u64 = 20 << 30;
 /// Media tokens live 60 s: a clock this far off breaks connecting.
 const SKEW_FAIL_SECS: f64 = 30.0;
 const SKEW_WARN_SECS: f64 = 5.0;
@@ -31,15 +36,15 @@ enum Level {
 
 struct Check {
     level: Level,
-    name: &'static str,
+    name: String,
     detail: String,
     fix: Option<String>,
 }
 
-fn check(level: Level, name: &'static str, detail: impl Into<String>) -> Check {
+fn check(level: Level, name: impl Into<String>, detail: impl Into<String>) -> Check {
     Check {
         level,
-        name,
+        name: name.into(),
         detail: detail.into(),
         fix: None,
     }
@@ -67,7 +72,13 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
         checks.push(pyrowave(docker, config).await);
         checks.push(gamepads(docker, config).await);
         checks.push(sandboxes(docker, config).await);
-        checks.push(home_volumes(docker).await);
+    }
+    checks.push(storage(docker, config, engine.is_ok()).await);
+    for (template, dir) in &config.shared_dirs {
+        checks.push(external_shared(template, dir).await);
+    }
+    if engine.is_ok() {
+        checks.push(legacy_homes(docker, config).await);
     }
     checks.push(render_node(&config.render_node));
     checks.push(user_namespaces());
@@ -271,26 +282,373 @@ async fn sandboxes(docker: &Docker, config: &DockerConfig) -> Check {
     }
 }
 
-/// The homes kept for persistent templates (Steam): one volume per user and
-/// template, which stopping an environment leaves alone.
-async fn home_volumes(docker: &Docker) -> Check {
-    match docker.volumes_named(HOME_VOLUME_PREFIX).await {
-        Ok(names) if names.is_empty() => check(
-            Level::Info,
-            "Home volumes",
-            "none yet (Steam keeps one per user, from the first launch)",
-        ),
-        Ok(names) => check(
-            Level::Info,
-            "Home volumes",
-            format!(
-                "{} kept, one per user and persistent template ({HOME_VOLUME_PREFIX}<user>-<template>)",
-                names.len()
-            ),
+/// The data root: where users' app data and shared data live. The agent must
+/// write it, and Docker must find the same directory at the path the agent
+/// names (it is given host paths): a root that is only inside the agent's
+/// container would take users' data to places nothing keeps.
+async fn storage(docker: &Docker, config: &DockerConfig, engine: bool) -> Check {
+    let fix_missing = format!(
+        "make it on the host (sudo mkdir -p {0}) and mount it into the agent at the same path \
+         (CHA_DATA_ROOT, deploy/node/compose.yaml)",
+        config.data_root.display()
+    );
+    let data = match DataRoot::new(&config.data_root, 1000, 1000) {
+        Ok(data) => data,
+        Err(err) => return check(Level::Fail, "Storage", format!("{err:#}")),
+    };
+    let root = data.path().display().to_string();
+    let name = {
+        let data = data.clone();
+        tokio::task::spawn_blocking(move || data.create_probe())
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|r| r)
+    };
+    let name = match name {
+        Ok(name) => name,
+        Err(err) => {
+            return check(Level::Fail, "Storage", format!("{err:#}")).fix(fix_missing);
+        }
+    };
+    // The same directory, as Docker sees it.
+    // (Without the engine, or the streamer image the probe runs from, there is
+    // nothing to ask Docker.)
+    let can_ask = engine
+        && docker
+            .image_exists(&config.streamer_image)
+            .await
+            .unwrap_or(false);
+    let seen = if !can_ask {
+        None
+    } else {
+        let probe = json!({
+            "Image": config.streamer_image,
+            "Entrypoint": ["test", "-e", format!("/probe/{name}")],
+            "HostConfig": {
+                "Mounts": [{
+                    "Type": "bind",
+                    "Source": root,
+                    "Target": "/probe",
+                    "ReadOnly": true,
+                    "BindOptions": { "CreateMountpoint": false },
+                }],
+                "NetworkMode": "none",
+            },
+        });
+        Some(
+            docker
+                .run("cha-doctor-storage", &probe, PROBE_TIMEOUT)
+                .await,
         )
-        .fix("`docker volume ls --filter name=cha-home-` lists them; `docker volume rm <name>` resets one"),
-        Err(err) => check(Level::Warn, "Home volumes", format!("{err:#}")),
+    };
+    {
+        let data = data.clone();
+        let name = name.clone();
+        let _ = tokio::task::spawn_blocking(move || data.remove_probe(&name)).await;
     }
+    match seen {
+        Some(Ok((0, _))) | None => {}
+        Some(Ok((_, _))) => {
+            return check(
+                Level::Fail,
+                "Storage",
+                format!(
+                    "{root} is writable here, but it isn't the same directory on the host: users' \
+                     data would land in the agent's container"
+                ),
+            )
+            .fix(format!(
+                "mount the host's {root} into the agent at {root} (CHA_DATA_ROOT, \
+                 deploy/node/compose.yaml)"
+            ));
+        }
+        Some(Err(err)) => {
+            return check(
+                Level::Fail,
+                "Storage",
+                format!("Docker can't mount {root}: {err:#}"),
+            )
+            .fix(fix_missing);
+        }
+    }
+    let stats = {
+        let data = data.clone();
+        tokio::task::spawn_blocking(move || data.stats())
+            .await
+            .unwrap_or_default()
+    };
+    let free = stats.free_bytes.unwrap_or(0);
+    let detail = format!(
+        "{root}: writable, {} free; {} app directories for {} users, {} shared{}",
+        gigabytes(free),
+        stats.user_dirs,
+        stats.users,
+        stats.shared_dirs,
+        if seen.is_none() {
+            " (not checked from Docker's side)"
+        } else {
+            ""
+        },
+    );
+    if stats.free_bytes.is_some() && free < LOW_SPACE_BYTES {
+        check(Level::Warn, "Storage", detail).fix(format!(
+            "free up space on the disk holding {root}: games and users' homes live there"
+        ))
+    } else {
+        check(Level::Ok, "Storage", detail)
+    }
+}
+
+/// A shared directory the owner keeps outside the data root (a NAS share).
+/// The agent only looks at it, from its own read-only bind of it, and a launch
+/// whose directory isn't usable goes without it, so problems here are
+/// warnings. Looking at an NFS share that is away can block, so it gives up.
+async fn external_shared(template: &str, dir: &Path) -> Check {
+    let name = format!("Shared ({template})");
+    let per_user = catalog_per_user(template);
+    let looked = {
+        let (dir, per_user) = (dir.to_path_buf(), per_user.clone());
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::task::spawn_blocking(move || inspect_shared(&dir, &per_user)),
+        )
+        .await
+    };
+    let Ok(Ok(looked)) = looked else {
+        return check(
+            Level::Warn,
+            name,
+            format!("{} didn't answer within 10 s", dir.display()),
+        )
+        .fix(
+            "a hard NFS mount makes reads wait for the server: check that it is up; \
+             launches go without this directory until then",
+        );
+    };
+    describe_shared(name, dir, &per_user, &looked)
+}
+
+/// What looking at a shared directory found.
+#[derive(Debug, Default)]
+struct SharedLook {
+    /// `Err` is why it can't be read.
+    stat: Option<Result<SharedStat, String>>,
+    /// The filesystem it is on: type and source, from the mount table.
+    fs: Option<(String, String)>,
+    /// Per-user places it doesn't have as real directories.
+    missing: Vec<String>,
+    /// Empty, and on the same device as its parent: likely a mountpoint that
+    /// nothing is mounted on.
+    looks_unmounted: bool,
+}
+
+#[derive(Debug)]
+struct SharedStat {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+
+fn inspect_shared(dir: &Path, per_user: &[String]) -> SharedLook {
+    use std::os::unix::fs::MetadataExt;
+    let mut look = SharedLook::default();
+    let meta = match std::fs::metadata(dir) {
+        Ok(m) if m.is_dir() => m,
+        Ok(_) => {
+            look.stat = Some(Err("not a directory".into()));
+            return look;
+        }
+        Err(e) => {
+            look.stat = Some(Err(e.to_string()));
+            return look;
+        }
+    };
+    look.stat = Some(Ok(SharedStat {
+        mode: meta.mode() & 0o7777,
+        uid: meta.uid(),
+        gid: meta.gid(),
+    }));
+    look.fs = std::fs::read_to_string("/proc/self/mountinfo")
+        .ok()
+        .and_then(|table| mount_for(&table, dir));
+    look.missing = crate::storage::missing_per_user(dir, per_user);
+    let empty = std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_none());
+    let same_device = dir
+        .parent()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .is_some_and(|parent| parent.dev() == meta.dev());
+    look.looks_unmounted = empty && same_device;
+    look
+}
+
+fn describe_shared(name: String, dir: &Path, per_user: &[String], look: &SharedLook) -> Check {
+    let path = dir.display();
+    let bind = format!(
+        "mount the share on the node and bind it into the agent read-only at the same path \
+         ({path}:{path}:ro, deploy/node/compose.yaml)"
+    );
+    let stat = match &look.stat {
+        Some(Ok(stat)) => stat,
+        Some(Err(why)) => {
+            return check(
+                Level::Warn,
+                name,
+                format!("{path}: {why}; launches go without the shared directory"),
+            )
+            .fix(bind);
+        }
+        None => return check(Level::Warn, name, format!("{path}: not looked at")),
+    };
+    let mut problems = Vec::new();
+    let mut notes = Vec::new();
+    let mut fixes = Vec::new();
+    if look.looks_unmounted {
+        problems
+            .push("empty, on the same device as its parent: the share looks unmounted".to_string());
+        fixes.push(bind);
+    }
+    if !look.missing.is_empty() {
+        problems.push(format!("missing {}", look.missing.join(", ")));
+        let dirs: Vec<String> = look
+            .missing
+            .iter()
+            .map(|m| dir.join(m).display().to_string())
+            .collect();
+        fixes.push(format!(
+            "as a user who can write there: mkdir -p {} (launches go without the shared \
+             directory until they exist)",
+            dirs.join(" ")
+        ));
+    }
+    let owner = format!("{:o} {}:{}", stat.mode, stat.uid, stat.gid);
+    if can_write(stat, APP_UID, APP_UID) {
+        notes.push(format!("uid {APP_UID} can write ({owner})"));
+        if stat.mode & 0o002 != 0 {
+            notes.push(
+                "world-writable: fine on a NAS that maps every user to one, otherwise any local user can write it"
+                    .into(),
+            );
+        }
+    } else {
+        problems.push(format!("uid {APP_UID} can't write it ({owner})"));
+        fixes.push(format!(
+            "give uid {APP_UID} write access on the server (apps write installs and manifests there)"
+        ));
+    }
+    let on = match &look.fs {
+        Some((fs, source)) => format!("{fs} ({source})"),
+        None => "filesystem unknown".into(),
+    };
+    let per_user_note = if look.missing.is_empty() && !per_user.is_empty() {
+        format!("{} per-user places present", per_user.len())
+    } else {
+        String::new()
+    };
+    let mut detail = vec![format!("{path}: {on}")];
+    detail.extend(Some(per_user_note).filter(|n| !n.is_empty()));
+    detail.extend(notes);
+    let (level, detail) = if problems.is_empty() {
+        (Level::Ok, detail.join("; "))
+    } else {
+        detail.extend(problems);
+        (Level::Warn, detail.join("; "))
+    };
+    let result = check(level, name, detail);
+    if fixes.is_empty() {
+        result
+    } else {
+        result.fix(fixes.join("; "))
+    }
+}
+
+/// Whether the user `uid`:`gid` can write a directory by its mode bits (a NAS
+/// may map users, so this is what the permissions say, not a test).
+fn can_write(stat: &SharedStat, uid: u32, gid: u32) -> bool {
+    if stat.uid == uid {
+        stat.mode & 0o200 != 0
+    } else if stat.gid == gid {
+        stat.mode & 0o020 != 0
+    } else {
+        stat.mode & 0o002 != 0
+    }
+}
+
+/// The filesystem `path` is on, from a mount table (`/proc/self/mountinfo`):
+/// its type and source, from the mount that covers it most closely. Each line
+/// is `id parent major:minor root mount-point options [fields] - type source
+/// super-options`, with spaces in the mount point written `\040`.
+fn mount_for(table: &str, path: &Path) -> Option<(String, String)> {
+    let mut best: Option<(usize, String, String)> = None;
+    for line in table.lines() {
+        let Some((head, tail)) = line.split_once(" - ") else {
+            continue;
+        };
+        let Some(point) = head.split_whitespace().nth(4) else {
+            continue;
+        };
+        let point = point.replace("\\040", " ");
+        let mut tail = tail.split_whitespace();
+        let (Some(fs), Some(source)) = (tail.next(), tail.next()) else {
+            continue;
+        };
+        if path.starts_with(&point) && best.as_ref().is_none_or(|(len, ..)| point.len() >= *len) {
+            best = Some((point.len(), fs.to_string(), source.replace("\\040", " ")));
+        }
+    }
+    best.map(|(_, fs, source)| (fs, source))
+}
+
+fn gigabytes(bytes: u64) -> String {
+    format!("{:.0} GB", bytes as f64 / (1u64 << 30) as f64)
+}
+
+/// The home volumes from before app data moved under the data root (one per
+/// user and persistent template). They are copied in on a launch and never
+/// removed by the agent: the owner removes them once the copy is trusted.
+async fn legacy_homes(docker: &Docker, config: &DockerConfig) -> Check {
+    let names = match docker.volumes_named(HOME_VOLUME_PREFIX).await {
+        Ok(names) => names,
+        Err(err) => return check(Level::Warn, "Legacy homes", format!("{err:#}")),
+    };
+    if names.is_empty() {
+        return check(
+            Level::Ok,
+            "Legacy homes",
+            "no home volumes left from before app data moved under the data root",
+        );
+    }
+    let migrated = DataRoot::new(&config.data_root, 1000, 1000)
+        .ok()
+        .map(|data| data.stats().migrated)
+        .unwrap_or_default();
+    let (copied, waiting): (Vec<&String>, Vec<&String>) = names.iter().partition(|name| {
+        parse_home_volume_name(name)
+            .is_some_and(|(user, template)| migrated.contains(&(user.into(), template.into())))
+    });
+    let fix = if copied.is_empty() {
+        "they are copied under the data root when their user next launches the app".to_string()
+    } else {
+        format!(
+            "the copied ones are safe to remove once you trust the new directories: docker volume rm {}",
+            copied
+                .iter()
+                .map(|n| n.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    check(
+        Level::Info,
+        "Legacy homes",
+        format!(
+            "{} left from before app data moved under {}: {} copied, {} not yet",
+            names.len(),
+            config.data_root.display(),
+            copied.len(),
+            waiting.len()
+        ),
+    )
+    .fix(fix)
 }
 
 fn render_node(path: &str) -> Check {
@@ -392,5 +750,175 @@ fn ports(config: &DockerConfig) -> Check {
             format!("{http} (TCP) or {webrtc} (UDP) is taken: by a running environment, or something else"),
         )
         .fix("pick another range with CHA_PORT_BASE")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The agent's view of the node: the container's root, and `/mnt/games/steam`
+    /// bound in from the host's NFS mount of `/mnt/games`.
+    const MOUNTINFO: &str = "\
+1011 987 0:61 / / rw,relatime master:1 - overlay overlay rw,lowerdir=/x
+1020 1011 0:62 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+1030 1011 259:2 /srv/cha-portal /srv/cha-portal rw,relatime - ext4 /dev/nvme0n1p2 rw
+1040 1011 0:53 /steam /mnt/games/steam ro,relatime shared:200 - nfs4 192.168.1.30:/mnt/user/games ro,vers=4.2,hard,nconnect=4
+1041 1011 0:54 / /mnt/with\\040space rw - cifs //nas/share rw
+";
+
+    #[test]
+    fn the_filesystem_comes_from_the_closest_mount() {
+        let nfs = mount_for(MOUNTINFO, Path::new("/mnt/games/steam"));
+        assert_eq!(
+            nfs,
+            Some(("nfs4".into(), "192.168.1.30:/mnt/user/games".into()))
+        );
+        assert_eq!(
+            mount_for(
+                MOUNTINFO,
+                Path::new("/mnt/games/steam/steamapps/compatdata")
+            )
+            .map(|m| m.0),
+            Some("nfs4".into())
+        );
+        assert_eq!(
+            mount_for(MOUNTINFO, Path::new("/srv/cha-portal/users")).map(|m| m.0),
+            Some("ext4".into())
+        );
+        // Not under any mount of its own: the root's.
+        assert_eq!(
+            mount_for(MOUNTINFO, Path::new("/mnt/other")).map(|m| m.0),
+            Some("overlay".into())
+        );
+        assert_eq!(
+            mount_for(MOUNTINFO, Path::new("/mnt/with space/x")).map(|m| m.0),
+            Some("cifs".into())
+        );
+        assert_eq!(mount_for("", Path::new("/mnt")), None);
+        assert_eq!(
+            mount_for("garbage\nno dash here\n", Path::new("/mnt")),
+            None
+        );
+    }
+
+    fn stat(mode: u32, uid: u32, gid: u32) -> SharedStat {
+        SharedStat { mode, uid, gid }
+    }
+
+    #[test]
+    fn write_access_follows_the_mode_bits_for_the_apps_user() {
+        // A NAS that maps everyone to nobody:users, 0777.
+        assert!(can_write(&stat(0o777, 99, 100), 1000, 1000));
+        assert!(!can_write(&stat(0o755, 99, 100), 1000, 1000));
+        assert!(
+            !can_write(&stat(0o775, 99, 100), 1000, 1000),
+            "group isn't ours"
+        );
+        assert!(can_write(&stat(0o775, 99, 1000), 1000, 1000));
+        assert!(can_write(&stat(0o700, 1000, 1000), 1000, 1000));
+        // The owner's own bits decide, even if others could.
+        assert!(!can_write(&stat(0o577, 1000, 1000), 1000, 1000));
+    }
+
+    fn healthy() -> SharedLook {
+        SharedLook {
+            stat: Some(Ok(stat(0o777, 99, 100))),
+            fs: Some(("nfs4".into(), "192.168.1.30:/mnt/user/games".into())),
+            missing: vec![],
+            looks_unmounted: false,
+        }
+    }
+
+    fn per_user() -> Vec<String> {
+        vec![
+            "steamapps/compatdata".into(),
+            "steamapps/shadercache".into(),
+        ]
+    }
+
+    #[test]
+    fn a_healthy_share_says_what_it_is() {
+        let dir = Path::new("/mnt/games/steam");
+        let c = describe_shared("Shared (steam)".into(), dir, &per_user(), &healthy());
+        assert!(c.level == Level::Ok);
+        assert!(
+            c.detail.contains("nfs4 (192.168.1.30:/mnt/user/games)"),
+            "{}",
+            c.detail
+        );
+        assert!(c.detail.contains("2 per-user places present"));
+        assert!(c.detail.contains("uid 1000 can write (777 99:100)"));
+        assert!(c.detail.contains("world-writable"));
+        assert!(c.fix.is_none());
+    }
+
+    #[test]
+    fn missing_places_come_with_the_exact_mkdir() {
+        let dir = Path::new("/mnt/games/steam");
+        let look = SharedLook {
+            missing: per_user(),
+            ..healthy()
+        };
+        let c = describe_shared("Shared (steam)".into(), dir, &per_user(), &look);
+        assert!(c.level == Level::Warn);
+        let fix = c.fix.unwrap();
+        assert!(
+            fix.contains("mkdir -p /mnt/games/steam/steamapps/compatdata /mnt/games/steam/steamapps/shadercache"),
+            "{fix}"
+        );
+    }
+
+    #[test]
+    fn a_share_that_looks_unmounted_or_unwritable_or_absent_warns() {
+        let dir = Path::new("/mnt/games/steam");
+        let unmounted = SharedLook {
+            looks_unmounted: true,
+            missing: per_user(),
+            ..healthy()
+        };
+        let c = describe_shared("Shared (steam)".into(), dir, &per_user(), &unmounted);
+        assert!(c.level == Level::Warn);
+        assert!(c.detail.contains("looks unmounted"));
+        assert!(
+            c.fix
+                .unwrap()
+                .contains("/mnt/games/steam:/mnt/games/steam:ro")
+        );
+
+        let read_only = SharedLook {
+            stat: Some(Ok(stat(0o755, 99, 100))),
+            ..healthy()
+        };
+        let c = describe_shared("Shared (steam)".into(), dir, &per_user(), &read_only);
+        assert!(c.level == Level::Warn);
+        assert!(c.detail.contains("uid 1000 can't write"));
+
+        let absent = SharedLook {
+            stat: Some(Err("No such file or directory (os error 2)".into())),
+            ..SharedLook::default()
+        };
+        let c = describe_shared("Shared (steam)".into(), dir, &per_user(), &absent);
+        assert!(c.level == Level::Warn);
+        assert!(c.detail.contains("go without the shared directory"));
+    }
+
+    #[test]
+    fn looking_at_a_local_directory_finds_what_is_missing_and_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let share = tmp.path().join("steam");
+        std::fs::create_dir(&share).unwrap();
+        // Empty, beside its parent's own device.
+        let look = inspect_shared(&share, &per_user());
+        assert!(look.looks_unmounted);
+        assert_eq!(look.missing, per_user());
+        std::fs::create_dir_all(share.join("steamapps/compatdata")).unwrap();
+        std::fs::create_dir_all(share.join("steamapps/shadercache")).unwrap();
+        let look = inspect_shared(&share, &per_user());
+        assert!(!look.looks_unmounted);
+        assert!(look.missing.is_empty());
+        assert!(matches!(look.stat, Some(Ok(_))));
+        let gone = inspect_shared(&tmp.path().join("nope"), &per_user());
+        assert!(matches!(gone.stat, Some(Err(_))));
     }
 }

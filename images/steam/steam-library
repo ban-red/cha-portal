@@ -1,0 +1,267 @@
+#!/usr/bin/python3
+"""Lists the shared directory as one of Steam's library folders, before Steam starts.
+
+The node mounts what an admin lets Steam share across users (a library on a
+NAS, say) and tells the app where in CHA_SHARED_DIR. Steam learns of a library
+folder from its list, `libraryfolders.vdf`, which it keeps in two places in
+its own directory, `~/.local/share/Steam`: `steamapps/` and `config/` (the two
+files are the same). Steam rewrites that list from what it has in memory when
+it runs, so a change is only kept if it is made before Steam starts: this runs
+first, from `start-steam`.
+
+- **Idempotent.** A folder that is already listed (by its path, whatever the
+  slashes at the end) leaves the file as it was: not rewritten at all.
+- **Only adds.** Every other library in the list, and everything else in the
+  file, stays as it was. A new entry takes the next number.
+- **The shared directory is never written.** It isn't ours: other users, and
+  other machines, use it. Where it has its own `libraryfolder.vdf` (Steam's
+  marker in a library: a content id and a label), the entry copies the content
+  id and label from it, so Steam sees one library; where it has none, the entry
+  is the path alone, and Steam makes the marker itself.
+- **A library Steam can't write isn't listed.** Steam refuses a library folder
+  it can't write to ("New Steam library folder must be writable"), so a
+  read-only mount isn't offered, and the reason is said.
+- **A home's first launch** has neither file yet (Steam makes them as it sets
+  itself up): both are made, with Steam's own folder as entry 0 and the shared
+  one as entry 1, as Steam would write them.
+- **A file that doesn't parse is left alone.**
+
+Nothing here can stop Steam: it exits 0 for anything it chose to skip, and
+`start-steam` ignores its failures.
+
+Usage: steam-library DIRECTORY
+"""
+
+import os
+import re
+import sys
+
+# Steam's own directory in a home, and the two lists in it.
+STEAM_DIR = ".local/share/Steam"
+LISTS = ("steamapps/libraryfolders.vdf", "config/libraryfolders.vdf")
+MARKER = "libraryfolder.vdf"
+
+
+# ---- Valve's KeyValues text format ----
+#
+# A file is `"key" "value"` pairs and `"key" { ...pairs... }` blocks, in order,
+# which a key may repeat in. Strings are quoted, with \n \t \\ \" escapes (an
+# unquoted word is allowed too), and `//` starts a comment.
+
+TOKEN = re.compile(
+    r"""
+    (?P<space>\s+|//[^\n]*)
+  | (?P<open>\{)
+  | (?P<close>\})
+  | "(?P<quoted>(?:[^"\\]|\\.)*)"
+  | (?P<bare>[^\s{}"]+)
+    """,
+    re.VERBOSE,
+)
+ESCAPES = {"n": "\n", "t": "\t", "\\": "\\", '"': '"'}
+
+
+def unescape(text):
+    return re.sub(r"\\(.)", lambda m: ESCAPES.get(m.group(1), m.group(0)), text)
+
+
+def escape(text):
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t")
+
+
+def tokens(text):
+    pos = 0
+    while pos < len(text):
+        m = TOKEN.match(text, pos)
+        if not m:
+            raise ValueError(f"can't read the file at character {pos}")
+        pos = m.end()
+        if m.lastgroup == "space":
+            continue
+        if m.lastgroup in ("open", "close"):
+            yield m.lastgroup, m.group()
+        elif m.group("quoted") is not None:
+            yield "str", unescape(m.group("quoted"))
+        else:
+            yield "str", m.group("bare")
+
+
+def parse(text):
+    """The file as a list of (key, value) pairs; a value is a string or such a list."""
+    stream = iter(tokens(text))
+
+    def block(top):
+        pairs = []
+        for kind, token in stream:
+            if kind == "close":
+                if top:
+                    raise ValueError("a } with nothing open")
+                return pairs
+            if kind != "str":
+                raise ValueError("a { with no key")
+            try:
+                kind, value = next(stream)
+            except StopIteration:
+                raise ValueError("a key with no value") from None
+            if kind == "open":
+                pairs.append((token, block(False)))
+            elif kind == "str":
+                pairs.append((token, value))
+            else:
+                raise ValueError("a key with no value")
+        if not top:
+            raise ValueError("a { never closed")
+        return pairs
+
+    return block(True)
+
+
+def dump(pairs, depth=0):
+    """Pairs as Steam writes them: tabs, two between a key and its value."""
+    pad = "\t" * depth
+    out = []
+    for key, value in pairs:
+        if isinstance(value, list):
+            out.append(f'{pad}"{escape(key)}"\n{pad}{{\n{dump(value, depth + 1)}{pad}}}\n')
+        else:
+            out.append(f'{pad}"{escape(key)}"\t\t"{escape(value)}"\n')
+    return "".join(out)
+
+
+# ---- The list of library folders ----
+
+
+def same_path(a, b):
+    return os.path.normpath(a) == os.path.normpath(b)
+
+
+def find_root(pairs):
+    """The `libraryfolders` block (Steam has written it in both cases)."""
+    for key, value in pairs:
+        if key.lower() == "libraryfolders" and isinstance(value, list):
+            return value
+    raise ValueError("no libraryfolders block")
+
+
+def listed(entries):
+    """The folders in a list, new format (blocks with a path) and old (a path)."""
+    paths = []
+    for key, value in entries:
+        if not key.isdigit():
+            continue
+        if isinstance(value, str):
+            paths.append(value)
+        else:
+            paths.extend(v for k, v in value if k == "path" and isinstance(v, str))
+    return paths
+
+
+def new_entry(path, label, contentid):
+    entry = [("path", path), ("label", label)]
+    if contentid:
+        entry.append(("contentid", contentid))
+    return entry + [("totalsize", "0"), ("apps", [])]
+
+
+def add_library(text, path, label="", contentid=None):
+    """`text` (a list file) with `path` listed; the same text if it already is."""
+    pairs = parse(text)
+    entries = find_root(pairs)
+    if any(same_path(p, path) for p in listed(entries)):
+        return text
+    numbers = [int(k) for k, _ in entries if k.isdigit()]
+    key = str(max(numbers) + 1 if numbers else 1)
+    old_format = any(k.isdigit() and isinstance(v, str) for k, v in entries)
+    entries.append((key, path if old_format else new_entry(path, label, contentid)))
+    return dump(pairs)
+
+
+def first_list(steam_dir, path, label="", contentid=None):
+    """A list for a Steam that hasn't made its own yet: its folder, then ours."""
+    root = [("0", new_entry(steam_dir, "", None))]
+    root.append(("1", new_entry(path, label, contentid)))
+    return dump([("libraryfolders", root)])
+
+
+def read_marker(directory):
+    """(content id, label) from the library's own marker file, if it has one."""
+    try:
+        with open(os.path.join(directory, MARKER), encoding="utf-8", errors="replace") as f:
+            pairs = parse(f.read())
+    except (OSError, ValueError):
+        return None, ""
+    values = {}
+    for key, value in pairs:
+        if isinstance(value, list):
+            values = {k: v for k, v in value if isinstance(v, str)}
+    return values.get("contentid"), values.get("label", "")
+
+
+def write_whole(path, text, mode=0o644):
+    """Replaces a file whole (a temp file beside it, then a rename)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(temp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
+
+
+def say(message):
+    print(f"steam-library: {message}", file=sys.stderr)
+
+
+def register(home, directory):
+    """Lists `directory` in the home's Steam; returns the files it changed."""
+    steam = os.path.join(home, STEAM_DIR)
+    if not os.path.isdir(directory):
+        say(f"{directory} isn't a directory: not listing it")
+        return []
+    if not os.access(directory, os.W_OK):
+        say(
+            f"{directory} isn't writable (a read-only share?): Steam refuses a library "
+            "folder it can't write to, so it isn't listed"
+        )
+        return []
+    contentid, label = read_marker(directory)
+    changed = []
+    existing = [os.path.join(steam, name) for name in LISTS if os.path.exists(os.path.join(steam, name))]
+    if not existing:
+        text = first_list(steam, directory, label, contentid)
+        for name in LISTS:
+            write_whole(os.path.join(steam, name), text)
+            changed.append(os.path.join(steam, name))
+        say(f"listed {directory} in a new Steam home")
+        return changed
+    for path in existing:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        try:
+            new = add_library(text, directory, label, contentid)
+        except ValueError as err:
+            say(f"{path}: {err}; leaving it alone")
+            continue
+        if new != text:
+            write_whole(path, new, os.stat(path).st_mode & 0o777)
+            changed.append(path)
+            say(f"listed {directory} in {path}")
+    return changed
+
+
+def main(argv):
+    if len(argv) != 2:
+        print(__doc__.strip().splitlines()[-1], file=sys.stderr)
+        return 2
+    register(os.environ.get("HOME", "/home/cha"), argv[1])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

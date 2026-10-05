@@ -3,7 +3,8 @@
 # GL falls back to Mesa unless the host's CDI spec carries NVIDIA's 32-bit
 # libraries. gamescope keeps Steam's clipboard in its own X server: the helper
 # that XFCE uses bridges it (crates/cha-x11-clipboard). steam-status shows the
-# first launch's download to the page.
+# first launch's download to the page; steam-library lists the library the node
+# shares across users (CHA_SHARED_DIR) among Steam's library folders.
 FROM rust:1.93-trixie AS build
 WORKDIR /src
 COPY . .
@@ -35,7 +36,7 @@ RUN dpkg --add-architecture i386 \
 # gamescope's Xwayland runs unprivileged and can't create the socket dirs.
 RUN install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
 COPY --from=build /usr/local/bin/cha-x11-clipboard /usr/local/bin/
-COPY images/steam/start-steam images/steam/steam-touch-mode images/steam/steam-status /usr/local/bin/
+COPY images/steam/start-steam images/steam/steam-touch-mode images/steam/steam-status images/steam/steam-library /usr/local/bin/
 # Debian puts gamescope and steam in /usr/games.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games
 USER cha

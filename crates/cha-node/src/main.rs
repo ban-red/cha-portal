@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime};
+use cha_node::storage::{DataRoot, parse_shared_dirs};
 use cha_node::{Agent, Identity, doctor, enroll, init_tls, inventory, normalize_portal_url};
 use clap::Parser;
 use tracing::{info, warn};
@@ -58,6 +59,18 @@ struct Args {
     /// (WAN without a mesh or TURN).
     #[arg(long, env = "CHA_PUBLIC_ADDRESS")]
     public_address: Option<String>,
+    /// Where apps' data lives: each user's home for an app they keep data
+    /// for, and what apps share. An absolute path on this machine, which the
+    /// agent's container also sees at the same path (Docker is given host paths).
+    #[arg(long, env = "CHA_DATA_ROOT", default_value = cha_wire::DEFAULT_DATA_ROOT)]
+    data_root: PathBuf,
+    /// Keeps a template's shared directory somewhere else, as TEMPLATE=/path
+    /// (repeat the flag, or comma-separate in the variable): for Steam, a
+    /// library on a NAS, say `steam=/mnt/games/steam`. Apps see it at that same
+    /// path. The agent never creates, changes or removes anything in it, and
+    /// its container needs it bound in read-only at that path to check it.
+    #[arg(long = "shared-dir", env = "CHA_SHARED_DIRS", value_delimiter = ',')]
+    shared_dirs: Vec<String>,
 }
 
 #[tokio::main]
@@ -80,7 +93,7 @@ async fn main() -> Result<()> {
     }
     init_tls();
     let docker = Docker::new(&args.docker_socket);
-    let config = docker_config(&args);
+    let config = docker_config(&args)?;
     if args.doctor {
         let identity = Identity::load(&args.state_dir).ok().flatten();
         let ok = doctor::run(&docker, &config, identity.as_ref()).await;
@@ -120,7 +133,7 @@ async fn main() -> Result<()> {
     let mut agent = Agent::new(identity)?;
     match DockerRuntime::new(docker, config.clone()).await {
         Ok(runtime) => {
-            info!(streamer = %config.streamer_image, render_node = %config.render_node, "running environments with Docker");
+            info!(streamer = %config.streamer_image, render_node = %config.render_node, data_root = %config.data_root.display(), "running environments with Docker");
             agent = agent.with_runtime(runtime);
         }
         Err(err) => warn!(
@@ -132,7 +145,10 @@ async fn main() -> Result<()> {
 }
 
 /// How environments run here, from the arguments.
-fn docker_config(args: &Args) -> DockerConfig {
+fn docker_config(args: &Args) -> Result<DockerConfig> {
+    // Refused up front: Docker would be handed paths built from these.
+    DataRoot::new(&args.data_root, 1000, 1000)?;
+    let shared_dirs = parse_shared_dirs(&args.shared_dirs, &args.data_root)?;
     let render_node = args.render_node.clone().unwrap_or_else(|| {
         inventory::collect()
             .gpus
@@ -141,7 +157,7 @@ fn docker_config(args: &Args) -> DockerConfig {
             .and_then(|g| g.render_node)
             .unwrap_or_else(|| "/dev/dri/renderD128".into())
     });
-    DockerConfig {
+    Ok(DockerConfig {
         streamer_image: args.streamer_image.clone(),
         render_node,
         gpu_device: args.gpu_device.clone(),
@@ -153,5 +169,7 @@ fn docker_config(args: &Args) -> DockerConfig {
             .filter(|a| !a.is_empty()),
         port_base: args.port_base,
         max_environments: args.max_environments,
-    }
+        data_root: args.data_root.clone(),
+        shared_dirs,
+    })
 }

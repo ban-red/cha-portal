@@ -13,7 +13,22 @@
 //! 4. Node → [`ToPortal::Inventory`] and [`ToPortal::Environments`] (what it
 //!    is running, so both sides reconcile), then [`ToPortal::Heartbeat`] every
 //!    `heartbeat_secs`. Requests flow both ways; the node pushes
-//!    [`ToPortal::EnvironmentExited`] when an environment stops on its own.
+//!    [`ToPortal::EnvironmentExited`] when an environment stops on its own, and
+//!    [`ToPortal::EnvironmentProgress`] while a start has something slow to say.
+//!
+//! App data (the layout is in `storage.rs`): the portal names each environment's directories
+//! under the node's data root in [`EnvironmentSpec::storage`], and asks the
+//! node to delete a user's with [`NodeRequest::DeleteUserData`]. Messages only
+//! gained optional fields and variants, so [`PROTOCOL_VERSION`] stays: a
+//! node that predates storage ignores `storage` (the portal checks the node
+//! reports a data root before sending it), and a portal that predates it still
+//! sends `home`, which the node honours.
+
+mod storage;
+
+pub use storage::*;
+
+use std::collections::BTreeMap;
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -105,6 +120,13 @@ pub enum ToPortal {
         /// app quitting normally.
         failed: bool,
     },
+    /// What a starting environment is doing, when it takes long enough to be
+    /// worth saying (copying a user's old home into its new directory). The
+    /// portal shows it as the environment's detail until it is running.
+    EnvironmentProgress {
+        id: String,
+        detail: String,
+    },
     Request {
         id: u64,
         request: PortalRequest,
@@ -143,6 +165,14 @@ pub enum NodeRequest {
     StreamerInfo {
         environment_id: String,
     },
+    /// Delete what a user keeps for an app on this node: their directory
+    /// `users/<user>/<template>` under the data root, the app's home and
+    /// everything else of theirs in it. Nothing if there is none. Refused
+    /// while an environment of theirs for that app runs here.
+    DeleteUserData {
+        user: String,
+        template: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +195,10 @@ pub enum NodeResponse {
     StreamerInfo {
         info: serde_json::Value,
     },
+    UserDataDeleted {
+        user: String,
+        template: String,
+    },
 }
 
 /// What to run, decided by the portal from a catalog template.
@@ -183,24 +217,35 @@ pub struct EnvironmentSpec {
     /// The portal's public key (base64 Ed25519): the streamer accepts only
     /// connections that carry a media token it signed.
     pub portal_key: String,
-    /// A volume kept across launches, mounted as the app's home (templates
-    /// marked persistent: one per user and template, on this node). Named by
-    /// [`home_volume_name`]; the node refuses any other name.
+    /// A Docker volume mounted as the app's home: how the first slice of
+    /// persistence kept it, one per user and template, named by
+    /// [`home_volume_name`] (the node refuses any other name). A portal that
+    /// has [`Self::storage`] doesn't send this; a node honours it for one that
+    /// doesn't yet. Not with `storage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
-    /// The user who launched it: a label on the home volume, so tooling can
-    /// tell whose it is. Empty from a portal that doesn't say.
+    /// The user who launched it: with `template`, whose directories under the
+    /// node's data root `storage` names, and the labels on the app's container.
+    /// Empty from a portal that doesn't say.
     #[serde(default)]
     pub owner: String,
-    /// The catalog template's id: the other label on the home volume.
+    /// The catalog template's id.
     #[serde(default)]
     pub template: String,
+    /// The app's persistent and shared data under the node's data root, if it
+    /// has any ([`Storage::check`] says what a node accepts).
+    /// Boxed: a spec is inside every start request, and the messages' sizes
+    /// are that of their largest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<Box<Storage>>,
 }
 
-/// What every home volume's name starts with.
+/// What every legacy home volume's name starts with.
 pub const HOME_VOLUME_PREFIX: &str = "cha-home-";
 
-/// The home volume of `owner` in `template` (ids, as the portal has them):
+/// The home volume `owner` had in `template` before data moved under the node's
+/// data root, and that `home` still names for older portals (ids, as the
+/// portal has them):
 /// `cha-home-<owner>-<template>`, with anything Docker's volume names don't
 /// allow made `_`. User ids are UUIDs and template ids are slugs, so no two
 /// pairs end up with one name.
@@ -219,6 +264,15 @@ pub fn is_home_volume_name(name: &str) -> bool {
     name.len() > HOME_VOLUME_PREFIX.len()
         && name.starts_with(HOME_VOLUME_PREFIX)
         && name.chars().all(volume_char)
+}
+
+/// The user and template ids in a home volume's name, if it is one of the
+/// portal's (`cha-home-<user id>-<template id>`, [`home_volume_name`]).
+pub fn parse_home_volume_name(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix(HOME_VOLUME_PREFIX)?;
+    let (user, template) = rest.split_at_checked(36)?;
+    let template = template.strip_prefix('-')?;
+    (valid_user_id(user) && valid_template_id(template)).then_some((user, template))
 }
 
 /// Docker's volume names: `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
@@ -277,6 +331,16 @@ pub struct Inventory {
     pub gpus: Vec<Gpu>,
     /// Addresses browsers might reach the node at (LAN, overlay).
     pub addresses: Vec<String>,
+    /// Where this node keeps app data (`CHA_DATA_ROOT`), when its agent can
+    /// run environments and so knows. Absent from agents that predate
+    /// storage: the portal won't send them a `storage` it can't honour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_root: Option<String>,
+    /// Template id → where the node's owner keeps that template's shared
+    /// directory, for the ones kept outside the data root (a NAS share): the
+    /// path on the node, and in the app's container too.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shared_dirs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -480,6 +544,7 @@ mod tests {
                 home: None,
                 owner: "u1".into(),
                 template: "chrome".into(),
+                storage: None,
             },
         })
         .unwrap();
@@ -539,6 +604,145 @@ mod tests {
     }
 
     #[test]
+    fn storage_specs_round_trip_and_old_ones_have_none() {
+        let user = "01a10527-f79f-761b-962f-4b26924a2e68";
+        let spec = EnvironmentSpec {
+            id: "e1".into(),
+            image: "cha/env-steam:dev".into(),
+            security: SecurityProfile::Steam,
+            shm_mb: 2048,
+            width: 2560,
+            height: 1440,
+            fps: 60,
+            portal_key: "k".into(),
+            home: None,
+            owner: user.into(),
+            template: "steam".into(),
+            storage: Some(Box::new(Storage {
+                home: Some(user_dir(user, "steam")),
+                shared: Some(Shared {
+                    path: shared_dir("steam"),
+                    writable: false,
+                    per_user: vec!["steamapps/compatdata".into()],
+                }),
+                legacy_volume: Some(home_volume_name(user, "steam")),
+            })),
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(
+            json["storage"],
+            serde_json::json!({
+                "home": "users/01a10527-f79f-761b-962f-4b26924a2e68/steam",
+                "shared": {
+                    "path": "shared/steam",
+                    "writable": false,
+                    "perUser": ["steamapps/compatdata"],
+                },
+                "legacyVolume": "cha-home-01a10527-f79f-761b-962f-4b26924a2e68-steam",
+            })
+        );
+        assert!(json.get("home").is_none());
+        assert_eq!(
+            serde_json::from_value::<EnvironmentSpec>(json).unwrap(),
+            spec
+        );
+
+        // Parts a portal leaves out are absent, and absent parts parse.
+        let bare = serde_json::to_value(EnvironmentSpec {
+            storage: Some(Box::default()),
+            ..spec.clone()
+        })
+        .unwrap();
+        assert_eq!(bare["storage"], serde_json::json!({}));
+        let shared_only =
+            serde_json::json!({ "shared": { "path": "shared/steam", "writable": true } });
+        let parsed: Storage = serde_json::from_value(shared_only).unwrap();
+        assert_eq!(parsed.home, None);
+        assert!(parsed.shared.unwrap().per_user.is_empty());
+
+        // A spec from before storage (or a portal that sends none): no storage.
+        let old = serde_json::json!({
+            "id": "e1", "image": "i", "security": "standard", "shmMb": 64,
+            "width": 1, "height": 1, "fps": 1, "portalKey": "k",
+        });
+        assert_eq!(
+            serde_json::from_value::<EnvironmentSpec>(old)
+                .unwrap()
+                .storage,
+            None
+        );
+    }
+
+    #[test]
+    fn a_node_that_predates_storage_ignores_it() {
+        // Fields a node that predates storage doesn't know are ignored, as
+        // serde does by default: what it reads is the spec's older half.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Before {
+            id: String,
+            home: Option<String>,
+        }
+        let spec = serde_json::json!({
+            "id": "e1", "image": "i", "security": "standard", "shmMb": 64,
+            "width": 1, "height": 1, "fps": 1, "portalKey": "k",
+            "storage": { "shared": { "path": "shared/steam", "writable": true } },
+        });
+        let before: Before = serde_json::from_value(spec).unwrap();
+        assert_eq!((before.id.as_str(), before.home), ("e1", None));
+    }
+
+    #[test]
+    fn storage_requests_have_stable_json() {
+        let delete = serde_json::to_value(NodeRequest::DeleteUserData {
+            user: "u".into(),
+            template: "steam".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            delete,
+            serde_json::json!({ "op": "delete_user_data", "user": "u", "template": "steam" })
+        );
+        let done = serde_json::to_value(NodeResponse::UserDataDeleted {
+            user: "u".into(),
+            template: "steam".into(),
+        })
+        .unwrap();
+        assert_eq!(done["op"], "user_data_deleted");
+        let progress = serde_json::to_value(ToPortal::EnvironmentProgress {
+            id: "e1".into(),
+            detail: "moving your files".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            progress,
+            serde_json::json!({ "type": "environment_progress", "id": "e1", "detail": "moving your files" })
+        );
+    }
+
+    #[test]
+    fn inventories_from_before_storage_have_no_data_root() {
+        let old = serde_json::json!({
+            "hostname": "h", "os": "o", "arch": "a", "cpus": 1, "memoryMb": 2,
+            "gpus": [], "addresses": [],
+        });
+        let inv: Inventory = serde_json::from_value(old).unwrap();
+        assert_eq!(inv.data_root, None);
+        let json = serde_json::to_value(&inv).unwrap();
+        assert!(json.get("dataRoot").is_none(), "absent, not null");
+        assert!(json.get("sharedDirs").is_none());
+        let with = Inventory {
+            data_root: Some(DEFAULT_DATA_ROOT.into()),
+            shared_dirs: [("steam".to_string(), "/mnt/games/steam".to_string())].into(),
+            ..inv
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["dataRoot"], "/srv/cha-portal");
+        assert_eq!(json["sharedDirs"]["steam"], "/mnt/games/steam");
+        assert_eq!(serde_json::from_value::<Inventory>(json).unwrap(), with);
+    }
+
+    #[test]
     fn home_volumes_are_named_for_docker() {
         let uuid = "01a10527-f79f-761b-962f-4b26924a2e68";
         assert_eq!(
@@ -554,6 +758,26 @@ mod tests {
         assert_eq!(odd, "cha-home-a_b_c_d-_.x");
         assert!(is_home_volume_name(&odd));
         assert!(is_home_volume_name(&home_volume_name(uuid, "steam")));
+    }
+
+    #[test]
+    fn a_home_volumes_name_gives_its_ids_back() {
+        let uuid = "01a10527-f79f-761b-962f-4b26924a2e68";
+        assert_eq!(
+            parse_home_volume_name(&home_volume_name(uuid, "test-pattern")),
+            Some((uuid, "test-pattern"))
+        );
+        for bad in [
+            "cha-home-",
+            "cha-home-u1-steam",
+            "cha-home-01a10527-f79f-761b-962f-4b26924a2e68",
+            "cha-home-01a10527-f79f-761b-962f-4b26924a2e68-",
+            "cha-home-01a10527-f79f-761b-962f-4b26924a2e68-Steam",
+            "cha-node_state",
+            "cha-home-é",
+        ] {
+            assert_eq!(parse_home_volume_name(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
