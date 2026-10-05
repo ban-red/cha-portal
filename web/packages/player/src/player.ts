@@ -170,6 +170,8 @@ interface ServerMessage {
   effect?: unknown;
   /** Fps: the frame rate now; stats carry it too. */
   fps?: number;
+  /** Cumulative frames the streamer sent (`stats`). */
+  frames_sent?: number;
 }
 
 /** A status message as a status: none without a label, and only the numbers it has. */
@@ -205,6 +207,8 @@ interface VideoPipeline {
 const SWITCH_TIMEOUT_MS = 3000;
 /** How long a frame rate change may take to be answered. */
 const FPS_TIMEOUT_MS = 3000;
+/** How far back the send rate looks: a few of the streamer's reports. */
+const SENT_WINDOW_MS = 4000;
 
 /** The frame rates a page may ask the streamer for. */
 export const FRAME_RATES = [60, 90, 120] as const;
@@ -239,6 +243,8 @@ export class Player {
   /** Where a viewer's page draws the controller's pointer. */
   private pointerEl: HTMLElement | null = null;
   /** The node's latest resource report, and when it came. */
+  /** The streamer's cumulative `frames_sent` at each recent `stats` message, for the send rate. */
+  private sentCounts: { at: number; frames: number }[] = [];
   private nodeStats: { stats: Omit<NodeStats, "ageMs">; at: number } | null = null;
   private pointerSpot: { x: number; y: number; drawn: boolean } | null = null;
   /** The environment's latest cursor, and the images seen so far by id. */
@@ -450,6 +456,7 @@ export class Player {
     this.pads = null;
     this.options.onControllers?.([]);
     this.nodeStats = null;
+    this.sentCounts = [];
     this.fpsChange?.fail(new Error("the session closed"));
     this.control?.close();
     this.pc?.close();
@@ -498,8 +505,21 @@ export class Player {
     else return null;
     const ageMs = this.nodeStats ? performance.now() - this.nodeStats.at : Infinity;
     snapshot.targetFps = this.streamFps;
+    snapshot.sentFps = this.sentFps();
     snapshot.node = this.nodeStats && ageMs <= NODE_STATS_FRESH_MS ? { ...this.nodeStats.stats, ageMs } : null;
     return snapshot;
+  }
+
+  /** Frames per second the streamer sent over its last few reports; null with under two, or none lately. */
+  private sentFps(): number | null {
+    const now = performance.now();
+    const c = this.sentCounts.filter((s) => now - s.at <= SENT_WINDOW_MS);
+    this.sentCounts = c;
+    if (c.length < 2) return null;
+    const first = c[0]!;
+    const last = c[c.length - 1]!;
+    const dt = last.at - first.at;
+    return dt > 0 && last.frames >= first.frames ? ((last.frames - first.frames) * 1000) / dt : null;
   }
 
   /** Click → screen, `count` synthetic clicks (use with the test pattern). */
@@ -785,6 +805,10 @@ export class Player {
         break;
       case "stats":
         this.noteFps(msg.fps);
+        if (typeof msg.frames_sent === "number") {
+          this.sentCounts.push({ at: performance.now(), frames: msg.frames_sent });
+          if (this.sentCounts.length > 8) this.sentCounts.shift();
+        }
         break;
       case "fps": {
         // The answer to `setFps`: the rate now, with an `error` if it didn't change.
@@ -1195,6 +1219,7 @@ export class Player {
       height: video.videoHeight || null,
       fps: wt.shown.length,
       targetFps: null,
+      sentFps: null,
       mbps: wt.mbps,
       decodeMs: decode,
       jitterMs: null,

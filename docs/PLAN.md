@@ -696,7 +696,7 @@ Delivers **features 5 and 8**.
   - per-(user, template) homes as plain directories under the node's data root (`CHA_DATA_ROOT`), built: on or off per (user, app) by the user, a default per app and shared access (`none`, `read`, `write`) by the admin, a reset button, the old Steam home volumes copied in on the first launch (`deploy/README.md`, *App data*). Open: `zfs`/`btrfs` drivers, size limits and backups;
   - snapshots, suspend/resume, idle timeouts, placement that follows the data;
   - experimental shared Steam library, built (a shared directory, local or on a NAS, listed in the user's Steam; each user's Proton prefixes and shader caches apart). Open: a game played from it, and updates by two users at once.
-- WAN hardening: netem suite across the fallback chain (direct → TURN-UDP → TURN-TLS 443 → WebSocket), RTT-based placement, Chrome LNA UX, an optional ACME mode for WebTransport.
+- WAN hardening: netem suite across the fallback chain (direct → TURN-UDP → TURN-TLS 443 → WebSocket), RTT-based placement, Chrome LNA UX, an optional ACME mode for WebTransport. The deployment side (an always-on portal over HTTPS, nodes on TLS channels, tailnet access, sign-in hardening, TURN-TLS, backups and upgrades) is planned in [docs/plans/production-deployment.md](plans/production-deployment.md).
 - Sharing: share links (viewer / controller / player-N), control hand-off, multi-viewer encoders.
 - **External GameStream hosts:**
   - pair Sunshine, Apollo, Vibepollo or Polaris from the portal (OTP/PIN), with the gateway on a node in the same LAN;

@@ -5,10 +5,13 @@ import {
   supportedCodecs,
   supportsPyroWave,
   supportsWebTransport,
+  HEALTH_WINDOW,
+  assessHealth,
   isPyroWave,
   hidUnavailableReason,
   type Codec,
   type FrameRate,
+  type HealthAssessment,
   type ManagedController,
   type PlayerState,
   type ProbeResult,
@@ -17,7 +20,7 @@ import {
   type Transport,
 } from "@cha/player";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 import { useRoute } from "vue-router";
 
 import { ApiError, api } from "../api";
@@ -369,9 +372,29 @@ const onFullscreen = () => (fullscreen.value = !!document.fullscreenElement);
 
 const showStats = ref(false);
 const stats = ref<StatsSnapshot | null>(null);
+// The health grade is judged from the last few snapshots, so the timer reads them (one getStats a
+// second, cheap) whether or not the panel is open, and the toolbar's letter stays current. A hidden
+// page's stats are throttled and say nothing about the stream, so they are not kept.
+const statsHistory: StatsSnapshot[] = [];
+const health = shallowRef<HealthAssessment>(assessHealth([], { visible: true }));
 const statsTimer = setInterval(async () => {
-  if (showStats.value && player) stats.value = await player.readStats();
+  if (!player) return;
+  const visible = document.visibilityState === "visible";
+  if (!visible) {
+    statsHistory.length = 0;
+    health.value = assessHealth([], { visible });
+    return;
+  }
+  const snapshot = await player.readStats();
+  stats.value = snapshot;
+  if (!snapshot) return;
+  statsHistory.push(snapshot);
+  if (statsHistory.length > HEALTH_WINDOW) statsHistory.shift();
+  health.value = assessHealth(statsHistory, { visible });
 }, 1000);
+const GRADE_TEXT: Record<string, string> = { A: "text-accent", B: "text-accent", C: "text-warn", D: "text-warn", F: "text-danger" };
+const gradeText = (grade: string | null) => (grade ? GRADE_TEXT[grade] : "text-ink-3");
+const SEVERITY_TEXT = { minor: "text-ink-2", major: "text-warn", critical: "text-danger" };
 const fmt = (v: number | null, digits = 1, unit = "") => (v === null || Number.isNaN(v) ? "–" : `${v.toFixed(digits)}${unit}`);
 
 /** Bytes as GB, one decimal. */
@@ -559,6 +582,7 @@ const STATUS: Record<PlayerState, string> = {
       </button>
       <button class="btn-ghost border-0 px-3 py-1.5 text-xs" :class="showStats && 'text-accent'" @click="showStats = !showStats">
         Stats
+        <span v-if="health.grade" class="ml-1 font-mono font-semibold" :class="gradeText(health.grade)" :title="`Stream health: ${health.summary}`">{{ health.grade }}</span>
       </button>
       <button
         v-if="env.data.value?.templateId === 'test-pattern'"
@@ -576,6 +600,21 @@ const STATUS: Record<PlayerState, string> = {
       v-if="showStats"
       class="absolute top-3 left-3 z-10 rounded-lg border border-line bg-panel/90 px-3 py-2 font-mono text-[11px] leading-5 text-ink-2 backdrop-blur"
     >
+      <div class="mb-1 border-b border-line pb-1">
+        <div class="flex items-center gap-2">
+          <span class="w-8 text-center text-3xl leading-8 font-semibold" :class="gradeText(health.grade)" aria-label="Stream health grade">{{ health.grade ?? "–" }}</span>
+          <div>
+            <div class="text-xs text-ink">{{ health.summary }}</div>
+            <div v-if="health.score !== null" class="text-ink-3">health {{ health.score }}/100</div>
+          </div>
+        </div>
+        <ul v-if="health.issues.length" class="mt-1 max-w-xs space-y-1.5">
+          <li v-for="issue in health.issues" :key="issue.id">
+            <div><span :class="SEVERITY_TEXT[issue.severity]">{{ issue.title }}</span> · {{ issue.detail }}</div>
+            <div class="text-ink-3">{{ issue.hint }}</div>
+          </li>
+        </ul>
+      </div>
       <div>{{ stats?.codec ?? codec.toUpperCase() }} · {{ stats?.width ?? "–" }}×{{ stats?.height ?? "–" }} · {{ fmt(stats?.fps ?? null, 0) }}{{ stats?.targetFps ? ` of ${stats.targetFps}` : "" }} fps</div>
       <div>{{ fmt(stats?.mbps ?? null, 1, " Mbit/s") }} · RTT {{ fmt(stats?.rttMs ?? null, 1, " ms") }}</div>
       <div class="text-ink">send → shown {{ fmt(stats?.latencyMs ?? null, 1, " ms") }}</div>

@@ -7,6 +7,12 @@ export interface StatsSnapshot {
   fps: number | null;
   /** The frame rate the streamer encodes at (60, 90 or 120); null until it says. `fps` is what arrives. */
   targetFps: number | null;
+  /**
+   * Frames per second the streamer sent, from its `stats` messages; null until two have come
+   * in (or on an older streamer). The streamer sends only when the picture changes, so an idle
+   * desktop sends almost none: judge `fps` against this, not `targetFps`.
+   */
+  sentFps: number | null;
   mbps: number | null;
   /** Average decode time per frame over the last interval. */
   decodeMs: number | null;
@@ -138,6 +144,7 @@ export class StatsReader {
       height: typeof i.frameHeight === "number" ? i.frameHeight : null,
       fps: typeof i.framesPerSecond === "number" ? i.framesPerSecond : null,
       targetFps: null,
+      sentFps: null,
       mbps: prev ? ((now.bytes - prev.bytes) * 8) / ((now.at - prev.at) * 1000) : null,
       decodeMs: prev ? per(now.decodeTime - prev.decodeTime, now.decoded - prev.decoded) : null,
       jitterMs: prev ? per(now.jitterDelay - prev.jitterDelay, now.emitted - prev.emitted) : null,

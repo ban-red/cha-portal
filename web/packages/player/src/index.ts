@@ -15,6 +15,15 @@ export {
   type Transport,
   type WebTransportOffer,
 } from "./player";
+export {
+  assessHealth,
+  HEALTH_WINDOW,
+  type HealthAssessment,
+  type HealthContext,
+  type HealthGrade,
+  type HealthIssue,
+  type IssueSeverity,
+} from "./health";
 export type { NodeStats, StatsSnapshot } from "./stats";
 export type { ProbeResult } from "./probe";
 export {
