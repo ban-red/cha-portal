@@ -8,14 +8,15 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::Serialize;
+use tokio::sync::broadcast;
 
 use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorShape, CursorWatch, PointerSpot, PointerWatch};
-use crate::gamepad::{Gamepads, PadState};
+use crate::gamepad::{Gamepads, MAX_PADS, PadState, Rumble};
 use crate::input::BrowserInput;
 use crate::media::Media;
 use crate::status::{Status, StatusWatch};
@@ -54,6 +55,14 @@ pub enum ServerMsg {
         stream: u8,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    },
+    /// An app set pad `i`'s motors: `lo` the strong one, `hi` the weak one
+    /// (0..1), for `ms`; 0 stops them.
+    Rumble {
+        i: usize,
+        lo: f32,
+        hi: f32,
+        ms: u32,
     },
     /// An app copied this text (P2.6).
     Clipboard {
@@ -327,6 +336,108 @@ pub async fn next_status(watch: &mut Option<StatusWatch>) -> Option<ServerMsg> {
     }
 }
 
+/// Rumble goes out at most this often per pad.
+const RUMBLE_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Keeps rumble to about 60 messages a second per pad: the newest of what
+/// comes in between waits for its turn, and a stop never waits.
+#[derive(Default)]
+struct RumbleLimit {
+    slots: [RumbleSlot; MAX_PADS],
+}
+
+#[derive(Default)]
+struct RumbleSlot {
+    sent: Option<Instant>,
+    waiting: Option<Rumble>,
+}
+
+impl RumbleLimit {
+    /// The message to send now, if any.
+    fn push(&mut self, rumble: Rumble, now: Instant) -> Option<Rumble> {
+        let slot = self.slots.get_mut(rumble.slot)?;
+        if rumble.ms == 0 {
+            *slot = RumbleSlot::default();
+            return Some(rumble);
+        }
+        if slot.sent.is_none_or(|at| now >= at + RUMBLE_INTERVAL) {
+            slot.sent = Some(now);
+            slot.waiting = None;
+            return Some(rumble);
+        }
+        slot.waiting = Some(rumble);
+        None
+    }
+
+    /// When a waiting message may go.
+    fn due(&self) -> Option<Instant> {
+        self.slots
+            .iter()
+            .filter(|s| s.waiting.is_some())
+            .filter_map(|s| s.sent.map(|at| at + RUMBLE_INTERVAL))
+            .min()
+    }
+
+    /// A waiting message whose time has come.
+    fn take_due(&mut self, now: Instant) -> Option<Rumble> {
+        let slot = self.slots.iter_mut().find(|s| {
+            s.waiting.is_some() && s.sent.is_some_and(|at| now >= at + RUMBLE_INTERVAL)
+        })?;
+        slot.sent = Some(now);
+        slot.waiting.take()
+    }
+}
+
+/// A session's view of the pads' rumble, rate-limited.
+pub struct RumbleFeed {
+    rx: Option<broadcast::Receiver<Rumble>>,
+    limit: RumbleLimit,
+}
+
+impl RumbleFeed {
+    pub fn new(gamepads: Option<&Gamepads>) -> Self {
+        Self {
+            rx: gamepads.map(Gamepads::rumble),
+            limit: RumbleLimit::default(),
+        }
+    }
+
+    /// The next rumble message; never resolves without pads.
+    pub async fn next(&mut self) -> ServerMsg {
+        loop {
+            let due = self.limit.due();
+            let Some(rx) = &mut self.rx else {
+                return std::future::pending().await;
+            };
+            let mut closed = false;
+            let ready = tokio::select! {
+                got = rx.recv() => match got {
+                    Ok(rumble) => self.limit.push(rumble, Instant::now()),
+                    Err(broadcast::error::RecvError::Lagged(_)) => None,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        closed = true;
+                        None
+                    }
+                },
+                () = tokio::time::sleep_until(due.unwrap_or_else(Instant::now).into()), if due.is_some() => {
+                    self.limit.take_due(Instant::now())
+                }
+            };
+            if closed {
+                self.rx = None;
+            }
+            if let Some(r) = ready {
+                return ServerMsg::Rumble {
+                    i: r.slot,
+                    lo: r.lo,
+                    hi: r.hi,
+                    ms: r.ms,
+                };
+            }
+        }
+    }
+}
+
 /// The floor as this session sees it.
 pub fn floor_msg(seat: &Seat) -> ServerMsg {
     ServerMsg::Floor {
@@ -378,6 +489,53 @@ mod tests {
 
     fn line(msg: &ServerMsg) -> String {
         serde_json::to_string(msg).unwrap()
+    }
+
+    #[test]
+    fn rumble_serializes_and_is_limited_per_pad() {
+        assert_eq!(
+            line(&ServerMsg::Rumble {
+                i: 1,
+                lo: 1.0,
+                hi: 0.5,
+                ms: 200
+            }),
+            r#"{"t":"rumble","i":1,"lo":1.0,"hi":0.5,"ms":200}"#
+        );
+        let r = |slot, lo, ms| Rumble {
+            slot,
+            lo,
+            hi: 0.0,
+            ms,
+        };
+        let mut limit = RumbleLimit::default();
+        let t0 = Instant::now();
+        assert!(limit.push(r(0, 0.1, 100), t0).is_some());
+        // Within the interval the newest waits; another pad is its own.
+        assert!(
+            limit
+                .push(r(0, 0.2, 100), t0 + Duration::from_millis(2))
+                .is_none()
+        );
+        assert!(
+            limit
+                .push(r(0, 0.3, 100), t0 + Duration::from_millis(4))
+                .is_none()
+        );
+        assert!(
+            limit
+                .push(r(1, 0.9, 100), t0 + Duration::from_millis(4))
+                .is_some()
+        );
+        assert_eq!(limit.due(), Some(t0 + RUMBLE_INTERVAL));
+        assert!(limit.take_due(t0 + Duration::from_millis(8)).is_none());
+        assert_eq!(limit.take_due(t0 + RUMBLE_INTERVAL).unwrap().lo, 0.3);
+        assert!(limit.due().is_none());
+        // A stop goes at once and cancels what waited.
+        assert!(limit.push(r(0, 0.4, 100), t0 + RUMBLE_INTERVAL).is_none());
+        let stop = limit.push(r(0, 0.0, 0), t0 + RUMBLE_INTERVAL).unwrap();
+        assert_eq!(stop.ms, 0);
+        assert!(limit.due().is_none());
     }
 
     #[test]

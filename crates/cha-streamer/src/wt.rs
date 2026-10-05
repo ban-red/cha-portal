@@ -36,8 +36,8 @@ use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
 use crate::congestion::MediaWindowFactory;
 use crate::control::{
-    Control, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
-    next_pointer, next_status, percentile,
+    Control, RumbleFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard,
+    next_cursor, next_pointer, next_status, percentile,
 };
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace, Subscription};
@@ -238,6 +238,7 @@ async fn run(
     let mut cursor_ids = HashSet::new();
     let mut pointer = Some(sessions.media.pointer());
     let mut status = Some(sessions.media.status());
+    let mut rumble = RumbleFeed::new(sessions.gamepads.as_deref());
     let _ = out.send(floor_msg(&handler.seat));
     let mut stats = StreamerStats::default();
     let mut report = interval_at(tokio::time::Instant::now() + STATS_INTERVAL, STATS_INTERVAL);
@@ -294,6 +295,12 @@ async fn run(
             }
             () = handler.seat.changed() => {
                 let _ = out.send(floor_msg(&handler.seat));
+            }
+            // The apps' rumble is the controller's alone.
+            msg = rumble.next() => {
+                if handler.seat.has_control() {
+                    let _ = out.send(msg);
+                }
             }
             // Every viewer sees what the app is setting up, not only the controller.
             msg = next_status(&mut status) => {

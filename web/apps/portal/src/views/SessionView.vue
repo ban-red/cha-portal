@@ -5,7 +5,9 @@ import {
   supportsPyroWave,
   supportsWebTransport,
   isPyroWave,
+  hidUnavailableReason,
   type Codec,
+  type ManagedController,
   type PlayerState,
   type ProbeResult,
   type SetupStatus,
@@ -111,6 +113,25 @@ function noteClipboard(written: boolean) {
   clearTimeout(clipboardNoteTimer);
   clipboardNoteTimer = setTimeout(() => (clipboardNote.value = null), written ? 1500 : 4000);
 }
+/** The controllers this page sends, and the menu to add one (WebHID needs a click). */
+const controllers = ref<ManagedController[]>([]);
+const controllerMenu = ref(false);
+const controllerNote = ref<string | null>(null);
+const hidReason = hidUnavailableReason();
+async function connectController() {
+  controllerNote.value = null;
+  try {
+    const added = await player?.connectHidController();
+    const failed = player?.controllers?.webhid?.lastError;
+    controllerNote.value = failed ?? (added ? null : "No controller was added.");
+  } catch (err) {
+    controllerNote.value = err instanceof Error ? err.message : String(err);
+  }
+}
+function closeControllerMenu() {
+  controllerMenu.value = false;
+  controllerNote.value = null;
+}
 /** What the app's long setup is doing (a first-run download), over the black picture. */
 const setup = ref<SetupStatus | null>(null);
 const amount = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: n < 10 ? 1 : 0 });
@@ -195,6 +216,9 @@ async function connect() {
     },
     onStatus: (status) => {
       if (player === p) setup.value = status;
+    },
+    onControllers: (list) => {
+      if (player === p) controllers.value = list;
     },
     signal: async (offer, c) => (await api.connect(id.value, { codec: c, offer })).answer!,
     onState: (s, detail) => {
@@ -369,6 +393,45 @@ const STATUS: Record<PlayerState, string> = {
       >
         {{ muted ? "Sound off" : audioBlocked ? "Enable sound" : "Sound on" }}
       </button>
+      <div class="relative" @keydown.esc="closeControllerMenu">
+        <button
+          class="btn-ghost border-0 px-3 py-1.5 text-xs"
+          :class="controllers.length > 0 && 'text-accent'"
+          aria-haspopup="true"
+          :aria-expanded="controllerMenu"
+          aria-controls="controller-menu"
+          :title="controllers.length ? `${controllers.length} controller(s) sending input` : 'No controller yet'"
+          @click="controllerMenu = !controllerMenu"
+        >
+          Controllers{{ controllers.length ? ` · ${controllers.length}` : "" }}
+        </button>
+        <div
+          v-if="controllerMenu"
+          id="controller-menu"
+          class="absolute top-full right-0 z-20 mt-2 w-64 rounded-xl border border-line bg-panel p-3 text-left text-xs whitespace-normal shadow-lg"
+        >
+          <ul v-if="controllers.length" class="mb-3 space-y-1">
+            <li v-for="c in controllers" :key="c.id" class="flex justify-between gap-2">
+              <span class="truncate">{{ c.info.name }}</span>
+              <span class="shrink-0 text-ink-3">{{ c.slot === null ? "no slot" : `slot ${c.slot + 1}` }}</span>
+            </li>
+          </ul>
+          <p v-else class="mb-3 text-ink-2">Press a button on a controller. If nothing shows, connect it below.</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              class="btn-ghost px-3 py-1 text-xs"
+              :disabled="!!hidReason || state !== 'connected'"
+              :aria-describedby="hidReason ? 'controller-reason' : undefined"
+              @click="connectController"
+            >
+              Connect a controller…
+            </button>
+            <RouterLink to="/controllers" class="text-accent hover:underline">Controllers page</RouterLink>
+          </div>
+          <p v-if="hidReason" id="controller-reason" class="mt-2 text-ink-3">{{ hidReason }}</p>
+          <p v-if="controllerNote" role="status" class="mt-2 text-warn">{{ controllerNote }}</p>
+        </div>
+      </div>
       <button class="btn-ghost border-0 px-3 py-1.5 text-xs" @click="toggleFullscreen">
         {{ fullscreen ? "Exit full screen" : "Full screen" }}
       </button>

@@ -15,3 +15,16 @@ export {
 } from "./player";
 export type { StatsSnapshot } from "./stats";
 export type { ProbeResult } from "./probe";
+export {
+  ControllerManager,
+  hidUnavailableReason,
+  type BackendName,
+  type Capabilities,
+  type ControllerInfo,
+  type ControllerState,
+  type ControllerType,
+  type ManagedController,
+  type ManagerOptions,
+  type RawReport,
+  type TouchPoint,
+} from "./controllers";

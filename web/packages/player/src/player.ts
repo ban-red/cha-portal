@@ -8,7 +8,7 @@
 // carries input, resize requests and clock pings up, and per-frame send times
 // down. The portal brokers the session; media flows straight from the node.
 
-import { GamepadCapture } from "./gamepad";
+import { ControllerManager, type ManagedController } from "./controllers";
 import { InputCapture } from "./input";
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { StatsReader, type StatsSnapshot } from "./stats";
@@ -105,6 +105,8 @@ export interface PlayerOptions {
    * session gets it, watching ones too; a late joiner is told at once.
    */
   onStatus?: (status: SetupStatus | null) => void;
+  /** The controllers this page sends (Gamepad API or WebHID), now and whenever one arrives or leaves. */
+  onControllers?: (controllers: ManagedController[]) => void;
 }
 
 /**
@@ -143,6 +145,11 @@ interface ServerMessage {
   done?: number;
   total?: number;
   unit?: string;
+  /** Rumble: the pad's slot, the strong and weak motors (0..1) and how long (0 stops). */
+  i?: number;
+  lo?: number;
+  hi?: number;
+  ms?: number;
 }
 
 /** A status message as a status: none without a label, and only the numbers it has. */
@@ -184,7 +191,7 @@ export class Player {
   private pc: RTCPeerConnection | null = null;
   private control: RTCDataChannel | null = null;
   private input: InputCapture | null = null;
-  private gamepads: GamepadCapture | null = null;
+  private pads: ControllerManager | null = null;
   private probe: ClickProbe | null = null;
   private readonly stats = new StatsReader();
   private readonly cleanup: (() => void)[] = [];
@@ -365,8 +372,9 @@ export class Player {
     this.probe?.stop();
     this.input?.dispose();
     this.input = null;
-    this.gamepads?.dispose();
-    this.gamepads = null;
+    this.pads?.stop();
+    this.pads = null;
+    this.options.onControllers?.([]);
     this.control?.close();
     this.pc?.close();
     this.pc = this.control = null;
@@ -438,6 +446,21 @@ export class Player {
     if (this.hasControl) this.send({ t: "input", ...msg });
   }
 
+  /** The controllers this page sends, once connected. */
+  get controllers(): ControllerManager | null {
+    return this.pads;
+  }
+
+  /**
+   * Opens the browser's picker for a controller WebHID can reach (one the
+   * Gamepad API can't see, such as a Steam Controller). Call it from a click.
+   * Resolves with how many controllers it added.
+   */
+  async connectHidController(): Promise<number> {
+    if (!this.pads) throw new Error("Not connected yet.");
+    return this.pads.connectHid();
+  }
+
   /** Asks for the controls (owners and admins get them). */
   takeControl(): void {
     this.send({ t: "take_control" });
@@ -448,7 +471,11 @@ export class Player {
     this.input = new InputCapture(video, (m) => this.sendInput(m), {
       onPaste: (text) => this.send({ t: "clipboard", text }),
     });
-    this.gamepads = new GamepadCapture((m) => this.sendInput(m));
+    this.pads?.stop();
+    const pads = new ControllerManager({ send: (m) => this.sendInput(m) });
+    pads.onChange((list) => this.options.onControllers?.(list));
+    pads.start();
+    this.pads = pads;
     video.focus();
     // Desktop mode draws the cursor here, with no stream delay; a locked
     // pointer (games) leaves it to the picture.
@@ -626,6 +653,8 @@ export class Player {
           this.lastSize = "";
           this.requestSize();
           this.send({ t: "cursor", client: !this.input?.locked });
+          // Pads were sent nothing while the controls were elsewhere.
+          this.pads?.resync();
         }
         this.applyCursor();
         this.placePointer();
@@ -634,6 +663,10 @@ export class Player {
       }
       case "status":
         this.options.onStatus?.(toStatus(msg));
+        break;
+      // The app rumbles pad `i`: play it on that physical controller.
+      case "rumble":
+        if (typeof msg.i === "number") this.pads?.rumble(msg.i, msg.lo ?? 0, msg.hi ?? 0, msg.ms ?? 0);
         break;
       case "pointer":
         this.pointerSpot = { x: msg.x ?? 0, y: msg.y ?? 0, drawn: !!msg.drawn };

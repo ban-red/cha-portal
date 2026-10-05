@@ -17,7 +17,8 @@
     "skipLibCheck": true,
     "types": [
       "@webgpu/types",
-      "vite/client"
+      "vite/client",
+      "bun"
     ]
   },
   "include": [

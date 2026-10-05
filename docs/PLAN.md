@@ -441,6 +441,7 @@ These are targets to validate in Phase 0, not measured facts.
   - Keyboard capture (Esc, Alt-Tab, Win/Cmd) differs by browser: `navigator.keyboard.lock()` on Chromium, `requestFullscreen({keyboardLock: "browser"})` on Firefox 151 and Safari 26.4. Feature-detect both.
   - Gamepad API polled every frame (Chromium samples at 250 Hz internally). Rumble via `vibrationActuator`; trigger rumble is Chrome-only.
   - WebHID DualSense opt-in (Chromium desktop) for gyro, touchpad, lightbar and adaptive triggers.
+  - Controllers are a multi-backend subsystem in `@cha/player` (`src/controllers/`): the Gamepad API, and WebHID drivers for what it can't see (a generic descriptor-driven HID gamepad, the Steam Controller in both generations, with lizard mode turned off and restored). A manager gives each a stable slot 0–3 and sends the standard layout, plus gyro, accelerometer, touchpads and battery when there are any; the portal's Controllers page shows what the browser sees. DualSense over WebHID is next.
   - Touch overlays: trackpad mode and virtual gamepad.
   - Expect Chrome's planned permission prompts for pointer and keyboard lock.
 - **UX.**
@@ -585,7 +586,7 @@ Seven milestones, each shippable and verified on its own:
 - **Sound:** `pactl`, `pacat` (44.1 and 48 kHz) and the test pattern play through our server. Chrome gets stereo Opus (2 channels, 100 packets/s, nothing concealed); NetEq holds 25–36 ms.
 - **Click → sound** (the test pattern's tone at the speakers, timed by an AudioWorklet): 85–90 ms p50 in the app's browser. About 15–20 ms of that is the test pattern's own 20 ms buffer, 12 ms the mixer and Opus, and ~30 ms NetEq.
 - **Gamepads:** in the environment, Chrome sees "Xbox 360 pad (STANDARD GAMEPAD 045e:028e)" with its buttons and both sticks, and SDL2 sees an "X360 Controller" (A, sticks, triggers). Both find it in the app's own `/dev/input` and udev data.
-- **Open:** the A/V offset and the pad panel on the baseline Chrome (the app's browser wasn't painting); a game, with Steam (Phase 2); rumble; a host udev rule so the host's own desktop ignores the virtual pads; microphones. |
+- **Open:** the A/V offset and the pad panel on the baseline Chrome (the app's browser wasn't painting); a game, with Steam (Phase 2); rumble on a real pad through the page (built 2026-10-05: force feedback on the virtual pads, forwarded as `rumble` messages; untested on hardware); a host udev rule so the host's own desktop ignores the virtual pads; microphones. |
 | **P1.7** *(built 2026-10-04; the exit runs are the owner's)* | Deploy + exit | `deploy/` compose for the portal and a node; `cha doctor` v0; the Tailscale guide; an optional coturn profile | Phase 1 exit criteria above. **So far** ([`deploy/README.md`](../deploy/README.md)):
 - **The portal's image and compose file** (`deploy/portal`): SPA and API in one container, SQLite in a volume only its user can enter, on localhost by default. HTTPS through `tailscale serve`, or Caddy with public DNS (profile `tls`).
 - **TURN** (profile `turn`): coturn relaying to the nodes only; the portal mints a day's credentials per connection (`GET /api/ice`, coturn's shared-secret scheme).

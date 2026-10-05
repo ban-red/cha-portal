@@ -30,8 +30,8 @@ use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorWatch, PointerWatch};
 use crate::control::{
-    Control, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
-    next_pointer, next_status, percentile,
+    Control, RumbleFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard,
+    next_cursor, next_pointer, next_status, percentile,
 };
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace};
@@ -171,6 +171,7 @@ struct Session {
     pointer: Option<PointerWatch>,
     /// What the app's setup is doing, once the control channel is open.
     status: Option<StatusWatch>,
+    rumble: RumbleFeed,
     subscribed_at: Option<Instant>,
     sending_until: Option<Instant>,
     finished_at: Option<Instant>,
@@ -196,6 +197,7 @@ impl Session {
     ) -> Self {
         let epoch = Instant::now();
         let clipboard = Some(params.media.clipboard());
+        let rumble = RumbleFeed::new(params.gamepads.as_deref());
         let rate = RateControl::new(MIN_BPS, params.media.bitrate_bps());
         let handler = Control {
             epoch,
@@ -227,6 +229,7 @@ impl Session {
             cursor_ids: HashSet::new(),
             pointer: None,
             status: None,
+            rumble,
             subscribed_at: None,
             sending_until: None,
             finished_at: None,
@@ -301,6 +304,12 @@ impl Session {
                 () = self.handler.seat.changed() => {
                     let msg = floor_msg(&self.handler.seat);
                     self.send_control(&msg);
+                }
+                // The apps' rumble is the controller's alone.
+                msg = self.rumble.next() => {
+                    if self.handler.seat.has_control() {
+                        self.send_control(&msg);
+                    }
                 }
                 // Every viewer sees what the app is setting up, not only the controller.
                 msg = next_status(&mut self.status) => {
