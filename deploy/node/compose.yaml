@@ -22,6 +22,10 @@ services:
     environment:
       CHA_PORTAL_URL: ${CHA_PORTAL_URL:?set CHA_PORTAL_URL to the portal's URL}
       CHA_JOIN_TOKEN: ${CHA_JOIN_TOKEN:-}
+      # Development only: lets CHA_PORTAL_URL be plain http:// to another
+      # machine, e.g. a dev portal on your LAN (`CHA_LISTEN=0.0.0.0:8090 bun run dev`).
+      # Otherwise it must be https://, or http:// to this machine (a tunnel).
+      CHA_ALLOW_INSECURE_PORTAL: ${CHA_ALLOW_INSECURE_PORTAL:-false}
       CHA_NODE_NAME: ${CHA_NODE_NAME:-}
       CHA_STREAMER_IMAGE: ${CHA_STREAMER_IMAGE:-cha/streamer:dev}
       # Virtual gamepads; set empty on hosts without the uinput module.
@@ -38,6 +42,10 @@ services:
       # Apps see it at that same path. Bind each one into the agent below,
       # read-only: the agent only checks it is there and makes nothing in it.
       CHA_SHARED_DIRS: ${CHA_SHARED_DIRS:-}
+      # NVIDIA's Wine DLLs on the host (nvngx.dll: DLSS under Proton), which the
+      # CDI spec leaves out. Bound into apps at this path if the host has it;
+      # empty goes without. Needs no mount here: the agent asks the engine.
+      CHA_NVIDIA_WINE_DIR: ${CHA_NVIDIA_WINE_DIR-/usr/lib/x86_64-linux-gnu/nvidia/wine}
       RUST_LOG: ${RUST_LOG:-info}
     # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi
     # and the render node (whose group the apps get).

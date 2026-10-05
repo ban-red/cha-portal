@@ -1,0 +1,30 @@
+#!/bin/sh
+# Checks that the folders the node mounted over Steam's shared library, one
+# per user (CHA_PER_USER_DIRS, colon-separated), are still mounted. They come
+# unmounted when something changes underneath them on the NAS; the app then
+# sees the library's own folders, which every user shares: Proton would use the
+# shared prefix (the one of whoever made it first) and write into it. Exits 1,
+# saying so, if any isn't.
+set -eu
+[ -n "${CHA_PER_USER_DIRS:-}" ] || exit 0
+# A mount point is the fifth field of a line (a space in it is written \040).
+# CHA_MOUNTINFO is for the tests.
+missing=$(printf '%s\n' "$CHA_PER_USER_DIRS" | awk -v info="${CHA_MOUNTINFO:-/proc/self/mountinfo}" '
+  BEGIN {
+    while ((getline line < info) > 0) {
+      split(line, field, " ")
+      point = field[5]
+      gsub(/\\040/, " ", point)
+      mounted[point] = 1
+    }
+  }
+  {
+    n = split($0, dir, ":")
+    for (i = 1; i <= n; i++)
+      if (dir[i] != "" && !(dir[i] in mounted)) printf "%s%s", (found++ ? ", " : ""), dir[i]
+  }')
+if [ -n "$missing" ]; then
+  echo "start-steam: your own folders in the shared library aren't mounted ($missing)." >&2
+  echo "start-steam: not starting Steam, since games would use the shared copies. Stop this app and start it again." >&2
+  exit 1
+fi

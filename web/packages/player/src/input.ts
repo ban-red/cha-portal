@@ -98,8 +98,12 @@ export class InputCapture {
   private move(e: PointerEvent): void {
     if (this.locked) {
       // Movement is in CSS pixels; the remote pointer moves in stream pixels.
+      // The picture is letterboxed (object-fit: contain), so scale by its
+      // drawn size, not the element's.
       const r = this.video.getBoundingClientRect();
-      const scale = (this.video.videoWidth || r.width) / r.width;
+      const vw = this.video.videoWidth || r.width;
+      const vh = this.video.videoHeight || r.height;
+      const scale = 1 / Math.min(r.width / vw, r.height / vh);
       if (e.movementX || e.movementY) this.send({ k: "rel", dx: e.movementX * scale, dy: e.movementY * scale });
     } else {
       this.send({ k: "move", ...this.position(e) });

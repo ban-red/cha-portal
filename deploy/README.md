@@ -38,7 +38,7 @@
    CHA_PORTAL_URL=https://portal.example docker compose -f deploy/node/compose.yaml run --rm agent --doctor
    ```
 
-   It checks Docker, the images, the GPU through CDI, PyroWave's Vulkan device, `/dev/uinput`, the Steam sandbox, the data root and any shared directories kept outside it, the home volumes left from before app data moved, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
+   It checks Docker, the images, the GPU through CDI, NVIDIA's Wine DLLs for DLSS, PyroWave's Vulkan device, `/dev/uinput`, the Steam sandbox, the data root and any shared directories kept outside it, the home volumes left from before app data moved, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself.
 
 ## Reaching nodes
 
@@ -55,7 +55,8 @@ The stream goes straight from the node to the browser; the portal only brokers i
 
 | Variable | Default | What |
 |---|---|---|
-| `CHA_PORTAL_URL` | (required) | The portal's URL |
+| `CHA_PORTAL_URL` | (required) | The portal's URL: `https://`, or `http://` to this machine (a tunnel) |
+| `CHA_ALLOW_INSECURE_PORTAL` | `false` | Development only: allow plain `http://` to another machine, e.g. a dev portal on your LAN (`CHA_LISTEN=0.0.0.0:8090 bun run dev`). The node's traffic, which can start containers here, then crosses the network unencrypted |
 | `CHA_JOIN_TOKEN` | | One-time, to enroll |
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
@@ -63,6 +64,7 @@ The stream goes straight from the node to the browser; the portal only brokers i
 | `CHA_PORT_BASE` | `47000` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
 | `CHA_MAX_ENVIRONMENTS` | `16` | |
 | `CHA_DATA_ROOT` | `/srv/cha-portal` | Where app data lives ([below](#app-data)): a host directory the compose file also mounts into the agent at the same path |
+| `CHA_NVIDIA_WINE_DIR` | `/usr/lib/x86_64-linux-gnu/nvidia/wine` | The driver's `nvngx.dll` and `_nvngx.dll`, which Proton copies into its prefixes for DLSS and the CDI spec leaves out. Bound read-only into apps at the same path when the host has it (the agent asks the engine; nothing to mount into the agent); empty goes without |
 | `CHA_SHARED_DIRS` | | Keeps an app's shared directory elsewhere, `app=/absolute/path`, comma-separated (`steam=/mnt/games/steam`, a NAS). Bind each into the agent read-only at that path |
 
 ## Portal settings
@@ -110,6 +112,7 @@ and bind it into the agent read-only at the same path, next to the data root in 
 - **Ownership.** Apps write it as uid 1000. On an NFS server that maps every user to one (Unraid's `all_squash`: files `nobody:users`, modes 0777/0666) that is fine; otherwise uid 1000 must be able to write there. `--doctor` shows the filesystem (`nfs4`, from the mount table), the mode and owner, and whether uid 1000 can write.
 - **A hard mount blocks.** NFS mounted `hard` (Unraid's default) makes every read and write wait for as long as the NAS is away: Steam, and anything touching the library, stops until it is back. The agent's own check gives up after 10 s and the launch goes without the share.
 - **Per-user parts.** Each user's Proton prefixes and shader caches are their own, mounted over the library's `steamapps/compatdata` and `steamapps/shadercache` from their home on this node. Prefixes already in the library's own `compatdata/` from another Steam client are hidden under them and not migrated: Steam Cloud covers most saves.
+- **Changes to those folders on the NAS drop the users' folders mounted over them.** When `steamapps/compatdata` or `steamapps/shadercache` changes on the server (Unraid's mover, or moving them between disks or pools; the user share's folder then changes identity), the kernel unmounts what is mounted on it, in a running app, without a word: Docker still lists the mounts. Steam would then see the library's own folders, shared by everyone, and Proton would work in them. Every 30 s the agent reads each such app's mount table from inside its container; when some are gone it logs a warning and the portal shows the user "Stop this app and start it again" on the dashboard and over the stream, and the message goes when they are back. Starting again mounts them. Steam's start-up script also refuses to start Steam without them (the app exits and the environment ends), so Proton never runs on the shared prefixes. Leave those two folders alone: `deploy/nas/move-steam-game`, which moves one game between the array and a pool, deliberately leaves a game's Proton prefix and shader cache where they are, since moving them changes the folders.
 - **Experimental.** Two users updating the same game at once can clash.
 
 ## Known gaps

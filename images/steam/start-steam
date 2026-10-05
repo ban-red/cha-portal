@@ -11,6 +11,10 @@ r="${CHA_REFRESH:-60}"
 # start over in each. There is one Steam per home (the portal allows one such
 # environment per user), so none is running now.
 rm -f "$HOME/.steam/steam.pid" "$HOME/.steam/steam.pipe"
+# The node lays each user's own folders over parts of the shared library
+# (CHA_PER_USER_DIRS: Proton's prefixes and shader caches); if they aren't
+# mounted, Proton would work in the shared copies. Not even Steam starts.
+steam-per-user-dirs || exit 1
 # The node mounts what the admin shares across users and says where in
 # CHA_SHARED_DIR (a library, often on a NAS). It is listed among Steam's library
 # folders now, before Steam starts: Steam rewrites its list from memory while it

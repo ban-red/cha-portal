@@ -1,0 +1,134 @@
+#!/bin/bash
+# move-steam-game: move one Steam game from the Unraid array disks to a pool
+# (cache), disk path to disk path, so the user share (/mnt/user/...) sees the
+# same files afterwards. Run on the Unraid server as root.
+#
+#   move-steam-game [-n] [-y] <appid | part of the game's name>
+#     -n  dry run: show what would move, change nothing
+#     -y  don't ask before moving
+#
+# Settings (environment): SHARE=games LIBRARY=steam POOL=cache
+set -euo pipefail
+
+SHARE=${SHARE:-games}     # the Unraid share holding the library
+LIBRARY=${LIBRARY:-steam} # Steam library root inside the share
+POOL=${POOL:-cache}       # destination pool, mounted at /mnt/$POOL
+MNT=${MNT:-/mnt}
+
+die() { echo "move-steam-game: $*" >&2; exit 1; }
+usage() { echo "usage: move-steam-game [-n] [-y] <appid | part of the name>" >&2; exit 2; }
+
+dry=0 yes=0
+while getopts ny opt; do
+  case $opt in n) dry=1 ;; y) yes=1 ;; *) usage ;; esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 1 ] || usage
+
+apps=$MNT/user/$SHARE/$LIBRARY/steamapps
+pool=$MNT/$POOL/$SHARE
+[ -d "$apps" ] || die "no Steam library at $apps"
+[ -d "$MNT/$POOL" ] || die "no pool at $MNT/$POOL (set POOL=<name>)"
+
+# A field from a Steam .acf manifest (Valve KeyValues, one "key" "value" per line).
+field() { sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*\"\(.*\)\"[[:space:]]*\$/\1/p" "$2" | head -n 1; }
+
+# Find the game's manifest by app id or by name.
+if [[ $1 =~ ^[0-9]+$ ]]; then
+  manifest=$apps/appmanifest_$1.acf
+  [ -f "$manifest" ] || die "app $1 isn't installed in $apps"
+else
+  want=${1,,} hits=()
+  for m in "$apps"/appmanifest_*.acf; do
+    [ -f "$m" ] || continue
+    name=$(field name "$m")
+    [[ ${name,,} == *"$want"* ]] && hits+=("$m")
+  done
+  [ ${#hits[@]} -gt 0 ] || die "no installed game matches \"$1\""
+  if [ ${#hits[@]} -gt 1 ]; then
+    echo "\"$1\" matches more than one game; use its app id:" >&2
+    for m in "${hits[@]}"; do echo "  $(field appid "$m")  $(field name "$m")" >&2; done
+    exit 1
+  fi
+  manifest=${hits[0]}
+fi
+
+appid=$(field appid "$manifest")
+name=$(field name "$manifest")
+installdir=$(field installdir "$manifest")
+[ -n "$appid" ] && [ -n "$installdir" ] || die "can't read $manifest"
+[[ $installdir != */* && $installdir != . && $installdir != .. ]] || die "odd installdir: $installdir"
+
+# Steam must not be updating it (on any machine using this library).
+[ ! -e "$apps/downloading/$appid" ] || die "$name is being downloaded or patched (steamapps/downloading/$appid); let it finish first"
+
+# The game's shared files, relative to the library root. Not its Proton prefix
+# (steamapps/compatdata/<appid>) or shader cache (steamapps/shadercache/<appid>):
+# those are each machine's own, small, and Cha Portal mounts every user's copy
+# over those two folders. Making them on the pool changes the folders under
+# NFS, and Linux then drops whatever is mounted on them.
+parts=(
+  "steamapps/common/$installdir"
+  "steamapps/workshop/content/$appid"
+  "steamapps/workshop/appworkshop_$appid.acf"
+  "steamapps/appmanifest_$appid.acf"
+)
+
+# What's on which array disk (a game can be split across disks).
+moves=() need=0
+for disk in "$MNT"/disk[0-9]*; do
+  [ -d "$disk/$SHARE/$LIBRARY" ] || continue
+  for part in "${parts[@]}"; do
+    src=$disk/$SHARE/$LIBRARY/$part
+    [ -e "$src" ] || continue
+    moves+=("$disk|$part")
+    need=$((need + $(du -sb "$src" | cut -f1)))
+  done
+done
+
+echo "$name (app $appid) in $SHARE/$LIBRARY"
+if [ ${#moves[@]} -eq 0 ]; then
+  echo "Nothing of it is on the array disks; nothing to move."
+  exit 0
+fi
+for m in "${moves[@]}"; do echo "  ${m%%|*}: ${m#*|}"; done
+free=$(df --output=avail -B1 "$MNT/$POOL" | tail -n 1 | tr -d ' ')
+echo "Size $(numfmt --to=iec "$need"), free on $POOL $(numfmt --to=iec "$free")"
+# Keep 10% of the pool's free space spare.
+[ "$need" -lt $((free * 9 / 10)) ] || die "not enough room on $POOL"
+
+# Warn if the mover will just move it back (Unraid share setting).
+cfg=/boot/config/shares/$SHARE.cfg
+if [ -f "$cfg" ]; then
+  use=$(sed -n 's/^shareUseCache="\(.*\)"/\1/p' "$cfg")
+  case $use in
+    yes) echo "Warning: share $SHARE moves cache -> array (shareUseCache=yes): the mover will move this back on its next run." \
+              "Set the mover to array -> cache, or exclude this folder with the Mover Tuning plugin." ;;
+    no) echo "Warning: share $SHARE doesn't use a pool (shareUseCache=no); the game will still be readable through /mnt/user." ;;
+  esac
+fi
+
+if [ $dry -eq 1 ]; then echo "Dry run: nothing moved."; exit 0; fi
+if [ $yes -eq 0 ]; then
+  read -r -p "Close $name everywhere (no Steam running it or updating it), then move it? [y/N] " ok
+  [[ $ok == [yY]* ]] || { echo "Nothing moved."; exit 0; }
+fi
+
+# The share's folder on the pool, owned like Unraid's own (nobody:users).
+if [ ! -d "$pool" ]; then
+  mkdir "$pool"
+  chown --reference="$MNT/user/$SHARE" "$pool"
+  chmod --reference="$MNT/user/$SHARE" "$pool"
+fi
+
+for m in "${moves[@]}"; do
+  disk=${m%%|*} part=${m#*|}
+  echo "Moving ${disk##*/}: $part"
+  # -R recreates the parent folders with the disk's owners and modes;
+  # each file leaves the disk only once it's safely on the pool.
+  rsync -aH -R --remove-source-files --info=progress2 \
+    "$disk/$SHARE/./$LIBRARY/$part" "$pool/"
+  [ -d "$disk/$SHARE/$LIBRARY/$part" ] && find "$disk/$SHARE/$LIBRARY/$part" -depth -type d -empty -delete
+done
+
+echo "Done: $name is on $POOL."

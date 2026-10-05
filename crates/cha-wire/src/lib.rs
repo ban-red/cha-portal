@@ -14,7 +14,9 @@
 //!    is running, so both sides reconcile), then [`ToPortal::Heartbeat`] every
 //!    `heartbeat_secs`. Requests flow both ways; the node pushes
 //!    [`ToPortal::EnvironmentExited`] when an environment stops on its own, and
-//!    [`ToPortal::EnvironmentProgress`] while a start has something slow to say.
+//!    [`ToPortal::EnvironmentProgress`] while a start has something slow to say,
+//!    and [`ToPortal::EnvironmentWarning`] when a running one needs the user's
+//!    attention (a portal that understands it says so in its welcome).
 //!
 //! App data (the layout is in `storage.rs`): the portal names each environment's directories
 //! under the node's data root in [`EnvironmentSpec::storage`], and asks the
@@ -23,6 +25,12 @@
 //! node that predates storage ignores `storage` (the portal checks the node
 //! reports a data root before sending it), and a portal that predates it still
 //! sends `home`, which the node honours.
+//!
+//! Warnings ([`ToPortal::EnvironmentWarning`]) are a variant an older portal
+//! can't read, and it answers a message it can't read by hanging up. So the
+//! portal says in its welcome that it understands them
+//! ([`ToNode::Welcome::environment_warnings`]), and a node sends none until it
+//! does; an older node never sends one.
 
 mod storage;
 
@@ -81,6 +89,12 @@ pub enum ToNode {
     Welcome {
         node_id: String,
         heartbeat_secs: u64,
+        /// The portal understands [`ToPortal::EnvironmentWarning`]. A portal
+        /// that predates it drops the connection over a message it doesn't
+        /// know, so a node sends warnings only when this is set (absent from
+        /// such a portal's welcome).
+        #[serde(default)]
+        environment_warnings: bool,
     },
     Request {
         id: u64,
@@ -126,6 +140,13 @@ pub enum ToPortal {
     EnvironmentProgress {
         id: String,
         detail: String,
+    },
+    /// Something the user should know about a running environment: set when
+    /// it appears, `None` when it is gone (or has been stopped). The portal
+    /// shows it with the environment.
+    EnvironmentWarning {
+        id: String,
+        warning: Option<String>,
     },
     Request {
         id: u64,
@@ -506,6 +527,31 @@ mod tests {
         assert!(verify_b64(&key.public_b64(), &hello_message("nonce-1", "node-b"), &sig).is_err());
         let other = NodeKey::from_secret([8u8; 32]);
         assert!(verify_b64(&other.public_b64(), &msg, &sig).is_err());
+    }
+
+    #[test]
+    fn warnings_are_sent_only_to_a_portal_that_says_it_reads_them() {
+        let said = serde_json::to_value(ToPortal::EnvironmentWarning {
+            id: "e1".into(),
+            warning: None,
+        })
+        .unwrap();
+        assert_eq!(
+            said,
+            serde_json::json!({ "type": "environment_warning", "id": "e1", "warning": null })
+        );
+        // A welcome from a portal that predates them doesn't say so.
+        let old: ToNode = serde_json::from_value(
+            serde_json::json!({ "type": "welcome", "node_id": "n", "heartbeat_secs": 15 }),
+        )
+        .unwrap();
+        assert!(matches!(
+            old,
+            ToNode::Welcome {
+                environment_warnings: false,
+                ..
+            }
+        ));
     }
 
     #[test]

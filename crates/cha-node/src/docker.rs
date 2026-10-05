@@ -16,6 +16,11 @@ use tokio::sync::mpsc;
 
 pub const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
 
+/// What [`Docker::exec`] keeps of a command's output.
+pub const EXEC_OUTPUT_LIMIT: usize = 256 * 1024;
+/// How long [`Docker::exec`] waits for a command to end.
+pub const EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Clone, Debug)]
 pub struct Docker {
     socket: PathBuf,
@@ -29,6 +34,19 @@ pub struct ContainerSummary {
     pub state: String,
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub mounts: Vec<ContainerMount>,
+}
+
+/// One of a container's mounts, as `GET /containers/json` lists them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ContainerMount {
+    /// The host path (or volume name) it mounts.
+    #[serde(default)]
+    pub source: String,
+    /// Where it is inside the container.
+    pub destination: String,
 }
 
 /// A container event (`GET /events`), with the labels we care about.
@@ -146,6 +164,63 @@ impl Docker {
         result
     }
 
+    /// Runs `cmd` in a running container, to its end: the exit code and its
+    /// output (stdout and stderr together, as a terminal would show them),
+    /// cut off at [`EXEC_OUTPUT_LIMIT`]. Gives up after [`EXEC_TIMEOUT`].
+    pub async fn exec(&self, container: &str, cmd: &[&str]) -> Result<(i64, String)> {
+        tokio::time::timeout(EXEC_TIMEOUT, self.exec_inner(container, cmd))
+            .await
+            .context("timed out")?
+    }
+
+    async fn exec_inner(&self, container: &str, cmd: &[&str]) -> Result<(i64, String)> {
+        let created = self
+            .call(
+                Method::POST,
+                &format!("/containers/{}/exec", encode(container)),
+                Some(&serde_json::json!({
+                    "AttachStdout": true,
+                    "AttachStderr": true,
+                    "Tty": true,
+                    "Cmd": cmd,
+                })),
+            )
+            .await?;
+        let id = serde_json::from_slice::<Value>(&created)?["Id"]
+            .as_str()
+            .map(str::to_string)
+            .context("the engine returned no exec id")?;
+        // With a terminal the output is the raw stream, not framed like logs.
+        let res = self
+            .open(
+                Method::POST,
+                &format!("/exec/{}/start", encode(&id)),
+                Some(&serde_json::json!({ "Detach": false, "Tty": true })),
+            )
+            .await?;
+        if !res.status().is_success() {
+            bail!("running {cmd:?} in {container}: {}", res.status());
+        }
+        let mut body = res.into_body();
+        let mut output = Vec::new();
+        while let Some(frame) = body.frame().await {
+            if let Ok(data) = frame?.into_data() {
+                output.extend_from_slice(&data);
+                if output.len() >= EXEC_OUTPUT_LIMIT {
+                    output.truncate(EXEC_OUTPUT_LIMIT);
+                    break;
+                }
+            }
+        }
+        let inspected = self
+            .call(Method::GET, &format!("/exec/{}/json", encode(&id)), None)
+            .await?;
+        let code = serde_json::from_slice::<Value>(&inspected)?["ExitCode"]
+            .as_i64()
+            .unwrap_or(-1);
+        Ok((code, String::from_utf8_lossy(&output).into_owned()))
+    }
+
     pub async fn image_exists(&self, image: &str) -> Result<bool> {
         let (status, bytes) = self
             .send(
@@ -187,6 +262,40 @@ impl Docker {
             }
         }
         Ok(())
+    }
+
+    /// Whether `path` exists on the host, which the agent in its container
+    /// can't see. The engine checks a bind's source when it creates the
+    /// container, so this creates one that is never started (read-only, no
+    /// network, nothing run) from `image`, and removes it. The engine never
+    /// makes the path (`CreateMountpoint` is off). An error is the engine
+    /// failing some other way: the answer is unknown.
+    pub async fn host_path_exists(&self, image: &str, path: &Path) -> Result<bool> {
+        let name = "cha-probe-host-path";
+        let source = path.to_string_lossy();
+        let config = serde_json::json!({
+            "Image": image,
+            "HostConfig": {
+                "NetworkMode": "none",
+                "Mounts": [{
+                    "Type": "bind",
+                    "Source": source,
+                    "Target": source,
+                    "ReadOnly": true,
+                    "BindOptions": { "CreateMountpoint": false },
+                }],
+            },
+        });
+        // A leftover from an interrupted probe.
+        let _ = self.remove(name, 0).await;
+        match self.create(name, &config).await {
+            Ok(id) => {
+                let _ = self.remove(&id, 0).await;
+                Ok(true)
+            }
+            Err(err) if format!("{err:#}").contains("bind source path does not exist") => Ok(false),
+            Err(err) => Err(err),
+        }
     }
 
     /// Creates a container; returns its id.

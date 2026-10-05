@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime};
 use cha_node::storage::{DataRoot, parse_shared_dirs};
-use cha_node::{Agent, Identity, doctor, enroll, init_tls, inventory, normalize_portal_url};
+use cha_node::{
+    Agent, Identity, check_portal_transport, doctor, enroll, init_tls, inventory,
+    normalize_portal_url,
+};
 use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -17,6 +20,12 @@ struct Args {
     /// The portal's URL, e.g. https://portal.example.
     #[arg(long, env = "CHA_PORTAL_URL")]
     portal_url: Option<String>,
+    /// Let the portal URL be plain http:// to another machine (a dev portal on
+    /// the LAN). Without it only https://, or http:// to this machine's
+    /// loopback (a tunnel), is accepted: over plain HTTP the network can read
+    /// the node's traffic and impersonate the portal.
+    #[arg(long, env = "CHA_ALLOW_INSECURE_PORTAL")]
+    allow_insecure_portal: bool,
     /// One-time join token from the portal (needed only to enroll).
     #[arg(long, env = "CHA_JOIN_TOKEN", hide_env_values = true)]
     join_token: Option<String>,
@@ -71,6 +80,15 @@ struct Args {
     /// its container needs it bound in read-only at that path to check it.
     #[arg(long = "shared-dir", env = "CHA_SHARED_DIRS", value_delimiter = ',')]
     shared_dirs: Vec<String>,
+    /// NVIDIA's Wine DLLs on the host (`nvngx.dll`, for DLSS under Proton),
+    /// bound into apps read-only at the same path when the host has the
+    /// directory; the CDI spec leaves it out. Empty goes without.
+    #[arg(
+        long,
+        env = "CHA_NVIDIA_WINE_DIR",
+        default_value = "/usr/lib/x86_64-linux-gnu/nvidia/wine"
+    )]
+    nvidia_wine_dir: String,
 }
 
 #[tokio::main]
@@ -119,6 +137,10 @@ async fn main() -> Result<()> {
             let portal_url = args
                 .portal_url
                 .context("not enrolled yet: pass --portal-url and --join-token")?;
+            check_portal_transport(
+                &normalize_portal_url(&portal_url)?,
+                args.allow_insecure_portal,
+            )?;
             let token = args
                 .join_token
                 .context("not enrolled yet: pass --join-token (from the portal's Nodes page)")?;
@@ -130,6 +152,10 @@ async fn main() -> Result<()> {
         }
     };
 
+    check_portal_transport(&identity.portal_url, args.allow_insecure_portal)?;
+    if identity.portal_url.starts_with("http://") && args.allow_insecure_portal {
+        warn!(portal = %identity.portal_url, "plain HTTP to the portal (CHA_ALLOW_INSECURE_PORTAL): for development only");
+    }
     let mut agent = Agent::new(identity)?;
     match DockerRuntime::new(docker, config.clone()).await {
         Ok(runtime) => {
@@ -171,5 +197,41 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
         max_environments: args.max_environments,
         data_root: args.data_root.clone(),
         shared_dirs,
+        nvidia_wine_dir: parse_nvidia_wine_dir(&args.nvidia_wine_dir)?,
     })
+}
+
+/// The NVIDIA Wine directory, `None` when empty. Docker is handed it as a bind
+/// source and target, so it must be a plain absolute path.
+fn parse_nvidia_wine_dir(value: &str) -> Result<Option<PathBuf>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let path = PathBuf::from(value);
+    anyhow::ensure!(
+        path.is_absolute()
+            && path
+                .components()
+                .all(|c| !matches!(c, std::path::Component::ParentDir)),
+        "CHA_NVIDIA_WINE_DIR must be an absolute path without `..`, or empty: {value}"
+    );
+    Ok(Some(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_nvidia_wine_dir() {
+        assert_eq!(parse_nvidia_wine_dir("").unwrap(), None);
+        assert_eq!(parse_nvidia_wine_dir("  ").unwrap(), None);
+        assert_eq!(
+            parse_nvidia_wine_dir("/opt/nvidia/wine").unwrap(),
+            Some(PathBuf::from("/opt/nvidia/wine"))
+        );
+        assert!(parse_nvidia_wine_dir("nvidia/wine").is_err());
+        assert!(parse_nvidia_wine_dir("/opt/../etc").is_err());
+    }
 }

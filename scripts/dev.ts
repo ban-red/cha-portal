@@ -9,14 +9,27 @@
 // - The SPA on Vite at http://localhost:5190 (PORT to change), hot reloading,
 //   proxying /api to cha-control (vite.config.ts).
 //
-// A node agent enrolls against http://127.0.0.1:8090 as usual. Ctrl-C stops
-// both; if either exits, the other is stopped too.
+// A node agent on this machine enrolls against http://127.0.0.1:8090. For a
+// node on another machine, listen on the LAN too:
+//
+//   CHA_LISTEN=0.0.0.0:8090 bun run dev
+//
+// and run the node with CHA_PORTAL_URL=http://<this machine>:8090 and
+// CHA_ALLOW_INSECURE_PORTAL=true (plain HTTP). "Login as Local Dev" still only
+// works from this machine (cha-control checks the peer address; the Vite proxy
+// stays on localhost). Ctrl-C stops both; if either exits, the other is
+// stopped too.
 
 import { mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const CONTROL = "127.0.0.1:8090";
+const LISTEN = process.env.CHA_LISTEN ?? "127.0.0.1:8090";
+const CONTROL_PORT = LISTEN.slice(LISTEN.lastIndexOf(":") + 1);
+// This machine's own way in, whatever LISTEN is bound to.
+const CONTROL = `127.0.0.1:${CONTROL_PORT}`;
+const LAN = !/^(127\.|localhost:|\[::1\]:)/.test(LISTEN);
 const WEB_PORT = process.env.PORT ?? "5190";
 
 mkdirSync(join(root, "data"), { recursive: true });
@@ -56,7 +69,7 @@ const children = [
     "cha-control",
     "--",
     "--listen",
-    CONTROL,
+    LISTEN,
     "--database",
     "data/dev.db",
     "--dev-login",
@@ -102,6 +115,13 @@ while (!stopping) {
       `\n\x1b[1mPortal dev instance ready\x1b[0m (${secs} s): http://localhost:${WEB_PORT} ` +
         `(hot reload; "Login as Local Dev" signs you in). API: http://${CONTROL}\n`,
     );
+    if (LAN) {
+      const host = hostname().replace(/\.local$/, "");
+      console.log(
+        `Listening on the LAN (${LISTEN}). Nodes elsewhere: CHA_PORTAL_URL=http://${host}.lan:${CONTROL_PORT} ` +
+          `CHA_ALLOW_INSECURE_PORTAL=true (use whatever name they resolve this machine by)\n`,
+      );
+    }
     break;
   }
   await Bun.sleep(1000);

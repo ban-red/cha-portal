@@ -16,6 +16,7 @@ use crate::Identity;
 use crate::docker::Docker;
 use crate::environments::{
     APP_UID, DockerConfig, SANDBOX_APPARMOR, browser_seccomp, catalog_images, catalog_per_user,
+    nvidia_present,
 };
 use crate::storage::DataRoot;
 
@@ -72,6 +73,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
         checks.push(pyrowave(docker, config).await);
         checks.push(gamepads(docker, config).await);
         checks.push(sandboxes(docker, config).await);
+        checks.push(nvidia_wine(docker, config).await);
     }
     checks.push(storage(docker, config, engine.is_ok()).await);
     for (template, dir) in &config.shared_dirs {
@@ -185,6 +187,41 @@ async fn gpu(docker: &Docker, config: &DockerConfig) -> Check {
          sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml (device {})",
         config.gpu_device
     ))
+}
+
+/// NVIDIA's Wine DLLs (`nvngx.dll`) on the host, which Proton games need for
+/// DLSS and the CDI spec leaves out; the agent binds them into apps.
+async fn nvidia_wine(docker: &Docker, config: &DockerConfig) -> Check {
+    let Some(dir) = &config.nvidia_wine_dir else {
+        return check(
+            Level::Info,
+            "NVIDIA Wine DLLs",
+            "off (CHA_NVIDIA_WINE_DIR is empty)",
+        );
+    };
+    let shown = dir.display();
+    match docker.host_path_exists(&config.streamer_image, dir).await {
+        Ok(true) => check(
+            Level::Ok,
+            "NVIDIA Wine DLLs",
+            format!("{shown} goes into apps (DLSS under Proton)"),
+        ),
+        Ok(false) if nvidia_present() => check(
+            Level::Warn,
+            "NVIDIA Wine DLLs",
+            format!("{shown} is missing, so Proton games get no DLSS"),
+        )
+        .fix(
+            "install the driver package that ships nvngx.dll (Ubuntu: libnvidia-gl-<version>; \
+             NVIDIA's .run installer includes it), or point CHA_NVIDIA_WINE_DIR at where it is",
+        ),
+        Ok(false) => check(
+            Level::Info,
+            "NVIDIA Wine DLLs",
+            format!("{shown} is missing; only NVIDIA's driver ships it"),
+        ),
+        Err(err) => check(Level::Warn, "NVIDIA Wine DLLs", format!("{err:#}")),
+    }
 }
 
 /// PyroWave's Vulkan device, made the way a streamer makes it. Optional:

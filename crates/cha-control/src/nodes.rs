@@ -292,6 +292,7 @@ async fn serve_node(state: AppState, mut socket: WebSocket) -> anyhow::Result<()
     let welcome = ToNode::Welcome {
         node_id: node_id.clone(),
         heartbeat_secs: HEARTBEAT_SECS,
+        environment_warnings: true,
     };
     send(&mut socket, &welcome).await?;
     info!(%node_id, name = %node.name, %agent_version, "node connected");
@@ -357,6 +358,11 @@ async fn pump(
                     ToPortal::EnvironmentProgress { id, detail } => {
                         let detail: String = detail.chars().take(200).collect();
                         db::set_environment_progress(&state.db, &id, node_id, &detail).await?;
+                    }
+                    ToPortal::EnvironmentWarning { id, warning } => {
+                        let warning = warning.map(|w| w.chars().take(300).collect::<String>());
+                        db::set_environment_warning(&state.db, &id, node_id, warning.as_deref())
+                            .await?;
                     }
                     ToPortal::EnvironmentExited { id, detail, failed } => {
                         tokio::spawn(crate::environments::exited(state.clone(), id, detail, failed));

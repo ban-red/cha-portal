@@ -12,17 +12,19 @@ import {
   type StatsSnapshot,
   type Transport,
 } from "@cha/player";
-import { useQuery } from "@tanstack/vue-query";
+import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 
 import { ApiError, api } from "../api";
+import WarningNote from "../components/WarningNote.vue";
 
 // The environment, full screen. The portal brokers the connection; the picture
 // and input go straight between this browser and the node.
 
 const route = useRoute();
 const id = computed(() => String(route.params.id));
+const queryClient = useQueryClient();
 const env = useQuery({ queryKey: ["environment", id], queryFn: () => api.environment(id.value), refetchInterval: 5000 });
 
 const video = ref<HTMLVideoElement | null>(null);
@@ -158,9 +160,17 @@ async function connect() {
     .iceServers()
     .then((r) => r.iceServers)
     .catch(() => []);
+  // Whether its display has a fixed size (Steam's), which the picture then keeps.
+  const fixedSize = await Promise.all([
+    queryClient.fetchQuery({ queryKey: ["environment", id], queryFn: () => api.environment(id.value), staleTime: 5000 }),
+    queryClient.fetchQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 }),
+  ])
+    .then(([e, templates]) => !!templates.find((t) => t.id === e.templateId)?.fixedSize)
+    .catch(() => false);
   if (leaving || mine !== attempt || !video.value) return;
   const p = new Player({
     video: video.value,
+    fixedSize,
     codec: codec.value,
     iceServers,
     transport: transportChoice.value,
@@ -394,6 +404,14 @@ const STATUS: Record<PlayerState, string> = {
           {{ fmt(probe.avOffsetMs.p50) }} ms
         </template>
       </div>
+    </div>
+
+    <!-- What the node noticed about this environment, which stays until it's gone -->
+    <div
+      v-if="state === 'connected' && env.data.value?.warning"
+      class="pointer-events-none absolute top-16 left-1/2 z-10 w-xl max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-lg bg-panel/90 backdrop-blur"
+    >
+      <WarningNote :message="env.data.value.warning" />
     </div>
 
     <div

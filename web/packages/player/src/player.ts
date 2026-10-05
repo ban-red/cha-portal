@@ -74,6 +74,9 @@ export interface PlayerOptions {
   iceServers?: RTCIceServer[];
   /** The largest picture to ask for (default 2560×1440, the baseline). */
   maxSize?: { width: number; height: number };
+  /** The app's display has a fixed size: never ask for a resize, so the
+   *  browser letterboxes the picture instead. */
+  fixedSize?: boolean;
   onState?: (state: PlayerState, detail?: string) => void;
   /** Start with the sound off. */
   muted?: boolean;
@@ -562,6 +565,7 @@ export class Player {
   /** Asks for a picture the element's size, after resizing settles. */
   private requestSize(): void {
     clearTimeout(this.resizeTimer);
+    if (this.options.fixedSize) return;
     // The controller's page sizes the picture; viewers scale it.
     if (!this.hasControl) return;
     this.resizeTimer = setTimeout(() => {

@@ -32,7 +32,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
-use crate::environments::{Exit, Progress, Runtime};
+use crate::environments::{Exit, Progress, Runtime, Warning};
 
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const IDENTITY_FILE: &str = "node.json";
@@ -113,6 +113,32 @@ pub fn normalize_portal_url(url: &str) -> Result<String> {
         bail!("the portal URL must start with http:// or https:// (got {url:?})");
     }
     Ok(url.to_string())
+}
+
+/// Whether plain `http://` to this portal is all right: only on the node's own
+/// loopback (a tunnel), unless `allow_insecure` (`CHA_ALLOW_INSECURE_PORTAL`,
+/// for a dev portal on the LAN). Over plain HTTP anyone on the path can read
+/// the node's traffic and impersonate the portal, which can run containers here.
+pub fn check_portal_transport(portal_url: &str, allow_insecure: bool) -> Result<()> {
+    let Some(rest) = portal_url.strip_prefix("http://") else {
+        return Ok(());
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if loopback || allow_insecure {
+        return Ok(());
+    }
+    bail!(
+        "the portal URL {portal_url} is plain http:// to another machine; use https://, \
+         or set CHA_ALLOW_INSECURE_PORTAL=true (--allow-insecure-portal) for a dev portal on your LAN"
+    )
 }
 
 fn connect_url(portal_url: &str) -> String {
@@ -251,10 +277,15 @@ impl Agent {
             protocol: PROTOCOL_VERSION,
         };
         sink.send(encode(&hello)?).await?;
-        let heartbeat = match next_message(&mut stream).await? {
-            Next::Message(ToNode::Welcome { heartbeat_secs, .. }) => {
-                Duration::from_secs(heartbeat_secs.max(1))
-            }
+        let (heartbeat, portal_reads_warnings) = match next_message(&mut stream).await? {
+            Next::Message(ToNode::Welcome {
+                heartbeat_secs,
+                environment_warnings,
+                ..
+            }) => (
+                Duration::from_secs(heartbeat_secs.max(1)),
+                environment_warnings,
+            ),
             Next::Closed(closed) => return Ok(closed),
             Next::Message(other) => bail!("expected a welcome, got {other:?}"),
         };
@@ -288,12 +319,21 @@ impl Agent {
         };
         sink.send(encode(&ToPortal::Environments { running })?)
             .await?;
+        // What the portal may have missed while this node was away, or that
+        // has passed since: where each environment stands now.
+        if portal_reads_warnings && let Some(runtime) = &self.runtime {
+            for Warning { id, warning } in runtime.warnings_now() {
+                sink.send(encode(&ToPortal::EnvironmentWarning { id, warning })?)
+                    .await?;
+            }
+        }
 
         // Requests run as tasks (starting an environment takes seconds) and
         // answer through this channel.
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ToPortal>();
         let mut exits = self.runtime.as_ref().map(|r| r.exits());
         let mut progress = self.runtime.as_ref().map(|r| r.progress());
+        let mut warnings = self.runtime.as_ref().map(|r| r.warnings());
 
         let start = tokio::time::Instant::now();
         let mut heartbeats = tokio::time::interval_at(start + heartbeat, heartbeat);
@@ -327,6 +367,14 @@ impl Agent {
                 said = next_event(&mut progress) => {
                     if let Some(Progress { id, detail }) = said {
                         sink.send(encode(&ToPortal::EnvironmentProgress { id, detail })?).await?;
+                    }
+                }
+                said = next_event(&mut warnings) => {
+                    if let Some(Warning { id, warning }) = said {
+                        // A portal that doesn't know the message would hang up on it.
+                        if portal_reads_warnings {
+                            sink.send(encode(&ToPortal::EnvironmentWarning { id, warning })?).await?;
+                        }
                     }
                 }
                 incoming = stream.next() => {
@@ -501,6 +549,27 @@ mod tests {
             "ws://127.0.0.1:8090/api/node/connect"
         );
         assert!(normalize_portal_url("portal.example").is_err());
+    }
+
+    #[test]
+    fn plain_http_only_to_loopback_unless_allowed() {
+        for ok in [
+            "https://portal.example",
+            "http://localhost:8090",
+            "http://127.0.0.1:8090",
+            "http://[::1]:8090/x",
+        ] {
+            assert!(check_portal_transport(ok, false).is_ok(), "{ok}");
+        }
+        for lan in [
+            "http://portal.lan:8090",
+            "http://192.168.1.5",
+            "http://[fd7a::1]:8090",
+            "http://127.0.0.1.example",
+        ] {
+            assert!(check_portal_transport(lan, false).is_err(), "{lan}");
+            assert!(check_portal_transport(lan, true).is_ok(), "{lan}");
+        }
     }
 
     #[test]

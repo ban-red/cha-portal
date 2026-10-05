@@ -4,6 +4,7 @@ import { computed, ref } from "vue";
 
 import { ApiError, api, type Environment, type EnvironmentState, type Template } from "../api";
 import FormError from "../components/FormError.vue";
+import WarningNote from "../components/WarningNote.vue";
 import { ago, dateTime } from "../format";
 import { useSession } from "../stores/session";
 import { STORAGE_KEY } from "../storage";
@@ -137,6 +138,7 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
           >
             Stop
           </button>
+          <WarningNote :message="e.warning" class="basis-full" />
         </div>
       </div>
     </section>

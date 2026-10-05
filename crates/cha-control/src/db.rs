@@ -374,13 +374,15 @@ pub struct EnvironmentRow {
     pub node_id: Option<String>,
     pub state: String,
     pub detail: Option<String>,
+    /// Something the user should know about while it runs (from its node).
+    pub warning: Option<String>,
     pub http_port: Option<i64>,
     pub webrtc_port: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, http_port, webrtc_port, created_at, updated_at";
+const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, http_port, webrtc_port, created_at, updated_at";
 
 pub async fn insert_environment(
     db: &SqlitePool,
@@ -509,6 +511,28 @@ pub async fn set_environment_progress(
         > 0)
 }
 
+/// What a node says is wrong with a running environment, or `None` when it
+/// no longer is. Only the environment's own node may, and only while it runs.
+pub async fn set_environment_warning(
+    db: &SqlitePool,
+    id: &str,
+    node_id: &str,
+    warning: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE environments SET warning = ?, updated_at = ? \
+         WHERE id = ? AND node_id = ? AND state = 'running'",
+    )
+    .bind(warning)
+    .bind(now())
+    .bind(id)
+    .bind(node_id)
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
 /// Moves an environment to `state`, but only from one of `from`; returns
 /// whether it moved (so concurrent updates can't resurrect a stopped one).
 pub async fn transition_environment(
@@ -520,7 +544,7 @@ pub async fn transition_environment(
 ) -> Result<bool, sqlx::Error> {
     let placeholders = vec!["?"; from.len()].join(", ");
     let sql = format!(
-        "UPDATE environments SET state = ?, detail = ?, updated_at = ? \
+        "UPDATE environments SET state = ?, detail = ?, warning = NULL, updated_at = ? \
          WHERE id = ? AND state IN ({placeholders})"
     );
     let mut query = sqlx::query(&sql)
@@ -561,7 +585,7 @@ pub async fn fail_node_environments(
     detail: &str,
 ) -> Result<u64, sqlx::Error> {
     Ok(sqlx::query(
-        "UPDATE environments SET state = 'failed', detail = ?, updated_at = ? \
+        "UPDATE environments SET state = 'failed', detail = ?, warning = NULL, updated_at = ? \
          WHERE node_id = ? AND state IN ('starting', 'running', 'stopping')",
     )
     .bind(detail)

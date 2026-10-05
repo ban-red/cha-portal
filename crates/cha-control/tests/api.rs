@@ -409,7 +409,8 @@ impl TestPortal {
     }
 
     /// Gives `user_id` a live environment of `template`, as a launch would.
-    async fn live_environment(&self, user_id: &str, template: &str) {
+    /// Returns its node's id and its own.
+    async fn live_environment(&self, user_id: &str, template: &str) -> (String, String) {
         let node_id = db::new_id();
         sqlx::query(
             "INSERT INTO nodes (id, name, public_key, enrolled_at) VALUES (?, 'test', ?, 0)",
@@ -419,16 +420,11 @@ impl TestPortal {
         .execute(&self.db)
         .await
         .unwrap();
-        db::insert_environment(
-            &self.db,
-            &db::new_id(),
-            user_id,
-            template,
-            &node_id,
-            "running",
-        )
-        .await
-        .unwrap();
+        let id = db::new_id();
+        db::insert_environment(&self.db, &id, user_id, template, &node_id, "running")
+            .await
+            .unwrap();
+        (node_id, id)
     }
 }
 
@@ -477,6 +473,19 @@ async fn app_data_starts_from_the_catalog() {
         reply.body["apps"].as_array().unwrap().len(),
         catalog.body.as_array().unwrap().len()
     );
+    // Steam's display has a fixed size, so its page never asks for a resize.
+    let template_of = |id: &str| {
+        catalog
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(template_of("steam")["fixedSize"], true);
+    assert_eq!(template_of("chrome")["fixedSize"], false);
 
     assert_eq!(
         p.call("GET", "/api/storage", None, None).await.status,
@@ -615,6 +624,66 @@ async fn settings_wait_for_a_live_environment() {
         )
         .await;
     assert_eq!(free.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_nodes_warning_shows_on_the_environment_until_it_clears_or_ends() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (node, id) = p.live_environment(&alice_id, "steam").await;
+    let warning_of = |listed: &Value| listed[0]["warning"].clone();
+    let listed = p.call("GET", "/api/environments", Some(&alice), None).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(warning_of(&listed.body), Value::Null);
+
+    // What the node's message does (`ToPortal::EnvironmentWarning`).
+    let set = db::set_environment_warning(&p.db, &id, &node, Some("folders came unmounted"))
+        .await
+        .unwrap();
+    assert!(set);
+    let listed = p.call("GET", "/api/environments", Some(&alice), None).await;
+    assert_eq!(warning_of(&listed.body), "folders came unmounted");
+    let shown = p
+        .call(
+            "GET",
+            &format!("/api/environments/{id}"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    assert_eq!(shown.body["warning"], "folders came unmounted");
+
+    // Only the environment's own node may say it.
+    assert!(
+        !db::set_environment_warning(&p.db, &id, "another-node", None)
+            .await
+            .unwrap()
+    );
+    let listed = p.call("GET", "/api/environments", Some(&alice), None).await;
+    assert_eq!(warning_of(&listed.body), "folders came unmounted");
+
+    // The node says it is over.
+    db::set_environment_warning(&p.db, &id, &node, None)
+        .await
+        .unwrap();
+    let listed = p.call("GET", "/api/environments", Some(&alice), None).await;
+    assert_eq!(warning_of(&listed.body), Value::Null);
+
+    // Ending the environment drops what it said, and a stopped one takes none.
+    db::set_environment_warning(&p.db, &id, &node, Some("again"))
+        .await
+        .unwrap();
+    db::transition_environment(&p.db, &id, &["running"], "destroyed", None)
+        .await
+        .unwrap();
+    let listed = p.call("GET", "/api/environments", Some(&alice), None).await;
+    assert_eq!(warning_of(&listed.body), Value::Null);
+    assert!(
+        !db::set_environment_warning(&p.db, &id, &node, Some("late"))
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]

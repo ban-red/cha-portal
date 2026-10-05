@@ -82,8 +82,10 @@
     },
     {
       "name": "portal-dev",
-      "runtimeExecutable": "bun",
+      "runtimeExecutable": "/usr/bin/env",
       "runtimeArgs": [
+        "CHA_LISTEN=0.0.0.0:8090",
+        "bun",
         "run",
         "dev"
       ],

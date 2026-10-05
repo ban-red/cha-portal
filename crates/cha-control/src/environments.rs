@@ -74,6 +74,10 @@ pub struct Template {
     /// default `crate::storage` starts from.
     #[serde(default)]
     pub persistent: bool,
+    /// Its display has a fixed size (Steam's gamescope): the page never asks
+    /// the streamer to resize, and the browser letterboxes the picture.
+    #[serde(default)]
+    pub fixed_size: bool,
     /// What it shares across users, unless an admin says otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<SharedDefaults>,
@@ -114,6 +118,8 @@ struct EnvironmentView {
     node_name: Option<String>,
     state: String,
     detail: Option<String>,
+    /// Something to tell the user while it runs (its node noticed a problem).
+    warning: Option<String>,
     created_at: i64,
     updated_at: i64,
     /// Where the streamer listens, while it runs (the portal brokers
@@ -153,6 +159,7 @@ fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>) -> EnvironmentVie
         node_id: row.node_id,
         state: row.state,
         detail: row.detail,
+        warning: row.warning,
         created_at: row.created_at,
         updated_at: row.updated_at,
         streamer,

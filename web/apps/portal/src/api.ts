@@ -66,6 +66,8 @@ export interface Template {
   class: string;
   security: SecurityProfile;
   shmMb: number;
+  /** Its display has a fixed size: the page never asks for a resize. */
+  fixedSize?: boolean;
   /** What the app shares across users by default, and the parts each user keeps apart. */
   shared?: { access: SharedAccess; perUser: string[] } | null;
 }
@@ -82,6 +84,8 @@ export interface Environment {
   state: EnvironmentState;
   /** Why it failed or ended. */
   detail: string | null;
+  /** Something its node noticed while it runs, for the user (null: nothing). */
+  warning: string | null;
   createdAt: number;
   updatedAt: number;
   /** Where its streamer listens while it runs. */

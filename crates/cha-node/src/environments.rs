@@ -22,7 +22,11 @@
 //!   user's directory that is new is first filled from their old home volume
 //!   (`cha-home-<user>-<template>`), once, or from the image's own `/home/cha`.
 //!   (A portal that predates this names a home volume instead, which is
-//!   mounted as it always was.)
+//!   mounted as it always was.) The per-user directories are mounts inside the
+//!   shared one, and the kernel drops those when the directory under them
+//!   changes on a server (a NAS's mover, say): the agent looks at each app's
+//!   mounts every [`OVERLAY_CHECK`], and a warning goes to the portal when
+//!   some are gone. The app is told them in `CHA_PER_USER_DIRS`.
 //!
 //! The agent is never in the media path: containers outlive agent restarts,
 //! and the agent finds them again by label.
@@ -44,9 +48,9 @@ use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
-use crate::docker::{ContainerEvent, Docker, encode};
+use crate::docker::{ContainerEvent, ContainerMount, Docker, encode};
 use crate::storage::{DataRoot, Seed, plan_seed};
 
 const LABEL_ENV: &str = "sh.cha.env";
@@ -73,6 +77,8 @@ const COPY_TIMEOUT: Duration = Duration::from_secs(3600);
 /// Looking at a shared directory on a NAS: a hard NFS mount makes a system
 /// call wait for as long as the server is away.
 const EXTERNAL_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often the agent looks for per-user directories that came unmounted.
+const OVERLAY_CHECK: Duration = Duration::from_secs(30);
 /// Each environment's streamer: HTTP (localhost), WebRTC and WebTransport.
 const PORTS_PER_ENVIRONMENT: u16 = 3;
 
@@ -89,6 +95,14 @@ pub struct Exit {
 pub struct Progress {
     pub id: String,
     pub detail: String,
+}
+
+/// Something wrong with a running environment that its user should be told,
+/// or (`None`) no longer wrong.
+#[derive(Debug, Clone)]
+pub struct Warning {
+    pub id: String,
+    pub warning: Option<String>,
 }
 
 /// A browser's request to connect, as the portal relayed it.
@@ -125,6 +139,14 @@ pub trait Runtime: Send + Sync + 'static {
     /// What starting environments say they are doing, from now on.
     fn progress(&self) -> broadcast::Receiver<Progress> {
         broadcast::channel(1).1
+    }
+    /// Warnings about running environments, as they come and go.
+    fn warnings(&self) -> broadcast::Receiver<Warning> {
+        broadcast::channel(1).1
+    }
+    /// Where each environment that is watched stands now: a warning, or none.
+    fn warnings_now(&self) -> Vec<Warning> {
+        Vec::new()
     }
     /// Where this runtime keeps app data; `None` if it keeps none.
     fn data_root(&self) -> Option<String> {
@@ -164,6 +186,10 @@ pub struct DockerConfig {
     /// [`crate::storage::parse_shared_dirs`]): template → absolute path, which
     /// is mounted into the app at the same path.
     pub shared_dirs: BTreeMap<String, PathBuf>,
+    /// The host's directory of NVIDIA's Wine DLLs (`nvngx.dll`, for DLSS),
+    /// which Proton copies into its prefixes and the CDI spec leaves out:
+    /// bound into apps read-only at the same path. `None` goes without.
+    pub nvidia_wine_dir: Option<PathBuf>,
 }
 
 pub struct DockerRuntime {
@@ -175,10 +201,127 @@ pub struct DockerRuntime {
     state: Mutex<State>,
     exits: broadcast::Sender<Exit>,
     progress: broadcast::Sender<Progress>,
+    warnings: broadcast::Sender<Warning>,
+}
+
+/// A per-user directory laid over a shared one in an app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Overlay {
+    /// Where it is mounted in the app's container.
+    target: String,
+    /// Its place in the shared directory (`steamapps/compatdata`).
+    part: String,
+}
+
+/// An app's per-user directories, and which of them were missing when last looked.
+#[derive(Debug, Default)]
+struct Overlays {
+    list: Vec<Overlay>,
+    lost: Vec<String>,
+    /// Looks in a row that couldn't be made (the container's gone, it has no `cat`).
+    failures: u32,
+}
+
+impl Overlays {
+    fn new(list: Vec<Overlay>) -> Self {
+        Self {
+            list,
+            ..Self::default()
+        }
+    }
+
+    /// What the app's mounts say: `Some` when what is missing changed since
+    /// the last look, with the warning to give (`None`: all is back).
+    fn observe(&mut self, mounted: &HashSet<String>) -> Option<Option<String>> {
+        let lost: Vec<String> = self
+            .list
+            .iter()
+            .filter(|o| !mounted.contains(&o.target))
+            .map(|o| o.part.clone())
+            .collect();
+        if lost == self.lost {
+            return None;
+        }
+        self.lost = lost;
+        Some(self.warning())
+    }
+
+    fn warning(&self) -> Option<String> {
+        (!self.lost.is_empty()).then(|| unmounted_warning(&self.lost))
+    }
+}
+
+/// What the user is told when `parts` of their own are no longer mounted.
+fn unmounted_warning(parts: &[String]) -> String {
+    format!(
+        "Your own folders in the shared library came unmounted ({}), likely after a change on \
+         the NAS. Games now see the shared copies instead. Stop this app and start it again.",
+        parts.join(", ")
+    )
+}
+
+/// The mount points in a `/proc/<pid>/mountinfo`: its fifth field, in which a
+/// space, tab, newline or backslash is an octal escape (`\040`).
+fn parse_mountinfo(text: &str) -> HashSet<String> {
+    text.lines()
+        .filter_map(|line| line.split(' ').nth(4))
+        .map(unescape_mountinfo)
+        .collect()
+}
+
+fn unescape_mountinfo(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let octal = (bytes[i] == b'\\')
+            .then(|| bytes.get(i + 1..i + 4))
+            .flatten()
+            .filter(|d| d.iter().all(|c| (b'0'..=b'7').contains(c)))
+            .and_then(|d| u32::from_str_radix(std::str::from_utf8(d).ok()?, 8).ok())
+            .and_then(|n| u8::try_from(n).ok());
+        match octal {
+            Some(byte) => {
+                out.push(byte);
+                i += 4;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The per-user directories an app container has, from its mounts: those whose
+/// source is in a user's `.cha-shared` under `users_dir` (the data root's
+/// `users`, as the host has it). What a restarted agent knows of a container
+/// it didn't make, or one an older agent made.
+fn overlays_from_mounts(mounts: &[ContainerMount], users_dir: &Path) -> Vec<Overlay> {
+    mounts
+        .iter()
+        .filter_map(|m| {
+            let rest = Path::new(&m.source).strip_prefix(users_dir).ok()?;
+            // <user>/<template>/.cha-shared/<part…>
+            let mut parts = rest.components();
+            let (_user, _template, dir) = (parts.next()?, parts.next()?, parts.next()?);
+            if dir.as_os_str() != PER_USER_DIR {
+                return None;
+            }
+            let part = parts.as_path().to_str()?;
+            (!part.is_empty()).then(|| Overlay {
+                target: m.destination.clone(),
+                part: part.to_string(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Default)]
 struct State {
+    /// Environment id → the per-user directories its app has to keep mounted.
+    overlays: BTreeMap<String, Overlays>,
     /// Environment id → its streamer's HTTP port.
     ports: BTreeMap<String, u16>,
     /// Environments being stopped on purpose (their containers' deaths aren't news).
@@ -194,14 +337,16 @@ struct State {
 impl DockerRuntime {
     /// Connects to the engine, adopts environments left running by an earlier
     /// agent, clears out dead ones, and starts watching for exits.
-    pub async fn new(docker: Docker, config: DockerConfig) -> Result<Arc<Self>> {
+    pub async fn new(docker: Docker, mut config: DockerConfig) -> Result<Arc<Self>> {
         docker.ping().await?;
+        config.nvidia_wine_dir = Self::settle_nvidia_wine_dir(&docker, &config).await;
         let render_gid = render_gid(&config.render_node);
         if render_gid.is_none() {
             warn!(render_node = %config.render_node, "can't read the render node's group; apps may fall back to software rendering");
         }
         let (exits, _) = broadcast::channel(64);
         let (progress, _) = broadcast::channel(64);
+        let (warnings, _) = broadcast::channel(64);
         let data = DataRoot::new(config.data_root.clone(), APP_UID, APP_UID)?;
         let runtime = Arc::new(Self {
             docker,
@@ -211,11 +356,41 @@ impl DockerRuntime {
             state: Mutex::default(),
             exits,
             progress,
+            warnings,
         });
         runtime.adopt().await?;
         let watcher = Arc::clone(&runtime);
         tokio::spawn(async move { watcher.watch().await });
+        let watcher = Arc::clone(&runtime);
+        tokio::spawn(async move { watcher.watch_overlays().await });
         Ok(runtime)
+    }
+
+    /// The NVIDIA Wine directory apps get: the configured one when the host has
+    /// it, else none (a bind whose source is missing fails the app's creation).
+    async fn settle_nvidia_wine_dir(docker: &Docker, config: &DockerConfig) -> Option<PathBuf> {
+        let dir = config.nvidia_wine_dir.as_ref()?;
+        match docker.host_path_exists(&config.streamer_image, dir).await {
+            Ok(true) => {
+                info!(dir = %dir.display(), "mounting NVIDIA's Wine DLLs into apps (DLSS under Proton)");
+                Some(dir.clone())
+            }
+            Ok(false) => {
+                if nvidia_present() {
+                    warn!(dir = %dir.display(), "the host has no NVIDIA Wine directory, so Proton games get no DLSS; install the driver package that ships nvngx.dll (Ubuntu: libnvidia-gl-<version>) or set CHA_NVIDIA_WINE_DIR");
+                } else {
+                    info!(dir = %dir.display(), "no NVIDIA Wine directory on the host; apps go without");
+                }
+                None
+            }
+            Err(err) => {
+                warn!(
+                    "can't tell whether the host has {} ({err:#}); apps go without it",
+                    dir.display()
+                );
+                None
+            }
+        }
     }
 
     async fn adopt(&self) -> Result<()> {
@@ -241,6 +416,13 @@ impl DockerRuntime {
                     state
                         .homes
                         .insert(id.clone(), (owner.clone(), template.clone()));
+                    let overlays = overlays_from_mounts(
+                        &container.mounts,
+                        &self.data.host_path(cha_wire::USERS_DIR),
+                    );
+                    if !overlays.is_empty() {
+                        state.overlays.insert(id.clone(), Overlays::new(overlays));
+                    }
                 }
                 state.ports.insert(id, port);
             }
@@ -249,6 +431,7 @@ impl DockerRuntime {
             info!(%id, "cleaning up an environment that died while the agent was away");
             self.state.lock().expect("state lock").ports.remove(&id);
             self.state.lock().expect("state lock").homes.remove(&id);
+            self.state.lock().expect("state lock").overlays.remove(&id);
             let _ = self.remove(&id).await;
         }
         let adopted = self.state.lock().expect("state lock").ports.len();
@@ -273,6 +456,74 @@ impl DockerRuntime {
                 _ => warn!("the engine's event stream ended"),
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    /// Looks at every environment's per-user directories each [`OVERLAY_CHECK`].
+    async fn watch_overlays(self: Arc<Self>) {
+        let mut ticks = tokio::time::interval(OVERLAY_CHECK);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            self.check_overlays().await;
+        }
+    }
+
+    /// Reads each app's mounts from inside its container, and reports when
+    /// some of its per-user directories are gone, or back. Looks only at what
+    /// is running (an environment is watched once it has started).
+    async fn check_overlays(&self) {
+        let watched: Vec<String> = {
+            let state = self.state.lock().expect("state lock");
+            state
+                .overlays
+                .keys()
+                .filter(|id| !state.stopping.contains(*id))
+                .cloned()
+                .collect()
+        };
+        for id in watched {
+            let name = container_name(&id, "app");
+            let looked = self
+                .docker
+                .exec(&name, &["cat", "/proc/self/mountinfo"])
+                .await
+                .and_then(|(code, out)| match code {
+                    0 => Ok(parse_mountinfo(&out)),
+                    code => bail!("cat exited {code}: {}", out.trim()),
+                });
+            let change = {
+                let mut state = self.state.lock().expect("state lock");
+                let Some(overlays) = state.overlays.get_mut(&id) else {
+                    continue;
+                };
+                match looked {
+                    Ok(mounted) => {
+                        overlays.failures = 0;
+                        overlays.observe(&mounted)
+                    }
+                    Err(err) => {
+                        // Not worth a line each time: the container may be on
+                        // its way out. Said once if it keeps up.
+                        overlays.failures += 1;
+                        match overlays.failures {
+                            1 => debug!(%id, "looking at the app's mounts: {err:#}"),
+                            3 => {
+                                warn!(%id, "can't look at the app's mounts, so can't tell whether its own folders are still mounted: {err:#}")
+                            }
+                            _ => {}
+                        }
+                        None
+                    }
+                }
+            };
+            if let Some(warning) = change {
+                match &warning {
+                    Some(text) => warn!(%id, "{text}"),
+                    None => info!(%id, "the app's own folders are mounted again"),
+                }
+                let _ = self.warnings.send(Warning { id, warning });
+            }
         }
     }
 
@@ -330,6 +581,14 @@ impl DockerRuntime {
         .await;
         match started {
             Ok(()) => {
+                let overlays = self.per_user_overlays(&spec);
+                if !overlays.is_empty() {
+                    self.state
+                        .lock()
+                        .expect("state lock")
+                        .overlays
+                        .insert(spec.id.clone(), Overlays::new(overlays));
+                }
                 info!(id = %spec.id, image = %spec.image, http_port = port, "environment started");
                 Ok(endpoint(port))
             }
@@ -657,14 +916,33 @@ impl DockerRuntime {
             ));
             // What isn't shared goes over it: the user's own directories, in
             // their home (a spec has to have one for these: `Storage::check`).
-            for path in &shared.per_user {
+            for overlay in self.per_user_overlays(spec) {
                 if let Some(home) = &storage.home {
-                    let source = host(&format!("{home}/{PER_USER_DIR}/{path}"));
-                    mounts.push(bind(source, format!("{target}/{path}"), false));
+                    let source = host(&format!("{home}/{PER_USER_DIR}/{}", overlay.part));
+                    mounts.push(bind(source, overlay.target, false));
                 }
             }
         }
         mounts
+    }
+
+    /// The user's own directories laid over the shared one in `spec`'s app.
+    fn per_user_overlays(&self, spec: &EnvironmentSpec) -> Vec<Overlay> {
+        let Some(storage) = &spec.storage else {
+            return Vec::new();
+        };
+        let (Some(shared), Some(_home)) = (&storage.shared, &storage.home) else {
+            return Vec::new();
+        };
+        let (_, target) = self.shared_location(&spec.template);
+        shared
+            .per_user
+            .iter()
+            .map(|part| Overlay {
+                target: format!("{target}/{part}"),
+                part: part.clone(),
+            })
+            .collect()
     }
 
     fn gpu(&self) -> Value {
@@ -763,10 +1041,20 @@ impl DockerRuntime {
         }
         let groups: Vec<String> = self.render_gid.iter().map(|g| g.to_string()).collect();
         let mut mounts = self.mounts(&spec.id, true);
-        mounts
-            .as_array_mut()
-            .expect("mounts are a list")
-            .extend(self.storage_mounts(spec));
+        let list = mounts.as_array_mut().expect("mounts are a list");
+        list.extend(self.storage_mounts(spec));
+        // Proton copies nvngx.dll from here into its prefixes; CDI doesn't bring it.
+        if let Some(dir) = &self.config.nvidia_wine_dir {
+            let dir = dir.to_string_lossy();
+            list.push(json!({
+                "Type": "bind",
+                "Source": dir,
+                "Target": dir,
+                "ReadOnly": true,
+                // It's the host's: never for Docker to make.
+                "BindOptions": { "CreateMountpoint": false },
+            }));
+        }
         // Proton's esync wants many descriptors.
         let ulimits = if spec.security == SecurityProfile::Steam {
             json!([{ "Name": "nofile", "Soft": 524288, "Hard": 524288 }])
@@ -786,6 +1074,12 @@ impl DockerRuntime {
                 "CHA_SHARED_DIR={}",
                 self.shared_location(&spec.template).1
             ));
+        }
+        // What it has to keep mounted of its own, for apps that check.
+        let overlays = self.per_user_overlays(spec);
+        if !overlays.is_empty() {
+            let targets: Vec<&str> = overlays.iter().map(|o| o.target.as_str()).collect();
+            env.push(format!("CHA_PER_USER_DIRS={}", targets.join(":")));
         }
         json!({
             "Image": spec.image,
@@ -819,6 +1113,7 @@ impl DockerRuntime {
         state.stopping.remove(id);
         state.ports.remove(id);
         state.homes.remove(id);
+        state.overlays.remove(id);
         result
     }
 
@@ -914,6 +1209,22 @@ impl Runtime for DockerRuntime {
 
     fn progress(&self) -> broadcast::Receiver<Progress> {
         self.progress.subscribe()
+    }
+
+    fn warnings(&self) -> broadcast::Receiver<Warning> {
+        self.warnings.subscribe()
+    }
+
+    fn warnings_now(&self) -> Vec<Warning> {
+        let state = self.state.lock().expect("state lock");
+        state
+            .overlays
+            .iter()
+            .map(|(id, o)| Warning {
+                id: id.clone(),
+                warning: o.warning(),
+            })
+            .collect()
     }
 
     fn data_root(&self) -> Option<String> {
@@ -1106,6 +1417,14 @@ fn home_mount(spec: &EnvironmentSpec) -> Option<Value> {
     }))
 }
 
+/// Whether this machine has an NVIDIA GPU, for hints.
+pub(crate) fn nvidia_present() -> bool {
+    crate::inventory::collect()
+        .gpus
+        .iter()
+        .any(|g| g.vendor == "nvidia")
+}
+
 /// The render node's group id, from the device node (CDI passes it through
 /// with the host's ownership).
 fn render_gid(render_node: &str) -> Option<u32> {
@@ -1190,6 +1509,7 @@ mod tests {
     ) -> DockerRuntime {
         let (exits, _) = broadcast::channel(1);
         let (progress, _) = broadcast::channel(16);
+        let (warnings, _) = broadcast::channel(16);
         DockerRuntime {
             docker,
             config: DockerConfig {
@@ -1202,12 +1522,14 @@ mod tests {
                 max_environments: 2,
                 data_root: root.clone(),
                 shared_dirs,
+                nvidia_wine_dir: None,
             },
             render_gid: Some(992),
             data: DataRoot::new(root, owner.0, owner.1).unwrap(),
             state: Mutex::default(),
             exits,
             progress,
+            warnings,
         }
     }
 
@@ -1411,6 +1733,11 @@ mod tests {
         /// A copy container exits with this code; 0 is success, and a copy
         /// that succeeds writes `copied` into the directory it was given.
         copy_exit: Mutex<i64>,
+        /// What a command run in a container prints, and its exit code.
+        exec_output: Mutex<String>,
+        exec_exit: Mutex<i64>,
+        /// Host paths that don't exist: creating a container that binds one fails.
+        missing_paths: Mutex<HashSet<String>>,
     }
 
     impl Engine {
@@ -1509,11 +1836,43 @@ mod tests {
                 Json(json!({ "StatusCode": code })).into_response()
             }
             ("GET", p) if p.ends_with("/logs") => StatusCode::OK.into_response(),
+            ("POST", p) if p.ends_with("/exec") => {
+                (StatusCode::CREATED, Json(json!({ "Id": "x1" }))).into_response()
+            }
+            ("POST", "/exec/x1/start") => {
+                engine.exec_output.lock().unwrap().clone().into_response()
+            }
+            ("GET", "/exec/x1/json") => {
+                Json(json!({ "ExitCode": *engine.exec_exit.lock().unwrap() })).into_response()
+            }
             ("GET", "/containers/json") => Json(json!(*containers)).into_response(),
             ("POST", "/containers/create") => {
                 let name = uri.split_once("name=").unwrap().1.to_string();
+                let missing = engine.missing_paths.lock().unwrap();
+                let absent = body["HostConfig"]["Mounts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|m| m["Type"] == "bind")
+                    .filter_map(|m| m["Source"].as_str())
+                    .find(|source| missing.contains(*source));
+                if let Some(source) = absent {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "message": format!("invalid mount config for type \"bind\": bind source path does not exist: {source}") })),
+                    )
+                        .into_response();
+                }
+                // As the engine lists them: where each mount comes from and goes.
+                let mounts: Vec<Value> = body["HostConfig"]["Mounts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|m| json!({ "Source": m["Source"], "Destination": m["Target"] }))
+                    .collect();
                 containers.push(json!({
                     "Id": name, "State": "created", "Labels": body["Labels"], "Config": body,
+                    "Mounts": mounts,
                 }));
                 (StatusCode::CREATED, Json(json!({ "Id": name }))).into_response()
             }
@@ -1546,6 +1905,94 @@ mod tests {
             .with_state(Arc::clone(&engine));
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (engine, dir, Docker::new(socket))
+    }
+
+    const WINE_DIR: &str = "/usr/lib/x86_64-linux-gnu/nvidia/wine";
+
+    #[test]
+    fn the_host_nvidia_wine_dir_reaches_apps_read_only() {
+        let mut rt = runtime();
+        let target = |config: &Value| {
+            config["HostConfig"]["Mounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["Target"] == WINE_DIR)
+                .cloned()
+        };
+        assert!(target(&rt.app_config(&steam_spec(), 47000)).is_none());
+
+        rt.config.nvidia_wine_dir = Some(WINE_DIR.into());
+        let mount = target(&rt.app_config(&steam_spec(), 47000)).expect("mounted");
+        assert_eq!(mount["Type"], "bind");
+        assert_eq!(mount["Source"], WINE_DIR);
+        assert_eq!(mount["ReadOnly"], true);
+        assert_eq!(mount["BindOptions"]["CreateMountpoint"], false);
+        // Streamers don't run Wine.
+        assert!(target(&rt.streamer_config(&steam_spec(), 47000)).is_none());
+    }
+
+    #[tokio::test]
+    async fn probes_whether_the_host_has_a_path_without_leaving_anything() {
+        let (engine, _dir, docker) = fake_engine();
+        let path = std::path::Path::new(WINE_DIR);
+        assert!(
+            docker
+                .host_path_exists("cha/streamer:dev", path)
+                .await
+                .unwrap()
+        );
+        engine.missing_paths.lock().unwrap().insert(WINE_DIR.into());
+        assert!(
+            !docker
+                .host_path_exists("cha/streamer:dev", path)
+                .await
+                .unwrap()
+        );
+        assert!(engine.containers.lock().unwrap().is_empty());
+        // The probe is only ever created: never started.
+        let requests = engine.requests.lock().unwrap();
+        assert!(requests.iter().all(|(_, uri, _)| !uri.ends_with("/start")));
+        let probe = requests
+            .iter()
+            .find(|(_, uri, _)| uri.starts_with("/containers/create"))
+            .unwrap();
+        let bind = &probe.2["HostConfig"]["Mounts"][0];
+        assert_eq!(bind["Source"], WINE_DIR);
+        assert_eq!(bind["BindOptions"]["CreateMountpoint"], false);
+    }
+
+    #[tokio::test]
+    async fn an_engine_that_fails_otherwise_leaves_the_answer_unknown() {
+        // Nothing listens: not "the path is missing".
+        let docker = Docker::new("/nonexistent");
+        assert!(
+            docker
+                .host_path_exists("cha/streamer:dev", std::path::Path::new(WINE_DIR))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn apps_get_the_nvidia_wine_dir_only_when_the_host_has_it() {
+        let (engine, _dir, docker) = fake_engine();
+        let mut config = runtime().config.clone();
+        assert_eq!(
+            DockerRuntime::settle_nvidia_wine_dir(&docker, &config).await,
+            None,
+            "not configured"
+        );
+        config.nvidia_wine_dir = Some(WINE_DIR.into());
+        assert_eq!(
+            DockerRuntime::settle_nvidia_wine_dir(&docker, &config).await,
+            Some(WINE_DIR.into())
+        );
+        engine.missing_paths.lock().unwrap().insert(WINE_DIR.into());
+        assert_eq!(
+            DockerRuntime::settle_nvidia_wine_dir(&docker, &config).await,
+            None
+        );
     }
 
     #[tokio::test]
@@ -2431,6 +2878,296 @@ mod tests {
         );
         let refused = n.rt.delete_user_data(USER.into(), "steam".into()).await;
         assert!(refused.is_err());
+    }
+
+    /// An app's `/proc/self/mountinfo`, with `mounted` mounted over the root.
+    fn mountinfo(mounted: &[&str]) -> String {
+        let mut text = String::from(
+            "1065 1020 0:52 / / rw,relatime - overlay overlay rw,lowerdir=/x\n\
+             1066 1065 0:55 / /proc rw,nosuid - proc proc rw\n",
+        );
+        for (n, dir) in mounted.iter().enumerate() {
+            text.push_str(&format!(
+                "{} 1065 0:{} / {dir} rw,relatime - nfs4 nas:/steam rw\n",
+                1100 + n,
+                70 + n
+            ));
+        }
+        text
+    }
+
+    const STEAM_DIR: &str = "/srv/cha-portal/shared/steam";
+
+    #[test]
+    fn mountinfo_gives_its_mount_points_unescaped() {
+        let text = "36 35 98:0 /mnt1 /mnt/with\\040space rw,noatime master:1 - ext3 /dev/root rw\n\
+                    37 35 0:3 / /tab\\011and\\134slash rw - proc proc rw\n\
+                    38 35 0:4 / /not\\9escape rw - tmpfs tmpfs rw\n\
+                    \n\
+                    short line\n";
+        let points = parse_mountinfo(text);
+        assert!(points.contains("/mnt/with space"));
+        assert!(points.contains("/tab\tand\\slash"));
+        assert!(points.contains("/not\\9escape"));
+        // A terminal's line endings, as `exec` with a TTY gives them.
+        let points = parse_mountinfo("1 0 0:1 / /a rw - x y rw\r\n2 0 0:1 / /b rw - x y rw\r\n");
+        assert_eq!(points, HashSet::from(["/a".to_string(), "/b".to_string()]));
+    }
+
+    #[test]
+    fn what_is_lost_is_reported_once_and_so_is_its_return() {
+        let part = |p: &str| Overlay {
+            target: format!("{STEAM_DIR}/{p}"),
+            part: p.into(),
+        };
+        let mut o = Overlays::new(vec![part(COMPAT), part(SHADER)]);
+        let all = parse_mountinfo(&mountinfo(&[
+            &format!("{STEAM_DIR}/{COMPAT}"),
+            &format!("{STEAM_DIR}/{SHADER}"),
+        ]));
+        let some = parse_mountinfo(&mountinfo(&[&format!("{STEAM_DIR}/{SHADER}")]));
+        let none = parse_mountinfo(&mountinfo(&[]));
+
+        // All there from the start: nothing to say, and nothing later.
+        assert_eq!(o.observe(&all), None);
+        assert_eq!(o.warning(), None);
+        // One goes: said, once.
+        let said = o.observe(&some).expect("a change").expect("a warning");
+        assert!(said.contains("(steamapps/compatdata)"), "{said}");
+        assert!(!said.contains("shadercache"), "{said}");
+        assert_eq!(o.observe(&some), None);
+        assert_eq!(o.warning().as_deref(), Some(said.as_str()));
+        // The other goes too: said again, with both.
+        let said = o.observe(&none).unwrap().unwrap();
+        assert!(said.contains("steamapps/compatdata, steamapps/shadercache"));
+        // Back: cleared, once.
+        assert_eq!(o.observe(&all), Some(None));
+        assert_eq!(o.observe(&all), None);
+        assert_eq!(o.warning(), None);
+    }
+
+    #[test]
+    fn a_containers_per_user_directories_come_from_its_mounts() {
+        let mount = |source: &str, destination: &str| ContainerMount {
+            source: source.into(),
+            destination: destination.into(),
+        };
+        let users = Path::new("/data/cha/users");
+        let mounts = [
+            mount("cha-env-e1", "/run/cha"),
+            mount("/data/cha/users/u1/steam", "/home/cha"),
+            mount("/mnt/games/steam", "/mnt/games/steam"),
+            mount(
+                "/data/cha/users/u1/steam/.cha-shared/steamapps/compatdata",
+                "/mnt/games/steam/steamapps/compatdata",
+            ),
+            mount(
+                "/data/cha/users/u1/steam/.cha-shared/steamapps/shadercache",
+                "/mnt/games/steam/steamapps/shadercache",
+            ),
+            // Not ours: someone's own directory of that name elsewhere.
+            mount("/elsewhere/users/u1/steam/.cha-shared/x", "/x"),
+            mount("/data/cha/users/u1/steam/.cha-shared", "/y"),
+            mount("/data/cha/users/u1/steam/other/steamapps", "/z"),
+        ];
+        assert_eq!(
+            overlays_from_mounts(&mounts, users),
+            [
+                Overlay {
+                    target: "/mnt/games/steam/steamapps/compatdata".into(),
+                    part: COMPAT.into(),
+                },
+                Overlay {
+                    target: "/mnt/games/steam/steamapps/shadercache".into(),
+                    part: SHADER.into(),
+                },
+            ]
+        );
+        assert!(overlays_from_mounts(&[], users).is_empty());
+    }
+
+    #[test]
+    fn the_app_is_told_its_per_user_directories() {
+        let rt = mounting(&[("steam", "/mnt/games/steam")]);
+        let env_of = |rt: &DockerRuntime, spec: &EnvironmentSpec| -> Vec<String> {
+            rt.app_config(spec, 47000)["Env"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e.as_str().unwrap().to_string())
+                .filter(|e| e.starts_with("CHA_PER_USER_DIRS="))
+                .collect()
+        };
+        let kept = app_data_spec("e1", "steam", Some(steam_storage(true, Some(true))));
+        assert_eq!(
+            env_of(&rt, &kept),
+            [format!(
+                "CHA_PER_USER_DIRS=/mnt/games/steam/{COMPAT}:/mnt/games/steam/{SHADER}"
+            )]
+        );
+        // The node's own shared directory, in its usual place.
+        let local = mounting(&[]);
+        assert_eq!(
+            env_of(&local, &kept),
+            [format!(
+                "CHA_PER_USER_DIRS={STEAM_DIR}/{COMPAT}:{STEAM_DIR}/{SHADER}"
+            )]
+        );
+        // None without any: nothing kept, nothing shared, or no storage.
+        for storage in [
+            Some(steam_storage(false, Some(true))),
+            Some(steam_storage(true, None)),
+            None,
+        ] {
+            let spec = app_data_spec("e1", "steam", storage);
+            assert!(env_of(&rt, &spec).is_empty());
+        }
+        // Always the paths the mounts use.
+        let mounts = rt.storage_mounts(&kept);
+        for overlay in rt.per_user_overlays(&kept) {
+            assert!(target(&mounts, &overlay.target).is_some(), "{overlay:?}");
+        }
+    }
+
+    /// Steam's environment, started on a fake engine, with its per-user directories.
+    async fn steam_node() -> Node {
+        let n = node(&[]);
+        let spec = app_data_spec("e1", "steam", Some(steam_storage(true, Some(true))));
+        n.rt.start_environment(spec).await.unwrap();
+        n
+    }
+
+    async fn warnings_after_a_look(
+        n: &Node,
+        rx: &mut broadcast::Receiver<Warning>,
+        mounted: &[&str],
+    ) -> Vec<Option<String>> {
+        *n.engine.exec_output.lock().unwrap() = mountinfo(mounted);
+        n.rt.check_overlays().await;
+        let mut said = Vec::new();
+        while let Ok(w) = rx.try_recv() {
+            assert_eq!(w.id, "e1");
+            said.push(w.warning);
+        }
+        said
+    }
+
+    #[tokio::test]
+    async fn lost_per_user_directories_are_noticed_and_said_once() {
+        let n = steam_node().await;
+        let mut rx = n.rt.warnings();
+        let compat = format!("{STEAM_DIR}/{COMPAT}");
+        let shader = format!("{STEAM_DIR}/{SHADER}");
+        let both = [STEAM_DIR, compat.as_str(), shader.as_str()];
+
+        // The look runs `cat` in the app's container, through a terminal.
+        assert!(warnings_after_a_look(&n, &mut rx, &both).await.is_empty());
+        let requests = n.engine.requests.lock().unwrap().clone();
+        let exec = requests
+            .iter()
+            .find(|(_, uri, _)| uri == "/containers/cha-env-e1-app/exec")
+            .expect("it execs in the app");
+        assert_eq!(exec.2["Cmd"], json!(["cat", "/proc/self/mountinfo"]));
+        assert_eq!(exec.2["Tty"], true);
+        drop(requests);
+        assert_eq!(n.rt.warnings_now().len(), 1);
+        assert_eq!(n.rt.warnings_now()[0].warning, None);
+
+        // The kernel drops one: a warning, and no second one for the same.
+        let said = warnings_after_a_look(&n, &mut rx, &[STEAM_DIR, shader.as_str()]).await;
+        assert_eq!(said.len(), 1);
+        assert!(said[0].as_ref().unwrap().contains("steamapps/compatdata"));
+        assert!(
+            warnings_after_a_look(&n, &mut rx, &[STEAM_DIR, shader.as_str()])
+                .await
+                .is_empty()
+        );
+        assert_eq!(n.rt.warnings_now()[0].warning, said[0]);
+
+        // Back (the user restarted, or it was remounted): cleared.
+        let said = warnings_after_a_look(&n, &mut rx, &both).await;
+        assert_eq!(said, [None]);
+        assert_eq!(n.rt.warnings_now()[0].warning, None);
+
+        // Stopping stops the watching.
+        n.rt.stop_environment("e1").await.unwrap();
+        assert!(n.rt.warnings_now().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_look_that_fails_changes_nothing_and_says_nothing() {
+        let n = steam_node().await;
+        let mut rx = n.rt.warnings();
+        // `cat` isn't there: the exec exits non-zero.
+        *n.engine.exec_exit.lock().unwrap() = 127;
+        for _ in 0..5 {
+            assert!(warnings_after_a_look(&n, &mut rx, &[]).await.is_empty());
+        }
+        assert_eq!(n.rt.warnings_now()[0].warning, None);
+        assert_eq!(
+            n.rt.state.lock().unwrap().overlays["e1"].failures,
+            5,
+            "counted, to say so once"
+        );
+        // The engine can't be reached at all.
+        let gone = runtime();
+        gone.state
+            .lock()
+            .unwrap()
+            .overlays
+            .insert("e1".into(), Overlays::new(vec![]));
+        gone.check_overlays().await;
+        // It looks again, and recovers.
+        *n.engine.exec_exit.lock().unwrap() = 0;
+        let said = warnings_after_a_look(&n, &mut rx, &[]).await;
+        assert_eq!(said.len(), 1);
+        assert_eq!(n.rt.state.lock().unwrap().overlays["e1"].failures, 0);
+    }
+
+    #[tokio::test]
+    async fn an_adopted_environment_is_watched_for_the_same_directories() {
+        let n = steam_node().await;
+        let started: Vec<Overlay> = n.rt.state.lock().unwrap().overlays["e1"].list.clone();
+        assert_eq!(started.len(), 2);
+        // An agent restart loses its memory; the containers remain.
+        {
+            let mut containers = n.engine.containers.lock().unwrap();
+            for c in containers.iter_mut() {
+                c["State"] = json!("running");
+                c["Labels"]["sh.cha.http-port"] = json!("47000");
+            }
+        }
+        *n.rt.state.lock().unwrap() = super::State::default();
+        n.rt.adopt().await.unwrap();
+        let adopted: Vec<Overlay> = n.rt.state.lock().unwrap().overlays["e1"].list.clone();
+        assert_eq!(adopted, started);
+
+        let mut rx = n.rt.warnings();
+        let said = warnings_after_a_look(&n, &mut rx, &[STEAM_DIR]).await;
+        assert_eq!(said.len(), 1);
+        assert!(said[0].is_some());
+    }
+
+    #[tokio::test]
+    async fn an_app_without_per_user_directories_isnt_watched() {
+        let n = node(&[]);
+        n.rt.start_environment(app_data_spec(
+            "e1",
+            "steam",
+            Some(steam_storage(true, None)),
+        ))
+        .await
+        .unwrap();
+        assert!(n.rt.state.lock().unwrap().overlays.is_empty());
+        n.rt.check_overlays().await;
+        assert!(
+            n.engine
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, uri, _)| !uri.contains("/exec"))
+        );
     }
 
     #[test]
