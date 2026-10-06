@@ -1,44 +1,55 @@
 # Cha Portal
 
-A self-hosted dashboard for "portaling" into remote environments (a Chrome instance, a KDE desktop, Steam Big Picture, or an external Moonlight-protocol host) with Moonlight-class latency, in the browser or in a thin native client. Environments run on **Cha Nodes**: docker compose stacks on your GPU servers that enroll with the portal.
+A self-hosted dashboard for streaming remote environments to your browser with Moonlight-class latency. You open the portal, pick Chrome, Firefox, an XFCE or KDE desktop, or Steam Big Picture, and it starts in a container on one of your GPU servers and streams full screen to the tab, with sound, keyboard, mouse, gamepads and clipboard.
 
-**Status: Phase 1 in progress.** Phase 0's spikes are done (see the plan). Phase 1 builds the MVP on our own streaming engine ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)): the portal, nodes, and Chrome, Firefox and XFCE environments streamed to the browser. The portal's foundation (P1.1: accounts, sessions, audit log, SPA) and nodes (P1.2: enrollment, the node channel, inventory) work. The streamer core (P1.3: our compositor, NVENC binding and WebRTC) streams from the GPU node. Environments (P1.4) launch from the portal, each running its app beside a streamer on a node, and **Connect** opens them full screen in the browser (P1.5): the portal brokers the WebRTC session with a short-lived media token, and media flows straight from the node. Sound (our own PulseAudio-protocol server, Opus) and gamepads (virtual Xbox 360 pads) work (P1.6). The portal and nodes deploy with compose, `cha-node --doctor` checks a node, and remote access works over Tailscale, a port-forward or TURN (P1.7, [`deploy/`](deploy/README.md)). Phase 1's exit runs (Firefox and Safari clients, WAN) are next.
+The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC, VA-API or PyroWave encoding, and WebRTC or WebTransport straight from the GPU server to the browser. There is no Wolf, GStreamer, FFmpeg, PulseAudio or PipeWire in the media path ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)).
 
-- Plan: [`docs/PLAN.md`](docs/PLAN.md)
-- Research (October 2026 landscape): [`docs/research/`](docs/research/README.md)
+> [!WARNING]
+> **Pre-release.** There are no tagged releases or published images yet: you build everything from source. Expect breaking changes to the database, the node protocol and the deploy files. It is developed and tested on one setup (a MacBook Pro M4 with Google Chrome on wired 1 GbE, and an NVIDIA RTX 4090 node).
 
-## Layout
+## What works
 
-| Path | What |
-|---|---|
-| `crates/cha-control` | The portal's server: accounts and sessions, audit log, nodes, the API, serving the SPA (SQLite) |
-| `crates/cha-node` | The node agent: enrolls with a join token, then keeps one WebSocket to the portal (inventory, heartbeats, requests) |
-| `crates/cha-streamer` | One environment's media engine: our headless Wayland compositor (Smithay), zero-copy NVENC and PyroWave, our PulseAudio-protocol server and Opus, virtual gamepads, WebRTC and WebTransport ([README](crates/cha-streamer/README.md)) |
-| `crates/cha-x11-clipboard` | The XFCE environment's clipboard helper: bridges the X server's CLIPBOARD to the streamer over a socket in `/run/cha` |
-| `crates/cha-testpattern` | The test-pattern environment: our own Wayland client (moving bar, frame counter, frame-ID strip, a flash and a tone on input, gamepad state) |
-| `crates/cha-nvenc` | Our NVENC + CUDA binding, loaded from the driver at runtime |
-| `crates/cha-pyrowave` | Our PyroWave binding (libpyrowave, loaded at runtime): dma-bufs in, network packets out |
-| `crates/cha-wire` | Node ⇄ portal messages and the node's Ed25519 identity ([ADR 0001](docs/adr/0001-node-channel-json-over-websocket.md)) |
-| `web/apps/portal` | The portal SPA (Vue 3, Tailwind) |
-| `web/packages/player` | `@cha/player`: the browser player: WebRTC, input, stats, click probe ([README](web/packages/player/README.md)) |
-| `deploy/portal` | The portal's compose stack, with optional Caddy (HTTPS) and coturn (TURN) ([README](deploy/README.md)) |
-| `deploy/node` | The node's compose stack (the agent), and host files for the owner |
-| `deploy/streamer` | The streamer's image and its dev loop on a node |
-| `images` | Our environment images (test pattern, Chrome, Firefox, XFCE, KDE Plasma, Steam) and the catalog ([README](images/README.md)) |
-| `crates/cha-proto` | `cha-stream/1` wire framing: Sans-IO datagram header, fragmentation, reassembly; and the clipboard helper's frames |
-| `web/packages/pyrowave-webgpu` | `@cha/pyrowave-webgpu`: PyroWave decode on WebGPU (TypeScript host for the WGSL port), draws straight to a canvas |
-| `spikes/s1-browser-pyrowave` | Spike S1: can a browser receive PyroWave-shaped traffic? ([README](spikes/s1-browser-pyrowave/README.md)) |
-| `spikes/s1b-pyrowave-webgpu` | Spike S1b: can a browser decode PyroWave fast and bit-exact? ([README](spikes/s1b-pyrowave-webgpu/README.md)) |
-| `spikes/s1c-codec-compare` | Spikes S1c/S1d: PyroWave vs H.264/HEVC/AV1 on the same transport, and four ways to put a decoded frame on screen ([README](spikes/s1c-codec-compare/README.md)) |
-| `spikes/s1e-encode-latency` | Spike S1e: per-frame encode latency on the node GPU, NVENC vs PyroWave ([README](spikes/s1e-encode-latency/README.md)) |
-| `spikes/s2-compositor` | Spike S2: gst-wayland-display compositor with Google Chrome on the node GPU, NVENC zero-copy ([README](spikes/s2-compositor/README.md)) |
-| `spikes/s3-gateway` | Spike S3: Moonlight (Wolf) → WebRTC passthrough gateway, measured by the S1d page ([README](spikes/s3-gateway/README.md)) |
-| `docs/` | Plan, research, [ADRs](docs/adr/README.md) and benchmark results |
-| `scripts/check.sh` | Every check: rustfmt, clippy, tests, the portal's colour guard, theme tests, typecheck and build |
+- **Environments:** Google Chrome, Firefox, XFCE, KDE Plasma 6, Steam Big Picture (inside gamescope, with Proton games) and a test pattern for measuring latency.
+- **Streaming:** H.264, HEVC and AV1 over WebRTC (tested in Chrome and Safari; Firefox gets H.264 only, and hasn't had a full test run); WebTransport as a faster path in Chromium; PyroWave, a low-latency wavelet codec, decoded on WebGPU for wired LANs. Measured send → shown latency is about 5 ms at the median on a wired LAN.
+- **WAN:** delay-based rate control, FEC and reference-frame invalidation, so a stream adapts to loss and throttling instead of stalling.
+- **Input:** keyboard (with keyboard lock), mouse with pointer lock, text clipboard both ways, and virtual Xbox 360, DualSense and Steam Controller pads fed from the browser's Gamepad API or WebHID.
+- **Sound:** stereo Opus from our own PulseAudio-protocol server.
+- **Portal:** local accounts, an audit log, node enrollment with one-time join tokens, live CPU/RAM/GPU usage per node, placement across NVIDIA, Intel/AMD (VA-API) and CPU-only devices, per-user app data kept between launches, and a shared Steam library (optionally on a NAS).
+- **Remote access:** Tailscale or WireGuard, a port-forward, or your own TURN server. Nothing goes through a cha.sh service.
+
+Not yet: an external Moonlight host as a source, sharing a session with another user, a native client. See the [roadmap](docs/PLAN.md#9-roadmap).
+
+## How it works
+
+```text
+             browser (portal SPA + @cha/player)
+               │  HTTPS: sign-in, launch, signalling          ▲
+               ▼                                               │ media: WebRTC / WebTransport (UDP)
+     cha-control (portal)  ◀── one outbound WebSocket ──  cha-node (agent, on each GPU server)
+     accounts, sessions,                                       │ Docker socket
+     nodes, audit log, SQLite                                  ▼
+                                                  per environment: app container + cha-streamer
+```
+
+- **`cha-control`** is the portal: a Rust server with SQLite that serves the web app and the API. It only brokers sessions; media never passes through it.
+- **`cha-node`** runs on each GPU server. It enrolls with a join token, then holds one outbound WebSocket to the portal, so a node needs no inbound port for control. It starts environments through the Docker socket.
+- **`cha-streamer`** runs beside each environment's app container. It is the app's Wayland compositor, audio server and input devices, and it encodes and sends the picture straight to the browser.
+
+The full design is in [`docs/PLAN.md`](docs/PLAN.md).
+
+## Getting started
+
+[`SETUP.md`](SETUP.md) walks through a first install, including a quick start with the portal and node on one machine. In short: you need a machine for the portal (anything that runs Docker) and a Linux server with a GPU for the node (NVIDIA with the Container Toolkit's CDI spec, an Intel or AMD GPU, or none at all for a CPU-only node).
+
+1. Start the portal with `docker compose -f deploy/portal/compose.yaml up -d --build`, and serve it over HTTPS (browsers only give gamepads, keyboard lock and audio worklets to secure pages).
+2. Build the streamer and environment images on the node, and start the agent with a join token from **Admin → Nodes → Add node**.
+3. Install the node's host files (`sudo deploy/node/host/install.sh`) and check it with `--doctor`.
+
+[`deploy/README.md`](deploy/README.md) has every step, setting and option: HTTPS, Tailscale, TURN, app data, NAS libraries and devices.
 
 ## Development
 
-Requires Rust ≥ 1.93 and Bun ≥ 1.4. Install the web dependencies, then run every check:
+You need Rust ≥ 1.93 and [Bun](https://bun.sh) ≥ 1.4 (the JS tooling is Bun only). The portal and agent build on macOS and Linux; `cha-streamer` and the environment images build on a Linux node, in the streamer's dev container ([`deploy/streamer/compose.dev.yaml`](deploy/streamer/compose.dev.yaml)).
 
 ```bash
 bun install
@@ -48,15 +59,15 @@ bun install
 ./scripts/check.sh
 ```
 
-To run a dev instance of the portal:
+`check.sh` runs what CI would: `cargo fmt`, clippy with `-D warnings`, the workspace tests, the Steam image's and host installer's Python tests, the portal's colour guard and theme tests, its typecheck and its production build.
 
 ```bash
 bun run dev
 ```
 
-It starts `cha-control` on port 8090 (database `data/dev.db`) and the SPA on Vite with hot reload at http://localhost:5190, which proxies `/api` to it. The sign-in page shows **Login as Local Dev** (`--dev-login`): it creates a `dev` admin and signs you in, and a **Login as <name>** button per existing admin account signs you in as that account (no password), so a local portal can show your own environments and settings. It only answers requests from this machine, and is not for a real portal. Flags after `--` go to `cha-control` (`bun run dev -- --turn-secret …`); Ctrl-C stops both.
+This starts `cha-control` on port 8090 (database `data/dev.db`) and the web app on Vite with hot reload at http://localhost:5190, which proxies `/api` to it. The sign-in page shows **Login as Local Dev**: it creates a `dev` admin and signs you in, and offers a **Login as *name*** button per existing admin, with no password. It only answers requests from this machine and is not for a real portal. Flags after `--` go to `cha-control` (`bun run dev -- --turn-secret …`); Ctrl-C stops both.
 
-To run the portal as it ships instead, build the SPA and start `cha-control` alone, which serves it on port 8090. On first start, its log prints a one-time setup token for creating the first admin at http://localhost:8090:
+To run the portal as it ships, build the web app and start `cha-control` alone. Its log prints a one-time setup token for creating the first admin at http://localhost:8090:
 
 ```bash
 bun run --cwd web/apps/portal build
@@ -66,44 +77,50 @@ bun run --cwd web/apps/portal build
 cargo run -p cha-control -- --listen 127.0.0.1:8090 --database data/dev.db
 ```
 
-To add a node, open **Admin → Nodes → Add node** and run the command it shows on the node. Locally, keep the agent's identity in `data/`:
+A local agent, for working on enrollment and the node channel without a GPU server, keeps its identity in `data/`:
 
 ```bash
 cargo run -p cha-node -- --portal-url http://127.0.0.1:8090 --join-token chajoin_… --state-dir data/node
 ```
 
-On a GPU server, use the compose stack instead (NVIDIA through CDI). The agent runs environments as containers through the Docker socket, so first build the images it starts:
+To point a real node at a dev portal on your LAN, start the portal with `CHA_LISTEN=0.0.0.0:8090 bun run dev` and the agent with `CHA_ALLOW_INSECURE_PORTAL=true` (development only: the node's traffic then crosses the network unencrypted).
 
-```bash
-docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
-```
+## Repository layout
 
-```bash
-docker compose -f images/compose.yaml build
-```
+| Path | What |
+|---|---|
+| [`crates/cha-control`](crates/cha-control) | The portal server: accounts, sessions, audit log, nodes, placement, the API, serving the web app. SQLite, with numbered migrations |
+| [`crates/cha-node`](crates/cha-node) | The node agent: enrollment, the portal channel, inventory, launching environments through Docker, `--doctor` |
+| [`crates/cha-streamer`](crates/cha-streamer) | The media engine: compositor (Smithay), NVENC, VA-API, x264 and PyroWave encoding, audio and Opus, virtual gamepads, WebRTC (str0m) and WebTransport (quinn). Linux only |
+| [`crates/cha-wire`](crates/cha-wire) | Node ⇄ portal messages and the node's Ed25519 identity |
+| [`crates/cha-proto`](crates/cha-proto) | `cha-stream/1`: Sans-IO framing, fragmentation and reassembly |
+| [`crates/cha-nvenc`](crates/cha-nvenc), [`cha-pyrowave`](crates/cha-pyrowave) | Our bindings to NVENC/CUDA and libpyrowave, loaded at runtime |
+| [`crates/cha-sysinfo`](crates/cha-sysinfo) | CPU, RAM and NVIDIA GPU use, from `/proc` and NVML |
+| [`crates/cha-testpattern`](crates/cha-testpattern), [`cha-x11-clipboard`](crates/cha-x11-clipboard) | The test-pattern environment; the X11 clipboard bridge for XFCE and Steam |
+| [`web/apps/portal`](web/apps/portal) | The portal web app: Vue 3, TypeScript, Tailwind 4 |
+| [`web/packages/player`](web/packages/player) | `@cha/player`: WebRTC and WebTransport, input, controllers, stats |
+| [`web/packages/pyrowave-webgpu`](web/packages/pyrowave-webgpu) | PyroWave decoding on WebGPU |
+| [`deploy/`](deploy) | Compose stacks for the portal, a node and the streamer, the node's host files, NAS helpers |
+| [`images/`](images) | Environment images and the catalog |
+| [`spikes/`](spikes) | Phase 0–2 experiments (S1–S8), not product code |
+| [`docs/`](docs) | The plan, decisions, research, guides and benchmark results |
 
-```bash
-CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
-```
+## Documentation
 
-Run `sudo deploy/node/host/install.sh` once on the node: it installs the udev rules, the Steam sandbox's AppArmor profile and the module list (`--check` only reports). Gamepads need the host's `uinput` module (`/dev/uinput`); without it, start the agent with `CHA_UINPUT=` and environments go without. The DualSense and Steam Controller kinds also need `uhid` (`/dev/uhid`; `CHA_UHID=` goes without, and they fall back to an Xbox 360 pad). `docker compose -f deploy/node/compose.yaml run --rm agent --doctor` checks the node and says how to fix what it finds; `cha-node --print-inventory` shows what the agent will report. For the portal itself, HTTPS and remote access, see [`deploy/README.md`](deploy/README.md). Once the node is online, **Environments** launches anything in the catalog on it.
+- [`deploy/README.md`](deploy/README.md): running a portal and nodes
+- [`docs/guides/tailscale.md`](docs/guides/tailscale.md): remote access over Tailscale
+- [`images/README.md`](images/README.md): the environment images and the contract between an app and the streamer
+- [`docs/controllers.md`](docs/controllers.md), [`docs/devices.md`](docs/devices.md): gamepads; GPUs and placement
+- [`crates/cha-streamer/README.md`](crates/cha-streamer/README.md), [`web/packages/player/README.md`](web/packages/player/README.md), [`web/apps/portal/README.md`](web/apps/portal/README.md): the engine, the player, the web app and its themes
+- [`docs/PLAN.md`](docs/PLAN.md): architecture and roadmap
+- [`docs/adr/`](docs/adr/README.md): architecture decisions
+- [`docs/research/`](docs/research/README.md): the October 2026 landscape survey behind the plan
+- [`docs/benchmarks/`](docs/benchmarks/README.md): measured latency, quality and WAN results
 
-### Themes
+## Contributing and security
 
-The portal's colours are runtime CSS variables, so a theme is one file: `web/apps/portal/src/themes/<id>.css` sets a `--cha-<role>` variable for every role under `:root[data-theme="<id>"]`, and `src/style.css` maps the roles to Tailwind utilities (`bg-panel`, `text-ink-3`, `text-ok`, and so on). The roles are listed in `src/themes/index.ts` (`ROLES`): three surfaces, three inks, `line` and `line-strong`, the accent set (`accent`, `accent-fill`, `accent-fill-hover`, `on-accent`, `accent-soft`), `focus`, the status colours, `scrim` and `chart-1` to `chart-4`. Components use only these roles; `scripts/check-portal-colors.sh` fails on palette classes, `text-white` and hex values in components. Use `ok` for running or healthy, not `accent`.
-
-There are two themes, **Cha – Magenta** (the default) and **Cha – Jade**. Each has four variants, chosen by attributes on `<html>`: dark (the base), `data-appearance="light"`, `data-contrast="more"` (dark with AAA text: `ink` and `ink-2` at 7:1 or better, stronger lines) and light with more contrast. Magenta also applies when `<html>` has no `data-theme`, through `:root:not([data-theme])` selectors that repeat each of its variants. Its colours are OKLCH ramps (`--cha-magenta-*`, `--cha-plum-*`) that the roles point at.
-
-What the user picked lives in `localStorage` under `cha.theme` as `{ theme, appearance, contrast, motion, transparency }`; each of the last four is `system` (follow the OS) unless set. `src/themes/runtime.ts` resolves it and sets `data-theme`, `data-appearance`, `data-contrast`, `data-motion` and `data-transparency`, updates `<meta name="theme-color">` and swaps the tab icon (`public/favicon.svg`, `public/favicon-jade.svg`). A short inline script in `index.html` does the same before first paint so there is no flash; it and `runtime.ts` must always agree. `useTheme()` exposes the choice to components. The stream view (`SessionView`) calls `setForcedDark(true)` while mounted, so video always sits in a dark, theme-neutral frame.
-
-Settings → **Appearance** (`/settings/appearance`, for every role, guests included) picks the theme from tiles that show a miniature in each theme's own colours, and sets Appearance (System / Light / Dark), Contrast, Motion and Transparency with segmented controls; each "System" option shows what the OS currently resolves to. Changes apply at once, with no Save button, and a status line says "Saved" once the server has it. The header has a quick toggle that cycles Appearance System, Light, Dark. The miniatures work because every `:root[data-theme="<id>"]…` selector in a theme file also lists `[data-theme-preview="<id>"]…`, with `data-appearance` and `data-contrast` copied onto the preview element; the test checks that each themed block has an identical scoped twin.
-
-The choice is also stored per user on the server, so it follows the user to another device: `GET /api/me/prefs` returns `{ "prefs": {…} }` (`{}` until something is saved) and `PUT /api/me/prefs` with `{ "prefs": {…} }` replaces the object (table `user_prefs`, migration 0010). Any signed-in user may call them. The server only accepts known keys (`theme`: `a-z0-9-`, up to 40 characters; `appearance`: system, dark or light; `contrast`: system, standard or more; `motion` and `transparency`: system or reduced), and the object is capped at 4 KiB; it keeps no list of theme ids, and the client falls back to the default for one it doesn't know. `src/themes/sync.ts` does the syncing. After sign-in the server's copy wins if it has any prefs and refreshes the `localStorage` cache; if it has none and the local choice isn't the default, the local choice is sent up once. A change applies and caches at once, then is sent about 400 ms later. A 404 (an older server) leaves the choice local-only, quietly; any other failure keeps the local choice and shows the error on the Appearance page. Signing out keeps the cache, so the sign-in page stays in the user's theme.
-
-Reduced motion (`data-motion="reduced"`) makes transitions and animations instant and turns the indeterminate bar into a static stripe. Reduced transparency (`data-transparency="reduced"`) is opt-in per element with the `transparency-reduced:` variant, e.g. `bg-panel/90 backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none`.
-
-To add a theme, write its CSS file with every role as a solid hex or `oklch()` value (only `scrim` may have alpha; `var(--cha-…)` references to the file's own primitives are fine), define the base, light, more and light+more blocks (each selector also listed with its `[data-theme-preview="<id>"]` twin, for the Appearance page), and add an entry to `THEMES` in `src/themes/index.ts`, including its favicon. `bun run --cwd web/apps/portal test` then checks that no role is missing and that the contrast pairs pass WCAG 2.x in every variant: text, accent, status and chart colours at 4.5:1 on every surface, `on-accent` on the accent fills at 4.5:1, `line-strong` and `focus` at 3:1, and under contrast "more" `ink` and `ink-2` at 7:1 and `line-strong` at 4.5:1. A theme that fails doesn't pass `./scripts/check.sh`.
+Contributions are welcome: read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. Report vulnerabilities privately, as [`SECURITY.md`](SECURITY.md) describes, which also sets out what the portal and nodes trust.
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE)
+Cha Portal is free software under the [GNU Affero General Public License v3.0 or later](LICENSE). If you run a modified version for others over a network, the AGPL requires you to offer them its source.

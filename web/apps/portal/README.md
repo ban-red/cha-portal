@@ -1,0 +1,34 @@
+# Portal SPA
+
+`web/apps/portal`: the portal's web app (Vue 3, TypeScript, Tailwind 4, Pinia, TanStack Query, Vite). `cha-control` serves its build; in development `bun run dev` serves it from Vite on :5190 with `/api` proxied to `cha-control` on :8090.
+
+```bash
+bun run --cwd web/apps/portal typecheck
+```
+
+```bash
+bun run --cwd web/apps/portal test
+```
+
+## Themes
+
+The portal's colours are runtime CSS variables, so a theme is one file: `web/apps/portal/src/themes/<id>.css` sets a `--cha-<role>` variable for every role under `:root[data-theme="<id>"]`, and `src/style.css` maps the roles to Tailwind utilities (`bg-panel`, `text-ink-3`, `text-ok`, and so on). The roles are listed in `src/themes/index.ts` (`ROLES`): three surfaces, three inks, `line` and `line-strong`, the accent set (`accent`, `accent-fill`, `accent-fill-hover`, `on-accent`, `accent-soft`), `focus`, the status colours, `scrim` and `chart-1` to `chart-4`. Components use only these roles; `scripts/check-portal-colors.sh` fails on palette classes, `text-white` and hex values in components. Use `ok` for running or healthy, not `accent`.
+
+There are two themes, **Cha – Magenta** (the default) and **Cha – Jade**. Each has four variants, chosen by attributes on `<html>`: dark (the base), `data-appearance="light"`, `data-contrast="more"` (dark with AAA text: `ink` and `ink-2` at 7:1 or better, stronger lines) and light with more contrast. Magenta also applies when `<html>` has no `data-theme`, through `:root:not([data-theme])` selectors that repeat each of its variants. Its colours are OKLCH ramps (`--cha-magenta-*`, `--cha-plum-*`) that the roles point at.
+
+What the user picked lives in `localStorage` under `cha.theme` as `{ theme, appearance, contrast, motion, transparency }`; each of the last four is `system` (follow the OS) unless set. `src/themes/runtime.ts` resolves it and sets `data-theme`, `data-appearance`, `data-contrast`, `data-motion` and `data-transparency`, updates `<meta name="theme-color">` and swaps the tab icon (`public/favicon.svg`, `public/favicon-jade.svg`). A short inline script in `index.html` does the same before first paint so there is no flash; it and `runtime.ts` must always agree. `useTheme()` exposes the choice to components. The stream view (`SessionView`) calls `setForcedDark(true)` while mounted, so video always sits in a dark, theme-neutral frame.
+
+Settings → **Appearance** (`/settings/appearance`, for every role, guests included) picks the theme from tiles that show a miniature in each theme's own colours, and sets Appearance (System / Light / Dark), Contrast, Motion and Transparency with segmented controls; each "System" option shows what the OS currently resolves to. Changes apply at once, with no Save button, and a status line says "Saved" once the server has it. The header has a quick toggle that cycles Appearance System, Light, Dark. The miniatures work because every `:root[data-theme="<id>"]…` selector in a theme file also lists `[data-theme-preview="<id>"]…`, with `data-appearance` and `data-contrast` copied onto the preview element; the test checks that each themed block has an identical scoped twin.
+
+The choice is also stored per user on the server, so it follows the user to another device: `GET /api/me/prefs` returns `{ "prefs": {…} }` (`{}` until something is saved) and `PUT /api/me/prefs` with `{ "prefs": {…} }` replaces the object (table `user_prefs`, migration 0010). Any signed-in user may call them. The server only accepts known keys (`theme`: `a-z0-9-`, up to 40 characters; `appearance`: system, dark or light; `contrast`: system, standard or more; `motion` and `transparency`: system or reduced), and the object is capped at 4 KiB; it keeps no list of theme ids, and the client falls back to the default for one it doesn't know. `src/themes/sync.ts` does the syncing. After sign-in the server's copy wins if it has any prefs and refreshes the `localStorage` cache; if it has none and the local choice isn't the default, the local choice is sent up once. A change applies and caches at once, then is sent about 400 ms later. A 404 (an older server) leaves the choice local-only, quietly; any other failure keeps the local choice and shows the error on the Appearance page. Signing out keeps the cache, so the sign-in page stays in the user's theme.
+
+Reduced motion (`data-motion="reduced"`) makes transitions and animations instant and turns the indeterminate bar into a static stripe. Reduced transparency (`data-transparency="reduced"`) is opt-in per element with the `transparency-reduced:` variant, e.g. `bg-panel/90 backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none`.
+
+To add a theme, write its CSS file with every role as a solid hex or `oklch()` value (only `scrim` may have alpha; `var(--cha-…)` references to the file's own primitives are fine), define the base, light, more and light+more blocks (each selector also listed with its `[data-theme-preview="<id>"]` twin, for the Appearance page), and add an entry to `THEMES` in `src/themes/index.ts`, including its favicon. `bun run --cwd web/apps/portal test` then checks that no role is missing and that the contrast pairs pass WCAG 2.x in every variant: text, accent, status and chart colours at 4.5:1 on every surface, `on-accent` on the accent fills at 4.5:1, `line-strong` and `focus` at 3:1, and under contrast "more" `ink` and `ink-2` at 7:1 and `line-strong` at 4.5:1. A theme that fails doesn't pass `./scripts/check.sh`.
+
+## Portal layout and icons
+
+Icons come from [Lucide](https://lucide.dev) (`lucide-vue-next`, ISC), imported by name and drawn at one stroke width (set once in `style.css`). The shell has three layouts: from 1024 px a full 16 rem sidebar; from 768 px an icon rail (labels stay as accessible names and tooltips, the account card becomes an avatar with a Sign out menu); below 768 px an off-canvas drawer opened from the header's menu button, with focus kept inside, Esc and the scrim closing it, and the page behind inert. Pages add controls to the header through `<Teleport to="#page-actions" defer>`.
+
+Environments has search, a filter (All, Applications, Desktops, Pinned), a sort (Name, Recently used) and a grid or list view. Each card lays itself out by its own width (container queries). **Pin** keeps an app first in every sort. Pins, view and sort are saved per user with the theme choices in `GET`/`PUT /api/me/prefs`: `pinned` (up to 64 different app ids, `a-z`, `0-9` and `-`), `envView` (`grid` or `list`) and `envSort` (`name` or `recent`). The small "Saved" badge is separate: it means the app keeps your data between launches.
+
