@@ -102,14 +102,27 @@ with a `hidraw` node and no input devices; the node's `hidraw` answers feature
 report 1 (settings, attributes, the serial), and output reports `0x80`
 (rumble) and `0x81` (a trackpad pulse) come back as `rumble` and `haptic`.
 
-- **Steam Input on the Steam Controller kind.** Verified 2026-10-05 with the
-  original Bluetooth controller (`28de:1106`): Steam opens the virtual
-  controller over `hidraw`, and Steam Input's output reaches the game (Cyberpunk
-  2077 under Proton plays well). The 2026 model (`28de:1303`) is new and is
-  checked in the streamer's tests and a live uhid test (the kernel binds it,
-  `hidraw` answers); not yet with Steam on top. The Bluetooth controllers have no
-  evdev pad of their own, so an app that doesn't use Steam Input sees no pad
-  from them.
+- **Steam Input on the Steam Controller kind: Steam has it, Proton games
+  don't.** Steam opens the virtual controller over `hidraw` (2026 model,
+  `28de:1303`, 2026-10-06): its menus, the Steam button and Quick Access work.
+  Steam Input then hands a game its own virtual Xbox pad (`28de:11ff`), which it
+  makes through `/dev/uinput`; the app has none (`Couldn't initialize virtual
+  gamepad: Couldn't open /dev/uinput for writing` in Steam's console log), so
+  that pad never exists. Steam also tells games to ignore every physical Steam
+  Controller (`SDL_GAMECONTROLLER_IGNORE_DEVICES`, both models), and Proton's
+  winebus applies that list to SDL and hidraw alike, so a Proton game sees no
+  controller at all (Cyberpunk 2077). An earlier note here said Cyberpunk
+  played through Steam Input on 2026-10-05: Steam's logs show that was the
+  Xbox 360 pad. The Bluetooth controllers have no evdev pad of their own, so an
+  app that doesn't use Steam Input sees no pad from them either.
+  - **Workaround, per game:** the launch option
+    `SDL_GAMECONTROLLER_IGNORE_DEVICES= PROTON_DISABLE_HIDRAW=1 %command%` lets
+    Proton's SDL read the controller itself (Balatro played, 2026-10-06). The
+    game then bypasses Steam Input: Steam's in-game menu shows no controller,
+    and after it closes the game needs a click to get its input back.
+  - **The fix** is to let Steam make its virtual pad: a uinput the app can only
+    make gamepads with, the device made by the streamer and passed into the app
+    like our own pads (planned).
 - **More players.** Pads past those made at start (`--gamepads`) get evdev
   nodes but no `hidraw` in the app (the node mounts what `/info` listed at
   start).

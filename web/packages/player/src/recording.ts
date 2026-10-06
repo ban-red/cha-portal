@@ -62,6 +62,7 @@ export interface RecordingSummary {
   /** Counter growth over the run. */
   framesLost: number;
   framesRecovered: number;
+  framesPartial: number;
   framesDropped: number;
   /** The longest wait between frames (WebTransport), ms, and the seconds in which a wait passed FREEZE_MS. */
   freezes: { longestGapMs: number | null; count: number };
@@ -160,6 +161,7 @@ export function summarizeRecording(
     bitrateMbpsAvg: round(mean(sortedOf(snapshots.map((s) => s.mbps))), 1),
     framesLost: growth(snapshots.map((s) => s.packetsLost)),
     framesRecovered: growth(snapshots.map((s) => s.framesRecovered)),
+    framesPartial: growth(snapshots.map((s) => s.framesPartial ?? 0)),
     framesDropped: growth(snapshots.map((s) => s.framesDropped)),
     freezes: {
       longestGapMs: gaps.length ? Math.round(Math.max(...gaps)) : null,
@@ -197,6 +199,7 @@ export function recordingMarkdown(r: RecordingSummary): string {
     ["RTT p50", n(r.rttMsP50, " ms")],
     ["Bitrate (mean)", n(r.bitrateMbpsAvg, " Mbit/s")],
     ["Lost / recovered / dropped frames", `${r.framesLost} / ${r.framesRecovered} / ${r.framesDropped}`],
+    ["Frames shown incomplete (PyroWave)", `${r.framesPartial}`],
     ["Freezes", `${r.freezes.count} (≥ ${FREEZE_MS} ms); longest gap ${n(r.freezes.longestGapMs, " ms")}`],
     ["Audio buffer", `mean ${n(r.audioBufferMs.mean, " ms")}, max ${n(r.audioBufferMs.max, " ms")}`],
     ["Health", `worst ${r.health.worstGrade ?? "n/a"}, final ${r.health.finalGrade ?? "n/a"} (${r.health.summary})`],

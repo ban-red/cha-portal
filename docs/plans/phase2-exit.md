@@ -10,7 +10,7 @@ decoded size.
 
 | Criterion | State |
 |---|---|
-| A Steam game playable with a controller in Chrome, on LAN | **Met** 2026-10-05 (Cyberpunk 2077, Steam Controller 2026 over WebHID, virtual Steam Controller). |
+| A Steam game playable with a controller in Chrome, on LAN | **Met** 2026-10-05 (Cyberpunk 2077, Steam Controller 2026 over WebHID, virtual Xbox 360 pad; Steam's logs show the game read that pad, not a virtual Steam Controller, which Proton games don't see yet: docs/controllers.md). |
 | … in Firefox and Safari | Runs 3 and 4. |
 | … over WAN | Run 5 (netem on the node; P2.5's suite met the stall bound). |
 | A KDE Plasma desktop works | **Met** 2026-10-04 (P2.2). |

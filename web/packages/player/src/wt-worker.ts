@@ -60,6 +60,8 @@ export type FromWorker =
     }
   | { type: "audio"; id: number; sendTs: number; /** When it arrived (epoch ms, the worker's clock). */ at: number; data: ArrayBuffer }
   | { type: "lost"; frames: number }
+  /** Intra: frames shown with some of their packets missing. */
+  | { type: "partial"; frames: number }
   /** Frames rebuilt from parity (FEC) since the last such message. */
   | { type: "recovered"; frames: number }
   | { type: "bytes"; bytes: number }
@@ -526,8 +528,8 @@ class Session {
     }
   }
 
-  /** Intra: the frame's whole packets, now. */
-  private deliverIntra(id: number, f: Partial, partial: boolean): void {
+  /** Intra: the frame's whole packets, now. False when none was whole: nothing to show. */
+  private deliverIntra(id: number, f: Partial, partial: boolean): boolean {
     // A packet starts at a part not CONTINUED and runs through parts that
     // CONTINUE; any part missing, and the packet is dropped.
     const units: Uint8Array[] = [];
@@ -547,7 +549,7 @@ class Session {
       if (whole) units.push(...unit);
     }
     const size = units.reduce((n, u) => n + u.byteLength, 0);
-    if (!size) return;
+    if (!size) return false;
     const data = new Uint8Array(size);
     let at = 0;
     for (const u of units) {
@@ -559,6 +561,7 @@ class Session {
       { type: "video", stream: this.stream!, id, key: true, sendTs: f.sendTs, firstAt: f.firstAt, lastAt: now(), data: data.buffer, partial },
       [data.buffer],
     );
+    return true;
   }
 
   /** Gives up on frames that won't complete, or that later ones overtook. */
@@ -568,8 +571,10 @@ class Session {
       for (const [id, f] of [...this.partials]) {
         if (t - f.firstAt < FRAME_DEADLINE_MS) continue;
         this.partials.delete(id);
-        post({ type: "lost", frames: 1 });
-        if (this.lastDelivered === null || before(this.lastDelivered, id)) this.deliverIntra(id, f, true);
+        // A PyroWave frame decodes from the packets that came: it shows,
+        // softer where blocks are missing. Lost only when nothing showed.
+        const shown = (this.lastDelivered === null || before(this.lastDelivered, id)) && this.deliverIntra(id, f, true);
+        post({ type: shown ? "partial" : "lost", frames: 1 });
       }
       return;
     }

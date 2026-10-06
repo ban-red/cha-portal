@@ -89,6 +89,12 @@ const LOST_FRAMES = { from: 0.2, to: 6 };
 const LOST_PACKETS = { from: 2, to: 60 };
 /** Frames FEC rebuilt per second: no harm, but the network is dropping packets. */
 const RECOVERED = { from: 2, to: 30 };
+/**
+ * PyroWave frames shown with packets missing, per second: each one is a single frame a little
+ * softer where blocks are missing (the next is whole), so like parity repairs it says the link
+ * is dropping data rather than that the picture broke.
+ */
+const PARTIAL = { from: 2, to: 30 };
 /** Round trip, ms: a LAN is a few. */
 const RTT = { from: 10, to: 80 };
 /** The longest wait between frames, in frame budgets (at least this many ms), and when it is a freeze. */
@@ -119,6 +125,7 @@ const WEIGHT = {
   jitter: 15,
   loss: 40,
   recovered: 8,
+  partial: 8,
   rtt: 12,
   freeze: 45,
   node: 30,
@@ -350,6 +357,18 @@ const CHECKS: Check[] = [
     },
   },
   {
+    id: "partial",
+    title: "Frames shown incomplete",
+    summary: "Lossy network",
+    weight: WEIGHT.partial,
+    hint: "PyroWave shows a frame from the packets that arrived, so a lost packet softens a few blocks for one frame instead of breaking the picture. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi.",
+    find(window, { seconds }) {
+      if (seconds <= 0) return null;
+      const rate = growth(window, (s) => s.framesPartial ?? 0) / seconds;
+      return rateFinding(rate, PARTIAL, () => `${rate.toFixed(1)} frames/s shown with packets missing`);
+    },
+  },
+  {
     id: "rtt",
     title: "Slow network round trip",
     summary: "Slow network",
@@ -384,7 +403,7 @@ const CHECKS: Check[] = [
     title: "Sound buffering",
     summary: "Sound hiccups",
     weight: WEIGHT.audio,
-    hint: "Audio packets are arriving late, so sound may crackle or lag. It follows the network: a cable helps.",
+    hint: "Sound packets are arriving late, so the player holds more sound back to keep it smooth, and the sound runs behind the picture; past the buffer it crackles. A busy or lossy link does this: a cable helps, and so does a lighter codec or frame rate when the link is nearly full.",
     find(window) {
       const v = values(window, (s) => s.audioJitterMs);
       const band = isWebTransport(window) ? AUDIO_JITTER_WT : AUDIO_JITTER_RTC;

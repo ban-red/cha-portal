@@ -28,6 +28,12 @@ export interface StatsSnapshot {
   packetsLost: number;
   /** Frames rebuilt from FEC parity instead of lost (WebTransport). */
   framesRecovered: number;
+  /**
+   * PyroWave frames shown with some packets missing (WebTransport): each frame
+   * stands alone, so it shows softer where blocks are missing instead of
+   * being lost, and the next one is whole again.
+   */
+  framesPartial: number;
   framesDropped: number;
   /** Server send → shown here, p50 over the last second (clock-synced). */
   latencyMs: number | null;
@@ -163,6 +169,7 @@ export class StatsReader {
       deliveryP95Ms: null,
       frameGapMs: null,
       framesRecovered: 0,
+      framesPartial: 0,
       node: null,
       audioJitterMs: prev ? per(now.audioDelay - prev.audioDelay, now.audioEmitted - prev.audioEmitted) : null,
     };

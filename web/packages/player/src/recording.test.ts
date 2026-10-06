@@ -19,6 +19,7 @@ function snap(over: Partial<StatsSnapshot> = {}): StatsSnapshot {
     rttMs: 2,
     packetsLost: 0,
     framesRecovered: 0,
+    framesPartial: 0,
     framesDropped: 0,
     latencyMs: 12,
     deliveryMs: 6,

@@ -36,6 +36,7 @@ function snap(over: Partial<StatsSnapshot> = {}): StatsSnapshot {
     rttMs: 2,
     packetsLost: 0,
     framesRecovered: 0,
+    framesPartial: 0,
     framesDropped: 0,
     latencyMs: 12,
     deliveryMs: 6,
@@ -206,6 +207,15 @@ describe("assessHealth", () => {
       expect(ids(h)).toEqual(["recovered"]);
       expect(h.issues[0]!.severity).not.toBe("critical");
       expect(h.grade).toMatch(/[BC]/);
+    });
+
+    test("PyroWave frames shown incomplete are a minor note, not packet loss", () => {
+      // 2.4 frames/s with packets missing, as a full 1 GbE link at 4:4:4 120 fps gave.
+      const h = assessHealth(run(8, (i) => ({ framesPartial: Math.round(i * 2.4) })), visible);
+      expect(ids(h)).toEqual(["partial"]);
+      expect(h.issues[0]!.severity).toBe("minor");
+      expect(h.issues[0]!.detail).toContain("shown with packets missing");
+      expect(h.grade).toBe("B");
     });
 
     test("a long round trip", () => {

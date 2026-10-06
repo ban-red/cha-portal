@@ -301,6 +301,8 @@ export class Player {
     bytesAt: number;
     mbps: number | null;
     lost: number;
+    /** Intra frames shown with packets missing. */
+    partial: number;
     recovered: number;
     shown: number[];
     /** Server send → decoded per frame, the last second's. */
@@ -1146,6 +1148,7 @@ export class Player {
       bytesAt: performance.now(),
       mbps: null,
       lost: 0,
+      partial: 0,
       recovered: 0,
       shown: [],
       delivery: [],
@@ -1198,6 +1201,9 @@ export class Player {
             break;
           case "lost":
             wt.lost += msg.frames;
+            break;
+          case "partial":
+            wt.partial += msg.frames;
             break;
           case "recovered":
             wt.recovered += msg.frames;
@@ -1409,6 +1415,7 @@ export class Player {
       rttMs: this.offset?.rtt ?? null,
       packetsLost: wt.lost,
       framesRecovered: wt.recovered,
+      framesPartial: wt.partial,
       framesDropped: quality?.droppedVideoFrames ?? 0,
       latencyMs,
       ...this.deliveryStats(wt),
