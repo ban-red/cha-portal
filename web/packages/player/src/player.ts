@@ -293,6 +293,12 @@ export class Player {
     jitter: AudioJitter<ArrayBuffer>;
     jitterTimer: ReturnType<typeof setTimeout> | undefined;
     soundWriter: WritableStreamDefaultWriter<AudioData>;
+    /**
+     * Times the sound was rebuilt: its decoder after an error (a WebCodecs decoder that errs closes
+     * for good, and the sound stopped for the rest of the session), its track after a failed write,
+     * or `restartAudio()`.
+     */
+    audioRestarts: number;
     /** The stream being shown (the streamer starts at 0) and its decoder. */
     stream: number;
     pipeline: VideoPipeline;
@@ -1134,17 +1140,15 @@ export class Player {
     const worker = new Worker(new URL("./wt-worker.ts", import.meta.url), { type: "module" });
     const frames = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
     const sound = new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
-    const soundWriter = sound.writable.getWriter();
     const wt: NonNullable<Player["wt"]> = {
       worker,
       frames: frames.writable.getWriter(),
-      audio: new AudioDecoder({
-        output: (data) => void soundWriter.write(data),
-        error: () => undefined,
-      }),
+      // Made just below, once `wt` exists for their callbacks.
+      audio: null as unknown as AudioDecoder,
       jitter: new AudioJitter<ArrayBuffer>(),
       jitterTimer: undefined,
-      soundWriter,
+      soundWriter: sound.writable.getWriter(),
+      audioRestarts: 0,
       stream: 0,
       pipeline: null as unknown as VideoPipeline,
       switching: null,
@@ -1167,7 +1171,7 @@ export class Player {
       worker.terminate();
       throw err;
     }
-    wt.audio.configure({ codec: "opus", sampleRate: 48_000, numberOfChannels: 2 });
+    wt.audio = this.newAudioDecoder(wt);
     this.wt = wt;
     video.srcObject = new MediaStream([frames]);
     video.muted = true;
@@ -1343,10 +1347,71 @@ export class Player {
     }
   }
 
+  /**
+   * An Opus decoder writing to the sound's track. On an error it closes for good, so a new one
+   * takes over from the next packet (a few ms of sound lost, not the rest of the session).
+   */
+  private newAudioDecoder(wt: NonNullable<Player["wt"]>): AudioDecoder {
+    const decoder: AudioDecoder = new AudioDecoder({
+      output: (data) => this.writeSound(wt, data),
+      error: () => {
+        if (this.wt !== wt || wt.audio !== decoder) return;
+        wt.audioRestarts++;
+        wt.audio = this.newAudioDecoder(wt);
+      },
+    });
+    decoder.configure({ codec: "opus", sampleRate: 48_000, numberOfChannels: 2 });
+    return decoder;
+  }
+
+  /** Writes decoded sound to the track; a failed write means the track broke, so it is rebuilt. */
+  private writeSound(wt: NonNullable<Player["wt"]>, data: AudioData): void {
+    const writer = wt.soundWriter;
+    writer.write(data).catch(() => {
+      if (this.wt === wt && wt.soundWriter === writer) this.rebuildSoundTrack(wt);
+    });
+  }
+
+  /** A new sound track for the `<audio>` element, and playback restarted on it. */
+  private rebuildSoundTrack(wt: NonNullable<Player["wt"]>): void {
+    wt.audioRestarts++;
+    const old = wt.soundWriter;
+    const sound = new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
+    wt.soundWriter = sound.writable.getWriter();
+    void old.close().catch(() => undefined);
+    this.audioTrack = sound;
+    this.audio.srcObject = new MediaStream([sound]);
+    void this.playAudio();
+  }
+
+  /**
+   * Rebuilds the sound from scratch, for when it went quiet and the page couldn't tell (the
+   * computer's output device changed, say): a new decoder and track on WebTransport, the same
+   * track re-attached on WebRTC, and playback restarted either way.
+   */
+  restartAudio(): void {
+    const wt = this.wt;
+    if (wt) {
+      const old = wt.audio;
+      wt.audio = this.newAudioDecoder(wt);
+      if (old.state !== "closed") old.close();
+      this.rebuildSoundTrack(wt);
+      return;
+    }
+    if (!this.audioTrack) return;
+    this.audio.srcObject = new MediaStream([this.audioTrack]);
+    void this.playAudio();
+  }
+
   /** Plays what the jitter buffer says is due, and sets a timer for the next slot. */
   private drainAudio(wt: NonNullable<Player["wt"]>): void {
     clearTimeout(wt.jitterTimer);
     if (this.wt !== wt) return;
+    // A decoder that closed without its error reaching us is replaced here too.
+    if (wt.audio.state === "closed") {
+      wt.audioRestarts++;
+      wt.audio = this.newAudioDecoder(wt);
+    }
     const now = performance.timeOrigin + performance.now();
     for (const o of wt.jitter.poll(now)) {
       if (o.kind === "play") {
@@ -1355,18 +1420,17 @@ export class Player {
         }
       } else {
         // WebCodecs has no Opus PLC: 10 ms of silence keeps the sound's timeline and the sink fed.
-        void wt.soundWriter
-          .write(
-            new AudioData({
-              format: "f32-planar",
-              sampleRate: 48_000,
-              numberOfFrames: 480,
-              numberOfChannels: 2,
-              timestamp: o.id * 10_000,
-              data: new Float32Array(960),
-            }),
-          )
-          .catch(() => undefined);
+        this.writeSound(
+          wt,
+          new AudioData({
+            format: "f32-planar",
+            sampleRate: 48_000,
+            numberOfFrames: 480,
+            numberOfChannels: 2,
+            timestamp: o.id * 10_000,
+            data: new Float32Array(960),
+          }),
+        );
       }
     }
     const wait = wt.jitter.nextDueMs(performance.timeOrigin + performance.now());
@@ -1422,6 +1486,7 @@ export class Player {
       packetsLost: wt.lost,
       framesRecovered: wt.recovered,
       framesPartial: wt.partial,
+      audioRestarts: wt.audioRestarts,
       framesDropped: quality?.droppedVideoFrames ?? 0,
       latencyMs,
       ...this.deliveryStats(wt),

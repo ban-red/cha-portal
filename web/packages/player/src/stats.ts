@@ -39,6 +39,11 @@ export interface StatsSnapshot {
    * being lost, and the next one is whole again.
    */
   framesPartial: number;
+  /**
+   * Times the page rebuilt the sound (WebTransport): its decoder after an error, its track after
+   * a failed write, or a restart asked for. Each is a few ms of sound lost instead of the rest.
+   */
+  audioRestarts?: number;
   framesDropped: number;
   /** Server send → shown here, p50 over the last second (clock-synced). */
   latencyMs: number | null;

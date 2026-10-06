@@ -307,6 +307,15 @@ describe("assessHealth", () => {
   });
 
   describe("audio", () => {
+    test("a rebuilt sound is a note, and repeats count more", () => {
+      const once = assessHealth(run(8, (i) => ({ audioRestarts: i >= 5 ? 1 : 0 })), visible);
+      expect(ids(once)).toEqual(["sound-restart"]);
+      expect(once.issues[0]!.severity).toBe("minor");
+      expect(once.issues[0]!.detail).toBe("sound rebuilt 1 time");
+      const often = assessHealth(run(8, (i) => ({ audioRestarts: i })), visible);
+      expect(often.issues[0]!.severity).not.toBe("minor");
+    });
+
     test("a growing audio buffer", () => {
       const h = assessHealth(run(8, { audioJitterMs: 150 }), visible);
       expect(ids(h)).toEqual(["audio"]);

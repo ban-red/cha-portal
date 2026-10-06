@@ -138,6 +138,7 @@ const WEIGHT = {
   recovered: 8,
   partial: 8,
   skipped: 20,
+  soundRestart: 10,
   rtt: 12,
   freeze: 45,
   node: 30,
@@ -423,6 +424,19 @@ const CHECKS: Check[] = [
       // Name whatever was over in the worst reading.
       const worst = per.reduce((a, b) => (Math.max(0, ...b.map((x) => x.level)) > Math.max(0, ...a.map((x) => x.level)) ? b : a));
       return { level: l, detail: worst.filter((x) => x.level > 0).map((x) => x.text).join(", ") };
+    },
+  },
+  {
+    id: "sound-restart",
+    title: "Sound restarted",
+    summary: "Sound hiccups",
+    weight: WEIGHT.soundRestart,
+    hint: "The page's sound decoder or track failed and was rebuilt, so a few milliseconds of sound were lost instead of the rest of the session. Once in a while is harmless; if it repeats, use Restart sound, or reload the page and tell us what the browser's console says.",
+    find(window) {
+      const n = growth(window, (s) => s.audioRestarts ?? 0);
+      if (n <= 0) return null;
+      // One in the window is a note; several is real trouble.
+      return { level: Math.min(1, 0.2 + 0.2 * (n - 1)), detail: `sound rebuilt ${n} time${n === 1 ? "" : "s"}` };
     },
   },
   {
