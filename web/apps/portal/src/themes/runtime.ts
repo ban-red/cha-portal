@@ -3,7 +3,7 @@
 // change both together.
 import { computed, readonly, ref } from "vue";
 
-import { DEFAULT_PREFS, THEMES, type ThemeId, type ThemePrefs } from "./index";
+import { DEFAULT_PREFS, MAX_PINNED, THEMES, type ThemeId, type ThemePrefs, type UserPrefs } from "./index";
 
 export const STORAGE_KEY = "cha.theme";
 
@@ -16,8 +16,17 @@ function pick<T extends string>(v: unknown, allowed: readonly T[], fallback: T):
   return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
 }
 
+const TEMPLATE_ID = /^[a-z0-9-]{1,40}$/;
+
+/** Unique, well-formed template ids, at most MAX_PINNED; anything else is dropped. */
+function parsePinned(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const ids = v.filter((x): x is string => typeof x === "string" && TEMPLATE_ID.test(x));
+  return [...new Set(ids)].slice(0, MAX_PINNED);
+}
+
 /** Any value to valid prefs, field by field: unknown or invalid values take the default. */
-export function parsePrefs(raw: unknown): ThemePrefs {
+export function parsePrefs(raw: unknown): UserPrefs {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
     theme: pick(
@@ -29,10 +38,13 @@ export function parsePrefs(raw: unknown): ThemePrefs {
     contrast: pick(o.contrast, CONTRASTS, DEFAULT_PREFS.contrast),
     motion: pick(o.motion, MOTIONS, DEFAULT_PREFS.motion),
     transparency: pick(o.transparency, TRANSPARENCIES, DEFAULT_PREFS.transparency),
+    pinned: parsePinned(o.pinned),
+    envView: pick(o.envView, ["grid", "list"] as const, DEFAULT_PREFS.envView),
+    envSort: pick(o.envSort, ["name", "recent"] as const, DEFAULT_PREFS.envSort),
   };
 }
 
-export function loadPrefs(): ThemePrefs {
+export function loadPrefs(): UserPrefs {
   try {
     const s = localStorage.getItem(STORAGE_KEY);
     return parsePrefs(s ? JSON.parse(s) : null);
@@ -41,7 +53,7 @@ export function loadPrefs(): ThemePrefs {
   }
 }
 
-export function savePrefs(prefs: ThemePrefs): void {
+export function savePrefs(prefs: UserPrefs): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   } catch {
@@ -101,7 +113,7 @@ export function resolvePrefs(prefs: ThemePrefs, env: SystemEnv, forcedDark = fal
 
 // ---- state -------------------------------------------------------------------------------
 
-const prefsRef = ref<ThemePrefs>({ ...DEFAULT_PREFS });
+const prefsRef = ref<UserPrefs>({ ...DEFAULT_PREFS });
 const resolvedRef = ref<Resolved>(resolvePrefs(DEFAULT_PREFS, readSystemEnv(() => ({ matches: false }))));
 let forcedDark = false;
 
@@ -156,7 +168,7 @@ export function setForcedDark(on: boolean): void {
 }
 
 /** Called after the user changes a preference (not when the server's copy is adopted). */
-type ChangeListener = (prefs: ThemePrefs) => void;
+type ChangeListener = (prefs: UserPrefs) => void;
 const changeListeners = new Set<ChangeListener>();
 
 export function onPrefsChange(fn: ChangeListener): () => void {
@@ -165,18 +177,18 @@ export function onPrefsChange(fn: ChangeListener): () => void {
 }
 
 /** Applies and caches prefs without telling the sync (the server's copy, say). */
-export function replacePrefs(prefs: ThemePrefs): void {
+export function replacePrefs(prefs: UserPrefs): void {
   prefsRef.value = prefs;
   savePrefs(prefs);
   applyPrefs(prefs);
 }
 
-export function currentPrefs(): ThemePrefs {
-  return { ...prefsRef.value };
+export function currentPrefs(): UserPrefs {
+  return { ...prefsRef.value, pinned: [...prefsRef.value.pinned] };
 }
 
 /** The user's change: applied and cached at once; the sync sends it to the server. */
-export function setPrefs(partial: Partial<ThemePrefs>): void {
+export function setPrefs(partial: Partial<UserPrefs>): void {
   replacePrefs(parsePrefs({ ...prefsRef.value, ...partial }));
   for (const fn of changeListeners) fn(currentPrefs());
 }

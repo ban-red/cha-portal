@@ -1,6 +1,6 @@
 # Themes, and a UI pass to go with them
 
-Status: T1–T3 done; T4 next.
+Status: T1–T4 done; T5 (sweep and verification) next.
 
 Goal: the portal gets themes that are easy to adjust and accessible by construction. **Cha – Magenta** (the dark magenta mock below) becomes the first theme and the default. The same pass moves the shell and the Environments page to the mock's layout and makes both work cleanly from a phone up to a 1440p display.
 

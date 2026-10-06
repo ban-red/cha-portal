@@ -5,6 +5,8 @@
 //! user may use them, guests included. They are cosmetic, so no audit entry.
 //! Keys and values are checked here; the list of theme ids lives only in the
 //! client, which falls back to its default on an id it doesn't know.
+//! Besides the theme keys: `pinned` (the app templates the user pinned),
+//! `envView` (grid or list) and `envSort` (name or recent) for the Environments page.
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::routing::get;
@@ -69,6 +71,17 @@ fn one_of(key: &str, v: &Value, allowed: &[&str]) -> ApiResult<()> {
     }
 }
 
+/// A template id, as the catalog spells them: a-z, 0-9 and -, up to 40 characters.
+fn is_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 40
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The most apps a user may pin.
+const MAX_PINNED: usize = 64;
+
 /// Checks a preferences object and returns it as it will be stored.
 fn validate(v: &Value) -> ApiResult<Map<String, Value>> {
     let Some(obj) = v.as_object() else {
@@ -80,13 +93,7 @@ fn validate(v: &Value) -> ApiResult<Map<String, Value>> {
     for (key, value) in obj {
         match key.as_str() {
             "theme" => {
-                let ok = value.as_str().is_some_and(|s| {
-                    !s.is_empty()
-                        && s.len() <= 40
-                        && s.bytes()
-                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                });
-                if !ok {
+                if !value.as_str().is_some_and(is_id) {
                     return Err(ApiError::bad_request(
                         "bad_pref",
                         "theme is a string of a-z, 0-9 and - up to 40 characters",
@@ -97,6 +104,26 @@ fn validate(v: &Value) -> ApiResult<Map<String, Value>> {
             "contrast" => one_of(key, value, &["system", "standard", "more"])?,
             "motion" => one_of(key, value, &["system", "reduced"])?,
             "transparency" => one_of(key, value, &["system", "reduced"])?,
+            "envView" => one_of(key, value, &["grid", "list"])?,
+            "envSort" => one_of(key, value, &["name", "recent"])?,
+            "pinned" => {
+                let ok = value.as_array().is_some_and(|a| {
+                    let ids: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
+                    let unique = ids.iter().collect::<std::collections::HashSet<_>>().len();
+                    a.len() <= MAX_PINNED
+                        && ids.len() == a.len()
+                        && unique == ids.len()
+                        && ids.iter().all(|s| is_id(s))
+                });
+                if !ok {
+                    return Err(ApiError::bad_request(
+                        "bad_pref",
+                        format!(
+                            "pinned is a list of up to {MAX_PINNED} different app ids (a-z, 0-9 and -)"
+                        ),
+                    ));
+                }
+            }
             other => {
                 return Err(ApiError::bad_request(
                     "unknown_pref",
@@ -124,5 +151,25 @@ mod tests {
         assert!(validate(&json!({"contrast": "high"})).is_err());
         assert!(validate(&json!({"extra": 1})).is_err());
         assert!(validate(&json!([])).is_err());
+    }
+
+    #[test]
+    fn environments_page_keys_are_checked() {
+        assert!(
+            validate(
+                &json!({"envView": "list", "envSort": "recent", "pinned": ["chrome", "steam-2"]})
+            )
+            .is_ok()
+        );
+        assert!(validate(&json!({"pinned": []})).is_ok());
+        assert!(validate(&json!({"envView": "table"})).is_err());
+        assert!(validate(&json!({"envSort": "size"})).is_err());
+        assert!(validate(&json!({"pinned": "chrome"})).is_err());
+        assert!(validate(&json!({"pinned": ["Chrome"]})).is_err());
+        assert!(validate(&json!({"pinned": ["a", "a"]})).is_err());
+        assert!(validate(&json!({"pinned": [1]})).is_err());
+        let many: Vec<String> = (0..65).map(|i| format!("app-{i}")).collect();
+        assert!(validate(&json!({ "pinned": many })).is_err());
+        assert!(validate(&json!({ "pinned": &many[..64] })).is_ok());
     }
 }

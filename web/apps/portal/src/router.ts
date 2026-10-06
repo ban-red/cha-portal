@@ -8,6 +8,8 @@ declare module "vue-router" {
     public?: boolean;
     admin?: boolean;
     title?: string;
+    /** One plain line under the page title in the shell header. */
+    subtitle?: string;
   }
 }
 
@@ -20,7 +22,7 @@ export const router = createRouter({
       path: "/",
       component: () => import("./components/AppShell.vue"),
       children: [
-        { path: "", name: "dashboard", component: () => import("./views/DashboardView.vue"), meta: { title: "Environments" } },
+        { path: "", name: "dashboard", component: () => import("./views/DashboardView.vue"), meta: { title: "Environments", subtitle: "Launch and manage your applications and desktops on remote GPUs." } },
         { path: "controllers", name: "controllers", component: () => import("./views/ControllersView.vue"), meta: { title: "Controllers" } },
         { path: "settings/appearance", name: "appearance", component: () => import("./views/AppearanceView.vue"), meta: { title: "Appearance" } },
         { path: "settings/storage", name: "storage", component: () => import("./views/StorageView.vue"), meta: { title: "Storage" } },

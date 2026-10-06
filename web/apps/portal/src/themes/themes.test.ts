@@ -327,6 +327,20 @@ describe("parsePrefs", () => {
   test("a known theme id is kept", () => {
     expect(parsePrefs({ theme: "cha-jade" }).theme).toBe("cha-jade");
   });
+  test("the Environments page's view, sort and pins are kept when valid", () => {
+    expect(parsePrefs({ envView: "list", envSort: "recent", pinned: ["chrome", "steam-2"] })).toEqual({
+      ...DEFAULT_PREFS,
+      envView: "list",
+      envSort: "recent",
+      pinned: ["chrome", "steam-2"],
+    });
+  });
+  test("invalid view, sort and pins fall back; pins are cleaned", () => {
+    expect(parsePrefs({ envView: "table", envSort: "size", pinned: "chrome" })).toEqual(DEFAULT_PREFS);
+    expect(parsePrefs({ pinned: ["a", "a", "B", 3, "ok-1", "x".repeat(41)] }).pinned).toEqual(["a", "ok-1"]);
+    const many = Array.from({ length: 80 }, (_, i) => `app-${i}`);
+    expect(parsePrefs({ pinned: many }).pinned).toHaveLength(64);
+  });
 });
 
 describe("system resolution", () => {

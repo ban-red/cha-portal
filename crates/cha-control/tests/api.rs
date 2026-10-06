@@ -1407,6 +1407,29 @@ async fn preferences_round_trip_per_user() {
 }
 
 #[tokio::test]
+async fn environments_page_preferences_round_trip() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let prefs = json!({
+        "theme": "cha-magenta",
+        "pinned": ["google-chrome", "steam"],
+        "envView": "list",
+        "envSort": "recent"
+    });
+    let put = p
+        .call(
+            "PUT",
+            "/api/me/prefs",
+            Some(&admin),
+            Some(json!({ "prefs": prefs })),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.body);
+    let got = p.call("GET", "/api/me/prefs", Some(&admin), None).await;
+    assert_eq!(got.body, json!({ "prefs": prefs }));
+}
+
+#[tokio::test]
 async fn bad_preferences_are_refused() {
     let p = portal().await;
     let admin = p.setup_admin().await;
@@ -1418,6 +1441,14 @@ async fn bad_preferences_are_refused() {
         json!({ "prefs": { "transparency": 1 } }),
         json!({ "prefs": { "theme": "Cha Jade" } }),
         json!({ "prefs": { "theme": "a".repeat(41) } }),
+        json!({ "prefs": { "envView": "table" } }),
+        json!({ "prefs": { "envSort": "size" } }),
+        json!({ "prefs": { "pinned": "chrome" } }),
+        json!({ "prefs": { "pinned": ["Chrome"] } }),
+        json!({ "prefs": { "pinned": ["chrome", "chrome"] } }),
+        json!({ "prefs": { "pinned": [7] } }),
+        json!({ "prefs": { "pinned": ["a".repeat(41)] } }),
+        json!({ "prefs": { "pinned": (0..65).map(|i| format!("app-{i}")).collect::<Vec<_>>() } }),
         json!({ "prefs": [] }),
         json!({ "prefs": "dark" }),
         json!({ "prefs": null }),

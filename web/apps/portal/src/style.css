@@ -89,6 +89,10 @@
       background: transparent;
     }
   }
+  /* One stroke weight for every icon (lucide-vue-next). */
+  svg.lucide {
+    stroke-width: 1.75;
+  }
   ::selection {
     background: color-mix(in oklab, var(--cha-accent) 35%, transparent);
   }
@@ -118,6 +122,19 @@
 }
 @utility card {
   @apply rounded-xl border border-line bg-panel;
+}
+
+/* A card that lifts a little on hover: a stronger edge and, per theme, a faint accent
+   glow (--cha-glow; "none" under contrast "more"). Decorative only. */
+@utility card-lift {
+  transition:
+    border-color 150ms ease-out,
+    box-shadow 150ms ease-out;
+  &:hover,
+  &:focus-within {
+    border-color: var(--cha-line-strong);
+    box-shadow: var(--cha-glow, none);
+  }
 }
 
 /* Reduced motion (the OS setting, or the user's own): transitions and animations become

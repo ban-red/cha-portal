@@ -1,4 +1,4 @@
-// Keeps the theme preferences in step with the server (`GET`/`PUT /api/me/prefs`).
+// Keeps the user's preferences (theme choices, Environments view and pins) in step with the server (`GET`/`PUT /api/me/prefs`).
 // The local cache (localStorage) stays the source for first paint; the server copy is
 // what follows the user to another device.
 //
@@ -12,7 +12,7 @@ import { readonly, ref, watch } from "vue";
 
 import { ApiError, api } from "../api";
 import { useSession } from "../stores/session";
-import { DEFAULT_PREFS, type ThemePrefs } from "./index";
+import { DEFAULT_PREFS, type UserPrefs } from "./index";
 import { currentPrefs, onPrefsChange, parsePrefs, replacePrefs } from "./runtime";
 
 export const SAVE_DELAY_MS = 400;
@@ -29,7 +29,7 @@ let dirty = false;
 let localOnly = false;
 let started = false;
 
-const isDefault = (p: ThemePrefs) => JSON.stringify(p) === JSON.stringify(DEFAULT_PREFS);
+const isDefault = (p: UserPrefs) => JSON.stringify(p) === JSON.stringify(DEFAULT_PREFS);
 
 function fail(err: unknown): void {
   if (err instanceof ApiError && err.status === 404) {
@@ -44,8 +44,8 @@ function fail(err: unknown): void {
   status.value = "error";
   error.value =
     err instanceof ApiError && err.message
-      ? `Couldn't save your appearance settings: ${err.message}`
-      : "Couldn't save your appearance settings. They still apply on this device.";
+      ? `Couldn't save your preferences: ${err.message}`
+      : "Couldn't save your preferences. They still apply on this device.";
 }
 
 async function push(): Promise<void> {

@@ -3,6 +3,7 @@
 // named under it; the chevron opens every option (the disallowed ones say why
 // and can't be chosen). Without placements (an older server, or still
 // loading) it is a plain Launch button.
+import { ChevronDown, Play } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 import type { PlacementChoice, Placements } from "../api";
@@ -16,6 +17,9 @@ const props = defineProps<{
   busy: boolean;
   /** Not for this user (a guest). */
   disabled: boolean;
+  /** For a list row: no top margin, the place line is for screen readers only, and the
+   *  menu may be wider than the button. */
+  compact?: boolean;
 }>();
 const emit = defineEmits<{ launch: [choice: PlacementChoice | null] }>();
 
@@ -106,21 +110,22 @@ watch(
 </script>
 
 <template>
-  <div ref="root" class="mt-4">
+  <div ref="root" :class="compact ? undefined : 'mt-4'">
     <div class="relative flex">
       <button
-        class="btn-primary flex-1"
+        class="btn-primary min-h-11 flex-1"
         :class="placements && 'rounded-r-none'"
         :disabled="disabled || busy || nowhere"
         :aria-describedby="placements ? `${id}-launch-on` : undefined"
         @click="emit('launch', null)"
       >
+        <Play class="size-4 fill-current" aria-hidden="true" />
         {{ busy ? "Launching…" : "Launch" }}
       </button>
       <button
         v-if="placements"
         ref="toggle"
-        class="btn-primary rounded-l-none border-l border-on-accent/30 px-2.5"
+        class="btn-primary min-h-11 min-w-11 rounded-l-none border-l border-on-accent/30 px-2.5"
         :disabled="disabled || busy || !placements.options.length"
         aria-haspopup="menu"
         :aria-expanded="open"
@@ -130,9 +135,7 @@ watch(
         @click="open ? closeMenu() : openMenu()"
         @keydown="onToggleKey"
       >
-        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
-          <path d="M4 6l4 4 4-4" />
-        </svg>
+        <ChevronDown class="size-5" aria-hidden="true" />
       </button>
       <ul
         v-if="open && placements"
@@ -140,6 +143,7 @@ watch(
         role="menu"
         aria-label="Where to launch"
         class="absolute top-full right-0 left-0 z-20 mt-2 max-h-72 overflow-y-auto rounded-xl border border-line bg-panel p-1 text-left shadow-lg"
+        :class="compact && 'left-auto min-w-64'"
         @keydown="onMenuKey"
       >
         <li v-for="(o, i) in placements.options" :key="`${o.node}/${o.device}`" role="none">
@@ -165,9 +169,19 @@ watch(
         </li>
       </ul>
     </div>
-    <p v-if="placements" :id="`${id}-launch-on`" class="mt-1.5 truncate text-2xs text-ink-3" aria-live="polite">
-      <template v-if="auto">on {{ describe(auto) }}</template>
-      <template v-else>{{ nowhereToRun(placements) }}</template>
+    <!-- Where it would run: a dot (ok when somewhere is allowed, warn when nowhere) and always the words. -->
+    <p
+      v-if="placements"
+      :id="`${id}-launch-on`"
+      class="flex items-center gap-2 text-xs text-ink-3"
+      :class="compact ? 'sr-only' : 'mt-2.5'"
+      aria-live="polite"
+    >
+      <span class="size-2 shrink-0 rounded-full" :class="auto ? 'bg-ok' : 'bg-warn'" aria-hidden="true" />
+      <span class="min-w-0 truncate">
+        <template v-if="auto">on {{ describe(auto) }}</template>
+        <template v-else>{{ nowhereToRun(placements) }}</template>
+      </span>
     </p>
   </div>
 </template>

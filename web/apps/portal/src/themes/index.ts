@@ -73,10 +73,26 @@ export type ThemePrefs = {
   transparency: "system" | "reduced";
 };
 
-export const DEFAULT_PREFS: ThemePrefs = {
+/** The Environments page's view, sort and pins: kept per user beside the theme. */
+export type EnvPrefs = {
+  /** Template ids the user pinned (unique, at most MAX_PINNED). */
+  pinned: string[];
+  envView: "grid" | "list";
+  envSort: "name" | "recent";
+};
+
+/** Everything saved per user (`GET`/`PUT /api/me/prefs`): the theme choices and the page's. */
+export type UserPrefs = ThemePrefs & EnvPrefs;
+
+export const MAX_PINNED = 64;
+
+export const DEFAULT_PREFS: UserPrefs = {
   theme: DEFAULT_THEME,
   appearance: "system",
   contrast: "system",
   motion: "system",
   transparency: "system",
+  pinned: [],
+  envView: "grid",
+  envSort: "name",
 };
