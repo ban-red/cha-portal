@@ -241,6 +241,7 @@ async fn run(
             "audio": sessions.audio.is_some(),
             "gamepads": sessions.gamepads.is_some(),
             "fps": sessions.media.fps(),
+            "overlay": sessions.media.overlay(),
             "transport": "webtransport",
             "maxDatagram": max_datagram,
         }),
@@ -381,6 +382,7 @@ async fn run(
             _ = report.tick() => {
                 video.report(&mut stats);
                 stats.fps = Some(sessions.media.fps());
+                stats.overlay = sessions.media.overlay();
                 let _ = out.send(ServerMsg::Stats {
                     elapsed_ms: epoch.elapsed().as_millis() as u64,
                     stats: stats.clone(),

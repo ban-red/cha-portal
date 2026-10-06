@@ -12,6 +12,7 @@ import { AudioJitter } from "./audio-jitter";
 import { ControllerManager, type ManagedController } from "./controllers";
 import type { CaptureView } from "./captureMode";
 import { InputCapture } from "./input";
+import { overlayAnswer, parseOverlay, type OverlayLevel, type OverlayState } from "./overlay";
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
 import { PyroPresenter } from "./pyro";
@@ -114,6 +115,11 @@ export interface PlayerOptions {
    * streamer first says and whenever it changes, whoever changed it.
    */
   onFps?: (fps: number) => void;
+  /**
+   * The performance overlay's level (0 off to 4 full, or `"custom"`), when the streamer first says
+   * and whenever it changes, whoever changed it; `null` when the app has no overlay.
+   */
+  onOverlay?: (level: OverlayState | null) => void;
   /** The controllers this page sends (Gamepad API or WebHID), now and whenever one arrives or leaves. */
   onControllers?: (controllers: ManagedController[]) => void;
   /**
@@ -177,6 +183,9 @@ interface ServerMessage {
   effect?: unknown;
   /** Fps: the frame rate now; stats carry it too. */
   fps?: number;
+  /** Overlay: the level now, in an answer; stats and the hello carry it as `overlay`. */
+  level?: unknown;
+  overlay?: unknown;
   /** Cumulative frames the streamer sent (`stats`). */
   frames_sent?: number;
 }
@@ -214,6 +223,8 @@ interface VideoPipeline {
 const SWITCH_TIMEOUT_MS = 3000;
 /** How long a frame rate change may take to be answered. */
 const FPS_TIMEOUT_MS = 3000;
+/** How long an overlay change may take to be answered. */
+const OVERLAY_TIMEOUT_MS = 3000;
 /** How far back the send rate looks: a few of the streamer's reports. */
 const SENT_WINDOW_MS = 4000;
 
@@ -245,6 +256,10 @@ export class Player {
   private streamFps: number | null = null;
   /** A frame rate change asked for, waiting for the streamer's answer. */
   private fpsChange: { done: (fps: number) => void; fail: (err: Error) => void } | null = null;
+  /** The performance overlay's level, once the streamer says (null: the app has none). */
+  private streamOverlay: OverlayState | null = null;
+  /** An overlay change asked for, waiting for the streamer's answer. */
+  private overlayChange: { done: (level: OverlayState | null) => void; fail: (err: Error) => void } | null = null;
   /** This page has the controls (streamers before P2.6 don't say: assume so). */
   private hasControl = true;
   /** Where a viewer's page draws the controller's pointer. */
@@ -306,6 +321,7 @@ export class Player {
   async connect(): Promise<void> {
     this.close();
     this.streamFps = null;
+    this.streamOverlay = null;
     this.setState("connecting");
     const want = isPyroWave(this.codec) ? "webtransport" : (this.options.transport ?? "auto");
     if (this.options.webTransport && want !== "webrtc" && supportsWebTransport()) {
@@ -363,6 +379,44 @@ export class Player {
     if (typeof fps !== "number" || !Number.isFinite(fps) || fps <= 0 || fps === this.streamFps) return;
     this.streamFps = fps;
     this.options.onFps?.(fps);
+  }
+
+  /** The performance overlay's level, once the streamer says; `null` when the app has none. */
+  get overlay(): OverlayState | null {
+    return this.streamOverlay;
+  }
+
+  /**
+   * Sets the performance overlay (0 off, 1 FPS only, 2 bar, 3 extended, 4 full): the streamer
+   * writes the app's overlay config and the overlay changes within about 100 ms. Resolves with the
+   * level now; rejects if this page doesn't have the controls, the app has no overlay, or the
+   * streamer refuses or doesn't answer in 3 s.
+   */
+  setOverlay(level: OverlayLevel): Promise<OverlayState> {
+    if (this.state !== "connected") return Promise.reject(new Error("not connected"));
+    if (!this.hasControl) return Promise.reject(new Error("this page doesn't have the controls"));
+    this.overlayChange?.fail(new Error("another change replaced it"));
+    return new Promise<OverlayState>((resolve, reject) => {
+      const timer = setTimeout(() => finish(() => reject(new Error("the streamer didn't answer"))), OVERLAY_TIMEOUT_MS);
+      const finish = (settle: () => void) => {
+        clearTimeout(timer);
+        if (this.overlayChange === change) this.overlayChange = null;
+        settle();
+      };
+      const change = {
+        done: (now: OverlayState | null) => finish(() => resolve(now ?? level)),
+        fail: (err: Error) => finish(() => reject(err)),
+      };
+      this.overlayChange = change;
+      this.send({ t: "overlay", level });
+    });
+  }
+
+  /** Records the overlay level the streamer reports (hello, stats, or the answer to `setOverlay`). */
+  private noteOverlay(level: OverlayState | null): void {
+    if (level === this.streamOverlay) return;
+    this.streamOverlay = level;
+    this.options.onOverlay?.(level);
   }
 
   /**
@@ -478,6 +532,7 @@ export class Player {
     this.presented = [];
     this.presentedBefore = null;
     this.fpsChange?.fail(new Error("the session closed"));
+    this.overlayChange?.fail(new Error("the session closed"));
     this.control?.close();
     this.pc?.close();
     this.pc = this.control = null;
@@ -874,9 +929,11 @@ export class Player {
         break;
       case "hello":
         this.noteFps((msg.stream as unknown as { fps?: number } | undefined)?.fps);
+        this.noteOverlay(parseOverlay((msg.stream as unknown as { overlay?: unknown } | undefined)?.overlay));
         break;
       case "stats":
         this.noteFps(msg.fps);
+        this.noteOverlay(parseOverlay(msg.overlay));
         if (typeof msg.frames_sent === "number") {
           this.sentCounts.push({ at: performance.now(), frames: msg.frames_sent });
           if (this.sentCounts.length > 8) this.sentCounts.shift();
@@ -889,6 +946,17 @@ export class Player {
         if (change) {
           if (msg.error) change.fail(new Error(msg.error));
           else change.done(msg.fps ?? this.streamFps ?? 0);
+        }
+        break;
+      }
+      case "overlay": {
+        // The answer to `setOverlay`: the level now (none without an overlay), with an `error` if it didn't change.
+        const answer = overlayAnswer(msg);
+        this.noteOverlay(answer.level);
+        const change = this.overlayChange;
+        if (change) {
+          if (answer.error) change.fail(new Error(answer.error));
+          else change.done(answer.level);
         }
         break;
       }

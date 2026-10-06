@@ -12,6 +12,8 @@ import {
   hidUnavailableReason,
   type Codec,
   type FrameRate,
+  type OverlayLevel,
+  type OverlayState,
   type HealthAssessment,
   type CaptureView,
   type ManagedController,
@@ -165,6 +167,27 @@ async function setFps(rate: FrameRate, select: HTMLSelectElement) {
     select.value = String(fps.value ?? rate);
   }
 }
+/**
+ * The app's performance overlay (Steam's MangoHud): the level now, whoever set
+ * it, or null when the app has none (then the page offers nothing).
+ */
+const OVERLAY_LABEL: Record<OverlayLevel, string> = { 0: "Off", 1: "FPS", 2: "Bar", 3: "Detailed", 4: "Full" };
+const perfOverlay = ref<OverlayState | null>(null);
+const overlaySwitching = ref(false);
+async function setOverlay(level: OverlayLevel, select: HTMLSelectElement) {
+  if (!player || overlaySwitching.value) return;
+  overlaySwitching.value = true;
+  problem.value = null;
+  try {
+    await player.setOverlay(level);
+  } catch (err) {
+    problem.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    overlaySwitching.value = false;
+    // Show what is set, if the streamer refused.
+    select.value = String(perfOverlay.value ?? level);
+  }
+}
 /** The controllers this page sends, and the menu to add one (WebHID needs a click). */
 const controllers = ref<ManagedController[]>([]);
 /** Mouse capture after the browser let go (Esc): clicks recapture, and a hint says so. */
@@ -245,6 +268,7 @@ async function connect() {
   problem.value = null;
   setup.value = null;
   fps.value = null;
+  perfOverlay.value = null;
   const mine = ++attempt;
   // Fresh TURN credentials each time; a portal without TURN returns none.
   const iceServers = await api
@@ -300,6 +324,9 @@ async function connect() {
     },
     onFps: (rate) => {
       if (player === p) fps.value = rate;
+    },
+    onOverlay: (level) => {
+      if (player === p) perfOverlay.value = level;
     },
     onControllers: (list) => {
       if (player === p) controllers.value = list;
@@ -595,6 +622,18 @@ const STATUS: Record<PlayerState, string> = {
         @change="setFps(Number(($event.target as HTMLSelectElement).value) as FrameRate, $event.target as HTMLSelectElement)"
       >
         <option v-for="rate in FRAME_RATES" :key="rate" :value="rate">{{ rate }} fps</option>
+      </select>
+      <select
+        v-if="perfOverlay !== null"
+        :disabled="overlaySwitching || !hasControl || state !== 'connected'"
+        class="rounded-lg border border-line bg-canvas px-2 py-1 text-xs text-ink-2"
+        :value="perfOverlay"
+        :title="hasControl ? 'Performance overlay' : 'Only the session with the controls changes the overlay'"
+        aria-label="Performance overlay"
+        @change="setOverlay(Number(($event.target as HTMLSelectElement).value) as OverlayLevel, $event.target as HTMLSelectElement)"
+      >
+        <option v-if="perfOverlay === 'custom'" value="custom" disabled>Overlay: custom</option>
+        <option v-for="(label, level) in OVERLAY_LABEL" :key="level" :value="level">Overlay: {{ label }}</option>
       </select>
       <select
         v-if="wtSupported"

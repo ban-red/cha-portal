@@ -31,6 +31,7 @@ use crate::device::Device;
 use crate::encoder::{Params, VideoEncoder};
 use crate::framerate;
 use crate::input::Input;
+use crate::overlay::{Level, Overlay};
 use crate::pyro::{PyroSettings, PyroWorker};
 use crate::status::{SetupStatus, StatusWatch};
 use crate::x11_clipboard::X11Clipboard;
@@ -310,6 +311,8 @@ pub struct Media {
     pointer: PointerWatch,
     /// The app's setup status, if there's a file to follow.
     setup_status: SetupStatus,
+    /// The app's performance overlay config, if the app has one.
+    overlay: Overlay,
 }
 
 impl Media {
@@ -338,6 +341,7 @@ impl Media {
             cursor: compositor.cursor.clone(),
             pointer: compositor.pointer.clone(),
             setup_status: SetupStatus::default(),
+            overlay: Overlay::default(),
         }
     }
 
@@ -345,6 +349,13 @@ impl Media {
     /// download), from the file it writes.
     pub fn with_setup_status(mut self, status: SetupStatus) -> Self {
         self.setup_status = status;
+        self
+    }
+
+    /// Also lets the pages set the app's performance overlay, through its
+    /// config file (see `overlay`).
+    pub fn with_overlay(mut self, overlay: Overlay) -> Self {
+        self.overlay = overlay;
         self
     }
 
@@ -465,6 +476,16 @@ impl Media {
     }
 
     /// The app's setup status, from now on (the current one counts as new).
+    /// The overlay level now (None: this app has no overlay).
+    pub fn overlay(&self) -> Option<Level> {
+        self.overlay.level()
+    }
+
+    /// Sets the overlay level; refused when the app has no overlay.
+    pub fn set_overlay(&self, level: u8) -> Result<u8, String> {
+        self.overlay.set(level)
+    }
+
     pub fn status(&self) -> StatusWatch {
         self.setup_status.subscribe()
     }

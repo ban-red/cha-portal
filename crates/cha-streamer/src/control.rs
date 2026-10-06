@@ -19,6 +19,7 @@ use crate::compositor::{ClipboardWatch, CursorShape, CursorWatch, PointerSpot, P
 use crate::gamepad::{EVENT_CLASSES, Gamepads, MAX_PADS, PadEvent, PadMemory, PadState};
 use crate::input::BrowserInput;
 use crate::media::Media;
+use crate::overlay::Level;
 use crate::status::{Status, StatusWatch};
 use crate::system::SystemSample;
 use crate::viewers::Seat;
@@ -61,6 +62,15 @@ pub enum ServerMsg {
     /// With `error`, it didn't change and `fps` is what still runs.
     Fps {
         fps: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// The performance overlay is now at `level` (the answer to the page's
+    /// `overlay` request). With `error`, it didn't change and `level` is what
+    /// it still is (left out when the app has no overlay).
+    Overlay {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        level: Option<Level>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -169,6 +179,10 @@ pub struct StreamerStats {
     /// The frame rate now (the page can change it: `{"t":"fps"}`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps: Option<u32>,
+    /// The performance overlay's level (0 off to 4 full, or "custom"), only
+    /// for an app that has one (the page can change it: `{"t":"overlay"}`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<Level>,
     /// Rate control (WebTransport): the rate it aims at, and the path's
     /// RTT growth over its minimum.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -211,7 +225,7 @@ impl Control {
         // A viewer watches: what it sends doesn't reach the environment.
         if matches!(
             kind,
-            Some("input" | "resize" | "clipboard" | "cursor" | "fps")
+            Some("input" | "resize" | "clipboard" | "cursor" | "fps" | "overlay")
         ) && !self.seat.has_control()
         {
             return;
@@ -242,6 +256,8 @@ impl Control {
             }
             // The frame rate, for every viewer: 60, 90 or 120.
             Some("fps") => reply(fps_reply(&self.media, &msg)),
+            // The app's performance overlay, for every viewer: 0 to 4.
+            Some("overlay") => reply(overlay_reply(&self.media, &msg)),
             // The page draws the cursor (desktop) or wants it in the picture.
             Some("cursor") => {
                 if let Some(client) = msg.get("client").and_then(|c| c.as_bool()) {
@@ -317,6 +333,36 @@ fn answer_fps(
         Ok(fps) => ServerMsg::Fps { fps, error: None },
         Err(error) => ServerMsg::Fps {
             fps: current(),
+            error: Some(error),
+        },
+    }
+}
+
+/// The answer to a `{"t":"overlay","level":N}` request: the level now, or
+/// why it didn't change.
+fn overlay_reply(media: &Media, msg: &serde_json::Value) -> ServerMsg {
+    answer_overlay(msg, |level| media.set_overlay(level), || media.overlay())
+}
+
+/// `set` applies a valid request; `current` is the level that is set now.
+fn answer_overlay(
+    msg: &serde_json::Value,
+    set: impl FnOnce(u8) -> Result<u8, String>,
+    current: impl FnOnce() -> Option<Level>,
+) -> ServerMsg {
+    let requested = msg
+        .get("level")
+        .and_then(|l| l.as_u64())
+        // Out of u8 range is out of range, not "no level".
+        .map(|l| u8::try_from(l).unwrap_or(u8::MAX))
+        .ok_or_else(|| "no level".to_string());
+    match requested.and_then(set) {
+        Ok(level) => ServerMsg::Overlay {
+            level: Some(Level::Preset(level)),
+            error: None,
+        },
+        Err(error) => ServerMsg::Overlay {
+            level: current(),
             error: Some(error),
         },
     }
@@ -820,6 +866,63 @@ mod tests {
             ask(r#"{"t":"fps","fps":"fast"}"#),
             r#"{"t":"fps","fps":60,"error":"no fps"}"#
         );
+    }
+
+    #[test]
+    fn the_overlay_request_is_answered_with_the_level_or_the_reason() {
+        let ask = |text: &str, has_overlay: bool| {
+            let msg: serde_json::Value = serde_json::from_str(text).unwrap();
+            let reply = answer_overlay(
+                &msg,
+                |level| match (has_overlay, level) {
+                    (false, _) => Err("this app has no performance overlay".to_string()),
+                    (true, 5..) => Err(format!("overlay level {level} isn't one of 0 to 4")),
+                    (true, level) => Ok(level),
+                },
+                || has_overlay.then_some(Level::Preset(1)),
+            );
+            serde_json::to_string(&reply).unwrap()
+        };
+        assert_eq!(
+            ask(r#"{"t":"overlay","level":3}"#, true),
+            r#"{"t":"overlay","level":3}"#
+        );
+        assert_eq!(
+            ask(r#"{"t":"overlay","level":0}"#, true),
+            r#"{"t":"overlay","level":0}"#
+        );
+        assert_eq!(
+            ask(r#"{"t":"overlay","level":9}"#, true),
+            r#"{"t":"overlay","level":1,"error":"overlay level 9 isn't one of 0 to 4"}"#
+        );
+        assert_eq!(
+            ask(r#"{"t":"overlay","level":1000}"#, true),
+            r#"{"t":"overlay","level":1,"error":"overlay level 255 isn't one of 0 to 4"}"#
+        );
+        assert_eq!(
+            ask(r#"{"t":"overlay"}"#, true),
+            r#"{"t":"overlay","level":1,"error":"no level"}"#
+        );
+        assert_eq!(
+            ask(r#"{"t":"overlay","level":2}"#, false),
+            r#"{"t":"overlay","error":"this app has no performance overlay"}"#
+        );
+    }
+
+    #[test]
+    fn the_stats_carry_the_overlay_only_for_an_app_that_has_one() {
+        let line = |stats: StreamerStats| serde_json::to_value(stats).unwrap();
+        assert!(line(StreamerStats::default()).get("overlay").is_none());
+        let on = StreamerStats {
+            overlay: Some(Level::Preset(2)),
+            ..StreamerStats::default()
+        };
+        assert_eq!(line(on)["overlay"], 2);
+        let custom = StreamerStats {
+            overlay: Some(Level::Custom),
+            ..StreamerStats::default()
+        };
+        assert_eq!(line(custom)["overlay"], "custom");
     }
 
     #[test]

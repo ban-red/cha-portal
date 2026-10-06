@@ -281,6 +281,15 @@ What an app's long first-run setup is doing, for the pages to show while the pic
 - **Reading.** A plain thread (`src/status.rs`) reads the file every 250 ms: an open and a few dozen bytes, with no inotify binding to maintain. `label` is required (the rest is optional: `done`, `total`, `unit`); `done` is held to `total`, long text is cut, and a missing file, `{}` or no label clears the status. A file that doesn't parse or is over 4 KiB changes nothing, so an app that doesn't write atomically costs at most a moment's old status. It is published on a `watch` channel, like the clipboard.
 - **Sending.** Every session, WebRTC and WebTransport alike, sends `{"t":"status","label","done","total","unit"}` when its control channel opens (if there is a status) and on each change, and `{"t":"status"}` with no label once it is cleared. All viewers get it, not only the controller. The player's `onStatus` and the portal's progress notice take it from there.
 
+## Performance overlay
+
+An app with a MangoHud overlay (Steam, drawn by mangoapp inside gamescope, so it is in the picture) lets the page change its level live. The streamer owns no overlay itself: it edits the app's config, `/run/cha/mangohud.conf` in the shared runtime dir (`src/overlay.rs`; the Steam image points `MANGOHUD_CONFIGFILE` at it). mangoapp re-reads the file when it is replaced, within about 100 ms.
+
+- **The file says whether there is an overlay.** Apps that don't write it have none, and the streamer never creates it.
+- **Formats.** `no_display` is level 0 (off). `mangoapp_steam` then `preset=N`, N in 1 to 4, is level N: FPS only, horizontal bar, extended, full (MangoHud's presets, which a user may redefine in `~/.config/MangoHud/presets.conf`). Any other content, or a file over 4 KiB, is the user's own config and is reported as `"custom"`.
+- **Setting.** `{"t":"overlay","level":0..4}`, any transport, only from the session with the controls. The streamer writes a temp file beside the config and renames it over it (mode 0644, owned by the app's uid when there is one). It answers `{"t":"overlay","level":N}`, or `{"t":"overlay","level":N,"error":"…"}` with the level still set; with no overlay the answer is only `{"t":"overlay","error":"this app has no performance overlay"}`. Levels outside 0 to 4 are refused.
+- **Reporting.** The `hello`'s `stream` and every `stats` message (about every 500 ms) carry `overlay`: a number 0 to 4 or `"custom"`. The stats line leaves it out when there is no file; the hello has `null`. The file is read on each report (a few bytes, no inotify), so every viewer sees a change, whoever made it, within about 500 ms.
+
 ## Gamepads (P1.6)
 
 - The page sends each pad's Gamepad API state (standard mapping) when it changes. The streamer turns each pad into a **virtual Xbox 360 controller** through `/dev/uinput` (045e:028e, the xpad driver's ranges), the pad SDL, Steam and Wine know best.

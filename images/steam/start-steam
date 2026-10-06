@@ -25,6 +25,16 @@ fi
 # GTK 4's Vulkan renderer fails under gamescope's WSI layer (Steam's zenity
 # dialogs crashed): GL instead.
 export GSK_RENDERER=gl
+# The performance overlay: gamescope starts mangoapp (--mangoapp), which draws
+# in gamescope's picture and re-reads this file whenever it changes. Plain
+# -gamepadui never offers Steam's overlay-level setting, so Steam doesn't write
+# it: the streamer does, replacing the file atomically with `no_display` (off)
+# or `mangoapp_steam` and `preset=1..4` (MangoHud draws nothing over Steam's own
+# UI without mangoapp_steam). The presets are ~/.config/MangoHud/presets.conf in
+# the home if it exists, else MangoHud's own. The file existing tells the
+# streamer this app has an overlay; each launch starts with it off.
+export MANGOHUD_CONFIGFILE=/run/cha/mangohud.conf
+printf 'no_display\n' > "$MANGOHUD_CONFIGFILE"
 # Two helpers run beside Steam, in gamescope's environment (its X display):
 # - Big Picture sets gamescope's touch click mode to "passthrough", which
 #   drops the pointer's motion; steam-touch-mode puts the mode back;
@@ -40,4 +50,4 @@ export GSK_RENDERER=gl
 # and the node keeps the log tail. gamescope is not restarted.
 exec steam-run dbus-run-session -- gamescope --backend wayland \
   -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" \
-  -e -- sh -c 'steam-touch-mode & (until cha-x11-clipboard; do sleep 1; done) & exec steam -gamepadui'
+  -e --mangoapp -- sh -c 'steam-touch-mode & (until cha-x11-clipboard; do sleep 1; done) & exec steam -gamepadui'

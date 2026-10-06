@@ -511,6 +511,7 @@ impl Session {
     fn summary(&self) -> StreamerStats {
         let mut stats = self.stats.clone();
         stats.fps = Some(self.params.media.fps());
+        stats.overlay = self.params.media.overlay();
         let mut encode = self.encode_ms.clone();
         encode.sort_by(f64::total_cmp);
         stats.composite_to_encoded_ms_p50 = percentile(&encode, 0.5);
@@ -569,6 +570,7 @@ impl Session {
                     "audio": self.audio_mid.is_some() && self.params.audio.is_some(),
                     "gamepads": self.params.gamepads.is_some(),
                     "fps": media.fps(),
+                    "overlay": media.overlay(),
                 });
                 self.send_control(&ServerMsg::Hello { stream });
                 let floor = floor_msg(&self.handler.seat);

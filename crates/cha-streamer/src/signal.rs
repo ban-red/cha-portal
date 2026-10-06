@@ -25,6 +25,7 @@ use crate::device::{self, Device, DeviceKind};
 use crate::gamepad::{GamepadKind, Gamepads};
 use crate::media::{EncodeSettings, FrameHub, Media};
 use crate::net;
+use crate::overlay::Overlay;
 use crate::pyro::PyroSettings;
 use crate::session;
 use crate::status::SetupStatus;
@@ -321,6 +322,8 @@ pub fn main() -> Result<()> {
             (width, height),
         )
         .with_x11_clipboard(x11_clipboard)
+        // The app's performance overlay, if it has a config file.
+        .with_overlay(Overlay::at(runtime_dir.join("mangohud.conf"), args.app_uid))
         // The app's setup progress (Steam's download), in the shared volume.
         .with_setup_status(SetupStatus::start(runtime_dir.join("status"))),
     );

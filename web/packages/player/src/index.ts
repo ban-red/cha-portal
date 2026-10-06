@@ -15,6 +15,7 @@ export {
   type Transport,
   type WebTransportOffer,
 } from "./player";
+export { OVERLAY_LEVELS, type OverlayLevel, type OverlayState } from "./overlay";
 export { CaptureMode, type CaptureState, type CaptureView } from "./captureMode";
 export {
   assessHealth,

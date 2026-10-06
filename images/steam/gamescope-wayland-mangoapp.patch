@@ -1,0 +1,21 @@
+--- a/src/Backends/WaylandBackend.cpp
++++ b/src/Backends/WaylandBackend.cpp
+@@ -51,6 +51,7 @@
+ extern bool g_bColorSliderInUse;
+ extern bool fadingOut;
+ extern std::string g_reshade_effect;
++extern void mangoapp_output_update( uint64_t vblanktime );
+ 
+ using namespace std::literals;
+ 
+@@ -1768,6 +1769,10 @@
+         }
+ 
+         GetVBlankTimer().MarkVBlank( ulTime, true );
++        // As the DRM backend does: a FIFO base plane (Steam's own UI, a
++        // vsynced game) only reaches mangoapp on presentation, and nothing
++        // else calls this in a nested gamescope.
++        mangoapp_output_update( ulTime );
+         wp_presentation_feedback_destroy( pFeedback );
+ 
+         // Nudge so that steamcompmgr releases commits.
