@@ -111,6 +111,27 @@ impl TestPortal {
         }
     }
 
+    /// POSTs to dev login from loopback through a proxy that sets `header`.
+    async fn dev_login_proxied(&self, header: &str) -> Reply {
+        let addr: std::net::SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/dev-login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header, "203.0.113.9")
+            .extension(ConnectInfo(addr))
+            .body(Body::from("{}"))
+            .unwrap();
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        Reply {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            cookie: None,
+        }
+    }
+
     /// POSTs to dev login as a client at `from`.
     async fn dev_login(&self, from: &str) -> Reply {
         self.call_from(from, "/api/auth/dev-login", Some(json!({})))
@@ -382,6 +403,11 @@ async fn dev_login_creates_the_dev_admin_for_loopback_only() {
     let remote = p.dev_login("192.168.1.20:5000").await;
     assert_eq!(remote.status, StatusCode::FORBIDDEN);
     assert_eq!(remote.body["error"], "dev_login_loopback_only");
+    for proxy in ["x-forwarded-for", "forwarded", "x-real-ip"] {
+        let proxied = p.dev_login_proxied(proxy).await;
+        assert_eq!(proxied.status, StatusCode::FORBIDDEN, "{proxy}");
+        assert_eq!(proxied.body["error"], "dev_login_loopback_only");
+    }
 
     let first = p.dev_login("127.0.0.1:5000").await;
     assert_eq!(first.status, StatusCode::OK, "{}", first.body);

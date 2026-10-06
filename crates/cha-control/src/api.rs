@@ -181,15 +181,18 @@ async fn login(
 const DEV_USERNAME: &str = "dev";
 
 /// Dev login is off without `--dev-login`, and only for loopback clients.
+/// A request through a proxy on this machine also arrives from loopback, so
+/// one that carries a forwarding header is refused too.
 fn require_dev_login(state: &AppState, client: &ClientInfo) -> ApiResult<()> {
     if !state.config.dev_login {
         return Err(ApiError::NotFound("no such API".into()));
     }
-    let loopback = client
-        .ip
-        .as_deref()
-        .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
-        .is_some_and(|ip| ip.is_loopback());
+    let loopback = !client.forwarded
+        && client
+            .ip
+            .as_deref()
+            .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+            .is_some_and(|ip| ip.is_loopback());
     if !loopback {
         return Err(ApiError::forbidden(
             "dev_login_loopback_only",

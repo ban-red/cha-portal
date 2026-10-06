@@ -114,6 +114,9 @@ pub fn removal_cookie() -> Cookie<'static> {
 pub struct ClientInfo {
     pub ip: Option<String>,
     pub user_agent: Option<String>,
+    /// The request carries a proxy's forwarding header, so `ip` is the
+    /// proxy's address rather than the client's.
+    pub forwarded: bool,
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for ClientInfo {
@@ -130,6 +133,9 @@ impl<S: Send + Sync> FromRequestParts<S> for ClientInfo {
                 .get(USER_AGENT)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.chars().take(300).collect()),
+            forwarded: ["forwarded", "x-forwarded-for", "x-real-ip"]
+                .iter()
+                .any(|h| parts.headers.contains_key(*h)),
         })
     }
 }
