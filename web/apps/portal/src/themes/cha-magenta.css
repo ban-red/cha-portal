@@ -1,0 +1,167 @@
+/* Cha – Magenta: the default theme. Dark, light, and both again with contrast "more" (AAA text).
+   Primitives are OKLCH ramps (magenta for the brand, plum for neutrals tinted toward it);
+   the role blocks below pick steps from them. Components only ever use the roles.
+   The base block and every variant also apply with no data-theme attribute (selectors with
+   :root:not([data-theme])), since Magenta is the default. Each variant block defines every
+   role it changes; the light blocks define all of them. */
+
+:root {
+  /* Brand ramp, hue ~350. 400 is the accent on dark, 500 the button fill on dark,
+     550 the fill on light, 600 the accent on light, 700 the hover on light. */
+  --cha-magenta-50: oklch(0.975 0.015 350);
+  --cha-magenta-100: oklch(0.94 0.04 350);
+  --cha-magenta-200: oklch(0.88 0.08 350);
+  --cha-magenta-300: oklch(0.78 0.159 347);
+  --cha-magenta-400: oklch(0.701 0.23 349.7);
+  --cha-magenta-500: oklch(0.574 0.233 355.1);
+  --cha-magenta-550: oklch(0.53 0.217 356.4);
+  --cha-magenta-600: oklch(0.511 0.209 355.5);
+  --cha-magenta-700: oklch(0.466 0.191 356.1);
+  --cha-magenta-800: oklch(0.3 0.09 350);
+  --cha-magenta-900: oklch(0.25 0.07 350);
+  --cha-magenta-950: oklch(0.18 0.05 350);
+
+  /* Neutrals, hue ~338, a little chroma so greys belong to the brand. */
+  --cha-plum-50: oklch(0.976 0.008 337.4);
+  --cha-plum-100: oklch(0.951 0.015 338.9);
+  --cha-plum-200: oklch(0.904 0.026 339.4);
+  --cha-plum-300: oklch(0.812 0.04 339.3);
+  --cha-plum-400: oklch(0.667 0.045 340.1);
+  --cha-plum-500: oklch(0.595 0.068 339.1);
+  --cha-plum-550: oklch(0.532 0.08 337.2);
+  --cha-plum-600: oklch(0.512 0.049 339.1);
+  --cha-plum-700: oklch(0.403 0.054 339.3);
+  --cha-plum-800: oklch(0.273 0.062 337.4);
+  --cha-plum-850: oklch(0.222 0.053 336.7);
+  --cha-plum-900: oklch(0.181 0.037 336.4);
+  --cha-plum-950: oklch(0.147 0.029 336.4);
+}
+
+/* Dark (the base) */
+:root,
+:root[data-theme="cha-magenta"] {
+  color-scheme: dark;
+
+  --cha-canvas: var(--cha-plum-950);
+  --cha-panel: var(--cha-plum-900);
+  --cha-panel-2: var(--cha-plum-850);
+  --cha-line: var(--cha-plum-800);
+  --cha-line-strong: var(--cha-plum-550);
+
+  --cha-ink: var(--cha-plum-100);
+  --cha-ink-2: var(--cha-plum-300);
+  --cha-ink-3: var(--cha-plum-400);
+
+  --cha-accent: var(--cha-magenta-400);
+  --cha-accent-fill: var(--cha-magenta-500);
+  --cha-accent-fill-hover: var(--cha-magenta-600);
+  --cha-on-accent: oklch(1 0 0);
+  --cha-accent-soft: var(--cha-magenta-800);
+  --cha-focus: var(--cha-magenta-300);
+
+  --cha-ok: oklch(0.773 0.153 163.2);
+  --cha-warn: oklch(0.837 0.164 84.4);
+  --cha-danger: oklch(0.739 0.162 12.1);
+  --cha-info: oklch(0.76 0.12 245);
+
+  --cha-scrim: oklch(0.1 0.03 336 / 0.62);
+
+  --cha-chart-1: oklch(0.8 0.12 235);
+  --cha-chart-2: oklch(0.82 0.13 175);
+  --cha-chart-3: oklch(0.82 0.14 65);
+  --cha-chart-4: oklch(0.78 0.13 295);
+}
+
+/* Light */
+:root:not([data-theme])[data-appearance="light"],
+:root[data-theme="cha-magenta"][data-appearance="light"] {
+  color-scheme: light;
+
+  --cha-canvas: var(--cha-plum-50);
+  --cha-panel: oklch(1 0 0);
+  --cha-panel-2: var(--cha-plum-100);
+  --cha-line: var(--cha-plum-200);
+  --cha-line-strong: var(--cha-plum-500);
+
+  --cha-ink: var(--cha-plum-950);
+  --cha-ink-2: var(--cha-plum-700);
+  --cha-ink-3: var(--cha-plum-600);
+
+  --cha-accent: var(--cha-magenta-600);
+  --cha-accent-fill: var(--cha-magenta-550);
+  --cha-accent-fill-hover: var(--cha-magenta-700);
+  --cha-on-accent: oklch(1 0 0);
+  --cha-accent-soft: var(--cha-magenta-100);
+  --cha-focus: var(--cha-magenta-600);
+
+  --cha-ok: oklch(0.508 0.105 165.6);
+  --cha-warn: oklch(0.473 0.125 46.2);
+  --cha-danger: oklch(0.519 0.197 22.2);
+  --cha-info: oklch(0.5 0.15 255);
+
+  --cha-scrim: oklch(0.2 0.04 336 / 0.4);
+
+  --cha-chart-1: oklch(0.5 0.14 245);
+  --cha-chart-2: oklch(0.5 0.1 175);
+  --cha-chart-3: oklch(0.5 0.12 55);
+  --cha-chart-4: oklch(0.5 0.17 295);
+}
+
+/* Dark, contrast "more": AAA text, stronger lines, a clearer selected state */
+:root:not([data-theme])[data-contrast="more"],
+:root[data-theme="cha-magenta"][data-contrast="more"] {
+  --cha-line: oklch(0.5 0.06 337);
+  --cha-line-strong: oklch(0.78 0.06 338);
+
+  --cha-ink: oklch(0.99 0.004 340);
+  --cha-ink-2: oklch(0.9 0.02 340);
+  --cha-ink-3: var(--cha-plum-300);
+
+  --cha-accent: oklch(0.8 0.18 349);
+  --cha-accent-fill: oklch(0.5 0.21 355);
+  --cha-accent-fill-hover: oklch(0.45 0.19 355);
+  --cha-accent-soft: oklch(0.36 0.12 350);
+  --cha-focus: oklch(0.88 0.12 348);
+
+  --cha-ok: oklch(0.83 0.16 163);
+  --cha-warn: oklch(0.88 0.16 85);
+  --cha-danger: oklch(0.8 0.15 12);
+  --cha-info: oklch(0.82 0.11 245);
+
+  --cha-scrim: oklch(0.05 0.02 336 / 0.75);
+}
+
+/* Light, contrast "more" */
+:root:not([data-theme])[data-appearance="light"][data-contrast="more"],
+:root[data-theme="cha-magenta"][data-appearance="light"][data-contrast="more"] {
+  color-scheme: light;
+
+  --cha-canvas: var(--cha-plum-50);
+  --cha-panel: oklch(1 0 0);
+  --cha-panel-2: var(--cha-plum-100);
+  --cha-line: oklch(0.72 0.04 339);
+  --cha-line-strong: oklch(0.45 0.06 339);
+
+  --cha-ink: oklch(0.12 0.03 336);
+  --cha-ink-2: oklch(0.33 0.05 339);
+  --cha-ink-3: oklch(0.42 0.05 339);
+
+  --cha-accent: oklch(0.45 0.2 355);
+  --cha-accent-fill: oklch(0.45 0.2 356);
+  --cha-accent-fill-hover: oklch(0.4 0.18 356);
+  --cha-on-accent: oklch(1 0 0);
+  --cha-accent-soft: oklch(0.9 0.07 350);
+  --cha-focus: oklch(0.4 0.18 355);
+
+  --cha-ok: oklch(0.4 0.1 165);
+  --cha-warn: oklch(0.42 0.1 50);
+  --cha-danger: oklch(0.46 0.19 22);
+  --cha-info: oklch(0.42 0.15 255);
+
+  --cha-scrim: oklch(0.15 0.03 336 / 0.55);
+
+  --cha-chart-1: oklch(0.42 0.14 245);
+  --cha-chart-2: oklch(0.42 0.09 175);
+  --cha-chart-3: oklch(0.42 0.1 55);
+  --cha-chart-4: oklch(0.42 0.16 295);
+}

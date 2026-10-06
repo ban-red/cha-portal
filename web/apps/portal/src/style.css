@@ -1,8 +1,14 @@
 @import "tailwindcss";
 
-/* Cha Portal: dark by default (it sits beside full-screen streams). Components use the
-   role tokens below through Tailwind utilities; themes fill them in (src/themes). */
+/* Cha Portal: Cha – Magenta, dark, by default (it sits beside full-screen streams).
+   Components use the role tokens below through Tailwind utilities; themes fill them in
+   (src/themes). */
+@import "./themes/cha-magenta.css";
 @import "./themes/cha-jade.css";
+
+/* Opt-in for components: transparency-reduced:bg-panel swaps a see-through surface for a
+   solid one when the user (or the OS) asks for reduced transparency. */
+@custom-variant transparency-reduced (:root[data-transparency="reduced"] &);
 
 @theme {
   --font-sans: system-ui, -apple-system, "Inter", ui-sans-serif, "Segoe UI", sans-serif;
@@ -112,4 +118,21 @@
 }
 @utility card {
   @apply rounded-xl border border-line bg-panel;
+}
+
+/* Reduced motion (the OS setting, or the user's own): transitions and animations become
+   instant, nothing loops. The indeterminate bar can't move, so it becomes a striped,
+   full-width bar that still reads as "busy". */
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+}
+:root[data-motion="reduced"] .animate-indeterminate {
+  animation: none !important;
+  width: 100%;
+  background-image: repeating-linear-gradient(135deg, transparent 0 0.4rem, var(--cha-panel) 0.4rem 0.8rem);
 }

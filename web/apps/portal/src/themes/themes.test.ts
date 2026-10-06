@@ -3,7 +3,8 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ROLES, THEMES } from "./index";
+import { DEFAULT_PREFS, DEFAULT_THEME, ROLES, THEMES } from "./index";
+import { parsePrefs, readSystemEnv, resolvePrefs, type SystemEnv } from "./runtime";
 
 const DIR = import.meta.dir;
 
@@ -54,6 +55,15 @@ export function parseColor(v: string): Rgb | null {
   return parseHex(v) ?? parseOklch(v);
 }
 
+/** Follows var(--cha-x) references through the merged variables of a variant. */
+export function resolveVar(value: string, vars: Record<string, string>, depth = 0): string {
+  const m = /^var\(\s*--cha-([\w-]+)\s*\)$/.exec(value.trim());
+  if (!m) return value;
+  const next = vars[m[1]!];
+  if (next === undefined || depth > 8) throw new Error(`cannot resolve ${value}`);
+  return resolveVar(next, vars, depth + 1);
+}
+
 // ---- WCAG 2.x ----------------------------------------------------------------------------
 
 const decode = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
@@ -72,6 +82,8 @@ interface Block {
   theme: string | null; // from [data-theme="x"]; null for a bare :root
   appearance: "dark" | "light" | null;
   contrast: "more" | "standard" | null;
+  /** The selector reads :root:not([data-theme]): the no-attribute (default theme) copy. */
+  noTheme: boolean;
   vars: Record<string, string>;
 }
 
@@ -94,6 +106,7 @@ export function parseBlocks(css: string): Block[] {
         theme: attr("theme"),
         appearance: attr("appearance") as Block["appearance"],
         contrast: attr("contrast") as Block["contrast"],
+        noTheme: sel.includes(":not([data-theme])"),
         vars,
       });
     }
@@ -142,6 +155,7 @@ const themes = files.map((f) => {
 // ---- tests -------------------------------------------------------------------------------
 
 const SURFACES = ["canvas", "panel", "panel-2"] as const;
+const CHARTS = ["chart-1", "chart-2", "chart-3", "chart-4"] as const;
 const TEXT = ["ink", "ink-2", "ink-3", "accent", "ok", "warn", "danger", "info"] as const;
 
 describe("theme registry", () => {
@@ -161,7 +175,8 @@ for (const theme of themes) {
       const color = (role: string): Rgb => {
         const raw = v.vars[role];
         if (raw === undefined) throw new Error(`${label}: role "${role}" is not defined`);
-        const rgb = parseColor(raw);
+        const resolved = resolveVar(raw, v.vars);
+        const rgb = parseColor(resolved);
         if (!rgb) throw new Error(`${label}: role "${role}" is "${raw}", which is not a hex or oklch() colour`);
         return rgb;
       };
@@ -207,11 +222,124 @@ for (const theme of themes) {
       test(`${v.appearance}/${v.contrast}: line-strong and focus reach 3:1 on every surface`, () => {
         failures.length = 0;
         for (const fg of ["line-strong", "focus"]) for (const bg of SURFACES) check(fg, bg, 3);
+        if (v.contrast === "more") for (const bg of SURFACES) check("line-strong", bg, 4.5);
+        expect(failures).toEqual([]);
+      });
+
+      test(`${v.appearance}/${v.contrast}: chart colours reach 4.5:1 on every surface`, () => {
+        failures.length = 0;
+        for (const fg of CHARTS) for (const bg of SURFACES) check(fg, bg, 4.5);
         expect(failures).toEqual([]);
       });
     }
   });
 }
+
+describe("the default theme", () => {
+  const theme = themes.find((t) => t.id === DEFAULT_THEME)!;
+  const combos = new Set(
+    theme.blocks.filter((b) => b.theme === DEFAULT_THEME).map((b) => `${b.appearance}/${b.contrast}`),
+  );
+
+  test("registry and CSS agree on the default", () => {
+    expect(theme).toBeDefined();
+    expect(THEMES.some((t) => t.id === DEFAULT_THEME)).toBe(true);
+    expect(DEFAULT_PREFS.theme).toBe(DEFAULT_THEME);
+  });
+
+  test("every variant also has a :root:not([data-theme]) selector with the same values", () => {
+    expect(combos.size).toBeGreaterThanOrEqual(4);
+    for (const key of combos) {
+      const mine = theme.blocks.find((b) => b.theme === DEFAULT_THEME && `${b.appearance}/${b.contrast}` === key)!;
+      const bare = theme.blocks.filter(
+        (b) => b.theme === null && `${b.appearance}/${b.contrast}` === key && (b.noTheme || key === "null/null"),
+      );
+      expect(
+        bare.some((b) => JSON.stringify(b.vars) === JSON.stringify(mine.vars)),
+        `no default-case selector for ${key}`,
+      ).toBe(true);
+    }
+  });
+
+  test("no other theme claims the bare :root", () => {
+    for (const t of themes.filter((t) => t.id !== DEFAULT_THEME)) {
+      expect(t.blocks.every((b) => b.theme === t.id)).toBe(true);
+    }
+  });
+
+  test("every theme has all four variants", () => {
+    for (const t of themes) expect(t.variants.length).toBe(4);
+  });
+});
+
+describe("the pre-paint script in index.html", () => {
+  const html = readFileSync(join(DIR, "../../index.html"), "utf8");
+  test("knows every theme id, the storage key and the five attributes", () => {
+    for (const t of THEMES) expect(html).toContain(`"${t.id}"`);
+    expect(html).toContain('"cha.theme"');
+    for (const a of ["theme", "appearance", "contrast", "motion", "transparency"]) {
+      expect(html).toContain(`"data-${a}"`);
+    }
+    expect(html).toContain('content="dark light"');
+  });
+});
+
+describe("parsePrefs", () => {
+  test("garbage gives the defaults", () => {
+    for (const bad of [null, undefined, 42, "x", [], true, {}]) expect(parsePrefs(bad)).toEqual(DEFAULT_PREFS);
+  });
+  test("a partial object keeps what is valid and defaults the rest", () => {
+    expect(parsePrefs({ appearance: "light", motion: "reduced" })).toEqual({
+      ...DEFAULT_PREFS,
+      appearance: "light",
+      motion: "reduced",
+    });
+  });
+  test("an unknown theme id or an invalid field falls back field by field", () => {
+    expect(parsePrefs({ theme: "cha-nope", appearance: "sepia", contrast: "more", transparency: 3 })).toEqual({
+      ...DEFAULT_PREFS,
+      contrast: "more",
+    });
+  });
+  test("a known theme id is kept", () => {
+    expect(parsePrefs({ theme: "cha-jade" }).theme).toBe("cha-jade");
+  });
+});
+
+describe("system resolution", () => {
+  const none: SystemEnv = { light: false, moreContrast: false, reducedMotion: false, reducedTransparency: false };
+  test("system follows the OS", () => {
+    const r = resolvePrefs(DEFAULT_PREFS, { light: true, moreContrast: true, reducedMotion: true, reducedTransparency: true });
+    expect(r).toEqual({ theme: DEFAULT_THEME, appearance: "light", contrast: "more", motion: "reduced", transparency: "reduced" });
+    expect(resolvePrefs(DEFAULT_PREFS, none)).toEqual({
+      theme: DEFAULT_THEME,
+      appearance: "dark",
+      contrast: "standard",
+      motion: "full",
+      transparency: "full",
+    });
+  });
+  test("explicit choices beat the OS", () => {
+    const os: SystemEnv = { light: true, moreContrast: true, reducedMotion: false, reducedTransparency: false };
+    const r = resolvePrefs({ ...DEFAULT_PREFS, appearance: "dark", contrast: "standard", transparency: "reduced" }, os);
+    expect(r.appearance).toBe("dark");
+    expect(r.contrast).toBe("standard");
+    expect(r.transparency).toBe("reduced");
+  });
+  test("forced dark wins over light", () => {
+    expect(resolvePrefs({ ...DEFAULT_PREFS, appearance: "light" }, none, true).appearance).toBe("dark");
+  });
+  test("reads the four media queries, and survives a missing matchMedia", () => {
+    const seen: string[] = [];
+    const env = readSystemEnv((q) => {
+      seen.push(q);
+      return { matches: q.includes("contrast") };
+    });
+    expect(env).toEqual({ light: false, moreContrast: true, reducedMotion: false, reducedTransparency: false });
+    expect(seen.length).toBe(4);
+    expect(readSystemEnv(undefined)).toEqual(none);
+  });
+});
 
 describe("colour maths", () => {
   test("black on white is 21:1", () => {

@@ -1,7 +1,6 @@
 /* Cha – Jade: the portal's original dark look, with its contrast fixed.
    Every role is a solid colour (scrim aside), so the contrast test can check every pair.
-   Applies with no data-theme attribute too, since it is the only theme so far. */
-:root,
+   Dark is the base; light and contrast "more" are variants (light defines every role). */
 :root[data-theme="cha-jade"] {
   color-scheme: dark;
 
@@ -33,4 +32,96 @@
   --cha-chart-2: #c4b5fd;
   --cha-chart-3: #f9a8d4;
   --cha-chart-4: #fdba74;
+}
+
+/* Light */
+:root[data-theme="cha-jade"][data-appearance="light"] {
+  color-scheme: light;
+
+  --cha-canvas: #f3f8f8;
+  --cha-panel: #ffffff;
+  --cha-panel-2: #e9f1f2;
+  --cha-line: #d3e0e2;
+  --cha-line-strong: #6a8790;
+
+  --cha-ink: #0c1a1d;
+  --cha-ink-2: #3d565d;
+  --cha-ink-3: #526a71;
+
+  --cha-accent: #0a6f64;
+  --cha-accent-fill: #0f766e;
+  --cha-accent-fill-hover: #0d5f58;
+  --cha-on-accent: #ffffff;
+  --cha-accent-soft: #d6f0ec;
+  --cha-focus: #0a6f64;
+
+  --cha-ok: #136b32;
+  --cha-warn: #92400e;
+  --cha-danger: #b91c1c;
+  --cha-info: #1d4ed8;
+
+  --cha-scrim: rgb(10 25 28 / 0.4);
+
+  --cha-chart-1: #0369a1;
+  --cha-chart-2: #6d28d9;
+  --cha-chart-3: #be185d;
+  --cha-chart-4: #9a4507;
+}
+
+/* Dark, contrast "more" */
+:root[data-theme="cha-jade"][data-contrast="more"] {
+  --cha-line: #46606a;
+  --cha-line-strong: #8fb0ba;
+
+  --cha-ink: #fafdfd;
+  --cha-ink-2: #d5e2e5;
+  --cha-ink-3: #b3c5ca;
+
+  --cha-accent: #5eead4;
+  --cha-accent-fill: #5eead4;
+  --cha-accent-fill-hover: #99f6e4;
+  --cha-on-accent: #021c19;
+  --cha-accent-soft: #17564f;
+  --cha-focus: #99f6e4;
+
+  --cha-ok: #86efac;
+  --cha-warn: #fde68a;
+  --cha-danger: #fca5a5;
+  --cha-info: #93c5fd;
+
+  --cha-scrim: rgb(0 0 0 / 0.75);
+}
+
+/* Light, contrast "more" */
+:root[data-theme="cha-jade"][data-appearance="light"][data-contrast="more"] {
+  color-scheme: light;
+
+  --cha-canvas: #f3f8f8;
+  --cha-panel: #ffffff;
+  --cha-panel-2: #e9f1f2;
+  --cha-line: #9db4ba;
+  --cha-line-strong: #46606a;
+
+  --cha-ink: #050f11;
+  --cha-ink-2: #263d43;
+  --cha-ink-3: #34494f;
+
+  --cha-accent: #0a5c53;
+  --cha-accent-fill: #0a5c53;
+  --cha-accent-fill-hover: #07463f;
+  --cha-on-accent: #ffffff;
+  --cha-accent-soft: #bfe8e2;
+  --cha-focus: #0a5c53;
+
+  --cha-ok: #116530;
+  --cha-warn: #7a3408;
+  --cha-danger: #991b1b;
+  --cha-info: #1e40af;
+
+  --cha-scrim: rgb(5 15 17 / 0.55);
+
+  --cha-chart-1: #075985;
+  --cha-chart-2: #5b21b6;
+  --cha-chart-3: #9d174d;
+  --cha-chart-4: #92400e;
 }

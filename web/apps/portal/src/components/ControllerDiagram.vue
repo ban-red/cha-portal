@@ -25,7 +25,7 @@ const FACE: Record<ControllerType, [string, string, string, string]> = {
 };
 const face = computed(() => FACE[props.type]);
 
-const on = "fill-accent stroke-accent";
+const on = "fill-accent-fill stroke-accent-fill";
 const off = "fill-panel stroke-line";
 </script>
 

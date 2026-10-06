@@ -154,7 +154,7 @@ watch(
           >
             <span class="flex items-center gap-2">
               <span class="min-w-0 flex-1 truncate font-medium">{{ o.label }}</span>
-              <span v-if="isAuto(o)" class="rounded-full bg-accent/15 px-2 py-0.5 text-2xs text-accent">Best</span>
+              <span v-if="isAuto(o)" class="rounded-full bg-accent-soft px-2 py-0.5 text-2xs text-accent">Best</span>
               <span class="rounded-full border border-line px-2 py-0.5 text-2xs text-ink-3">{{ KIND_LABEL[o.kind] }}</span>
             </span>
             <span class="truncate text-xs text-ink-3">on {{ o.nodeName }}</span>

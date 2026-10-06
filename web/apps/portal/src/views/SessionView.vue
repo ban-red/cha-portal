@@ -32,6 +32,7 @@ import { ApiError, api } from "../api";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import RecordingDialog from "../components/RecordingDialog.vue";
 import StatsOverlay from "../components/StatsOverlay.vue";
+import { setForcedDark } from "../themes/runtime";
 import { PREFS_KEY, parsePrefs, type OverlayPrefs } from "../statsOverlay";
 import WarningNote from "../components/WarningNote.vue";
 
@@ -538,11 +539,14 @@ async function runProbe() {
 }
 
 onMounted(() => {
+  // The stream view stays dark and theme-neutral, whatever appearance the user picked.
+  setForcedDark(true);
   document.addEventListener("fullscreenchange", onFullscreen);
   void connect();
 });
 
 onBeforeUnmount(() => {
+  setForcedDark(false);
   leaving = true;
   clearTimeout(retryTimer);
   clearTimeout(hideTimer);
@@ -569,7 +573,7 @@ const STATUS: Record<PlayerState, string> = {
     <!-- After Esc released the mouse: a click on the picture captures it again -->
     <div
       v-if="capture.hint"
-      class="pointer-events-none absolute top-1/2 left-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line bg-panel/80 px-4 py-2 text-sm shadow backdrop-blur"
+      class="pointer-events-none absolute top-1/2 left-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line bg-panel/80 px-4 py-2 text-sm shadow backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none"
       role="status"
     >
       Click to capture the mouse
@@ -587,12 +591,12 @@ const STATUS: Record<PlayerState, string> = {
       @click="expand"
       @focus="expand"
     >
-      <span class="block h-1.5 w-24 rounded-full border border-line bg-panel/80 shadow backdrop-blur" />
+      <span class="block h-1.5 w-24 rounded-full border border-line bg-panel/80 shadow backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none" />
     </button>
 
     <!-- Toolbar -->
     <div
-      class="absolute top-3 left-1/2 z-30 flex origin-top -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 whitespace-nowrap shadow-lg backdrop-blur transition duration-200"
+      class="absolute top-3 left-1/2 z-30 flex origin-top -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 whitespace-nowrap shadow-lg backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none transition duration-200"
       :class="toolbar ? 'opacity-100' : 'pointer-events-none -translate-y-3 scale-y-50 opacity-0'"
       :inert="!toolbar"
       @pointerenter="hover = true"
@@ -781,21 +785,21 @@ const STATUS: Record<PlayerState, string> = {
     <!-- What the node noticed about this environment, which stays until it's gone -->
     <div
       v-if="state === 'connected' && env.data.value?.warning"
-      class="pointer-events-none absolute top-16 left-1/2 z-10 w-xl max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-lg bg-panel/90 backdrop-blur"
+      class="pointer-events-none absolute top-16 left-1/2 z-10 w-xl max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-lg bg-panel/90 backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none"
     >
       <WarningNote :message="env.data.value.warning" />
     </div>
 
     <div
       v-if="clipboardNote"
-      class="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg border border-line bg-panel/90 px-3 py-1.5 text-sm backdrop-blur"
+      class="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg border border-line bg-panel/90 px-3 py-1.5 text-sm backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none"
     >
       {{ clipboardNote }}
     </div>
 
     <!-- Setup status: the app's long first-run setup, while the picture is black -->
     <div v-if="setup && state === 'connected'" class="pointer-events-none absolute inset-0 grid place-items-center">
-      <div role="status" class="w-80 max-w-[calc(100%-2rem)] rounded-xl border border-line bg-panel/90 px-6 py-5 text-center backdrop-blur">
+      <div role="status" class="w-80 max-w-[calc(100%-2rem)] rounded-xl border border-line bg-panel/90 px-6 py-5 text-center backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none">
         <p class="font-medium">{{ setup.label }}</p>
         <p v-if="setupDetail" class="mt-1 text-sm text-ink-2 tabular-nums">{{ setupDetail }}</p>
         <div
@@ -811,7 +815,7 @@ const STATUS: Record<PlayerState, string> = {
             class="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
             :style="{ width: `${setupPercent}%` }"
           />
-          <div v-else class="h-full w-2/5 animate-indeterminate rounded-full bg-accent motion-reduce:w-full motion-reduce:animate-none motion-reduce:opacity-40" />
+          <div v-else class="h-full w-2/5 animate-indeterminate rounded-full bg-accent" />
         </div>
       </div>
     </div>
@@ -821,7 +825,7 @@ const STATUS: Record<PlayerState, string> = {
       v-if="state !== 'connected'"
       class="absolute inset-0 grid place-items-center"
     >
-      <div class="max-w-md rounded-xl border border-line bg-panel/90 px-6 py-5 text-center backdrop-blur">
+      <div class="max-w-md rounded-xl border border-line bg-panel/90 px-6 py-5 text-center backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none">
         <p class="font-medium">{{ STATUS[state] }}</p>
         <p v-if="problem" class="mt-2 text-sm text-danger">{{ problem }}</p>
         <p v-if="env.data.value && env.data.value.state !== 'running'" class="mt-2 text-sm text-ink-2">

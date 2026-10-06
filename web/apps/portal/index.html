@@ -3,8 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#12060f" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      // Sets the theme attributes on <html> before first paint. src/themes/runtime.ts does the
+      // same resolution (same key, same defaults, same "system" rules): the two MUST agree.
+      (function () {
+        try {
+          var d = document.documentElement,
+            p = JSON.parse(localStorage.getItem("cha.theme") || "null") || {},
+            m = function (q) {
+              return !!window.matchMedia && window.matchMedia(q).matches;
+            },
+            pick = function (v, ok, f) {
+              return ok.indexOf(v) >= 0 ? v : f;
+            },
+            a = pick(p.appearance, ["system", "dark", "light"], "system"),
+            c = pick(p.contrast, ["system", "standard", "more"], "system"),
+            mo = pick(p.motion, ["system", "reduced"], "system"),
+            t = pick(p.transparency, ["system", "reduced"], "system");
+          d.setAttribute("data-theme", pick(p.theme, ["cha-magenta", "cha-jade"], "cha-magenta"));
+          d.setAttribute("data-appearance", a === "light" || (a === "system" && m("(prefers-color-scheme: light)")) ? "light" : "dark");
+          d.setAttribute("data-contrast", c === "more" || (c === "system" && m("(prefers-contrast: more)")) ? "more" : "standard");
+          d.setAttribute("data-motion", mo === "reduced" || m("(prefers-reduced-motion: reduce)") ? "reduced" : "full");
+          d.setAttribute("data-transparency", t === "reduced" || m("(prefers-reduced-transparency: reduce)") ? "reduced" : "full");
+        } catch (e) {}
+      })();
+    </script>
     <title>Cha Portal</title>
   </head>
   <body class="h-full">

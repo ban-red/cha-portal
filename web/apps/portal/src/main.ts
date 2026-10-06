@@ -7,6 +7,7 @@ import { createApp } from "vue";
 import App from "./App.vue";
 import { ApiError } from "./api";
 import { router } from "./router";
+import { initTheme } from "./themes/runtime";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -17,5 +18,7 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+initTheme();
 
 createApp(App).use(createPinia()).use(router).use(VueQueryPlugin, { queryClient }).mount("#app");

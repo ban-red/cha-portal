@@ -19,8 +19,8 @@ function toggle() {
     class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition before:absolute before:-inset-2 before:content-['']
       motion-reduce:transition-none"
     :class="[
-      modelValue ? 'border-accent-fill bg-accent-fill' : 'border-line-strong bg-panel-2',
-      disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:brightness-110',
+      modelValue ? 'border-accent-fill bg-accent-fill hover:bg-accent-fill-hover' : 'border-line-strong bg-panel-2 hover:border-ink-3',
+      disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
     ]"
     @click="toggle"
   >

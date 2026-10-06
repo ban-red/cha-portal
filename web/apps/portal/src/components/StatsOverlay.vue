@@ -258,7 +258,7 @@ const BTN =
   <button
     v-if="!prefs.open"
     type="button"
-    class="absolute z-10 rounded-md border border-line bg-panel/60 px-1.5 font-mono text-2xs leading-5 opacity-30 backdrop-blur-md transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-focus"
+    class="absolute z-10 rounded-md border border-line bg-panel/60 px-1.5 font-mono text-2xs leading-5 opacity-30 backdrop-blur-md transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-focus"
     :class="CORNER_CLASS[prefs.corner]"
     :aria-label="`Show the stats panel, stream health ${health.grade ?? 'not measured'}`"
     title="Show stats"
@@ -270,7 +270,7 @@ const BTN =
     v-else
     ref="panel"
     aria-label="Stream statistics"
-    class="absolute z-10 max-h-[calc(100%-5rem)] max-w-[calc(100%-1.5rem)] flex flex-col overflow-hidden rounded-lg border border-line font-mono text-2xs leading-5 text-ink shadow-lg backdrop-blur-md [font-variant-numeric:tabular-nums]"
+    class="absolute z-10 max-h-[calc(100%-5rem)] max-w-[calc(100%-1.5rem)] flex flex-col overflow-hidden rounded-lg border border-line font-mono text-2xs leading-5 text-ink shadow-lg backdrop-blur-md transparency-reduced:backdrop-blur-none [font-variant-numeric:tabular-nums]"
     :class="[placedFree ? '' : CORNER_CLASS[prefs.corner], prefs.compact || prefs.collapsed ? 'w-max' : 'w-64']"
     :style="panelStyle"
     @keydown.esc="menuOpen = false"

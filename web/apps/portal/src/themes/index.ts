@@ -38,15 +38,45 @@ export interface ThemeInfo {
   appearances: readonly Appearance[];
   /** Preview colours for a theme picker: canvas, panel, accent, ok. */
   swatches: readonly string[];
+  /** The tab icon for this theme (a file in public/). */
+  favicon: string;
 }
 
 export const THEMES = [
   {
+    id: "cha-magenta",
+    name: "Cha – Magenta",
+    appearances: ["dark", "light"],
+    swatches: ["#12060f", "#1c0b18", "#ff4fb3", "#34d399"],
+    favicon: "/favicon.svg",
+  },
+  {
     id: "cha-jade",
     name: "Cha – Jade",
-    appearances: ["dark"],
+    appearances: ["dark", "light"],
     swatches: ["#0a0f11", "#10181b", "#2dd4bf", "#4ade80"],
+    favicon: "/favicon-jade.svg",
   },
 ] as const satisfies readonly ThemeInfo[];
 
 export type ThemeId = (typeof THEMES)[number]["id"];
+
+/** Shown when nothing is stored, and what a bare <html> (no data-theme) renders as. */
+export const DEFAULT_THEME: ThemeId = "cha-magenta";
+
+/** What the user picked. "system" follows the OS setting. Resolution is in runtime.ts. */
+export type ThemePrefs = {
+  theme: ThemeId;
+  appearance: "system" | "dark" | "light";
+  contrast: "system" | "standard" | "more";
+  motion: "system" | "reduced";
+  transparency: "system" | "reduced";
+};
+
+export const DEFAULT_PREFS: ThemePrefs = {
+  theme: DEFAULT_THEME,
+  appearance: "system",
+  contrast: "system",
+  motion: "system",
+  transparency: "system",
+};
