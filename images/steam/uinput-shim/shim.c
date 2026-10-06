@@ -669,8 +669,11 @@ static int shim_ioctl(struct slot *s, int fd, unsigned long req, unsigned long a
 			u->retval = 0;
 			effect_from_wire(&u->effect, r->effect);
 			effect_from_wire(&u->old, r->old);
-			logf_("ioctl UI_BEGIN_FF_UPLOAD request %u: effect type %#x id %d length %u", id, u->effect.type,
-			      u->effect.id, u->effect.replay_length);
+			/* FF_RUMBLE's union starts with the strong and weak magnitudes. */
+			uint16_t strong = (uint16_t)(u->effect.u.raw[0] | u->effect.u.raw[1] << 8);
+			uint16_t weak = (uint16_t)(u->effect.u.raw[2] | u->effect.u.raw[3] << 8);
+			logf_("ioctl UI_BEGIN_FF_UPLOAD request %u: effect type %#x id %d length %u strong %u weak %u", id,
+			      u->effect.type, u->effect.id, u->effect.replay_length, strong, weak);
 		}
 		ret = 0;
 		break;

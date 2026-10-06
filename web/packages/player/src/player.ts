@@ -188,6 +188,8 @@ interface ServerMessage {
   overlay?: unknown;
   /** Cumulative frames the streamer sent (`stats`). */
   frames_sent?: number;
+  /** Composited → encoded p99 over the streamer's last report, ms (`stats`). */
+  composite_to_encoded_ms_p99?: number | null;
 }
 
 /** A status message as a status: none without a label, and only the numbers it has. */
@@ -265,6 +267,8 @@ export class Player {
   /** Where a viewer's page draws the controller's pointer. */
   private pointerEl: HTMLElement | null = null;
   /** The node's latest resource report, and when it came. */
+  /** The streamer's composited → encoded p99 from its last `stats` message, ms. */
+  private encodeP99Ms: number | null = null;
   /** The streamer's cumulative `frames_sent` at each recent `stats` message, for the send rate. */
   private sentCounts: { at: number; frames: number }[] = [];
   /** Presented-frame counts (requestVideoFrameCallback's `presentedFrames`) by local time, for `shownSentFps`. */
@@ -599,6 +603,7 @@ export class Player {
     const sent = this.sentRates(latencyMs ?? 0);
     snapshot.sentFps = sent?.sent ?? null;
     snapshot.shownSentFps = sent?.shown ?? null;
+    snapshot.encodeP99Ms = this.encodeP99Ms;
     snapshot.node = this.nodeStats && ageMs <= NODE_STATS_FRESH_MS ? { ...this.nodeStats.stats, ageMs } : null;
     return snapshot;
   }
@@ -936,6 +941,7 @@ export class Player {
       case "stats":
         this.noteFps(msg.fps);
         this.noteOverlay(parseOverlay(msg.overlay));
+        this.encodeP99Ms = typeof msg.composite_to_encoded_ms_p99 === "number" ? msg.composite_to_encoded_ms_p99 : null;
         if (typeof msg.frames_sent === "number") {
           this.sentCounts.push({ at: performance.now(), frames: msg.frames_sent });
           if (this.sentCounts.length > 8) this.sentCounts.shift();

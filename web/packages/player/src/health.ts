@@ -84,6 +84,17 @@ const DELIVERY_SPREAD = { from: 8, to: 40 };
 const LATENCY_SPREAD = { from: 6, to: 30 };
 /** WebRTC jitter-buffer wait per frame, ms. */
 const JITTER_BUFFER = { from: 25, to: 80 };
+/**
+ * PyroWave frames skipped, per second as a fraction of the target rate: a frame that missed a
+ * packet and was overtaken by the next whole one never shows, but costs only itself (every frame
+ * stands alone), so it is judged like a dropped frame, not like a lost one.
+ */
+const SKIPPED = { from: 0.01, to: 0.15 };
+/**
+ * The node's GPU load counts only while the streamer's composited → encoded p99 is past this share
+ * of the frame budget: a game using the whole GPU is a game running, not the node making frames late.
+ */
+const GPU_LATE_ENCODE = 0.5;
 /** Lost frames per second (WebTransport counts frames FEC couldn't rebuild) or packets per second (WebRTC, which retransmits). */
 const LOST_FRAMES = { from: 0.2, to: 6 };
 const LOST_PACKETS = { from: 2, to: 60 };
@@ -126,6 +137,7 @@ const WEIGHT = {
   loss: 40,
   recovered: 8,
   partial: 8,
+  skipped: 20,
   rtt: 12,
   freeze: 45,
   node: 30,
@@ -218,6 +230,8 @@ const shownOfSent = (s: StatsSnapshot) => s.shownSentFps ?? s.fps;
 
 /** Whether the stream is WebTransport, which has delivery times and frame gaps that WebRTC lacks. */
 const isWebTransport = (window: StatsSnapshot[]) => window.some((s) => s.deliveryMs !== null || s.frameGapMs !== null);
+/** PyroWave: every frame stands alone, so a lost one is skipped, not a broken chain. */
+const isPyroWave = (window: StatsSnapshot[]) => window.some((s) => s.codec?.startsWith("PYROWAVE") ?? false);
 
 const CHECKS: Check[] = [
   {
@@ -338,7 +352,7 @@ const CHECKS: Check[] = [
     weight: WEIGHT.loss,
     hint: "The network is dropping packets, which costs frames or forces resends. Wi-Fi interference or a congested link: try a cable, or move closer to the access point.",
     find(window, { seconds }) {
-      if (seconds <= 0) return null;
+      if (seconds <= 0 || isPyroWave(window)) return null;
       const wt = isWebTransport(window);
       const rate = growth(window, (s) => s.packetsLost) / seconds;
       return rateFinding(rate, wt ? LOST_FRAMES : LOST_PACKETS, () => `${rate.toFixed(1)} ${wt ? "frames" : "packets"} lost per second`);
@@ -354,6 +368,18 @@ const CHECKS: Check[] = [
       if (seconds <= 0) return null;
       const rate = growth(window, (s) => s.framesRecovered) / seconds;
       return rateFinding(rate, RECOVERED, () => `${rate.toFixed(1)} frames/s rebuilt from parity`);
+    },
+  },
+  {
+    id: "skipped",
+    title: "Frames skipped",
+    summary: "Skipped frames",
+    weight: WEIGHT.skipped,
+    hint: "PyroWave frames that lost a packet and were overtaken by the next whole one are skipped: each costs one frame, and the next shows whole. Many of them read as stutter. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi.",
+    find(window, { seconds, target }) {
+      if (seconds <= 0 || !isPyroWave(window)) return null;
+      const rate = growth(window, (s) => s.packetsLost) / seconds;
+      return rateFinding(rate / target, SKIPPED, () => `${rate.toFixed(1)} frames/s skipped`);
     },
   },
   {
@@ -387,10 +413,11 @@ const CHECKS: Check[] = [
     summary: "Node overloaded",
     weight: WEIGHT.node,
     hint: "The machine running the environment is out of something, so frames are made late. Close other apps on it, lower the frame rate, or choose another device.",
-    find(window) {
-      const nodes = values(window, (s) => s.node);
-      if (!nodes.length) return null;
-      const per = nodes.map(nodeLevels);
+    find(window, { budgetMs }) {
+      const per = window
+        .filter((s) => s.node)
+        .map((s) => nodeLevels(s.node!, s.encodeP99Ms != null && s.encodeP99Ms > GPU_LATE_ENCODE * budgetMs));
+      if (!per.length) return null;
       const l = windowLevel(per.map((p) => Math.max(0, ...p.map((x) => x.level))));
       if (l === 0) return null;
       // Name whatever was over in the worst reading.
@@ -415,12 +442,13 @@ const CHECKS: Check[] = [
 ];
 
 /** What a node report puts over its limits, each as a level and a phrase. */
-function nodeLevels(n: NodeStats): { level: number; text: string }[] {
+/** Each resource's level; the GPU's only while `encodeLate` (see GPU_LATE_ENCODE). */
+function nodeLevels(n: NodeStats, encodeLate: boolean): { level: number; text: string }[] {
   const pct = (v: number) => `${v.toFixed(0)}%`;
   const out = [
     { level: level(n.cpu, NODE_CPU), text: `CPU ${pct(n.cpu)}` },
     { level: n.memTotal > 0 ? level((n.memUsed / n.memTotal) * 100, NODE_RAM) : 0, text: `RAM ${pct((n.memUsed / n.memTotal) * 100)}` },
-    { level: level(n.gpu, NODE_GPU), text: `GPU ${pct(n.gpu ?? 0)}` },
+    { level: encodeLate ? level(n.gpu, NODE_GPU) : 0, text: `GPU ${pct(n.gpu ?? 0)}` },
     {
       level: n.vramTotal && n.vramUsed !== undefined ? level((n.vramUsed / n.vramTotal) * 100, NODE_VRAM) : 0,
       text: `VRAM ${pct(((n.vramUsed ?? 0) / (n.vramTotal || 1)) * 100)}`,

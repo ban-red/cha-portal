@@ -209,6 +209,16 @@ describe("assessHealth", () => {
       expect(h.grade).toMatch(/[BC]/);
     });
 
+    test("PyroWave frames skipped are judged as a share of the rate, not as lost frames", () => {
+      const pyro = { codec: "PYROWAVE444 · WebTransport", targetFps: 120, sentFps: 120, fps: 120 };
+      // 1 a second at 120 fps (the 2026-10-06 report): under 1 %, nothing to say.
+      expect(assessHealth(run(8, (i) => ({ ...pyro, packetsLost: i })), visible).grade).toBe("A");
+      // 6 a second (5 %): skipped frames, not "Packet loss".
+      const h = assessHealth(run(8, (i) => ({ ...pyro, packetsLost: i * 6 })), visible);
+      expect(ids(h)).toEqual(["skipped"]);
+      expect(h.issues[0]!.detail).toContain("frames/s skipped");
+    });
+
     test("PyroWave frames shown incomplete are a minor note, not packet loss", () => {
       // 2.4 frames/s with packets missing, as a full 1 GbE link at 4:4:4 120 fps gave.
       const h = assessHealth(run(8, (i) => ({ framesPartial: Math.round(i * 2.4) })), visible);
@@ -261,7 +271,6 @@ describe("assessHealth", () => {
 
     test.each([
       ["CPU", { cpu: 97 }],
-      ["GPU", { gpu: 99 }],
       ["VRAM", { vramUsed: 11.8 }],
       ["NVENC", { enc: 99 }],
       ["streamer CPU", { streamerCpu: 1500 }],
@@ -271,6 +280,16 @@ describe("assessHealth", () => {
       expect(ids(h)).toEqual(["node"]);
       expect(h.issues[0]!.detail).toContain(name);
       expect(h.grade).not.toBe("A");
+    });
+
+    test("a full GPU counts only while the streamer encodes late", () => {
+      // A game using the whole GPU, the streamer's frames still on time (60 fps: 16.7 ms budget).
+      expect(assessHealth(run(8, { ...node({ gpu: 100 }), encodeP99Ms: 2 }), visible).grade).toBe("A");
+      expect(assessHealth(run(8, node({ gpu: 100 })), visible).grade).toBe("A");
+      // Past half the budget, it does.
+      const h = assessHealth(run(8, { ...node({ gpu: 99 }), encodeP99Ms: 12 }), visible);
+      expect(ids(h)).toEqual(["node"]);
+      expect(h.issues[0]!.detail).toContain("GPU");
     });
 
     test("busy but under the limits is fine", () => {

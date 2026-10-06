@@ -278,6 +278,8 @@ const TRITON_STATE: u8 = 0x45;
 const TRITON_BATTERY: u8 = 0x43;
 const TRITON_WIRELESS: u8 = 0x79;
 const TRITON_RUMBLE: u8 = 0x80;
+/// How many rumble changes are logged with their bytes.
+const RUMBLE_LOG_CHANGES: u32 = 60;
 const TRITON_PULSE: u8 = 0x81;
 /// The command messages' feature report, and what follows its id.
 const TRITON_FEATURE: u8 = 1;
@@ -411,6 +413,8 @@ pub struct SteamController {
     start: Instant,
     sent: u32,
     rumble: (u16, u16),
+    /// Rumble reports logged so far (the first few changes, with their bytes).
+    rumble_logged: u32,
     /// The command ids seen so far, for the log.
     seen: Vec<u8>,
     /// Settings written (`SET_SETTINGS`), in the order first written.
@@ -435,6 +439,7 @@ impl SteamController {
             start: Instant::now(),
             sent: 0,
             rumble: (0, 0),
+            rumble_logged: 0,
             seen: Vec::new(),
             settings: Vec::new(),
             reply: [0; REPORT_SIZE],
@@ -781,6 +786,12 @@ impl SteamController {
             return Vec::new();
         }
         self.rumble = motors;
+        // What the app sends besides the speeds (intensity, gains), for the
+        // first changes: a weak rumble may be in fields read nowhere else.
+        if self.rumble_logged < RUMBLE_LOG_CHANGES {
+            self.rumble_logged += 1;
+            info!(slot = self.slot, body = ?&body[..9], "steam controller: rumble report");
+        }
         vec![PadEvent::Rumble(Rumble {
             slot: self.slot,
             lo: f32::from(motors.0) / 65535.0,

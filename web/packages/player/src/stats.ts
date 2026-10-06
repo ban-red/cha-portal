@@ -14,6 +14,11 @@ export interface StatsSnapshot {
    */
   sentFps: number | null;
   /**
+   * The streamer's composited → encoded p99 over its last report, ms: how late
+   * the node makes frames, whatever else runs on its GPU. Null until it says.
+   */
+  encodeP99Ms?: number | null;
+  /**
    * Frames per second shown over the same span as `sentFps` (between its first and last report,
    * shifted by the latency), so a burst of sends then a still screen compares like with like.
    * Null without `sentFps`; judge stutter with this and fall back to `fps`.

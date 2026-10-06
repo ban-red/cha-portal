@@ -733,6 +733,7 @@ If S1 fails, Phase 4 starts in parallel with Phase 2.
 - An L4S/ECN-aware controller on the QUIC path (Chrome already reports ECN in QUIC ACKs).
 - A Media-over-QUIC spectator/fan-out mode for many viewers.
 - Postgres and multi-portal HA for team scale.
+- **Steam Controller rumble through its motors.** On the `steam` pad kind, Steam turns a game's rumble into trackpad haptic pulses, not the 2026 controller's motors: during a Cyberpunk drive (2026-10-06) the game asked Steam's virtual pad for rumble (mostly ~25 %, peaks at full) and our virtual Steam Controller got no `0x80` rumble report at all, so the user felt it only weakly (inferred: the `0x81` pulses aren't logged yet). Log the pulses to confirm, then find which answer makes Steam think the controller has no motors (it sends `0xc1`, `0xdc`, `0xe2` and `0xf2`, which the streamer doesn't handle). Then, if still wanted, a per-controller rumble strength on the Controllers page, applied in the player to rumble and pulses alike. The streamer logs the first 60 rumble reports' bytes and the shim each effect's strong/weak magnitudes for this.
 
 ---
 
