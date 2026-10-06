@@ -1,8 +1,8 @@
 # The portal: cha-control (the API, the SPA and the nodes' WebSocket), with
 # its SQLite database in the `data` volume. From the repository root:
 #   docker compose -f deploy/portal/compose.yaml up -d --build
-# The first start logs a one-time setup token (`... logs portal`): open the
-# portal and create the first admin with it.
+# A fresh portal is open to claim: the first visitor to open it creates the
+# first admin, so open it right after the first start.
 #
 # Serve it over HTTPS. Browsers give gamepads, keyboard lock and audio
 # worklets only to secure pages, and the session cookie is marked Secure:

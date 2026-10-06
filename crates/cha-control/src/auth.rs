@@ -23,7 +23,7 @@ use crate::db::{self, Role, User};
 use crate::error::{ApiError, ApiResult};
 
 pub const SESSION_COOKIE: &str = "cha_session";
-pub const MIN_PASSWORD_LEN: usize = 10;
+pub const MIN_PASSWORD_LEN: usize = 3;
 
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     let mut salt = [0u8; 16];

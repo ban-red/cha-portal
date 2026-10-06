@@ -40,7 +40,6 @@ async fn portal() -> Portal {
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool).await.unwrap();
-    let setup_token = state.setup_token.lock().await.clone().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move {
@@ -55,7 +54,7 @@ async fn portal() -> Portal {
     let http = reqwest::Client::new();
     let res = http
         .post(format!("{url}/api/setup"))
-        .json(&json!({ "token": setup_token, "username": "admin", "password": "correct horse battery" }))
+        .json(&json!({ "username": "admin", "password": "correct horse battery" }))
         .send()
         .await
         .unwrap();

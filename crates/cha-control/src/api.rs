@@ -52,42 +52,24 @@ async fn setup_status(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetupRequest {
-    token: String,
     username: String,
     display_name: Option<String>,
     password: String,
 }
 
-/// Creates the first admin, with the setup token from the server log.
+/// Claims a fresh portal: creates the first admin. Open only while the portal
+/// has no accounts; the first request wins.
 async fn setup(
     State(state): State<AppState>,
     client: ClientInfo,
     jar: CookieJar,
     Json(req): Json<SetupRequest>,
 ) -> ApiResult<(CookieJar, Json<User>)> {
-    let mut setup_token = state.setup_token.lock().await;
+    let _claim = state.setup_lock.lock().await;
     if db::user_count(&state.db).await? > 0 {
         return Err(ApiError::conflict(
             "already_set_up",
             "the portal already has accounts",
-        ));
-    }
-    let expected = setup_token
-        .as_deref()
-        .ok_or_else(|| ApiError::conflict("already_set_up", "setup isn't open"))?;
-    if !constant_time_eq(req.token.trim().as_bytes(), expected.as_bytes()) {
-        db::audit(
-            &state.db,
-            None,
-            "setup.bad_token",
-            None,
-            None,
-            client.ip.as_deref(),
-        )
-        .await?;
-        return Err(ApiError::forbidden(
-            "bad_setup_token",
-            "that setup token isn't the one in the server log",
         ));
     }
     let username = valid_username(&req.username)?;
@@ -106,7 +88,6 @@ async fn setup(
         Role::Admin,
     )
     .await?;
-    *setup_token = None;
     db::audit(
         &state.db,
         Some(&user.id),
@@ -275,7 +256,7 @@ async fn dev_login(
         .await?;
         return Ok((jar.add(cookie), Json(user)));
     }
-    let mut setup_token = state.setup_token.lock().await;
+    let claim = state.setup_lock.lock().await;
     let user = match db::user_for_login(&state.db, DEV_USERNAME).await? {
         Some(row) => row.user,
         None => {
@@ -300,8 +281,7 @@ async fn dev_login(
             user
         }
     };
-    *setup_token = None;
-    drop(setup_token);
+    drop(claim);
     if user.disabled {
         return Err(ApiError::forbidden("disabled", "this account is disabled"));
     }
@@ -396,27 +376,16 @@ async fn audit(
     Ok(Json(db::recent_audit(&state.db, 200).await?))
 }
 
-/// 3–32 characters: letters, digits, `.`, `_`, `-`; starts with a letter or digit.
+/// 3–64 characters, trimmed, no control characters.
 fn valid_username(name: &str) -> ApiResult<&str> {
     let name = name.trim();
-    let ok = (3..=32).contains(&name.len())
-        && name
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    let ok = (3..=64).contains(&name.chars().count()) && !name.chars().any(char::is_control);
     if ok {
         Ok(name)
     } else {
         Err(ApiError::bad_request(
             "bad_username",
-            "usernames are 3–32 letters, digits, '.', '_' or '-', starting with a letter or digit",
+            "usernames need at least 3 characters (and at most 64)",
         ))
     }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

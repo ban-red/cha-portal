@@ -276,7 +276,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   setupStatus: () => request<{ needed: boolean; devLogin: boolean }>("GET", "/setup"),
-  setup: (body: { token: string; username: string; displayName?: string; password: string }) =>
+  setup: (body: { username: string; displayName?: string; password: string }) =>
     request<User>("POST", "/setup", body),
   login: (body: { username: string; password: string }) => request<User>("POST", "/auth/login", body),
   devLogin: (username?: string) => request<User>("POST", "/auth/dev-login", username ? { username } : {}),

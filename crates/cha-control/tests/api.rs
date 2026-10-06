@@ -12,7 +12,6 @@ use tower::ServiceExt;
 struct TestPortal {
     app: Router,
     db: sqlx::SqlitePool,
-    setup_token: String,
     _dir: tempfile::TempDir,
 }
 
@@ -33,11 +32,9 @@ async fn portal_with(dev_login: bool) -> TestPortal {
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool.clone()).await.unwrap();
-    let setup_token = state.setup_token.lock().await.clone().unwrap();
     TestPortal {
         app: app(state),
         db: pool,
-        setup_token,
         _dir: dir,
     }
 }
@@ -160,7 +157,7 @@ impl TestPortal {
                 "POST",
                 "/api/setup",
                 None,
-                Some(json!({ "token": self.setup_token, "username": "admin", "password": "correct horse battery" })),
+                Some(json!({ "username": "admin", "password": "correct horse battery" })),
             )
             .await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
@@ -176,11 +173,24 @@ async fn first_run_setup_creates_one_admin() {
         json!({ "needed": true, "devLogin": false })
     );
 
-    let wrong = p
-        .call("POST", "/api/setup", None, Some(json!({ "token": "nope", "username": "admin", "password": "correct horse battery" })))
+    let short = p
+        .call(
+            "POST",
+            "/api/setup",
+            None,
+            Some(json!({ "username": "ad", "password": "abc" })),
+        )
         .await;
-    assert_eq!(wrong.status, StatusCode::FORBIDDEN);
-    assert_eq!(wrong.body["error"], "bad_setup_token");
+    assert_eq!(short.body["error"], "bad_username");
+    let short = p
+        .call(
+            "POST",
+            "/api/setup",
+            None,
+            Some(json!({ "username": "adm", "password": "ab" })),
+        )
+        .await;
+    assert_eq!(short.body["error"], "weak_password");
 
     let cookie = p.setup_admin().await;
     let me = p.call("GET", "/api/me", Some(&cookie), None).await;
@@ -197,7 +207,12 @@ async fn first_run_setup_creates_one_admin() {
         json!({ "needed": false, "devLogin": false })
     );
     let again = p
-        .call("POST", "/api/setup", None, Some(json!({ "token": p.setup_token, "username": "x2", "password": "correct horse battery" })))
+        .call(
+            "POST",
+            "/api/setup",
+            None,
+            Some(json!({ "username": "x2", "password": "correct horse battery" })),
+        )
         .await;
     assert_eq!(again.status, StatusCode::CONFLICT);
 }
@@ -290,7 +305,7 @@ async fn only_admins_manage_users() {
             "POST",
             "/api/users",
             Some(&admin),
-            Some(json!({ "username": "player2", "password": "short", "role": "user" })),
+            Some(json!({ "username": "player2", "password": "ab", "role": "user" })),
         )
         .await;
     assert_eq!(weak.body["error"], "weak_password");
@@ -299,9 +314,7 @@ async fn only_admins_manage_users() {
             "POST",
             "/api/users",
             Some(&admin),
-            Some(
-                json!({ "username": "../x", "password": "another long password", "role": "user" }),
-            ),
+            Some(json!({ "username": " x ", "password": "another long password", "role": "user" })),
         )
         .await;
     assert_eq!(bad_name.body["error"], "bad_username");

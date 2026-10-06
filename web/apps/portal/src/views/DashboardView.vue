@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { ArrowUpDown, LayoutGrid, List, Monitor, MonitorPlay, Pin, Search, Square, X } from "lucide-vue-next";
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, reactive, ref } from "vue";
 
-import { ApiError, api, type Environment, type EnvironmentState, type PlacementChoice, type Template } from "../api";
+import { ApiError, api, type Environment, type EnvironmentState, type PlacementChoice, type StorageApp, type Template } from "../api";
 import AppCard from "../components/AppCard.vue";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import FormError from "../components/FormError.vue";
@@ -14,7 +14,7 @@ import { useSession } from "../stores/session";
 import { useAppFps } from "../appFps";
 import { useControllerApps } from "../controllerKinds";
 import { PLACEMENTS_KEY, usePlacements } from "../placements";
-import { STORAGE_KEY } from "../storage";
+import { STORAGE_KEY, patchApp } from "../storage";
 import { MAX_PINNED } from "../themes";
 import { useTheme } from "../themes/runtime";
 
@@ -33,9 +33,29 @@ const environments = useQuery({
 
 // Which apps keep the user's data. Where the server can't say yet (404) nothing is marked.
 const storage = useQuery({ queryKey: STORAGE_KEY, queryFn: api.storage, staleTime: 30_000 });
-const saved = computed(
-  () => new Set((storage.data.value?.apps ?? []).filter((a) => a.persistent).map((a) => a.template)),
-);
+const storageByTemplate = computed(() => new Map((storage.data.value?.apps ?? []).map((a) => [a.template, a])));
+const storageErrors = reactive<Record<string, string>>({});
+const setPersistent = useMutation({
+  mutationFn: (v: { template: string; persistent: boolean }) => api.setStoragePersistent(v.template, v.persistent),
+  onMutate: async ({ template, persistent }) => {
+    delete storageErrors[template];
+    await queryClient.cancelQueries({ queryKey: STORAGE_KEY });
+    const was = storageByTemplate.value.get(template)?.persistent;
+    patchApp<StorageApp>(queryClient, STORAGE_KEY, template, { persistent });
+    return { was };
+  },
+  onSuccess: (updated, { template }) => patchApp<StorageApp>(queryClient, STORAGE_KEY, template, updated),
+  onError: (err, { template }, ctx) => {
+    if (ctx?.was !== undefined) patchApp<StorageApp>(queryClient, STORAGE_KEY, template, { persistent: ctx.was });
+    storageErrors[template] =
+      err instanceof ApiError && err.status === 409
+        ? "It is running. Stop it first."
+        : err instanceof ApiError && err.message
+          ? err.message
+          : "Couldn't save the change.";
+  },
+  onSettled: () => void queryClient.invalidateQueries({ queryKey: STORAGE_KEY }),
+});
 
 // Which controller each app sees, chosen right on its card (from its next launch).
 const controllerApps = useControllerApps();
@@ -318,7 +338,8 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
                 :template="t"
                 :view="view"
                 :pinned="pinned.has(t.id)"
-                :saved="saved.has(t.id)"
+                :storage="storageByTemplate.get(t.id)"
+                :storage-error="storageErrors[t.id]"
                 :controller="
                   session.user?.role !== 'guest' && !controllerApps.missing.value
                     ? controllerApps.byTemplate.value.get(t.id)
@@ -336,6 +357,7 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
                 :disabled="session.user?.role === 'guest'"
                 @launch="(choice) => launch.mutate({ template: t, choice })"
                 @pin="togglePin(t.id)"
+                @set-persistent="(persistent) => setPersistent.mutate({ template: t.id, persistent })"
                 @choose-controller="controllerApps.choose(controllerApps.byTemplate.value.get(t.id)!, $event)"
                 @choose-fps="appFps.choose(appFps.byTemplate.value.get(t.id)!, $event)"
               />

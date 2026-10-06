@@ -15,7 +15,7 @@
    docker compose -f deploy/portal/compose.yaml up -d --build
    ```
 
-   It listens on `127.0.0.1:7676`. Serve it over HTTPS: browsers only give gamepads, keyboard lock and audio worklets to secure pages. On a tailnet, run `sudo tailscale serve --bg 7676` ([guide](../docs/guides/tailscale.md)). With public DNS, set `CHA_DOMAIN` and add `--profile tls` (Caddy). The first start logs a one-time setup token for the first admin.
+   It listens on `127.0.0.1:7676`. Serve it over HTTPS: browsers only give gamepads, keyboard lock and audio worklets to secure pages. On a tailnet, run `sudo tailscale serve --bg 7676` ([guide](../docs/guides/tailscale.md)). With public DNS, set `CHA_DOMAIN` and add `--profile tls` (Caddy). A fresh portal is open to claim: the first visitor creates the first admin, so open it right after the first start.
 2. **The node**, on the GPU server (NVIDIA with the Container Toolkit's CDI spec; or an Intel or AMD GPU, or no GPU at all: *Devices*, below). Build the images it runs:
 
    ```bash

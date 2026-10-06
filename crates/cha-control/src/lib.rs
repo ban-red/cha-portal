@@ -54,27 +54,23 @@ pub struct Config {
 pub struct AppState {
     pub db: SqlitePool,
     pub config: Arc<Config>,
-    /// One-time token that lets the first admin be created; `None` once set up.
-    pub setup_token: Arc<Mutex<Option<String>>>,
+    /// Held while the first account is created, so two visitors can't both
+    /// claim a fresh portal.
+    pub setup_lock: Arc<Mutex<()>>,
     pub nodes: Arc<nodes::NodeHub>,
     /// Signs media tokens; nodes' streamers check them with its public half.
     pub media_key: Arc<cha_wire::NodeKey>,
 }
 
 impl AppState {
-    /// Opens storage and, when the portal has no accounts yet, opens setup with a
-    /// fresh one-time token.
+    /// Opens storage. A portal with no accounts yet is open to claim: the
+    /// first visitor creates the first admin.
     pub async fn new(config: Config, db: SqlitePool) -> Result<Self> {
-        let setup_token = if db::user_count(&db).await? == 0 {
-            Some(auth::random_token()?)
-        } else {
-            None
-        };
         let media_key = Arc::new(media_key(&db).await?);
         Ok(Self {
             db,
             config: Arc::new(config),
-            setup_token: Arc::new(Mutex::new(setup_token)),
+            setup_lock: Arc::default(),
             nodes: Arc::default(),
             media_key,
         })
@@ -116,9 +112,9 @@ pub fn app(state: AppState) -> Router {
 pub async fn run(config: Config) -> Result<()> {
     let db = db::open(&config.database).await?;
     let state = AppState::new(config.clone(), db.clone()).await?;
-    if let Some(token) = state.setup_token.lock().await.as_deref() {
+    if db::user_count(&db).await? == 0 {
         warn!(
-            "No accounts yet. Open the portal and create the first admin with setup token: {token}"
+            "No accounts yet. Open the portal to claim it: the first visitor creates the first admin"
         );
     }
     if config

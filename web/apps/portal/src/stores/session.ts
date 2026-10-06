@@ -39,8 +39,8 @@ export const useSession = defineStore("session", () => {
     setupNeeded.value = false;
   }
 
-  async function setup(token: string, username: string, password: string, displayName?: string): Promise<void> {
-    user.value = await api.setup({ token, username, password, displayName });
+  async function setup(username: string, password: string, displayName?: string): Promise<void> {
+    user.value = await api.setup({ username, password, displayName });
     setupNeeded.value = false;
   }
 

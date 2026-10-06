@@ -67,7 +67,7 @@ bun run dev
 
 This starts `cha-control` on port 7677 (database `data/dev.db`) and the web app on Vite with hot reload at http://localhost:7678, which proxies `/api` to it. The sign-in page shows **Login as Local Dev**: it creates a `dev` admin and signs you in, and offers a **Login as *name*** button per existing admin, with no password. It only answers requests from this machine and is not for a real portal. Flags after `--` go to `cha-control` (`bun run dev -- --turn-secret …`); Ctrl-C stops both.
 
-To run the portal as it ships, build the web app and start `cha-control` alone. Its log prints a one-time setup token for creating the first admin at http://localhost:7677:
+To run the portal as it ships, build the web app and start `cha-control` alone. Open http://localhost:7677 and claim it: the first visitor creates the first admin.
 
 ```bash
 bun run --cwd web/apps/portal build

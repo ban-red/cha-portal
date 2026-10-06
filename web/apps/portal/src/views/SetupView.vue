@@ -10,7 +10,6 @@ import { useSession } from "../stores/session";
 
 const session = useSession();
 const router = useRouter();
-const token = ref("");
 const username = ref("admin");
 const displayName = ref("");
 const password = ref("");
@@ -26,7 +25,7 @@ async function submit() {
   }
   busy.value = true;
   try {
-    await session.setup(token.value, username.value, password.value, displayName.value || undefined);
+    await session.setup(username.value, password.value, displayName.value || undefined);
     await router.replace({ name: "dashboard" });
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : "Setup failed. Is cha-control running?";
@@ -37,16 +36,11 @@ async function submit() {
 </script>
 
 <template>
-  <AuthCard title="Set up Cha Portal" subtitle="Create the first admin account.">
+  <AuthCard title="Claim this portal" subtitle="Create your admin account to finish setting up Cha Portal.">
     <form class="space-y-4" @submit.prevent="submit">
       <div>
-        <label class="label" for="token">Setup token</label>
-        <input id="token" v-model="token" name="setup-token" class="field font-mono" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="token-hint" required />
-        <p id="token-hint" class="mt-1.5 text-xs text-ink-3">Printed in the cha-control log on first start.</p>
-      </div>
-      <div>
         <label class="label" for="username">Username</label>
-        <input id="username" v-model="username" name="username" class="field" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+        <input id="username" v-model="username" name="username" class="field" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" autofocus required />
       </div>
       <div>
         <label class="label" for="display">Display name <span class="font-normal text-ink-3">(optional)</span></label>
@@ -54,8 +48,8 @@ async function submit() {
       </div>
       <div>
         <label class="label" for="password">Password</label>
-        <input id="password" v-model="password" name="new-password" type="password" class="field" autocomplete="new-password" minlength="10" aria-describedby="password-hint" required />
-        <p id="password-hint" class="mt-1.5 text-xs text-ink-3">At least 10 characters.</p>
+        <input id="password" v-model="password" name="new-password" type="password" class="field" autocomplete="new-password" minlength="3" aria-describedby="password-hint" required />
+        <p id="password-hint" class="mt-1.5 text-xs text-ink-3">At least 3 characters.</p>
       </div>
       <div>
         <label class="label" for="confirm">Confirm password</label>

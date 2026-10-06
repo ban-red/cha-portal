@@ -24,7 +24,7 @@ Tailscale (or plain WireGuard) is the simplest way to reach a homelab portal fro
    sudo tailscale serve --bg 7676
    ```
 
-   `tailscale serve status` shows the URL. Open it, and create the first admin with the setup token from `docker compose -f deploy/portal/compose.yaml logs portal`.
+   `tailscale serve status` shows the URL. Open it and claim the portal: the first visitor creates the first admin.
 5. **Add each node**: **Admin → Nodes → Add node**, then on the node:
 
    ```bash

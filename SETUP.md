@@ -51,9 +51,9 @@ Run the `generate` command again after every driver update.
 
 The portal and the node on one Linux machine, from the images a release publishes (`ghcr.io/ban-red/cha-portal`, `cha-node` and `cha-streamer`) and one compose file, [`deploy/quickstart/compose.yaml`](deploy/quickstart/compose.yaml). Only the environment images (Chrome, Firefox, XFCE, KDE, Steam, the test pattern) are still built here. Until the first release is tagged there are no published images to pull: follow [One machine, from source](#one-machine-from-source) instead.
 
-Install Tailscale on the machine and on the device you'll play from, and enable **MagicDNS** and **HTTPS Certificates** in the Tailscale admin console under **DNS**.
+You'll need Tailscale on the machine (the setup script can install it) and on the device you'll play from. Enable **MagicDNS** and **HTTPS Certificates** in the Tailscale admin console under **DNS**.
 
-1. **Get the code**, for the environment images and the host files:
+1. **Get the code at the release you'll run.** The environment images are built from it and talk to the streamer, so they must come from the same release:
 
    ```bash
    git clone https://github.com/ban-red/cha-portal.git
@@ -63,27 +63,28 @@ Install Tailscale on the machine and on the device you'll play from, and enable 
    cd cha-portal
    ```
 
-2. **Pick the release.** Copy the example settings and set `CHA_VERSION` to the release you want:
+   ```bash
+   git checkout v0.1.0
+   ```
+
+2. **Prepare the machine** with [`deploy/quickstart/setup.sh`](deploy/quickstart/setup.sh). On Ubuntu or Debian it does everything up to starting the portal:
+   - installs the packages it needs and turns on clock synchronisation;
+   - installs Docker Engine 26 or newer, with compose and buildx, from Docker's own repository (it stops, rather than replace, a distribution's older `docker.io`);
+   - with an NVIDIA driver already installed, installs NVIDIA's Container Toolkit and generates the CDI spec. It never installs or changes a GPU driver;
+   - installs the host files (udev rules, the Steam sandbox's AppArmor profile, the `uinput` and `uhid` modules);
+   - makes the data root, `/srv/cha-portal`, owned by root with mode 0755 (the agent makes each user's directories in it);
+   - writes `deploy/quickstart/.env` with `CHA_VERSION`, readable only by you;
+   - builds the environment images. This is the slow part.
 
    ```bash
-   cp deploy/quickstart/.env.example deploy/quickstart/.env
+   sudo deploy/quickstart/setup.sh --version 0.1.0 --tailscale
    ```
+
+   Leave out `--tailscale` if Tailscale is already installed, or if you're going [without HTTPS](#without-https-a-trusted-lan-only). `--data-root DIR` puts app data elsewhere, `--no-build` skips the images, and `--check` reports what's left to do without changing anything. It's safe to run again, and it says what it did at each step. On another distribution, do the same by hand: [Before you start](#before-you-start), then [One machine, from source](#one-machine-from-source) steps 5 and 6.
 
    Compose reads `deploy/quickstart/.env` on every run, so the portal, the agent and the streamer always stay on the same version. The other settings in [`deploy/README.md`](deploy/README.md) go in the same file.
 
-3. **Build the environment images.** This is the slow step:
-
-   ```bash
-   docker compose -f images/compose.yaml build
-   ```
-
-4. **Install the host files** (udev rules, the Steam sandbox's AppArmor profile, the `uinput`/`uhid` modules):
-
-   ```bash
-   sudo deploy/node/host/install.sh
-   ```
-
-5. **Start the portal**, and serve it over HTTPS on your tailnet. The quick start's portal listens on port 7676 on every interface, so it also answers on the LAN; set `CHA_BIND=127.0.0.1:7676` in `.env` to keep it to this machine, and do so on a machine with a public address, since Docker's published ports bypass ufw and firewalld:
+3. **Start the portal**, and serve it over HTTPS on your tailnet. The quick start's portal listens on port 7676 on every interface, so it also answers on the LAN; set `CHA_BIND=127.0.0.1:7676` in `.env` to keep it to this machine, and do so on a machine with a public address, since Docker's published ports bypass ufw and firewalld:
 
    ```bash
    docker compose -f deploy/quickstart/compose.yaml up -d portal
@@ -93,15 +94,11 @@ Install Tailscale on the machine and on the device you'll play from, and enable 
    sudo tailscale serve --bg 7676
    ```
 
-   `tailscale serve status` prints the portal's URL, `https://<machine>.<tailnet>.ts.net`.
+   If the setup script has just installed Tailscale, join your tailnet first with `sudo tailscale up`. `tailscale serve status` prints the portal's URL, `https://<machine>.<tailnet>.ts.net`.
 
-6. **Create the first admin** with the one-time setup token from the portal's log:
+4. **Claim the portal.** Open its URL: a fresh portal shows **Claim this portal**, where you pick the first admin's username and password (at least 3 characters each). Whoever opens it first claims it, so do this right after it starts.
 
-   ```bash
-   docker compose -f deploy/quickstart/compose.yaml logs portal
-   ```
-
-7. **Start the node.** In the portal, open **Admin → Nodes → Add node**, copy the join token, and start the agent with it. On its first start the agent pulls the streamer image, then enrolls:
+5. **Start the node.** In the portal, open **Admin → Nodes → Add node**, copy the join token, and start the agent with it. On its first start the agent pulls the streamer image, then enrolls:
 
    ```bash
    CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/quickstart/compose.yaml up -d
@@ -109,13 +106,13 @@ Install Tailscale on the machine and on the device you'll play from, and enable 
 
    The token is used once; the node's identity is kept in the `agent-state` volume. On a machine without an NVIDIA GPU, first delete the agent's `devices:` lines from the compose file.
 
-8. **Check the node**, and fix what it reports:
+6. **Check the node**, and fix what it reports:
 
    ```bash
    docker compose -f deploy/quickstart/compose.yaml run --rm agent --doctor
    ```
 
-Then go to [First launch](#first-launch). To update, set the new `CHA_VERSION` in `.env`, rebuild the environment images and run `docker compose -f deploy/quickstart/compose.yaml pull`, then `up -d`.
+Then go to [First launch](#first-launch). To update, check out the new release (`git fetch --tags && git checkout v0.2.0`), run `sudo deploy/quickstart/setup.sh --version 0.2.0` to rebuild the environment images and set the version, then `docker compose -f deploy/quickstart/compose.yaml pull` and `up -d`.
 
 ## One machine, from source
 
@@ -145,13 +142,7 @@ The portal and the node on the same Linux machine, with the browser anywhere on 
 
    `tailscale serve status` prints the portal's URL, `https://<machine>.<tailnet>.ts.net`.
 
-4. **Create the first admin.** The portal's first start logs a one-time setup token:
-
-   ```bash
-   docker compose -f deploy/portal/compose.yaml logs portal
-   ```
-
-   Open the portal's URL and create your admin account with it.
+4. **Claim the portal.** Open its URL: a fresh portal shows **Claim this portal**, where you pick the first admin's username and password (at least 3 characters each). Whoever opens it first claims it, so do this right after it starts.
 
 5. **Build the images the node runs:** the streamer, and the environments (Chrome, Firefox, XFCE, KDE, Steam, the test pattern). This is the slow step:
 

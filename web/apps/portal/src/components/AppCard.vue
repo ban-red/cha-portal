@@ -3,12 +3,13 @@
 // width (a container query): icon beside the title when it is wide, stacked when narrow;
 // the Controller and Frame rate selects sit side by side only when there is room for their
 // full option text.
-import { Activity, AppWindow, Database, Gamepad2, Gauge, Globe, Monitor, Pin } from "lucide-vue-next";
+import { Activity, AppWindow, Gamepad2, Gauge, Globe, Monitor, Pin } from "lucide-vue-next";
 import { computed, ref } from "vue";
 
-import { catalogIconUrl, type AppSettings, type ControllerApp, type Environment, type PlacementChoice, type Placements, type Template } from "../api";
+import { catalogIconUrl, type AppSettings, type ControllerApp, type Environment, type PlacementChoice, type Placements, type StorageApp, type Template } from "../api";
 import { FPS_CHOICES } from "../appFps";
 import { KINDS, kindLabel } from "../controllerKinds";
+import AppStorageMenu from "./AppStorageMenu.vue";
 import FormError from "./FormError.vue";
 import LaunchButton from "./LaunchButton.vue";
 
@@ -16,8 +17,9 @@ const props = defineProps<{
   template: Template;
   view: "grid" | "list";
   pinned: boolean;
-  /** The app keeps the user's data between launches. */
-  saved: boolean;
+  /** The app's data setting, when the server offers it. */
+  storage?: StorageApp;
+  storageError?: string | null;
   /** The controller choice, when the server offers it and the user can launch. */
   controller?: ControllerApp;
   fps?: AppSettings;
@@ -34,6 +36,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   launch: [choice: PlacementChoice | null];
   pin: [];
+  setPersistent: [persistent: boolean];
   chooseController: [event: Event];
   chooseFps: [event: Event];
 }>();
@@ -72,15 +75,13 @@ const SELECT_ICON = "pointer-events-none absolute top-1/2 left-3 size-4 -transla
           <p class="mt-0.5 line-clamp-2 text-sm text-ink-2" :title="t.description">{{ t.description }}</p>
         </div>
         <div class="col-start-2 row-start-1 flex items-center gap-2 @min-[26rem]:col-start-3">
-          <RouterLink
-            v-if="saved"
-            :to="{ name: 'storage' }"
-            title="Data kept between launches"
-            class="inline-flex items-center gap-1 rounded-full border border-line-strong px-2 py-0.5 text-2xs text-ink-3 transition hover:border-ink-3 hover:text-ink-2"
-          >
-            <Database class="size-3" aria-hidden="true" />
-            Saved<span class="sr-only">: data kept between launches. Open storage settings.</span>
-          </RouterLink>
+          <AppStorageMenu
+            v-if="storage"
+            :app="storage"
+            :error="storageError"
+            :disabled="disabled"
+            @toggle="(v) => emit('setPersistent', v)"
+          />
           <button
             type="button"
             class="inline-flex size-9 items-center justify-center rounded-lg transition hover:bg-panel-2 pointer-coarse:size-11"
@@ -158,15 +159,13 @@ const SELECT_ICON = "pointer-events-none absolute top-1/2 left-3 size-4 -transla
       <div class="min-w-0 [grid-area:text]">
         <div class="flex items-center gap-2">
           <h3 class="truncate text-base leading-6 font-semibold">{{ t.name }}</h3>
-          <RouterLink
-            v-if="saved"
-            :to="{ name: 'storage' }"
-            title="Data kept between launches"
-            class="inline-flex shrink-0 items-center gap-1 rounded-full border border-line-strong px-2 py-0.5 text-2xs text-ink-3 transition hover:border-ink-3 hover:text-ink-2"
-          >
-            <Database class="size-3" aria-hidden="true" />
-            Saved<span class="sr-only">: data kept between launches. Open storage settings.</span>
-          </RouterLink>
+          <AppStorageMenu
+            v-if="storage"
+            :app="storage"
+            :error="storageError"
+            :disabled="disabled"
+            @toggle="(v) => emit('setPersistent', v)"
+          />
         </div>
         <p class="truncate text-sm text-ink-2" :title="t.description">{{ t.description }}</p>
       </div>

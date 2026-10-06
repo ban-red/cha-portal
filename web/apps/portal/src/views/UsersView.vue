@@ -65,8 +65,8 @@ const roleStyle: Record<Role, string> = {
       </div>
       <div>
         <label class="label" for="u-pass">Password</label>
-        <input id="u-pass" v-model="password" name="new-password" type="password" class="field" autocomplete="new-password" minlength="10" aria-describedby="u-pass-hint" required />
-        <p id="u-pass-hint" class="mt-1.5 text-xs text-ink-3">At least 10 characters.</p>
+        <input id="u-pass" v-model="password" name="new-password" type="password" class="field" autocomplete="new-password" minlength="3" aria-describedby="u-pass-hint" required />
+        <p id="u-pass-hint" class="mt-1.5 text-xs text-ink-3">At least 3 characters.</p>
       </div>
       <div>
         <label class="label" for="u-role">Role</label>

@@ -76,7 +76,7 @@ To do:
 
 ## 4. Sign-in hardening (step 4, ~1–2 days)
 
-Built: Argon2 password hashes, session cookies (HttpOnly, Secure, SameSite), setup token for the first admin, roles (admin/user/guest), audit log, dev login only from loopback and only with `--dev-login`.
+Built: Argon2 password hashes, session cookies (HttpOnly, Secure, SameSite), claim-on-first-visit for the first admin, roles (admin/user/guest), audit log, dev login only from loopback and only with `--dev-login`.
 
 To do:
 - **Login throttling**: per account and per client address, exponential backoff after failures; audit `login.failed`; never reveal whether an account exists.
@@ -125,7 +125,7 @@ For networks that block UDP and allow only HTTPS (some offices, hotels).
 - [ ] The portal listens on localhost only; HTTPS terminates in `tailscale serve` or Caddy.
 - [ ] Node streamer ports reachable only from the LAN and the tailnet (or the forwarded range for the public profile).
 - [ ] The Docker socket stays mounted only into the node agent (it's root-equivalent: §4.2).
-- [ ] Setup token used and gone; the `dev` account removed; every admin has a strong password (or Tailscale/OIDC sign-in).
+- [ ] Portal claimed right after its first start; the `dev` account removed; every admin has a strong password (or Tailscale/OIDC sign-in).
 - [ ] Backups exist and a restore was tested.
 - [ ] `install.sh --check` clean on every node; the doctor clean.
 - [ ] Secrets (`CHA_TURN_SECRET`, OIDC client secret) in env files readable by root only, not in the repository.
