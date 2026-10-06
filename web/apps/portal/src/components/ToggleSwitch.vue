@@ -19,14 +19,14 @@ function toggle() {
     class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition before:absolute before:-inset-2 before:content-['']
       motion-reduce:transition-none"
     :class="[
-      modelValue ? 'border-accent bg-accent' : 'border-line bg-panel-2',
+      modelValue ? 'border-accent-fill bg-accent-fill' : 'border-line-strong bg-panel-2',
       disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:brightness-110',
     ]"
     @click="toggle"
   >
     <span
       class="inline-block size-4 rounded-full transition-transform motion-reduce:transition-none"
-      :class="modelValue ? 'translate-x-[1.375rem] bg-accent-ink' : 'translate-x-1 bg-ink-3'"
+      :class="modelValue ? 'translate-x-[1.375rem] bg-on-accent' : 'translate-x-1 bg-ink-3'"
     />
   </button>
 </template>

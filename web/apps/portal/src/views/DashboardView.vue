@@ -76,7 +76,7 @@ const glyph = (t: Template) => GLYPHS[t.class] ?? "⧉";
 
 const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
   starting: { text: "Starting", dot: "bg-warn animate-pulse" },
-  running: { text: "Running", dot: "bg-accent" },
+  running: { text: "Running", dot: "bg-ok" },
   stopping: { text: "Stopping", dot: "bg-warn animate-pulse" },
   destroyed: { text: "Ended", dot: "bg-ink-3" },
   failed: { text: "Failed", dot: "bg-danger" },
@@ -99,7 +99,7 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
               v-if="saved.has(t.id)"
               :to="{ name: 'storage' }"
               title="Data kept between launches"
-              class="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] text-ink-3 transition hover:border-ink-3 hover:text-ink-2"
+              class="inline-flex items-center gap-1 rounded-full border border-line-strong px-2 py-0.5 text-2xs text-ink-3 transition hover:border-ink-3 hover:text-ink-2"
             >
               <svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
                 <ellipse cx="8" cy="4" rx="5" ry="2" />
@@ -146,7 +146,7 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
                 </select>
               </div>
             </div>
-            <p v-if="live.some((e) => e.templateId === t.id)" class="mt-1 text-[11px] text-ink-3">
+            <p v-if="live.some((e) => e.templateId === t.id)" class="mt-1 text-2xs text-ink-3">
               Running: a change applies when you stop it and launch it again.
             </p>
             <FormError v-if="controllerApps.errors[t.id]" polite class="mt-1" :message="controllerApps.errors[t.id] ?? null" />

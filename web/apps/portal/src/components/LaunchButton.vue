@@ -120,7 +120,7 @@ watch(
       <button
         v-if="placements"
         ref="toggle"
-        class="btn-primary rounded-l-none border-l border-accent-ink/30 px-2.5"
+        class="btn-primary rounded-l-none border-l border-on-accent/30 px-2.5"
         :disabled="disabled || busy || !placements.options.length"
         aria-haspopup="menu"
         :aria-expanded="open"
@@ -154,8 +154,8 @@ watch(
           >
             <span class="flex items-center gap-2">
               <span class="min-w-0 flex-1 truncate font-medium">{{ o.label }}</span>
-              <span v-if="isAuto(o)" class="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] text-accent">Best</span>
-              <span class="rounded-full border border-line px-2 py-0.5 text-[11px] text-ink-3">{{ KIND_LABEL[o.kind] }}</span>
+              <span v-if="isAuto(o)" class="rounded-full bg-accent/15 px-2 py-0.5 text-2xs text-accent">Best</span>
+              <span class="rounded-full border border-line px-2 py-0.5 text-2xs text-ink-3">{{ KIND_LABEL[o.kind] }}</span>
             </span>
             <span class="truncate text-xs text-ink-3">on {{ o.nodeName }}</span>
             <span v-if="o.reason" class="text-xs" :class="o.allowed ? 'text-warn' : 'text-ink-3'">
@@ -165,7 +165,7 @@ watch(
         </li>
       </ul>
     </div>
-    <p v-if="placements" :id="`${id}-launch-on`" class="mt-1.5 truncate text-[11px] text-ink-3" aria-live="polite">
+    <p v-if="placements" :id="`${id}-launch-on`" class="mt-1.5 truncate text-2xs text-ink-3" aria-live="polite">
       <template v-if="auto">on {{ describe(auto) }}</template>
       <template v-else>{{ nowhereToRun(placements) }}</template>
     </p>

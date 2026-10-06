@@ -94,7 +94,7 @@ function confirmRemove(node: NodeInfo) {
 }
 
 function status(node: NodeInfo): { text: string; dot: string } {
-  if (node.online) return { text: `Online since ${clockTime(node.connectedAt ?? 0)}`, dot: "bg-accent" };
+  if (node.online) return { text: `Online since ${clockTime(node.connectedAt ?? 0)}`, dot: "bg-ok" };
   if (node.lastSeenAt) return { text: `Offline · seen ${ago(node.lastSeenAt)}`, dot: "bg-ink-3" };
   return { text: "Waiting for its first connection", dot: "bg-warn" };
 }
@@ -164,7 +164,7 @@ function status(node: NodeInfo): { text: string; dot: string } {
               {{ status(node).text }}
             </p>
           </div>
-          <span v-if="node.agentVersion" class="shrink-0 rounded-full border border-line px-2 py-0.5 font-mono text-[11px] text-ink-3">
+          <span v-if="node.agentVersion" class="shrink-0 rounded-full border border-line px-2 py-0.5 font-mono text-2xs text-ink-3">
             v{{ node.agentVersion }}
           </span>
         </header>
@@ -186,7 +186,7 @@ function status(node: NodeInfo): { text: string; dot: string } {
                 <span
                   v-for="enc in gpu.encoders"
                   :key="enc"
-                  class="rounded border border-accent/30 px-1.5 font-mono text-[10px] text-accent uppercase"
+                  class="rounded border border-accent/30 px-1.5 font-mono text-2xs text-accent uppercase"
                   >{{ enc }}</span
                 >
               </p>

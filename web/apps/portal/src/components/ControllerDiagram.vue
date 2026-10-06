@@ -56,15 +56,15 @@ const off = "fill-panel stroke-line";
     <rect x="147" y="140" width="14" height="14" rx="2" :class="held(15) ? on : off" />
 
     <!-- Face buttons -->
-    <g class="text-[10px] font-semibold" text-anchor="middle">
+    <g class="text-2xs font-semibold" text-anchor="middle">
       <circle cx="260" cy="115" r="10" :class="held(0) ? on : off" />
       <circle cx="280" cy="95" r="10" :class="held(1) ? on : off" />
       <circle cx="240" cy="95" r="10" :class="held(2) ? on : off" />
       <circle cx="260" cy="75" r="10" :class="held(3) ? on : off" />
-      <text x="260" y="118.5" :class="held(0) ? 'fill-accent-ink' : 'fill-ink-3'">{{ face[0] }}</text>
-      <text x="280" y="98.5" :class="held(1) ? 'fill-accent-ink' : 'fill-ink-3'">{{ face[1] }}</text>
-      <text x="240" y="98.5" :class="held(2) ? 'fill-accent-ink' : 'fill-ink-3'">{{ face[2] }}</text>
-      <text x="260" y="78.5" :class="held(3) ? 'fill-accent-ink' : 'fill-ink-3'">{{ face[3] }}</text>
+      <text x="260" y="118.5" :class="held(0) ? 'fill-on-accent' : 'fill-ink-3'">{{ face[0] }}</text>
+      <text x="280" y="98.5" :class="held(1) ? 'fill-on-accent' : 'fill-ink-3'">{{ face[1] }}</text>
+      <text x="240" y="98.5" :class="held(2) ? 'fill-on-accent' : 'fill-ink-3'">{{ face[2] }}</text>
+      <text x="260" y="78.5" :class="held(3) ? 'fill-on-accent' : 'fill-ink-3'">{{ face[3] }}</text>
     </g>
 
     <!-- Back, start, guide -->

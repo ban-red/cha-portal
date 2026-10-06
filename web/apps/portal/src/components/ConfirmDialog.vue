@@ -52,7 +52,7 @@ function confirm() {
     ref="dialog"
     :aria-labelledby="titleId"
     :aria-describedby="bodyId"
-    class="m-auto w-[min(28rem,calc(100%-2rem))] rounded-xl border border-line bg-panel p-0 text-ink backdrop:bg-black/60"
+    class="m-auto w-[min(28rem,calc(100%-2rem))] rounded-xl border border-line bg-panel p-0 text-ink backdrop:bg-scrim"
     @cancel.prevent="cancel"
     @click.self="cancel"
     @close="emit('closed')"

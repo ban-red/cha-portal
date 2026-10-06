@@ -27,7 +27,7 @@ const toggleSection = (id: SectionId) =>
   patch({ folded: isFolded(id) ? prefs.value.folded.filter((x) => x !== id) : [...prefs.value.folded, id] });
 const patch = (p: Partial<OverlayPrefs>) => (prefs.value = { ...prefs.value, ...p });
 
-const GRADE_TEXT: Record<string, string> = { A: "text-accent", B: "text-accent", C: "text-warn", D: "text-warn", F: "text-danger" };
+const GRADE_TEXT: Record<string, string> = { A: "text-ok", B: "text-ok", C: "text-warn", D: "text-warn", F: "text-danger" };
 const gradeClass = computed(() => (props.health.grade ? GRADE_TEXT[props.health.grade] : "text-ink-2"));
 const SEVERITY_TEXT = { minor: "text-ink-2", major: "text-warn", critical: "text-danger" };
 
@@ -234,8 +234,8 @@ const panelStyle = computed(() => {
   const o = prefs.value.opacity;
   const t = Math.min(1, Math.max(0, (100 - o) / (100 - OPACITY_MIN)));
   const style: Record<string, string> = {
-    backgroundColor: `color-mix(in oklab, var(--color-panel) ${o}%, transparent)`,
-    "--color-ink-2": `color-mix(in oklab, #9db0b6, var(--color-ink) ${Math.round(t * 100)}%)`,
+    backgroundColor: `color-mix(in oklab, var(--cha-panel) ${o}%, transparent)`,
+    "--cha-ink-2": `color-mix(in oklab, var(--cha-ink-2-theme), var(--cha-ink) ${Math.round(t * 100)}%)`,
     textShadow: `0 0 ${(2 + 4 * t).toFixed(1)}px rgb(0 0 0 / ${(0.35 + 0.55 * t).toFixed(2)}), 0 1px 1px rgb(0 0 0 / ${(0.5 * t).toFixed(2)})`,
   };
   const at = dragAt.value ?? freePos.value;
@@ -250,7 +250,7 @@ const placedFree = computed(() => !!dragAt.value || !!freePos.value);
 const bodyId = useId();
 const menuId = useId();
 const BTN =
-  "grid size-5 place-items-center rounded text-ink-2 hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent";
+  "grid size-5 place-items-center rounded text-ink-2 hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-focus";
 </script>
 
 <template>
@@ -258,7 +258,7 @@ const BTN =
   <button
     v-if="!prefs.open"
     type="button"
-    class="absolute z-10 rounded-md border border-line bg-panel/60 px-1.5 font-mono text-[11px] leading-5 opacity-30 backdrop-blur-md transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent"
+    class="absolute z-10 rounded-md border border-line bg-panel/60 px-1.5 font-mono text-2xs leading-5 opacity-30 backdrop-blur-md transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-focus"
     :class="CORNER_CLASS[prefs.corner]"
     :aria-label="`Show the stats panel, stream health ${health.grade ?? 'not measured'}`"
     title="Show stats"
@@ -270,7 +270,7 @@ const BTN =
     v-else
     ref="panel"
     aria-label="Stream statistics"
-    class="absolute z-10 max-h-[calc(100%-5rem)] max-w-[calc(100%-1.5rem)] flex flex-col overflow-hidden rounded-lg border border-line font-mono text-[11px] leading-5 text-ink shadow-lg backdrop-blur-md [font-variant-numeric:tabular-nums]"
+    class="absolute z-10 max-h-[calc(100%-5rem)] max-w-[calc(100%-1.5rem)] flex flex-col overflow-hidden rounded-lg border border-line font-mono text-2xs leading-5 text-ink shadow-lg backdrop-blur-md [font-variant-numeric:tabular-nums]"
     :class="[placedFree ? '' : CORNER_CLASS[prefs.corner], prefs.compact || prefs.collapsed ? 'w-max' : 'w-64']"
     :style="panelStyle"
     @keydown.esc="menuOpen = false"
@@ -279,7 +279,7 @@ const BTN =
     <div class="flex h-6 shrink-0 items-center gap-1 pr-1">
       <button
         type="button"
-        class="flex h-6 min-w-0 flex-1 cursor-grab touch-none items-center gap-1.5 rounded-tl-lg px-2 text-left select-none focus-visible:outline-2 focus-visible:outline-accent active:cursor-grabbing"
+        class="flex h-6 min-w-0 flex-1 cursor-grab touch-none items-center gap-1.5 rounded-tl-lg px-2 text-left select-none focus-visible:outline-2 focus-visible:outline-focus active:cursor-grabbing"
         :aria-label="`Stats panel, stream health ${health.grade ?? 'not measured'}, ${word}. Drag or use the arrow keys to move it`"
         title="Drag to move; arrow keys on this handle move it too"
         @pointerdown="onDown"
@@ -371,7 +371,7 @@ const BTN =
           <span class="truncate text-ink-2" :title="`${topIssue.title}: ${topIssue.detail}`">{{ topIssue.title }} · {{ topIssue.detail }}</span>
           <button
             type="button"
-            class="ml-1 grid size-4 shrink-0 place-items-center rounded align-middle text-ink-2 hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+            class="ml-1 grid size-4 shrink-0 place-items-center rounded align-middle text-ink-2 hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-focus"
             :aria-label="copiedId === topIssue.id ? 'Copied' : 'Copy this warning with the stream numbers'"
             :title="copiedId === topIssue.id ? 'Copied' : 'Copy this warning and the stream numbers'"
             @click="copyIssue(topIssue)"
@@ -390,7 +390,7 @@ const BTN =
           <div v-for="issue in health.issues" :key="issue.id">
             <div><span :class="SEVERITY_TEXT[issue.severity]">{{ issue.title }}</span> <span class="text-ink-2">· {{ issue.detail }}</span><button
             type="button"
-            class="ml-1 inline-grid size-4 shrink-0 place-items-center rounded align-middle text-ink-2 hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+            class="ml-1 inline-grid size-4 shrink-0 place-items-center rounded align-middle text-ink-2 hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-focus"
             :aria-label="copiedId === issue.id ? 'Copied' : 'Copy this warning with the stream numbers'"
             :title="copiedId === issue.id ? 'Copied' : 'Copy this warning and the stream numbers'"
             @click="copyIssue(issue)"
@@ -405,8 +405,8 @@ const BTN =
         </div>
         <div v-if="health.score !== null" class="mb-1 text-ink-2">Health {{ health.score }}/100</div>
 
-        <h3 class="mt-1.5 text-[10px] font-semibold tracking-wider text-accent uppercase">
-          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-accent" :aria-expanded="!isFolded('stream')" @click="toggleSection('stream')">
+        <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-accent uppercase">
+          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('stream')" @click="toggleSection('stream')">
             <svg viewBox="0 0 16 16" class="size-2.5 transition-transform" :class="isFolded('stream') && '-rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
             Stream
             <span v-if="isFolded('stream')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.stream.cls || 'text-ink'">{{ summary.stream.text }}</span>
@@ -419,8 +419,8 @@ const BTN =
           <dt title="How much video data is arriving each second, in megabits. It rises with motion and falls on a still screen.">Bitrate</dt><dd>{{ num(stats?.mbps ?? null) }} Mbit/s</dd>
         </dl>
 
-        <h3 class="mt-1.5 text-[10px] font-semibold tracking-wider text-sky-300 uppercase">
-          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-accent" :aria-expanded="!isFolded('latency')" @click="toggleSection('latency')">
+        <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-1 uppercase">
+          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('latency')" @click="toggleSection('latency')">
             <svg viewBox="0 0 16 16" class="size-2.5 transition-transform" :class="isFolded('latency') && '-rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
             Latency
             <span v-if="isFolded('latency')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.latency.cls || 'text-ink'">{{ summary.latency.text }}</span>
@@ -433,8 +433,8 @@ const BTN =
           <dt title="Average time sound waits in the browser's audio buffer to avoid crackles. More wait is steadier sound but later sound.">Audio buffer</dt><dd :class="bad('audio')">{{ num(stats?.audioJitterMs ?? null, 0) }} ms</dd>
         </dl>
 
-        <h3 class="mt-1.5 text-[10px] font-semibold tracking-wider text-violet-300 uppercase">
-          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-accent" :aria-expanded="!isFolded('network')" @click="toggleSection('network')">
+        <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-2 uppercase">
+          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('network')" @click="toggleSection('network')">
             <svg viewBox="0 0 16 16" class="size-2.5 transition-transform" :class="isFolded('network') && '-rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
             Network
             <span v-if="isFolded('network')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.network.cls || 'text-ink'">{{ summary.network.text }}</span>
@@ -447,8 +447,8 @@ const BTN =
         </dl>
 
         <template v-if="node">
-          <h3 class="mt-1.5 text-[10px] font-semibold tracking-wider text-pink-300 uppercase">
-          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-accent" :aria-expanded="!isFolded('node')" @click="toggleSection('node')">
+          <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-3 uppercase">
+          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('node')" @click="toggleSection('node')">
             <svg viewBox="0 0 16 16" class="size-2.5 transition-transform" :class="isFolded('node') && '-rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
             Node
             <span v-if="isFolded('node')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.node.cls || 'text-ink'">{{ summary.node.text }}</span>
@@ -486,7 +486,7 @@ const BTN =
         <div class="mt-1.5 border-t border-line pt-1">
           <button
             type="button"
-            class="rounded px-1 text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+            class="rounded px-1 text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-50"
             :disabled="!connected || recordingLeft !== null"
             title="Collect 30 s of stats, then copy a summary"
             @click="emit('record')"

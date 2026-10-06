@@ -34,7 +34,7 @@ A self-hosted dashboard for "portaling" into remote environments (a Chrome insta
 | `spikes/s2-compositor` | Spike S2: gst-wayland-display compositor with Google Chrome on the node GPU, NVENC zero-copy ([README](spikes/s2-compositor/README.md)) |
 | `spikes/s3-gateway` | Spike S3: Moonlight (Wolf) → WebRTC passthrough gateway, measured by the S1d page ([README](spikes/s3-gateway/README.md)) |
 | `docs/` | Plan, research, [ADRs](docs/adr/README.md) and benchmark results |
-| `scripts/check.sh` | Every check: rustfmt, clippy, tests, the portal's typecheck and build |
+| `scripts/check.sh` | Every check: rustfmt, clippy, tests, the portal's colour guard, theme tests, typecheck and build |
 
 ## Development
 
@@ -87,6 +87,12 @@ CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… docker compose 
 ```
 
 Run `sudo deploy/node/host/install.sh` once on the node: it installs the udev rules, the Steam sandbox's AppArmor profile and the module list (`--check` only reports). Gamepads need the host's `uinput` module (`/dev/uinput`); without it, start the agent with `CHA_UINPUT=` and environments go without. The DualSense and Steam Controller kinds also need `uhid` (`/dev/uhid`; `CHA_UHID=` goes without, and they fall back to an Xbox 360 pad). `docker compose -f deploy/node/compose.yaml run --rm agent --doctor` checks the node and says how to fix what it finds; `cha-node --print-inventory` shows what the agent will report. For the portal itself, HTTPS and remote access, see [`deploy/README.md`](deploy/README.md). Once the node is online, **Environments** launches anything in the catalog on it.
+
+### Themes
+
+The portal's colours are runtime CSS variables, so a theme is one file: `web/apps/portal/src/themes/<id>.css` sets a `--cha-<role>` variable for every role under `:root[data-theme="<id>"]`, and `src/style.css` maps the roles to Tailwind utilities (`bg-panel`, `text-ink-3`, `text-ok`, and so on). The roles are listed in `src/themes/index.ts` (`ROLES`): three surfaces, three inks, `line` and `line-strong`, the accent set (`accent`, `accent-fill`, `accent-fill-hover`, `on-accent`, `accent-soft`), `focus`, the status colours, `scrim` and `chart-1` to `chart-4`. Components use only these roles; `scripts/check-portal-colors.sh` fails on palette classes, `text-white` and hex values in components. Use `ok` for running or healthy, not `accent`. The only theme so far is `cha-jade`, which also applies when `<html>` has no `data-theme`.
+
+To add a theme, write its CSS file with every role as a solid hex or `oklch()` value (only `scrim` may have alpha) and add an entry to `THEMES` in `src/themes/index.ts`. `bun run --cwd web/apps/portal test` then checks that no role is missing and that the contrast pairs pass WCAG 2.x: text, accent and status colours at 4.5:1 on every surface, `on-accent` on the accent fills at 4.5:1, and `line-strong` and `focus` at 3:1. A theme that fails doesn't pass `./scripts/check.sh`.
 
 ## License
 

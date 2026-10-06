@@ -40,13 +40,13 @@ async function copy(what: "JSON" | "Markdown", text: string) {
   <dialog
     ref="dialog"
     :aria-labelledby="titleId"
-    class="m-auto w-[min(40rem,calc(100%-2rem))] rounded-xl border border-line bg-panel p-0 text-ink backdrop:bg-black/60"
+    class="m-auto w-[min(40rem,calc(100%-2rem))] rounded-xl border border-line bg-panel p-0 text-ink backdrop:bg-scrim"
     @click.self="emit('close')"
     @close="emit('close')"
   >
     <div class="space-y-3 p-5">
       <h2 :id="titleId" class="text-base font-semibold tracking-tight">Measurement</h2>
-      <pre class="max-h-[50vh] overflow-auto rounded-lg border border-line bg-canvas p-3 font-mono text-[11px] leading-5 whitespace-pre-wrap text-ink-2" tabindex="0">{{ markdown }}</pre>
+      <pre class="max-h-[50vh] overflow-auto rounded-lg border border-line bg-canvas p-3 font-mono text-2xs leading-5 whitespace-pre-wrap text-ink-2" tabindex="0">{{ markdown }}</pre>
       <div class="flex flex-wrap items-center justify-end gap-2">
         <span class="mr-auto text-xs text-ink-3" role="status">{{ copied }}</span>
         <button type="button" class="btn-ghost" @click="copy('JSON', json)">Copy as JSON</button>

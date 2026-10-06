@@ -34,11 +34,11 @@ async function signOut() {
     >
       <div class="flex h-16 items-center gap-3 px-5">
         <BrandMark class="size-8" />
-        <span class="text-[15px] font-semibold tracking-tight">Cha Portal</span>
+        <span class="text-[0.9375rem] font-semibold tracking-tight">Cha Portal</span>
       </div>
       <nav class="flex-1 space-y-0.5 px-3 py-2" @click="menuOpen = false">
         <template v-for="item in nav" :key="item.to">
-          <p v-if="item.show && item.section" class="px-3 pt-5 pb-1.5 text-[11px] font-medium tracking-wider text-ink-3 uppercase">
+          <p v-if="item.show && item.section" class="px-3 pt-5 pb-1.5 text-2xs font-medium tracking-wider text-ink-3 uppercase">
             {{ item.section }}
           </p>
           <RouterLink
@@ -61,7 +61,7 @@ async function signOut() {
         </div>
       </div>
     </aside>
-    <div v-if="menuOpen" class="fixed inset-0 z-10 bg-black/50 md:hidden" @click="menuOpen = false" />
+    <div v-if="menuOpen" class="fixed inset-0 z-10 bg-scrim md:hidden" @click="menuOpen = false" />
 
     <div class="flex min-w-0 flex-1 flex-col">
       <header class="flex h-16 items-center gap-3 border-b border-line px-4 md:px-8">

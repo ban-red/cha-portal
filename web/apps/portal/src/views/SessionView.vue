@@ -520,7 +520,7 @@ function cancelRecording() {
   recording = null;
   recordingLeft.value = null;
 }
-const GRADE_TEXT: Record<string, string> = { A: "text-accent", B: "text-accent", C: "text-warn", D: "text-warn", F: "text-danger" };
+const GRADE_TEXT: Record<string, string> = { A: "text-ok", B: "text-ok", C: "text-warn", D: "text-warn", F: "text-danger" };
 const gradeText = (grade: string | null) => (grade ? GRADE_TEXT[grade] : "text-ink-3");
 
 
@@ -605,7 +605,7 @@ const STATUS: Record<PlayerState, string> = {
       <RouterLink to="/" class="btn-ghost border-0 px-3 py-1.5 text-xs" title="Back to the dashboard (it keeps running)">← Back</RouterLink>
       <span class="max-w-48 truncate px-2 text-sm font-medium">{{ env.data.value?.templateName ?? "…" }}</span>
       <select
-        class="rounded-lg border border-line bg-canvas px-2 py-1 text-xs text-ink-2"
+        class="rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2"
         :value="codec"
         title="Video codec"
         @change="setCodec(($event.target as HTMLSelectElement).value as Codec)"
@@ -615,7 +615,7 @@ const STATUS: Record<PlayerState, string> = {
       <select
         v-if="!fixedSize && fps !== null"
         :disabled="fpsSwitching || !hasControl || state !== 'connected'"
-        class="rounded-lg border border-line bg-canvas px-2 py-1 text-xs text-ink-2"
+        class="rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2"
         :value="fps"
         :title="hasControl ? 'Frame rate' : 'Only the session with the controls changes the frame rate'"
         aria-label="Frame rate"
@@ -626,7 +626,7 @@ const STATUS: Record<PlayerState, string> = {
       <select
         v-if="perfOverlay !== null"
         :disabled="overlaySwitching || !hasControl || state !== 'connected'"
-        class="rounded-lg border border-line bg-canvas px-2 py-1 text-xs text-ink-2"
+        class="rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2"
         :value="perfOverlay"
         :title="hasControl ? 'Performance overlay' : 'Only the session with the controls changes the overlay'"
         aria-label="Performance overlay"
@@ -638,7 +638,7 @@ const STATUS: Record<PlayerState, string> = {
       <select
         v-if="wtSupported"
         :disabled="isPyroWave(codec)"
-        class="rounded-lg border border-line bg-canvas px-2 py-1 text-xs text-ink-2"
+        class="rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2"
         :value="transportChoice"
         :title="transport ? `Connected over ${transport === 'webtransport' ? 'WebTransport' : 'WebRTC'}` : 'Transport'"
         @change="setTransport(($event.target as HTMLSelectElement).value as TransportChoice)"
@@ -749,7 +749,7 @@ const STATUS: Record<PlayerState, string> = {
       <!-- Floats on the toolbar's lower edge, in the middle -->
       <button
         type="button"
-        class="absolute top-full left-1/2 grid h-5 w-9 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-line bg-panel text-ink-2 shadow transition hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+        class="absolute top-full left-1/2 grid h-5 w-9 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-line bg-panel text-ink-2 shadow transition hover:text-ink focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-50"
         :disabled="state !== 'connected'"
         aria-label="Hide the toolbar"
         title="Hide the toolbar (hover the thin bar at the top to bring it back)"
