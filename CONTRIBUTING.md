@@ -55,12 +55,31 @@ To change a decision, propose a new ADR that supersedes the old one. ADRs are ne
 
 ## Commits and pull requests
 
-- Subject line: `Area: what changed, in plain words`, e.g. `Controllers: WebHID showed as unavailable everywhere`. An optional body explains why.
+- [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): what changed`, lowercase and imperative, at most 72 characters, e.g. `fix(controllers): show WebHID as available where it is`. Types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `ci`, `build`, `chore`. Scopes follow the area: `portal`, `node`, `streamer`, `player`, `proto`, `wire`, `controllers`, `steam`, `images`, `deploy`, `plans`, `spikes`. An optional body, wrapped at 72, explains why.
+- Sign off every commit (below).
 - Keep a pull request to one change, with tests where the code has them.
 - Say how you tested it, and on what hardware if the streamer, a node or a browser is involved.
+
+## Sign your commits off
+
+Every commit must carry a `Signed-off-by` line with your name and email, which certifies the [Developer Certificate of Origin](https://developercertificate.org/) (DCO). By adding it, you state that:
+
+1. you wrote the change and have the right to submit it under the project's licence; or
+2. it is based on earlier work under a compatible open-source licence, and you have the right to submit it with your changes; or
+3. it was given to you by someone who certified (1) or (2), and you haven't changed it;
+
+and that you understand the contribution and your sign-off are public and kept for good. Read the full text at the link before you sign off for the first time.
+
+`git commit -s` adds the line for you:
+
+```text
+Signed-off-by: Jane Doe <jane@example.com>
+```
+
+Use your real name, or the name you are known by, and an email address that reaches you. Don't sign off code you copied from somewhere whose licence you don't know or that isn't compatible with the AGPL (Magic Mirror / mm-server, for example, is under the BUSL). If you forgot, `git commit --amend -s` fixes the last commit and `git rebase --signoff main` fixes a branch. A check on each pull request looks for the line on every commit.
 
 ## Dependencies and licence
 
 Cha Portal is under the [AGPL-3.0-or-later](LICENSE). New dependencies must have a compatible licence (MIT, Apache-2.0, BSD, ISC, MPL-2.0, LGPL, GPL-3.0 or AGPL-3.0 are fine), and should be lean: say why a new one is worth it.
 
-By contributing, you agree that your contribution is licensed under the AGPL-3.0-or-later, the same as the project.
+By contributing, you agree that your contribution is licensed under the AGPL-3.0-or-later, the same as the project. You keep the copyright in your contribution; the project's notice is "Alex Red and the Cha Portal contributors", and the git history records who wrote what.

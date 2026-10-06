@@ -123,4 +123,6 @@ Contributions are welcome: read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. Repo
 
 ## License
 
+Copyright © 2026 Alex Red and the Cha Portal contributors.
+
 Cha Portal is free software under the [GNU Affero General Public License v3.0 or later](LICENSE). If you run a modified version for others over a network, the AGPL requires you to offer them its source.
