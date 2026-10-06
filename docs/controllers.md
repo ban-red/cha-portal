@@ -121,10 +121,14 @@ report 1 (settings, attributes, the serial), and output reports `0x80`
     app.
   - **Not yet verified:** Cyberpunk 2077, rumble through the relay, and Steam's
     exit leaving no device behind.
-  - **Known problem:** after Steam's in-game menu closes, the game ignores input
-    until it gets a click, although the pad's events still arrive and gamescope
-    gives the game the X focus back (Balatro; the same with the launch-option
-    workaround below). Under investigation.
+  - **After Steam's in-game menu:** gamescope gives the game the X focus back
+    with XSetInputFocus alone, and Wine doesn't make it the foreground window
+    again (`WINEDEBUG=+event`: the FocusIn arrives, the foreground stays Wine's
+    desktop), so the game ignored all input, the controller's too (SDL drops
+    pad events without keyboard focus), until a click. `steam-focus` in the
+    Steam image sends the game `WM_TAKE_FOCUS` when the focus moves from
+    Steam's window back to it, which gamescope never does: input comes back
+    without a click (Balatro, 2026-10-06).
   - **Workaround without the shim:** the launch option
     `SDL_GAMECONTROLLER_IGNORE_DEVICES= PROTON_DISABLE_HIDRAW=1 %command%` lets
     Proton's SDL read the controller itself, bypassing Steam Input.

@@ -118,7 +118,7 @@ RUN install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
 COPY --from=build /usr/local/bin/cha-x11-clipboard /usr/local/bin/
 COPY --from=mangoapp /out/usr/bin/mangoapp /usr/local/bin/
 COPY --from=uinput-shim /out/opt/cha /opt/cha
-COPY images/steam/start-steam images/steam/steam-touch-mode images/steam/steam-status images/steam/steam-library images/steam/steam-per-user-dirs images/steam/steam-run /usr/local/bin/
+COPY images/steam/start-steam images/steam/steam-touch-mode images/steam/steam-focus images/steam/steam-status images/steam/steam-library images/steam/steam-per-user-dirs images/steam/steam-run /usr/local/bin/
 # Debian puts gamescope and steam in /usr/games.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games
 USER cha

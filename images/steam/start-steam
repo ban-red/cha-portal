@@ -35,9 +35,13 @@ export GSK_RENDERER=gl
 # streamer this app has an overlay; each launch starts with it off.
 export MANGOHUD_CONFIGFILE=/run/cha/mangohud.conf
 printf 'no_display\n' > "$MANGOHUD_CONFIGFILE"
-# Two helpers run beside Steam, in gamescope's environment (its X display):
+# Three helpers run beside Steam, in gamescope's environment (its X display):
 # - Big Picture sets gamescope's touch click mode to "passthrough", which
 #   drops the pointer's motion; steam-touch-mode puts the mode back;
+# - when Steam's in-game menu closes, gamescope gives a Proton game the X focus
+#   back but Wine doesn't make it the foreground window again, and its input,
+#   the controller's too, goes nowhere until a click; steam-focus sends the
+#   game WM_TAKE_FOCUS, which gamescope never does;
 # - gamescope doesn't pass the clipboard between our compositor and its X
 #   server; cha-x11-clipboard bridges it to the streamer, as in XFCE (it
 #   exits when X does; after any other exit it starts again).
@@ -59,4 +63,4 @@ printf 'no_display\n' > "$MANGOHUD_CONFIGFILE"
 # /run/cha/uinput-shim.log.
 exec steam-run dbus-run-session -- gamescope --backend wayland \
   -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" \
-  -e --mangoapp -- sh -c 'steam-touch-mode & (until cha-x11-clipboard; do sleep 1; done) & LD_PRELOAD="/opt/cha/\$LIB/libcha-uinput.so${LD_PRELOAD:+ $LD_PRELOAD}" exec steam -gamepadui'
+  -e --mangoapp -- sh -c 'steam-touch-mode & steam-focus & (until cha-x11-clipboard; do sleep 1; done) & LD_PRELOAD="/opt/cha/\$LIB/libcha-uinput.so${LD_PRELOAD:+ $LD_PRELOAD}" exec steam -gamepadui'

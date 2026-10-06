@@ -1,0 +1,163 @@
+#!/usr/bin/python3
+"""Gives a Proton game its input back after Steam's in-game menu closes.
+
+Steam's menu (the Steam button) takes the X focus in gamescope's X server, and
+Wine, losing it, makes its desktop the foreground window. When the menu closes,
+gamescope gives the game's window the X focus back with XSetInputFocus alone,
+and Wine doesn't make the game the foreground window again on that FocusIn
+(2026-10-06, Balatro, WINEDEBUG=+event: "FocusIn … foreground 0x10020", the
+desktop). Its input then goes nowhere, the controller's too (SDL drops pad
+events without keyboard focus), until a click activates the window. Wine's
+windows ask for WM_TAKE_FOCUS, which window managers send on focus and gamescope
+never does; sent by hand at that moment, it brought the game back.
+
+This watches the X focus and, when it moves from one of Steam's own windows to
+a window that isn't Steam's and asks for WM_TAKE_FOCUS, sends it that message.
+
+Run it with gamescope's X server in $DISPLAY; it ends when that goes away.
+"""
+
+import ctypes
+import time
+
+# How often the focus is read: a round trip to the X server, nothing more.
+POLL = 0.1
+# Steam's own app id on its windows (STEAM_GAME); games carry theirs.
+STEAM_APP_ID = 769
+CLIENT_MESSAGE = 33
+CURRENT_TIME = 0
+ANY_PROPERTY_TYPE = 0
+
+STEAM, OTHER, NONE = "steam", "other", "none"
+
+
+def kind(app_id, overlay):
+    """What a focused window is: Steam's (its UI or overlay), something else, or nothing."""
+    if app_id is None and not overlay:
+        return NONE
+    if overlay or app_id == STEAM_APP_ID:
+        return STEAM
+    return OTHER
+
+
+def should_take_focus(before, now, changed, wants_take_focus):
+    """Whether to send WM_TAKE_FOCUS to the window that has the focus now.
+
+    Only when the focus moved (`changed`) from Steam's window to another that
+    asks for the message: that is the menu closing over a game.
+    """
+    return changed and before == STEAM and now == OTHER and wants_take_focus
+
+
+class Atoms:
+    def __init__(self, x11, display):
+        intern = lambda name: x11.XInternAtom(display, name, 0)
+        self.steam_game = intern(b"STEAM_GAME")
+        self.steam_overlay = intern(b"STEAM_OVERLAY")
+        self.wm_protocols = intern(b"WM_PROTOCOLS")
+        self.wm_take_focus = intern(b"WM_TAKE_FOCUS")
+
+
+class ClientMessage(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+        ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+        ("format", ctypes.c_int), ("data", ctypes.c_long * 5),
+    ]
+
+
+class Event(ctypes.Union):
+    _fields_ = [("xclient", ClientMessage), ("pad", ctypes.c_long * 24)]
+
+
+def load_x11():
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XInternAtom.restype = ctypes.c_ulong
+    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x11.XGetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    x11.XGetWindowProperty.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_long, ctypes.c_long,
+        ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    return x11
+
+
+def cardinals(x11, display, window, atom):
+    """A 32-bit property's values ([] while it isn't set, or the window is gone)."""
+    kind_, fmt = ctypes.c_ulong(), ctypes.c_int()
+    count, left, data = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_void_p()
+    status = x11.XGetWindowProperty(
+        display, window, atom, 0, 32, 0, ANY_PROPERTY_TYPE,
+        ctypes.byref(kind_), ctypes.byref(fmt), ctypes.byref(count), ctypes.byref(left), ctypes.byref(data),
+    )
+    values = []
+    if status == 0 and data.value:
+        if fmt.value == 32:
+            values = [ctypes.cast(data.value, ctypes.POINTER(ctypes.c_ulong))[i] for i in range(count.value)]
+        x11.XFree(data)
+    return values
+
+
+def main():
+    x11 = load_x11()
+    # A window can go between reading the focus and its properties: ignore
+    # the BadWindow that follows (the default handler would exit).
+    handler_type = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    ignore = handler_type(lambda _display, _error: 0)
+    x11.XSetErrorHandler(ignore)
+    # gamescope's X server is up before it starts its child, but be patient.
+    for _ in range(100):
+        display = x11.XOpenDisplay(None)
+        if display:
+            break
+        time.sleep(0.1)
+    else:
+        raise SystemExit("steam-focus: no X display")
+    atoms = Atoms(x11, display)
+
+    def describe(window):
+        if window in (0, 1):  # None, PointerRoot
+            return NONE, False
+        app = cardinals(x11, display, window, atoms.steam_game)
+        overlay = cardinals(x11, display, window, atoms.steam_overlay)
+        protocols = cardinals(x11, display, window, atoms.wm_protocols)
+        return (
+            kind(app[0] if app else None, bool(overlay and overlay[0])),
+            atoms.wm_take_focus in protocols,
+        )
+
+    def take_focus(window):
+        event = Event()
+        event.xclient.type = CLIENT_MESSAGE
+        event.xclient.window = window
+        event.xclient.message_type = atoms.wm_protocols
+        event.xclient.format = 32
+        event.xclient.data[0] = atoms.wm_take_focus
+        event.xclient.data[1] = CURRENT_TIME
+        x11.XSendEvent(display, window, 0, 0, ctypes.byref(event))
+        x11.XFlush(display)
+        print(f"steam-focus: WM_TAKE_FOCUS to {window:#x}, back from Steam's menu", flush=True)
+
+    focus, revert = ctypes.c_ulong(), ctypes.c_int()
+    last_window, last_kind = None, NONE
+    while True:
+        # Fails (and the default I/O error handler exits) once X is gone.
+        x11.XGetInputFocus(display, ctypes.byref(focus), ctypes.byref(revert))
+        window = focus.value
+        changed = window != last_window
+        if changed:
+            now, wants = describe(window)
+            if should_take_focus(last_kind, now, changed, wants):
+                take_focus(window)
+            last_window, last_kind = window, now
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()
