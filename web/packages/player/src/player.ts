@@ -12,7 +12,7 @@ import { AudioJitter } from "./audio-jitter";
 import { ControllerManager, type ManagedController } from "./controllers";
 import type { CaptureView } from "./captureMode";
 import { InputCapture } from "./input";
-import { judgeLiveness, shouldReconnectOnResume } from "./liveness";
+import { judgeLiveness, RESUME_ANSWER_MS, shouldReconnectOnResume } from "./liveness";
 import { overlayAnswer, parseOverlay, type OverlayLevel, type OverlayState } from "./overlay";
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
@@ -716,8 +716,9 @@ export class Player {
    * Watches for a node that went quiet (a dead Wi-Fi link, a sleeping laptop) without the transport
    * saying so. The node answers a ping every second and sends other messages, so four seconds of
    * nothing while the page is in front is a dead link; a still screen is no reason, since video
-   * isn't what is counted. A page that comes back to the front with an old last answer reconnects
-   * at once.
+   * isn't what is counted. A page that comes back to the front with an old last answer (a hidden
+   * tab's timers are throttled) gets a fresh grace period and pings at once: no answer within
+   * RESUME_ANSWER_MS, and it reconnects. A quick look at another tab costs nothing.
    */
   private watchLiveness(): void {
     this.lastInbound = this.lastPong = performance.now();
@@ -733,13 +734,24 @@ export class Player {
       if (verdict === "frozen") this.lastInbound = t; // slept: give the link a fresh few seconds to prove itself
       else if (verdict === "dead") this.lose("no data from the node");
     }, 1000);
+    let resumeCheck: ReturnType<typeof setTimeout> | undefined;
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
-      if (shouldReconnectOnResume(performance.now() - this.lastPong)) this.lose("no data from the node");
+      const asked = performance.now();
+      if (!shouldReconnectOnResume(asked - this.lastPong)) return;
+      // Judge the link from now, not from the hidden tab's stale numbers.
+      this.lastInbound = asked;
+      tickedAt = asked;
+      this.send({ t: "ping", c: performance.timeOrigin + asked });
+      clearTimeout(resumeCheck);
+      resumeCheck = setTimeout(() => {
+        if (this.lastPong < asked && document.visibilityState === "visible") this.lose("no data from the node");
+      }, RESUME_ANSWER_MS);
     };
     document.addEventListener("visibilitychange", onVisible);
     this.cleanup.push(() => {
       clearInterval(timer);
+      clearTimeout(resumeCheck);
       document.removeEventListener("visibilitychange", onVisible);
     });
   }

@@ -4,8 +4,13 @@
 
 /** Silence this long, with the page visible, means the link is dead. */
 export const SILENCE_MS = 4000;
-/** A page that comes back to the front hears from the node within this, or reconnects at once. */
+/**
+ * A page that comes back to the front with a last answer older than this asks the node again
+ * (a hidden tab's timers are throttled, so an old answer alone proves nothing)…
+ */
 export const RESUME_MS = 3000;
+/** …and reconnects if that ping isn't answered within this. */
+export const RESUME_ANSWER_MS = 1500;
 /** Watchdog ticks further apart than this mean the page was frozen (sleep, a suspended tab), not the link. */
 export const FROZEN_TICK_MS = 2500;
 
@@ -23,7 +28,7 @@ export function judgeLiveness(input: { silentMs: number; tickGapMs: number; visi
   return input.silentMs >= SILENCE_MS ? "dead" : "ok";
 }
 
-/** The page is in front again: reconnect at once if the node's last answer is older than `RESUME_MS`. */
+/** The page is in front again: check the link (a ping, `RESUME_ANSWER_MS` to answer) if the node's last answer is older than `RESUME_MS`. */
 export function shouldReconnectOnResume(sincePongMs: number): boolean {
   return sincePongMs > RESUME_MS;
 }
