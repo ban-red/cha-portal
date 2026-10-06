@@ -79,7 +79,9 @@ function setup(): void {
     status("Sweep complete. Use “Copy results JSON” to save it.");
   });
   $("copy").onclick = async () => {
-    const payload = { capturedAt: new Date().toISOString(), env, server: lastInfo, rows };
+    // The server's addresses and certificate hash identify the machine; results don't need them.
+    const server = lastInfo && { ...lastInfo, addresses: undefined, cert_hash_hex: undefined };
+    const payload = { capturedAt: new Date().toISOString(), env, server, rows };
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
     status(`Copied ${rows.length} result(s) to the clipboard.`);
   };
