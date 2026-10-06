@@ -7,7 +7,7 @@
 # Serve it over HTTPS. Browsers give gamepads, keyboard lock and audio
 # worklets only to secure pages, and the session cookie is marked Secure:
 # - Tailscale (homelab): keep the portal on localhost and run
-#   `tailscale serve --bg 8080` (docs/guides/tailscale.md);
+#   `tailscale serve --bg 7676` (docs/guides/tailscale.md);
 # - Caddy with public DNS: CHA_DOMAIN=portal.example.com and the `tls` profile
 #   (ports 80 and 443): `... --profile tls up -d`.
 #
@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
     ports:
       # Localhost by default: for tailscale serve or a proxy on this host.
-      - ${CHA_BIND:-127.0.0.1:8080}:8080
+      - ${CHA_BIND:-127.0.0.1:7676}:7676
     environment:
       CHA_SECURE_COOKIES: ${CHA_SECURE_COOKIES:-true}
       CHA_STUN_URLS: ${CHA_STUN_URLS:-}

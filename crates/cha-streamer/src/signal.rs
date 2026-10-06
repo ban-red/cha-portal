@@ -93,14 +93,14 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0")]
     listen: IpAddr,
     /// Signalling (HTTP) port.
-    #[arg(long, default_value_t = 4495)]
+    #[arg(long, default_value_t = 7660)]
     http_port: u16,
     /// WebRTC UDP port (ICE-lite).
-    #[arg(long, default_value_t = 4496)]
+    #[arg(long, default_value_t = 7661)]
     webrtc_port: u16,
     /// WebTransport UDP port (`cha-stream/1`, the Chromium fast path); 0 for
     /// none.
-    #[arg(long, default_value_t = 4497)]
+    #[arg(long, default_value_t = 7662)]
     wt_port: u16,
     /// Addresses browsers may reach WebRTC on (host candidates). Default:
     /// every IPv4 address of this machine except loopback and container

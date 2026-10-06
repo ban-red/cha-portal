@@ -1,6 +1,6 @@
 # Portal SPA
 
-`web/apps/portal`: the portal's web app (Vue 3, TypeScript, Tailwind 4, Pinia, TanStack Query, Vite). `cha-control` serves its build; in development `bun run dev` serves it from Vite on :5190 with `/api` proxied to `cha-control` on :8090.
+`web/apps/portal`: the portal's web app (Vue 3, TypeScript, Tailwind 4, Pinia, TanStack Query, Vite). `cha-control` serves its build; in development `bun run dev` serves it from Vite on :7678 with `/api` proxied to `cha-control` on :7677.
 
 ```bash
 bun run --cwd web/apps/portal typecheck

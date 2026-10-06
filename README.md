@@ -65,25 +65,25 @@ bun install
 bun run dev
 ```
 
-This starts `cha-control` on port 8090 (database `data/dev.db`) and the web app on Vite with hot reload at http://localhost:5190, which proxies `/api` to it. The sign-in page shows **Login as Local Dev**: it creates a `dev` admin and signs you in, and offers a **Login as *name*** button per existing admin, with no password. It only answers requests from this machine and is not for a real portal. Flags after `--` go to `cha-control` (`bun run dev -- --turn-secret …`); Ctrl-C stops both.
+This starts `cha-control` on port 7677 (database `data/dev.db`) and the web app on Vite with hot reload at http://localhost:7678, which proxies `/api` to it. The sign-in page shows **Login as Local Dev**: it creates a `dev` admin and signs you in, and offers a **Login as *name*** button per existing admin, with no password. It only answers requests from this machine and is not for a real portal. Flags after `--` go to `cha-control` (`bun run dev -- --turn-secret …`); Ctrl-C stops both.
 
-To run the portal as it ships, build the web app and start `cha-control` alone. Its log prints a one-time setup token for creating the first admin at http://localhost:8090:
+To run the portal as it ships, build the web app and start `cha-control` alone. Its log prints a one-time setup token for creating the first admin at http://localhost:7677:
 
 ```bash
 bun run --cwd web/apps/portal build
 ```
 
 ```bash
-cargo run -p cha-control -- --listen 127.0.0.1:8090 --database data/dev.db
+cargo run -p cha-control -- --listen 127.0.0.1:7677 --database data/dev.db
 ```
 
 A local agent, for working on enrollment and the node channel without a GPU server, keeps its identity in `data/`:
 
 ```bash
-cargo run -p cha-node -- --portal-url http://127.0.0.1:8090 --join-token chajoin_… --state-dir data/node
+cargo run -p cha-node -- --portal-url http://127.0.0.1:7677 --join-token chajoin_… --state-dir data/node
 ```
 
-To point a real node at a dev portal on your LAN, start the portal with `CHA_LISTEN=0.0.0.0:8090 bun run dev` and the agent with `CHA_ALLOW_INSECURE_PORTAL=true` (development only: the node's traffic then crosses the network unencrypted).
+To point a real node at a dev portal on your LAN, start the portal with `CHA_LISTEN=0.0.0.0:7677 bun run dev` and the agent with `CHA_ALLOW_INSECURE_PORTAL=true` (development only: the node's traffic then crosses the network unencrypted).
 
 ## Repository layout
 

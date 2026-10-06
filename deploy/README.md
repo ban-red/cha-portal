@@ -15,7 +15,7 @@
    docker compose -f deploy/portal/compose.yaml up -d --build
    ```
 
-   It listens on `127.0.0.1:8080`. Serve it over HTTPS: browsers only give gamepads, keyboard lock and audio worklets to secure pages. On a tailnet, run `sudo tailscale serve --bg 8080` ([guide](../docs/guides/tailscale.md)). With public DNS, set `CHA_DOMAIN` and add `--profile tls` (Caddy). The first start logs a one-time setup token for the first admin.
+   It listens on `127.0.0.1:7676`. Serve it over HTTPS: browsers only give gamepads, keyboard lock and audio worklets to secure pages. On a tailnet, run `sudo tailscale serve --bg 7676` ([guide](../docs/guides/tailscale.md)). With public DNS, set `CHA_DOMAIN` and add `--profile tls` (Caddy). The first start logs a one-time setup token for the first admin.
 2. **The node**, on the GPU server (NVIDIA with the Container Toolkit's CDI spec; or an Intel or AMD GPU, or no GPU at all: *Devices*, below). Build the images it runs:
 
    ```bash
@@ -56,21 +56,35 @@ The stream goes straight from the node to the browser; the portal only brokers i
 |---|---|
 | Same LAN | Nothing |
 | A tailnet or WireGuard | Nothing: streamers offer the mesh address too ([guide](../docs/guides/tailscale.md)) |
-| Internet, with a port-forward | Forward UDP 47000–47047 to the node (WebRTC and WebTransport, two ports per environment), and set `CHA_PUBLIC_ADDRESS` on it |
+| Internet, with a port-forward | Forward UDP 7600–7647 to the node (WebRTC and WebTransport, two ports per environment), and set `CHA_PUBLIC_ADDRESS` on it |
 | Internet, UDP to the node blocked | The portal's `turn` profile (coturn), with `CHA_TURN_SECRET`, `CHA_TURN_URLS` and `CHA_TURN_PEERS` |
+
+## Ports
+
+Every Cha Portal service sits in the 76xx range.
+
+| Port | Used by |
+|---|---|
+| TCP 7676 | The portal (`cha-control`), `127.0.0.1` only by default |
+| TCP 7677 | The dev portal (`bun run dev`) |
+| TCP 7678 | The Vite dev server for the web app |
+| 7600–7647 | Environment streamers: three ports each from `CHA_PORT_BASE` (TCP signalling on localhost, UDP WebRTC, UDP WebTransport), 16 environments by default |
+| TCP 7660, UDP 7661–7662 | A standalone `cha-streamer` (signalling, WebRTC, WebTransport) |
+
+The spikes under `spikes/` keep their own ports.
 
 ## Node settings
 
 | Variable | Default | What |
 |---|---|---|
 | `CHA_PORTAL_URL` | (required) | The portal's URL: `https://`, or `http://` to this machine (a tunnel) |
-| `CHA_ALLOW_INSECURE_PORTAL` | `false` | Development only: allow plain `http://` to another machine, e.g. a dev portal on your LAN (`CHA_LISTEN=0.0.0.0:8090 bun run dev`). The node's traffic, which can start containers here, then crosses the network unencrypted |
+| `CHA_ALLOW_INSECURE_PORTAL` | `false` | Development only: allow plain `http://` to another machine, e.g. a dev portal on your LAN (`CHA_LISTEN=0.0.0.0:7677 bun run dev`). The node's traffic, which can start containers here, then crosses the network unencrypted |
 | `CHA_JOIN_TOKEN` | | One-time, to enroll |
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
 | `CHA_UHID` | `/dev/uhid` | For virtual DualSense and Steam Controllers; empty goes without (no `uhid` module), and those fall back to an Xbox 360 pad |
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |
-| `CHA_PORT_BASE` | `47000` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
+| `CHA_PORT_BASE` | `7600` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
 | `CHA_MAX_ENVIRONMENTS` | `16` | |
 | `CHA_DATA_ROOT` | `/srv/cha-portal` | Where app data lives ([below](#app-data)): a host directory the compose file also mounts into the agent at the same path |
 | `CHA_NVIDIA_WINE_DIR` | `/usr/lib/x86_64-linux-gnu/nvidia/wine` | The driver's `nvngx.dll` and `_nvngx.dll`, which Proton copies into its prefixes for DLSS and the CDI spec leaves out. Bound read-only into apps at the same path when the host has it (the agent asks the engine; nothing to mount into the agent); empty goes without |
@@ -104,7 +118,7 @@ An environment runs on one **device** of a node (`docs/devices.md`), and the use
 
 | Variable | Default | What |
 |---|---|---|
-| `CHA_BIND` | `127.0.0.1:8080` | Where the compose file publishes the portal |
+| `CHA_BIND` | `127.0.0.1:7676` | Where the compose file publishes the portal |
 | `CHA_SECURE_COOKIES` | `true` | Keep it on behind HTTPS |
 | `CHA_DOMAIN` | | For the `tls` profile (Caddy) |
 | `CHA_STUN_URLS` | | STUN for players, comma-separated |

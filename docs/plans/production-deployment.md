@@ -1,7 +1,7 @@
 # Plan: from the dev rig to a real deployment
 
 Phase 3's "WAN hardening" and auth, made concrete for this homelab. Today the
-portal is `bun run dev` on a MacBook (`CHA_LISTEN=0.0.0.0:8090`, dev login on,
+portal is `bun run dev` on a MacBook (`CHA_LISTEN=0.0.0.0:7677`, dev login on,
 plain HTTP), and the node `gpu-node` reaches it with `CHA_ALLOW_INSECURE_PORTAL`.
 That's fine for development and wrong for anything else: anyone on the LAN can
 reach the API, the node's channel (which can start containers) crosses the
@@ -42,8 +42,8 @@ The rest assumes D1 (b), D2 (a), D3 (a)→(c), D4 none at first.
 - Remove the `dev` account afterwards (it was created by dev login); keep the owner's `admin`.
 
 **Host the portal (D1 b)**
-- A Debian/Ubuntu VM or LXC with Docker and Tailscale; the portal publishes on `127.0.0.1:8080` only (the compose default).
-- `sudo tailscale serve --bg 8080` → `https://portal.<tailnet>.ts.net` (the existing guide, `docs/guides/tailscale.md`).
+- A Debian/Ubuntu VM or LXC with Docker and Tailscale; the portal publishes on `127.0.0.1:7676` only (the compose default).
+- `sudo tailscale serve --bg 7676` → `https://portal.<tailnet>.ts.net` (the existing guide, `docs/guides/tailscale.md`).
 - Health: `GET /api/health` (exists) for an uptime check.
 
 **Exit for step 1:** the owner signs in at `https://portal.<tailnet>.ts.net` with their password, sees the node, their environments' history and settings; the dev portal on the Mac is off.
@@ -56,7 +56,7 @@ The rest assumes D1 (b), D2 (a), D3 (a)→(c), D4 none at first.
 - The node is on the tailnet already or joins it (`tailscale up` on the host; the agent uses host networking, so it reaches the portal through the host's tailnet).
 - The node keeps its identity (`state` volume) and its id (carried in the DB): no re-enrollment.
 - Doctor: the "Portal" check already reports the URL and clock; add a line that says whether the channel is TLS and warns when `CHA_ALLOW_INSECURE_PORTAL` is set.
-- **Firewall the node**: streamer ports 47000–47047 (TCP and UDP) only from the LAN and the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`); nothing else inbound except SSH. A `deploy/node/host/` nftables snippet installed by `install.sh` (optional, `--firewall`), since it's a host change the owner makes.
+- **Firewall the node**: streamer ports 7600–7647 (TCP and UDP) only from the LAN and the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`); nothing else inbound except SSH. A `deploy/node/host/` nftables snippet installed by `install.sh` (optional, `--firewall`), since it's a host change the owner makes.
 
 **Exit for step 2:** the node connects over `wss://`, the doctor is clean, a launch works.
 

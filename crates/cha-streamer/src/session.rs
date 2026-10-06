@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn each_viewers_checks_reach_its_own_rtc_only() {
-        let server_addr: SocketAddr = "192.0.2.100:4496".parse().unwrap();
+        let server_addr: SocketAddr = "192.0.2.100:7661".parse().unwrap();
         let mut a = pair("192.0.2.1:50000", server_addr);
         let mut b = pair("192.0.2.2:50001", server_addr);
         let from_a = first_datagrams(&mut a);

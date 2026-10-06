@@ -60,13 +60,13 @@
         "cha-control",
         "--",
         "--listen",
-        "127.0.0.1:8090",
+        "127.0.0.1:7677",
         "--database",
         "data/dev.db",
         "--web-dir",
         "web/apps/portal/dist"
       ],
-      "port": 8090
+      "port": 7677
     },
     {
       "name": "portal",
@@ -77,19 +77,19 @@
         "web/apps/portal",
         "dev"
       ],
-      "port": 5190,
+      "port": 7678,
       "autoPort": true
     },
     {
       "name": "portal-dev",
       "runtimeExecutable": "/usr/bin/env",
       "runtimeArgs": [
-        "CHA_LISTEN=0.0.0.0:8090",
+        "CHA_LISTEN=0.0.0.0:7677",
         "bun",
         "run",
         "dev"
       ],
-      "port": 5190
+      "port": 7678
     },
     {
       "name": "s7-web",

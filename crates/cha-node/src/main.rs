@@ -56,7 +56,7 @@ struct Args {
     #[arg(long, env = "CHA_RENDER_NODE")]
     render_node: Option<String>,
     /// Streamers listen on this port and up (two each: HTTP, WebRTC).
-    #[arg(long, env = "CHA_PORT_BASE", default_value_t = 47000)]
+    #[arg(long, env = "CHA_PORT_BASE", default_value_t = 7600)]
     port_base: u16,
     #[arg(long, env = "CHA_MAX_ENVIRONMENTS", default_value_t = 16)]
     max_environments: u16,

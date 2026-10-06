@@ -1032,7 +1032,7 @@ mod tests {
     #[test]
     fn webtransport_urls_cover_every_address() {
         let info = json!({
-            "wt_port": 47002,
+            "wt_port": 7602,
             "cert_hash_hex": "ab12",
             "addresses": ["192.168.1.5", "100.64.0.7", "fd7a::1"],
         });
@@ -1040,11 +1040,11 @@ mod tests {
         assert_eq!(hash, "ab12");
         assert_eq!(
             urls[0],
-            "https://192.168.1.5:47002/media?codec=hevc&token=tok"
+            "https://192.168.1.5:7602/media?codec=hevc&token=tok"
         );
         assert_eq!(
             urls[2],
-            "https://[fd7a::1]:47002/media?codec=hevc&token=tok"
+            "https://[fd7a::1]:7602/media?codec=hevc&token=tok"
         );
         assert!(webtransport_urls(&json!({ "wt_port": 0 }), "hevc", "tok").is_none());
     }

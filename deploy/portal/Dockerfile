@@ -24,12 +24,12 @@ RUN apt-get update \
  && install -d -m 700 -o cha -g cha /var/lib/cha
 COPY --from=build /usr/local/bin/cha-control /usr/local/bin/cha-control
 COPY --from=web /src/web/apps/portal/dist /usr/share/cha/web
-ENV CHA_LISTEN=0.0.0.0:8080 \
+ENV CHA_LISTEN=0.0.0.0:7676 \
     CHA_DATABASE=/var/lib/cha/cha.db \
     CHA_WEB_DIR=/usr/share/cha/web
 USER cha
 # The database (accounts, nodes, environments, the audit log, the media key),
 # in a directory only the portal's user can enter.
 VOLUME /var/lib/cha
-EXPOSE 8080
+EXPOSE 7676
 ENTRYPOINT ["cha-control"]

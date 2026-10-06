@@ -59,7 +59,7 @@ The portal and the node on the same Linux machine, with the browser anywhere on 
    cd cha-portal
    ```
 
-2. **Start the portal.** It listens on `127.0.0.1:8080` only:
+2. **Start the portal.** It listens on `127.0.0.1:7676` only:
 
    ```bash
    docker compose -f deploy/portal/compose.yaml up -d --build
@@ -68,7 +68,7 @@ The portal and the node on the same Linux machine, with the browser anywhere on 
 3. **Serve it over HTTPS** on your tailnet:
 
    ```bash
-   sudo tailscale serve --bg 8080
+   sudo tailscale serve --bg 7676
    ```
 
    `tailscale serve status` prints the portal's URL, `https://<machine>.<tailnet>.ts.net`.
@@ -97,10 +97,10 @@ The portal and the node on the same Linux machine, with the browser anywhere on 
    sudo deploy/node/host/install.sh
    ```
 
-7. **Enroll the node.** In the portal, open **Admin → Nodes → Add node** and copy the join token. The agent uses host networking, so it reaches the portal at `http://127.0.0.1:8080`, which it allows without TLS because it never leaves the machine:
+7. **Enroll the node.** In the portal, open **Admin → Nodes → Add node** and copy the join token. The agent uses host networking, so it reaches the portal at `http://127.0.0.1:7676`, which it allows without TLS because it never leaves the machine:
 
    ```bash
-   CHA_PORTAL_URL=http://127.0.0.1:8080 CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
+   CHA_PORTAL_URL=http://127.0.0.1:7676 CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
    ```
 
    The token is used once. Later starts only need `CHA_PORTAL_URL`; the node's identity is kept in the agent's `state` volume.
@@ -108,7 +108,7 @@ The portal and the node on the same Linux machine, with the browser anywhere on 
 8. **Check the node:**
 
    ```bash
-   CHA_PORTAL_URL=http://127.0.0.1:8080 docker compose -f deploy/node/compose.yaml run --rm agent --doctor
+   CHA_PORTAL_URL=http://127.0.0.1:7676 docker compose -f deploy/node/compose.yaml run --rm agent --doctor
    ```
 
    It checks Docker, the images, the GPU, gamepads, the Steam sandbox, the host files, disk space and the clock, and says how to fix each problem. Fix what it reports, then go to [First launch](#first-launch).
@@ -135,7 +135,7 @@ CHA_PORTAL_URL=https://portal-host.your-tailnet.ts.net CHA_JOIN_TOKEN=chajoin_�
 CHA_PORTAL_URL=https://portal-host.your-tailnet.ts.net docker compose -f deploy/node/compose.yaml run --rm agent --doctor
 ```
 
-Set `CHA_NODE_NAME` to name a node in the portal. Every node needs its own join token. The portal only brokers sessions: the browser needs a UDP path to each node (ports 47000–47047 by default), and on a LAN or tailnet it already has one. For anything else, see [Reaching nodes](deploy/README.md#reaching-nodes).
+Set `CHA_NODE_NAME` to name a node in the portal. Every node needs its own join token. The portal only brokers sessions: the browser needs a UDP path to each node (ports 7600–7647 by default), and on a LAN or tailnet it already has one. For anything else, see [Reaching nodes](deploy/README.md#reaching-nodes).
 
 ## First launch
 
@@ -150,7 +150,7 @@ In Chrome, Esc goes to the environment; hold **Esc** to leave full screen. The e
 
 All of these are in [`deploy/README.md`](deploy/README.md):
 
-- **Play from outside your network without Tailscale:** forward UDP 47000–47047 to the node and set `CHA_PUBLIC_ADDRESS`, or run the portal's `turn` profile (coturn) for networks that block UDP. See [Reaching nodes](deploy/README.md#reaching-nodes).
+- **Play from outside your network without Tailscale:** forward UDP 7600–7647 to the node and set `CHA_PUBLIC_ADDRESS`, or run the portal's `turn` profile (coturn) for networks that block UDP. See [Reaching nodes](deploy/README.md#reaching-nodes).
 - **A shared Steam library on a NAS**, so games install once for every user: [A shared directory on a NAS](deploy/README.md#a-shared-directory-on-a-nas).
 - **More users:** create them under **Admin → Users**. Each user's app data lives on the node, under `CHA_DATA_ROOT`: [App data](deploy/README.md#app-data).
 - **Intel, AMD or CPU-only nodes, and choosing where a launch goes:** [Devices](deploy/README.md#devices).

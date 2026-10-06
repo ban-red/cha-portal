@@ -197,9 +197,9 @@ impl Runtime for FakeRuntime {
             self.running.lock().unwrap().push(spec.id.clone());
             self.started.lock().unwrap().push(spec);
             Ok(StreamerEndpoint {
-                http_port: 47000,
-                webrtc_port: 47001,
-                webtransport_port: 47002,
+                http_port: 7600,
+                webrtc_port: 7601,
+                webtransport_port: 7602,
             })
         })
     }
@@ -460,7 +460,7 @@ async fn environments_launch_stop_fail_and_reconcile() {
     assert_eq!(env["templateName"], "Google Chrome");
     assert_eq!(env["nodeName"], "gpu-box");
     assert_eq!(env["streamer"]["host"], "192.168.1.20");
-    assert_eq!(env["streamer"]["httpPort"], 47000);
+    assert_eq!(env["streamer"]["httpPort"], 7600);
     let spec = runtime.started.lock().unwrap()[0].clone();
     assert_eq!(spec.id, id);
     assert_eq!(spec.image, "cha/env-chrome:dev");

@@ -384,7 +384,7 @@ These are targets to validate in Phase 0, not measured facts.
   - For **WebRTC** these become ICE host and srflx candidates, plus passive ICE-TCP. The streamer runs ICE-lite, like GeForce NOW.
   - For **WebTransport** the player **races** connections to every address and keeps the fastest.
   - Candidate RTTs also feed placement, CloudRetro-style.
-- **Ports.** Each streamer gets one UDP port from a node range (default `47000–47099/udp`), shared by its ICE and QUIC endpoints (demuxed by first byte). A single node-wide port can come later.
+- **Ports.** Each streamer gets one UDP port from a node range (default `7600–7699/udp`), shared by its ICE and QUIC endpoints (demuxed by first byte). A single node-wide port can come later.
 - **Certificates:**
   - **WebRTC** needs no CA: DTLS fingerprints travel in the SDP, which the portal relays over authenticated channels.
   - **WebTransport** uses the Punktfunk scheme:

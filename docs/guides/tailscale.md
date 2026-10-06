@@ -12,7 +12,7 @@ Tailscale (or plain WireGuard) is the simplest way to reach a homelab portal fro
 
 1. **Install Tailscale** on the portal's host, on every node, and on the devices you'll play from. Run `sudo tailscale up` on each.
 2. **Turn on HTTPS** for the tailnet: in the admin console, under **DNS**, enable MagicDNS and **HTTPS Certificates**.
-3. **Start the portal** on its host. It listens on `127.0.0.1:8080` only:
+3. **Start the portal** on its host. It listens on `127.0.0.1:7676` only:
 
    ```bash
    docker compose -f deploy/portal/compose.yaml up -d --build
@@ -21,7 +21,7 @@ Tailscale (or plain WireGuard) is the simplest way to reach a homelab portal fro
 4. **Serve it over HTTPS** on the tailnet:
 
    ```bash
-   sudo tailscale serve --bg 8080
+   sudo tailscale serve --bg 7676
    ```
 
    `tailscale serve status` shows the URL. Open it, and create the first admin with the setup token from `docker compose -f deploy/portal/compose.yaml logs portal`.
@@ -44,10 +44,10 @@ Tailscale (or plain WireGuard) is the simplest way to reach a homelab portal fro
 
 - **Don't use Funnel** for the portal unless you mean to publish it on the internet.
 - **Never enable `--dev-login` on a portal behind `tailscale serve`**, or behind any proxy on the same machine. Every request then comes from `127.0.0.1`, so every tailnet user would count as local.
-- **Lock it down** with Tailscale ACLs if the tailnet is shared. Players need TCP 443 to the portal's host and UDP to the nodes' streamer ports (47000–47047 by default). Nodes need TCP 443 to the portal's host.
+- **Lock it down** with Tailscale ACLs if the tailnet is shared. Players need TCP 443 to the portal's host and UDP to the nodes' streamer ports (7600–7647 by default). Nodes need TCP 443 to the portal's host.
 - **Plain WireGuard** works the same way: streamers offer the `wg0` address too. Serve the portal with any HTTPS proxy, e.g. Caddy with an internal CA.
 
 ## Without a mesh
 
-- **Port-forward:** forward the streamers' UDP ports (47000–47047 by default: WebRTC and WebTransport) from the router to the node, and set `CHA_PUBLIC_ADDRESS` to the router's public IP on the node. The portal itself still needs HTTPS: use the compose file's `tls` profile (Caddy, public DNS).
+- **Port-forward:** forward the streamers' UDP ports (7600–7647 by default: WebRTC and WebTransport) from the router to the node, and set `CHA_PUBLIC_ADDRESS` to the router's public IP on the node. The portal itself still needs HTTPS: use the compose file's `tls` profile (Caddy, public DNS).
 - **TURN:** for networks that block UDP to the node, run the portal compose file's `turn` profile (coturn) where browsers can reach it and it can reach the nodes. The portal mints a day's credentials per connection. TURN over TLS on 443 comes with Phase 3.

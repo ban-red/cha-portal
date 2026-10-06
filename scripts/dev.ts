@@ -4,18 +4,18 @@
 //   bun run dev                         # cha-control + the SPA with hot reload
 //   bun run dev -- --turn-secret …      # extra flags go to cha-control
 //
-// - cha-control on 127.0.0.1:8090 (`cargo run`), database `data/dev.db`,
+// - cha-control on 127.0.0.1:7677 (`cargo run`), database `data/dev.db`,
 //   with `--dev-login`: the sign-in page offers "Login as Local Dev", and a
 //   button for each existing admin account (to see your own data locally).
-// - The SPA on Vite at http://localhost:5190 (PORT to change), hot reloading,
+// - The SPA on Vite at http://localhost:7678 (PORT to change), hot reloading,
 //   proxying /api to cha-control (vite.config.ts).
 //
-// A node agent on this machine enrolls against http://127.0.0.1:8090. For a
+// A node agent on this machine enrolls against http://127.0.0.1:7677. For a
 // node on another machine, listen on the LAN too:
 //
-//   CHA_LISTEN=0.0.0.0:8090 bun run dev
+//   CHA_LISTEN=0.0.0.0:7677 bun run dev
 //
-// and run the node with CHA_PORTAL_URL=http://<this machine>:8090 and
+// and run the node with CHA_PORTAL_URL=http://<this machine>:7677 and
 // CHA_ALLOW_INSECURE_PORTAL=true (plain HTTP). "Login as Local Dev" still only
 // works from this machine (cha-control checks the peer address; the Vite proxy
 // stays on localhost). Ctrl-C stops both; if either exits, the other is
@@ -26,12 +26,12 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const LISTEN = process.env.CHA_LISTEN ?? "127.0.0.1:8090";
+const LISTEN = process.env.CHA_LISTEN ?? "127.0.0.1:7677";
 const CONTROL_PORT = LISTEN.slice(LISTEN.lastIndexOf(":") + 1);
 // This machine's own way in, whatever LISTEN is bound to.
 const CONTROL = `127.0.0.1:${CONTROL_PORT}`;
 const LAN = !/^(127\.|localhost:|\[::1\]:)/.test(LISTEN);
-const WEB_PORT = process.env.PORT ?? "5190";
+const WEB_PORT = process.env.PORT ?? "7678";
 
 mkdirSync(join(root, "data"), { recursive: true });
 

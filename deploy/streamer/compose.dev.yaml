@@ -4,7 +4,7 @@
 #   docker compose -f deploy/streamer/compose.dev.yaml exec dev cargo build --release -p cha-streamer
 #   docker compose -f deploy/streamer/compose.dev.yaml exec dev /target/release/cha-streamer \
 #     --run 'google-chrome-stable --no-sandbox --kiosk ... file:///src/spikes/s2-compositor/bench/page/live.html'
-# Signalling on TCP 4495, WebRTC on UDP 4496 (host network).
+# Signalling on TCP 7660, WebRTC on UDP 7661 (host network).
 name: cha-streamer-dev
 
 services:

@@ -2017,7 +2017,7 @@ mod tests {
                 uinput: Some("/dev/uinput".into()),
                 uhid: Some("/dev/uhid".into()),
                 public_address: None,
-                port_base: 47000,
+                port_base: 7600,
                 max_environments: 2,
                 data_root: root.clone(),
                 shared_dirs,
@@ -2066,7 +2066,7 @@ mod tests {
     #[test]
     fn steam_gets_the_sandbox_profile_and_its_home() {
         let rt = runtime();
-        let app = rt.app_config(&steam_spec(), 47000, &[]);
+        let app = rt.app_config(&steam_spec(), 7600, &[]);
         let opts = app["HostConfig"]["SecurityOpt"].as_array().unwrap();
         assert!(opts.iter().any(|o| o == "apparmor=cha-sandbox"));
         assert!(
@@ -2080,7 +2080,7 @@ mod tests {
         assert!(home.get("ReadOnly").is_none(), "the app writes its home");
         assert_eq!(app["HostConfig"]["Ulimits"][0]["Name"], "nofile");
         // Others keep Docker's AppArmor profile and no home volume.
-        let chrome = rt.app_config(&spec(SecurityProfile::Browser), 47000, &[]);
+        let chrome = rt.app_config(&spec(SecurityProfile::Browser), 7600, &[]);
         let opts = chrome["HostConfig"]["SecurityOpt"].as_array().unwrap();
         assert!(
             !opts
@@ -2094,17 +2094,17 @@ mod tests {
     #[test]
     fn allocates_port_triples_until_full() {
         let rt = runtime();
-        assert_eq!(rt.allocate("a").unwrap(), 47000);
-        assert_eq!(rt.allocate("b").unwrap(), 47003);
+        assert_eq!(rt.allocate("a").unwrap(), 7600);
+        assert_eq!(rt.allocate("b").unwrap(), 7603);
         assert!(rt.allocate("c").is_err());
         rt.state.lock().unwrap().ports.remove("a");
-        assert_eq!(rt.allocate("c").unwrap(), 47000);
+        assert_eq!(rt.allocate("c").unwrap(), 7600);
     }
 
     #[test]
     fn apps_are_confined() {
         let rt = runtime();
-        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000, &[]);
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 7600, &[]);
         assert_eq!(app["User"], "1000:1000");
         assert_eq!(app["HostConfig"]["CapDrop"], json!(["ALL"]));
         assert_eq!(
@@ -2115,7 +2115,7 @@ mod tests {
         assert_eq!(app["HostConfig"]["ShmSize"], 1024 * 1024 * 1024);
         assert!(app["HostConfig"].get("NetworkMode").is_none());
 
-        let browser = rt.app_config(&spec(SecurityProfile::Browser), 47000, &[]);
+        let browser = rt.app_config(&spec(SecurityProfile::Browser), 7600, &[]);
         let opts = browser["HostConfig"]["SecurityOpt"].as_array().unwrap();
         let seccomp = opts[1].as_str().unwrap().strip_prefix("seccomp=").unwrap();
         let profile: Value = serde_json::from_str(seccomp).unwrap();
@@ -2126,7 +2126,7 @@ mod tests {
     #[test]
     fn streamers_get_their_ports_and_the_gpu() {
         let rt = runtime();
-        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 47002);
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 7602);
         let cmd: Vec<&str> = s["Cmd"]
             .as_array()
             .unwrap()
@@ -2134,9 +2134,9 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         let arg = |name: &str| cmd[cmd.iter().position(|a| *a == name).unwrap() + 1];
-        assert_eq!(arg("--http-port"), "47002");
-        assert_eq!(arg("--webrtc-port"), "47003");
-        assert_eq!(arg("--wt-port"), "47004");
+        assert_eq!(arg("--http-port"), "7602");
+        assert_eq!(arg("--webrtc-port"), "7603");
+        assert_eq!(arg("--wt-port"), "7604");
         assert_eq!(arg("--app-uid"), "1000");
         assert_eq!(arg("--listen"), "127.0.0.1");
         assert_eq!(arg("--portal-key"), "cG9ydGFs");
@@ -2147,7 +2147,7 @@ mod tests {
             s["HostConfig"]["DeviceRequests"][0]["DeviceIDs"][0],
             "nvidia.com/gpu=all"
         );
-        assert_eq!(s["Labels"]["sh.cha.http-port"], "47002");
+        assert_eq!(s["Labels"]["sh.cha.http-port"], "7602");
     }
 
     fn device_spec(kind: DeviceKind, render_node: Option<&str>) -> EnvironmentSpec {
@@ -2186,7 +2186,7 @@ mod tests {
             steam_spec(),
             device_spec(DeviceKind::Nvidia, Some("/dev/dri/renderD130")),
         ] {
-            let s = rt.streamer_config(&spec, 47000);
+            let s = rt.streamer_config(&spec, 7600);
             let cmd = cmd_of(&s);
             // What a streamer from before devices is started with.
             assert!(!cmd.contains(&"--device"));
@@ -2196,7 +2196,7 @@ mod tests {
                 s["HostConfig"]["DeviceRequests"][0]["DeviceIDs"][0],
                 "nvidia.com/gpu=all"
             );
-            let app = rt.app_config(&spec, 47000, &[]);
+            let app = rt.app_config(&spec, 7600, &[]);
             assert_eq!(app["HostConfig"]["DeviceRequests"][0]["Driver"], "cdi");
             assert_eq!(app["HostConfig"]["GroupAdd"], json!(["992"]));
             assert!(app["HostConfig"].get("Devices").is_none());
@@ -2209,7 +2209,7 @@ mod tests {
         let mut rt = runtime();
         rt.config.nvidia_wine_dir = Some("/usr/lib/nvidia/wine".into());
         let spec = device_spec(DeviceKind::Vaapi, Some("/dev/dri/renderD129"));
-        let s = rt.streamer_config(&spec, 47000);
+        let s = rt.streamer_config(&spec, 7600);
         let cmd = cmd_of(&s);
         let at = cmd.iter().position(|a| *a == "--device").unwrap();
         assert_eq!(
@@ -2228,7 +2228,7 @@ mod tests {
         };
         let streamer_node = node(&s).expect("the streamer gets the render node");
         assert_eq!(streamer_node["PathInContainer"], "/dev/dri/renderD129");
-        let app = rt.app_config(&spec, 47000, &[]);
+        let app = rt.app_config(&spec, 7600, &[]);
         assert_eq!(app["HostConfig"]["DeviceRequests"], json!([]));
         assert_eq!(
             app["HostConfig"]["Devices"],
@@ -2248,7 +2248,7 @@ mod tests {
         let mut rt = runtime();
         rt.config.nvidia_wine_dir = Some("/usr/lib/nvidia/wine".into());
         let spec = device_spec(DeviceKind::Cpu, None);
-        let s = rt.streamer_config(&spec, 47000);
+        let s = rt.streamer_config(&spec, 7600);
         let cmd = cmd_of(&s);
         assert!(cmd.windows(2).any(|w| w == ["--device", "cpu"]));
         assert!(!cmd.contains(&"--render-node"));
@@ -2262,7 +2262,7 @@ mod tests {
                     .as_str()
                     .is_some_and(|p| p.contains("/dev/dri")))
         );
-        let app = rt.app_config(&spec, 47000, &[]);
+        let app = rt.app_config(&spec, 7600, &[]);
         assert_eq!(app["HostConfig"]["DeviceRequests"], json!([]));
         assert!(app["HostConfig"].get("Devices").is_none());
         assert_eq!(app["HostConfig"]["GroupAdd"], json!([]));
@@ -2298,13 +2298,13 @@ mod tests {
     #[test]
     fn gamepads_reach_the_app_read_only() {
         let rt = runtime();
-        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 47000);
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 7600);
         assert_eq!(
             s["HostConfig"]["Devices"][0]["PathInContainer"],
             "/dev/uinput"
         );
         assert!(s["Cmd"].as_array().unwrap().contains(&json!("--input-dir")));
-        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000, &[]);
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 7600, &[]);
         let mounts = app["HostConfig"]["Mounts"].as_array().unwrap();
         let input = mounts.iter().find(|m| m["Target"] == "/dev/input").unwrap();
         assert_eq!(input["Source"], "cha-env-e1-input");
@@ -2320,10 +2320,10 @@ mod tests {
         let mut rt = runtime();
         rt.config.uinput = None;
         rt.config.uhid = None;
-        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 47000);
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 7600);
         assert_eq!(s["HostConfig"]["Devices"], json!([]));
         assert!(!s["Cmd"].as_array().unwrap().contains(&json!("--input-dir")));
-        let app = rt.app_config(&spec(SecurityProfile::Standard), 47000, &[]);
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 7600, &[]);
         assert_eq!(app["HostConfig"]["Mounts"].as_array().unwrap().len(), 1);
         assert_eq!(app["HostConfig"]["DeviceCgroupRules"], json!([]));
     }
@@ -2339,7 +2339,7 @@ mod tests {
     fn the_streamer_gets_uhid_and_the_pad_kind() {
         let rt = runtime();
         let cmd = |spec: &EnvironmentSpec| -> Vec<String> {
-            rt.streamer_config(spec, 47000)["Cmd"]
+            rt.streamer_config(spec, 7600)["Cmd"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2356,7 +2356,7 @@ mod tests {
         assert_eq!(value_of(&ds, "--uhid").as_deref(), Some("/dev/uhid"));
         assert_eq!(value_of(&ds, "--uinput").as_deref(), Some("/dev/uinput"));
         assert_eq!(value_of(&ds, "--input-dir").as_deref(), Some(INPUT_DIR));
-        let s = rt.streamer_config(&pad_spec(Some(GamepadKind::Steam)), 47000);
+        let s = rt.streamer_config(&pad_spec(Some(GamepadKind::Steam)), 7600);
         let devices = s["HostConfig"]["Devices"].as_array().unwrap();
         assert!(devices.iter().any(|d| d["PathOnHost"] == "/dev/uhid"
             && d["PathInContainer"] == "/dev/uhid"
@@ -2374,7 +2374,7 @@ mod tests {
         let mut only = runtime();
         only.config.uinput = None;
         only.config.uhid = Some("/dev/misc/uhid".into());
-        let s = only.streamer_config(&pad_spec(Some(GamepadKind::Dualsense)), 47000);
+        let s = only.streamer_config(&pad_spec(Some(GamepadKind::Dualsense)), 7600);
         let cmd = s["Cmd"].as_array().unwrap();
         assert!(cmd.contains(&json!("--input-dir")) && !cmd.contains(&json!("--uinput")));
         assert_eq!(
@@ -2385,7 +2385,7 @@ mod tests {
         // Without uhid the streamer is told the kind and falls back itself.
         let mut none = runtime();
         none.config.uhid = None;
-        let s = none.streamer_config(&pad_spec(Some(GamepadKind::Dualsense)), 47000);
+        let s = none.streamer_config(&pad_spec(Some(GamepadKind::Dualsense)), 7600);
         assert!(!s["Cmd"].as_array().unwrap().contains(&json!("--uhid")));
     }
 
@@ -2404,7 +2404,7 @@ mod tests {
                 minor: 4,
             },
         ];
-        let app = rt.app_config(&pad_spec(Some(GamepadKind::Dualsense)), 47000, &nodes);
+        let app = rt.app_config(&pad_spec(Some(GamepadKind::Dualsense)), 7600, &nodes);
         let mounts = app["HostConfig"]["Mounts"].as_array().unwrap();
         assert_eq!(
             mounts.iter().find(|m| m["Target"] == "/dev/hidraw3"),
@@ -2429,7 +2429,7 @@ mod tests {
             json!(["c 13:* rw", "c 240:3 rwm", "c 240:4 rwm"])
         );
         // No nodes: what an Xbox pad gets.
-        let plain = rt.app_config(&pad_spec(None), 47000, &[]);
+        let plain = rt.app_config(&pad_spec(None), 7600, &[]);
         assert_eq!(
             plain["HostConfig"]["DeviceCgroupRules"],
             json!(["c 13:* rw"])
@@ -2535,7 +2535,7 @@ mod tests {
     #[test]
     fn the_streamer_never_sees_the_home() {
         let rt = runtime();
-        let streamer = rt.streamer_config(&steam_spec(), 47000);
+        let streamer = rt.streamer_config(&steam_spec(), 7600);
         let mounts = streamer["HostConfig"]["Mounts"].as_array().unwrap();
         assert!(mounts.iter().all(|m| m["Target"] != "/home/cha"));
         assert!(mounts.iter().all(|m| m.get("VolumeOptions").is_none()));
@@ -2760,16 +2760,16 @@ mod tests {
                 .find(|m| m["Target"] == WINE_DIR)
                 .cloned()
         };
-        assert!(target(&rt.app_config(&steam_spec(), 47000, &[])).is_none());
+        assert!(target(&rt.app_config(&steam_spec(), 7600, &[])).is_none());
 
         rt.config.nvidia_wine_dir = Some(WINE_DIR.into());
-        let mount = target(&rt.app_config(&steam_spec(), 47000, &[])).expect("mounted");
+        let mount = target(&rt.app_config(&steam_spec(), 7600, &[])).expect("mounted");
         assert_eq!(mount["Type"], "bind");
         assert_eq!(mount["Source"], WINE_DIR);
         assert_eq!(mount["ReadOnly"], true);
         assert_eq!(mount["BindOptions"]["CreateMountpoint"], false);
         // Streamers don't run Wine.
-        assert!(target(&rt.streamer_config(&steam_spec(), 47000)).is_none());
+        assert!(target(&rt.streamer_config(&steam_spec(), 7600)).is_none());
     }
 
     #[tokio::test]
@@ -2930,7 +2930,7 @@ mod tests {
         let rt = runtime_on(docker);
         {
             let mut state = rt.state.lock().unwrap();
-            state.ports.insert("e1".into(), 47000);
+            state.ports.insert("e1".into(), 7600);
             state.starting.insert("e1".into(), None);
         }
         engine.containers.lock().unwrap().push(json!({
@@ -2965,7 +2965,7 @@ mod tests {
     async fn an_app_left_without_a_streamer_is_cleared_when_the_agent_starts() {
         let (engine, _dir, docker) = fake_engine();
         let rt = runtime_on(docker);
-        let labels = |env: &str, role: &str| json!({ LABEL_ENV: env, LABEL_ROLE: role, LABEL_HTTP_PORT: "47000" });
+        let labels = |env: &str, role: &str| json!({ LABEL_ENV: env, LABEL_ROLE: role, LABEL_HTTP_PORT: "7600" });
         engine.containers.lock().unwrap().extend([
             // e1 lost its streamer; e2 is whole.
             json!({ "Id": "a1", "State": "running", "Labels": labels("e1", "app") }),
@@ -3139,7 +3139,7 @@ mod tests {
                     }
                     None => assert_eq!(shared, None, "{label}"),
                 }
-                let app = rt.app_config(&spec, 47000, &[]);
+                let app = rt.app_config(&spec, 7600, &[]);
                 let env: Vec<&str> = app["Env"]
                     .as_array()
                     .unwrap()
@@ -3223,7 +3223,7 @@ mod tests {
             mounts[2]["Source"],
             format!("/data/cha/users/{USER}/steam/.cha-shared/{COMPAT}")
         );
-        let app = rt.app_config(&spec, 47000, &[]);
+        let app = rt.app_config(&spec, 7600, &[]);
         assert!(
             app["Env"]
                 .as_array()
@@ -3253,7 +3253,7 @@ mod tests {
     fn the_streamer_never_sees_app_data() {
         let rt = mounting(&[]);
         let spec = app_data_spec("e1", "steam", Some(steam_storage(true, Some(true))));
-        let streamer = rt.streamer_config(&spec, 47000);
+        let streamer = rt.streamer_config(&spec, 7600);
         let mounts = streamer["HostConfig"]["Mounts"].as_array().unwrap();
         assert!(mounts.iter().all(|m| m["Type"] == "volume"));
         assert!(
@@ -3262,10 +3262,10 @@ mod tests {
                 .all(|m| !m["Target"].as_str().unwrap().contains("steam"))
         );
         // The app is labelled with whose home it has.
-        let app = rt.app_config(&spec, 47000, &[]);
+        let app = rt.app_config(&spec, 7600, &[]);
         assert_eq!(app["Labels"]["sh.cha.owner"], USER);
         assert_eq!(app["Labels"]["sh.cha.template"], "steam");
-        let plain = rt.app_config(&app_data_spec("e1", "steam", None), 47000, &[]);
+        let plain = rt.app_config(&app_data_spec("e1", "steam", None), 7600, &[]);
         assert!(plain["Labels"].get("sh.cha.owner").is_none());
     }
 
@@ -3915,7 +3915,7 @@ mod tests {
             let mut containers = n.engine.containers.lock().unwrap();
             for c in containers.iter_mut() {
                 c["State"] = json!("running");
-                c["Labels"]["sh.cha.http-port"] = json!("47000");
+                c["Labels"]["sh.cha.http-port"] = json!("7600");
             }
         }
         {
@@ -4042,7 +4042,7 @@ mod tests {
     fn the_app_is_told_its_per_user_directories() {
         let rt = mounting(&[("steam", "/mnt/games/steam")]);
         let env_of = |rt: &DockerRuntime, spec: &EnvironmentSpec| -> Vec<String> {
-            rt.app_config(spec, 47000, &[])["Env"]
+            rt.app_config(spec, 7600, &[])["Env"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -4186,7 +4186,7 @@ mod tests {
             let mut containers = n.engine.containers.lock().unwrap();
             for c in containers.iter_mut() {
                 c["State"] = json!("running");
-                c["Labels"]["sh.cha.http-port"] = json!("47000");
+                c["Labels"]["sh.cha.http-port"] = json!("7600");
             }
         }
         *n.rt.state.lock().unwrap() = super::State::default();
@@ -4254,7 +4254,7 @@ mod tests {
     /// with what a test machine may not have (the GPU, input devices) taken
     /// out and a script for its command, with only the storage mounts.
     fn probe_config(rt: &DockerRuntime, spec: &EnvironmentSpec, script: &str) -> Value {
-        let mut config = rt.app_config(spec, 47000, &[]);
+        let mut config = rt.app_config(spec, 7600, &[]);
         config["Entrypoint"] = json!(["sh", "-c", script]);
         config["Cmd"] = json!([]);
         config["HostConfig"]["Mounts"] = json!(rt.storage_mounts(spec));

@@ -599,8 +599,8 @@ mod tests {
         assert_eq!(url, "https://portal.example");
         assert_eq!(connect_url(&url), "wss://portal.example/api/node/connect");
         assert_eq!(
-            connect_url("http://127.0.0.1:8090"),
-            "ws://127.0.0.1:8090/api/node/connect"
+            connect_url("http://127.0.0.1:7677"),
+            "ws://127.0.0.1:7677/api/node/connect"
         );
         assert!(normalize_portal_url("portal.example").is_err());
     }
@@ -609,16 +609,16 @@ mod tests {
     fn plain_http_only_to_loopback_unless_allowed() {
         for ok in [
             "https://portal.example",
-            "http://localhost:8090",
-            "http://127.0.0.1:8090",
-            "http://[::1]:8090/x",
+            "http://localhost:7677",
+            "http://127.0.0.1:7677",
+            "http://[::1]:7677/x",
         ] {
             assert!(check_portal_transport(ok, false).is_ok(), "{ok}");
         }
         for lan in [
-            "http://portal.lan:8090",
+            "http://portal.lan:7677",
             "http://192.168.1.5",
-            "http://[fd7a::1]:8090",
+            "http://[fd7a::1]:7677",
             "http://127.0.0.1.example",
         ] {
             assert!(check_portal_transport(lan, false).is_err(), "{lan}");

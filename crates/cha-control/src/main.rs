@@ -8,7 +8,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-    #[arg(long, env = "CHA_LISTEN", default_value = "0.0.0.0:8080")]
+    #[arg(long, env = "CHA_LISTEN", default_value = "0.0.0.0:7676")]
     listen: SocketAddr,
     /// SQLite database file.
     #[arg(long, env = "CHA_DATABASE", default_value = "data/cha.db")]

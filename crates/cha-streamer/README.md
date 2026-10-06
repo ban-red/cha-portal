@@ -330,8 +330,8 @@ docker compose -f deploy/streamer/compose.dev.yaml exec dev /target/release/cha-
 ```
 
 - Chrome runs with `--no-sandbox` only because the dev container runs as root. The environment images in P1.4 run apps unprivileged.
-- Signalling is on TCP 4495 and WebRTC on UDP 4496.
-- On its own like this, starting a stream needs the token printed at startup, kept in `/state/token`. Measure with the S1c/S1d page, as for S2: host `gpu-node.lan`, port 4495, the token, the WebRTC present path. The streams are `live-hevc`, `live-h264` and `live-av1`.
+- Signalling is on TCP 7660 and WebRTC on UDP 7661.
+- On its own like this, starting a stream needs the token printed at startup, kept in `/state/token`. Measure with the S1c/S1d page, as for S2: host `gpu-node.lan`, port 7660, the token, the WebRTC present path. The streams are `live-hevc`, `live-h264` and `live-av1`.
 
 ## Run by the agent (P1.5)
 
