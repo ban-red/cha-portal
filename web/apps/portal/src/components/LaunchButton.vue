@@ -3,10 +3,13 @@
 // named under it; the chevron opens every option (the disallowed ones say why
 // and can't be chosen). Without placements (an older server, or still
 // loading) it is a plain Launch button.
-import { ChevronDown, Play } from "lucide-vue-next";
+//
+// When the app already has an environment, the main part is Open (to that
+// environment) and the menu starts with "Launch new instance".
+import { ChevronDown, MonitorPlay, Play } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 
-import type { PlacementChoice, Placements } from "../api";
+import type { Environment, PlacementChoice, Placements } from "../api";
 import { KIND_LABEL, autoOption, describe, nowhereToRun } from "../placements";
 
 const props = defineProps<{
@@ -17,7 +20,9 @@ const props = defineProps<{
   busy: boolean;
   /** Not for this user (a guest). */
   disabled: boolean;
-  /** For a list row: no top margin, the place line is for screen readers only, and the
+  /** The app's existing environment, if any: Open goes to it once it runs. */
+  instance?: Environment;
+  /** For a list row: the place line is for screen readers only, and the
    *  menu may be wider than the button. */
   compact?: boolean;
 }>();
@@ -26,6 +31,8 @@ const emit = defineEmits<{ launch: [choice: PlacementChoice | null] }>();
 const auto = computed(() => autoOption(props.placements));
 // Nothing allowed anywhere: the main button has nothing to launch.
 const nowhere = computed(() => !!props.placements && !props.placements.auto);
+// Menu items before the placement options: "Launch new instance".
+const lead = computed(() => (props.instance ? 1 : 0));
 const menuId = computed(() => `${props.id}-launch-menu`);
 
 const open = ref(false);
@@ -52,7 +59,7 @@ async function openMenu(focus: "first" | "last" = "first") {
   const list = items.value.filter(Boolean);
   // The best allowed one first, so Enter picks what Launch would.
   const best = props.placements?.options.findIndex((o) => isAuto(o)) ?? -1;
-  focusItem(focus === "last" ? list.length - 1 : Math.max(best, 0));
+  focusItem(focus === "last" ? list.length - 1 : props.instance ? 0 : Math.max(best, 0));
 }
 
 function closeMenu(returnFocus = false) {
@@ -64,6 +71,12 @@ function choose(o: { node: string; device: string; allowed: boolean }) {
   if (!o.allowed) return;
   closeMenu(true);
   emit("launch", { node: o.node, device: o.device });
+}
+
+function launchNew() {
+  if (nowhere.value) return;
+  closeMenu(true);
+  emit("launch", null);
 }
 
 function onToggleKey(event: KeyboardEvent) {
@@ -102,7 +115,7 @@ watch(open, (isOpen) => {
 onBeforeUnmount(() => document.removeEventListener("pointerdown", onPointerDown));
 // What it listed may be gone by the next refresh.
 watch(
-  () => props.placements?.options.length,
+  () => (props.instance ? 1 : 0) + (props.placements?.options.length ?? 0),
   (n) => {
     if (!n) open.value = false;
   },
@@ -110,9 +123,27 @@ watch(
 </script>
 
 <template>
-  <div ref="root" :class="compact ? undefined : 'mt-4'">
+  <div ref="root">
     <div class="relative flex">
+      <RouterLink
+        v-if="instance && instance.state === 'running'"
+        :to="{ name: 'session', params: { id: instance.id } }"
+        class="btn-primary min-h-11 flex-1 rounded-r-none"
+        :aria-describedby="`${id}-launch-on`"
+      >
+        <MonitorPlay class="size-4" aria-hidden="true" />
+        Open
+      </RouterLink>
       <button
+        v-else-if="instance"
+        class="btn-primary min-h-11 flex-1 rounded-r-none"
+        disabled
+        :aria-describedby="`${id}-launch-on`"
+      >
+        {{ instance.state === "stopping" ? "Stopping…" : "Starting…" }}
+      </button>
+      <button
+        v-else
         class="btn-primary min-h-11 flex-1"
         :class="placements && 'rounded-r-none'"
         :disabled="disabled || busy || nowhere"
@@ -123,32 +154,49 @@ watch(
         {{ busy ? "Launching…" : "Launch" }}
       </button>
       <button
-        v-if="placements"
+        v-if="placements || instance"
         ref="toggle"
         class="btn-primary min-h-11 min-w-11 rounded-l-none border-l border-on-accent/30 px-2.5"
-        :disabled="disabled || busy || !placements.options.length"
+        :disabled="disabled || busy || (!instance && !placements?.options.length)"
         aria-haspopup="menu"
         :aria-expanded="open"
         :aria-controls="menuId"
-        aria-label="Choose where to launch"
-        title="Choose where to launch"
+        :aria-label="instance ? 'More ways to launch' : 'Choose where to launch'"
+        :title="instance ? 'Launch new instance, or choose where' : 'Choose where to launch'"
         @click="open ? closeMenu() : openMenu()"
         @keydown="onToggleKey"
       >
         <ChevronDown class="size-5" aria-hidden="true" />
       </button>
       <ul
-        v-if="open && placements"
+        v-if="open && (placements || instance)"
         :id="menuId"
         role="menu"
-        aria-label="Where to launch"
+        :aria-label="instance ? 'Launch' : 'Where to launch'"
         class="absolute top-full right-0 left-0 z-20 mt-2 max-h-72 overflow-y-auto rounded-xl border border-line bg-panel p-1 text-left shadow-lg"
         :class="compact && 'left-auto min-w-64'"
         @keydown="onMenuKey"
       >
-        <li v-for="(o, i) in placements.options" :key="`${o.node}/${o.device}`" role="none">
+        <li v-if="instance" role="none">
           <button
-            :ref="(el) => setItem(i, el as HTMLElement | null)"
+            :ref="(el) => setItem(0, el as HTMLElement | null)"
+            role="menuitem"
+            type="button"
+            class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium transition focus:bg-panel-2 focus:outline-none"
+            :class="nowhere ? 'cursor-not-allowed text-ink-3' : 'text-ink hover:bg-panel-2'"
+            :aria-disabled="nowhere"
+            @click="launchNew"
+          >
+            <Play class="size-4 fill-current" aria-hidden="true" />
+            Launch new instance
+          </button>
+        </li>
+        <li v-if="instance && placements?.options.length" role="none" class="px-3 pt-2 pb-1 text-2xs text-ink-3">
+          Or launch a new instance on
+        </li>
+        <li v-for="(o, i) in placements?.options ?? []" :key="`${o.node}/${o.device}`" role="none">
+          <button
+            :ref="(el) => setItem(i + lead, el as HTMLElement | null)"
             role="menuitem"
             type="button"
             class="flex w-full flex-col gap-0.5 rounded-lg px-3 py-2 text-left text-sm transition focus:bg-panel-2 focus:outline-none"
@@ -171,10 +219,23 @@ watch(
     </div>
     <!-- Where it would run: a dot (ok when somewhere is allowed, warn when nowhere) and always the words. -->
     <p
-      v-if="placements"
+      v-if="instance"
       :id="`${id}-launch-on`"
       class="flex items-center gap-2 text-xs text-ink-3"
-      :class="compact ? 'sr-only' : 'mt-2.5'"
+      :class="compact ? 'sr-only' : 'mt-2'"
+      aria-live="polite"
+    >
+      <span class="size-2 shrink-0 rounded-full" :class="instance.state === 'running' ? 'bg-ok' : 'bg-warn'" aria-hidden="true" />
+      <span class="min-w-0 truncate">
+        {{ instance.state === "running" ? "Running" : instance.state === "stopping" ? "Stopping" : "Starting" }}
+        on {{ instance.nodeName ?? "a removed node" }}
+      </span>
+    </p>
+    <p
+      v-else-if="placements"
+      :id="`${id}-launch-on`"
+      class="flex items-center gap-2 text-xs text-ink-3"
+      :class="compact ? 'sr-only' : 'mt-2'"
       aria-live="polite"
     >
       <span class="size-2 shrink-0 rounded-full" :class="auto ? 'bg-ok' : 'bg-warn'" aria-hidden="true" />

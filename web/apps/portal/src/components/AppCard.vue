@@ -3,10 +3,10 @@
 // width (a container query): icon beside the title when it is wide, stacked when narrow;
 // the Controller and Frame rate selects sit side by side only when there is room for their
 // full option text.
-import { Activity, AppWindow, Database, Gamepad2, Globe, Monitor, Pin } from "lucide-vue-next";
+import { Activity, AppWindow, Database, Gamepad2, Gauge, Globe, Monitor, Pin } from "lucide-vue-next";
 import { computed, ref } from "vue";
 
-import { catalogIconUrl, type AppSettings, type ControllerApp, type PlacementChoice, type Placements, type Template } from "../api";
+import { catalogIconUrl, type AppSettings, type ControllerApp, type Environment, type PlacementChoice, type Placements, type Template } from "../api";
 import { FPS_CHOICES } from "../appFps";
 import { KINDS, kindLabel } from "../controllerKinds";
 import FormError from "./FormError.vue";
@@ -25,6 +25,8 @@ const props = defineProps<{
   fpsError?: string | null;
   /** An environment of this app is live: changes apply from the next launch. */
   running: boolean;
+  /** The app's existing environment (the latest live one), to open instead of launching. */
+  instance?: Environment;
   placements?: Placements;
   busy: boolean;
   disabled: boolean;
@@ -50,23 +52,24 @@ const controllerText = computed(() =>
 );
 const fpsText = computed(() => (props.fps ? `${props.fps.fps ?? props.fps.defaultFps} fps` : null));
 
-const SELECT = "field min-h-9 pointer-coarse:min-h-11 truncate";
+const SELECT = "field min-h-9 pointer-coarse:min-h-11 truncate pl-9";
+const SELECT_ICON = "pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-3";
 </script>
 
 <template>
   <!-- Grid: a card and a container. -->
   <article v-if="view === 'grid'" class="card card-lift @container" :aria-label="t.name">
-    <div class="flex h-full flex-col p-4 @min-[26rem]:p-5">
+    <div class="flex h-full flex-col p-4">
       <div
         class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 @min-[26rem]:grid-cols-[auto_minmax(0,1fr)_auto]"
       >
-        <div class="col-start-1 row-start-1 size-14" :class="[TILE, tileTone]">
-          <img v-if="logo" :src="logo" alt="" class="size-9 object-contain" draggable="false" @error="logoFailed = true" />
-          <component :is="icon" v-else class="size-7" aria-hidden="true" />
+        <div class="col-start-1 row-start-1 size-11" :class="[TILE, tileTone]">
+          <img v-if="logo" :src="logo" alt="" class="size-7 object-contain" draggable="false" @error="logoFailed = true" />
+          <component :is="icon" v-else class="size-6" aria-hidden="true" />
         </div>
         <div class="col-span-2 col-start-1 row-start-2 min-w-0 @min-[26rem]:col-span-1 @min-[26rem]:col-start-2 @min-[26rem]:row-start-1">
-          <h3 class="text-xl leading-7 font-semibold tracking-tight">{{ t.name }}</h3>
-          <p class="mt-1 line-clamp-3 text-sm text-ink-2" :title="t.description">{{ t.description }}</p>
+          <h3 class="text-lg leading-6 font-semibold tracking-tight">{{ t.name }}</h3>
+          <p class="mt-0.5 line-clamp-2 text-sm text-ink-2" :title="t.description">{{ t.description }}</p>
         </div>
         <div class="col-start-2 row-start-1 flex items-center gap-2 @min-[26rem]:col-start-3">
           <RouterLink
@@ -92,28 +95,30 @@ const SELECT = "field min-h-9 pointer-coarse:min-h-11 truncate";
         </div>
       </div>
 
-      <div v-if="controller || fps" class="mt-4 border-t border-line pt-4">
-        <div class="grid grid-cols-1 gap-3 @min-[26rem]:grid-cols-2">
-          <div v-if="controller" class="min-w-0">
-            <label :for="`${t.id}-controller`" class="mb-1 block text-xs text-ink-3">Controller</label>
+      <div v-if="controller || fps" class="mt-3">
+        <div class="grid grid-cols-2 gap-2">
+          <div v-if="controller" class="relative min-w-0" :class="!fps && 'col-span-2'">
+            <label :for="`${t.id}-controller`" class="sr-only">Controller</label>
+            <Gamepad2 :class="SELECT_ICON" aria-hidden="true" />
             <select
               :id="`${t.id}-controller`"
               :value="controller.kind ?? ''"
               :class="SELECT"
-              title="The controller this app sees, from its next launch"
+              title="Controller: the one this app sees, from its next launch"
               @change="emit('chooseController', $event)"
             >
               <option value="">Default ({{ kindLabel(controller.default) }})</option>
               <option v-for="k in KINDS" :key="k.kind" :value="k.kind">{{ k.label }}</option>
             </select>
           </div>
-          <div v-if="fps" class="min-w-0">
-            <label :for="`${t.id}-fps`" class="mb-1 block text-xs text-ink-3">Frame rate</label>
+          <div v-if="fps" class="relative min-w-0" :class="!controller && 'col-span-2'">
+            <label :for="`${t.id}-fps`" class="sr-only">Frame rate</label>
+            <Gauge :class="SELECT_ICON" aria-hidden="true" />
             <select
               :id="`${t.id}-fps`"
               :value="fps.fps ?? ''"
               :class="SELECT"
-              title="Your screen needs to refresh this fast for it to show; 120 needs a 120 Hz display. From the next launch"
+              title="Frame rate: your screen needs to refresh this fast for it to show; 120 needs a 120 Hz display. From the next launch"
               @change="emit('chooseFps', $event)"
             >
               <option value="">Default ({{ fps.defaultFps }} fps)</option>
@@ -121,19 +126,20 @@ const SELECT = "field min-h-9 pointer-coarse:min-h-11 truncate";
             </select>
           </div>
         </div>
-        <p v-if="running" class="mt-2 text-xs text-ink-3">
+        <p v-if="running" class="mt-1.5 text-xs text-ink-3">
           Running: a change applies when you stop it and launch it again.
         </p>
         <FormError v-if="controllerError" polite class="mt-1" :message="controllerError" />
         <FormError v-if="fpsError" polite class="mt-1" :message="fpsError" />
       </div>
 
-      <div class="mt-auto">
+      <div class="mt-auto pt-3">
         <LaunchButton
           :id="t.id"
           :placements="placements"
           :busy="busy"
           :disabled="disabled"
+          :instance="instance"
           @launch="(choice) => emit('launch', choice)"
         />
       </div>
@@ -187,6 +193,7 @@ const SELECT = "field min-h-9 pointer-coarse:min-h-11 truncate";
           :placements="placements"
           :busy="busy"
           :disabled="disabled"
+          :instance="instance"
           @launch="(choice) => emit('launch', choice)"
         />
       </div>

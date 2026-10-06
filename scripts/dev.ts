@@ -19,7 +19,8 @@
 // CHA_ALLOW_INSECURE_PORTAL=true (plain HTTP). "Login as Local Dev" still only
 // works from this machine (cha-control checks the peer address; the Vite proxy
 // stays on localhost). Ctrl-C stops both; if either exits, the other is
-// stopped too.
+// stopped too. Vite starts after cha-control is answering, so the first page
+// load doesn't hit a dead proxy.
 
 import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
@@ -62,7 +63,7 @@ async function relay(stream: ReadableStream<Uint8Array>, tag: string): Promise<v
   if (rest) process.stdout.write(tag + rest + "\n");
 }
 
-const children = [
+const children: Child[] = [
   start("control", 36, [
     "cargo",
     "run",
@@ -76,9 +77,6 @@ const children = [
     "--dev-login",
     ...process.argv.slice(2),
   ]),
-  start("web", 35, ["bun", "run", "--cwd", "web/apps/portal", "dev", "--port", WEB_PORT, "--strictPort"], {
-    CHA_CONTROL: `http://${CONTROL}`,
-  }),
 ];
 
 let stopping = false;
@@ -96,34 +94,45 @@ function stop(code: number): void {
 
 process.on("SIGINT", () => stop(0));
 process.on("SIGTERM", () => stop(0));
-for (const { name, proc } of children) {
+
+/** Stops the whole dev instance when this child exits on its own. */
+function watch({ name, proc }: Child): void {
   void proc.exited.then((code) => {
     if (stopping) return;
     console.error(`\n${name} exited (${code}); stopping the dev instance.`);
     stop(code || 1);
   });
 }
+watch(children[0]!);
 
-// Say where to go once cha-control answers (the first `cargo run` compiles).
+// Vite starts only once cha-control answers (the first `cargo run` compiles),
+// so the page never loads against a proxy with nothing behind it.
 const startedAt = Date.now();
 while (!stopping) {
   const up = await fetch(`http://${CONTROL}/api/health`)
     .then((r) => r.ok)
     .catch(() => false);
-  if (up) {
-    const secs = ((Date.now() - startedAt) / 1000).toFixed(0);
+  if (up) break;
+  await Bun.sleep(250);
+}
+
+if (!stopping) {
+  const web = start("web", 35, ["bun", "run", "--cwd", "web/apps/portal", "dev", "--port", WEB_PORT, "--strictPort"], {
+    CHA_CONTROL: `http://${CONTROL}`,
+  });
+  children.push(web);
+  watch(web);
+
+  const secs = ((Date.now() - startedAt) / 1000).toFixed(0);
+  console.log(
+    `\n\x1b[1mPortal dev instance ready\x1b[0m (${secs} s): http://localhost:${WEB_PORT} ` +
+      `(hot reload; "Login as Local Dev" signs you in). API: http://${CONTROL}\n`,
+  );
+  if (LAN) {
+    const host = hostname().replace(/\.local$/, "");
     console.log(
-      `\n\x1b[1mPortal dev instance ready\x1b[0m (${secs} s): http://localhost:${WEB_PORT} ` +
-        `(hot reload; "Login as Local Dev" signs you in). API: http://${CONTROL}\n`,
+      `Listening on the LAN (${LISTEN}). Nodes elsewhere: CHA_PORTAL_URL=http://${host}.lan:${CONTROL_PORT} ` +
+        `CHA_ALLOW_INSECURE_PORTAL=true (use whatever name they resolve this machine by)\n`,
     );
-    if (LAN) {
-      const host = hostname().replace(/\.local$/, "");
-      console.log(
-        `Listening on the LAN (${LISTEN}). Nodes elsewhere: CHA_PORTAL_URL=http://${host}.lan:${CONTROL_PORT} ` +
-          `CHA_ALLOW_INSECURE_PORTAL=true (use whatever name they resolve this machine by)\n`,
-      );
-    }
-    break;
   }
-  await Bun.sleep(1000);
 }

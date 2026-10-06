@@ -49,6 +49,15 @@ const placements = usePlacements(computed(() => session.user?.role !== "guest"))
 const live = computed(() =>
   (environments.data.value ?? []).filter((e) => e.state !== "destroyed" && e.state !== "failed"),
 );
+// The latest live environment of each app: its card opens it instead of launching another.
+const instanceOf = computed(() => {
+  const m = new Map<string, Environment>();
+  for (const e of live.value) {
+    const have = m.get(e.templateId);
+    if (!have || e.createdAt > have.createdAt) m.set(e.templateId, e);
+  }
+  return m;
+});
 const ended = computed(() =>
   (environments.data.value ?? []).filter((e) => e.state === "destroyed" || e.state === "failed").slice(0, 8),
 );
@@ -218,6 +227,42 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
   </Teleport>
 
   <div class="mx-auto max-w-[100rem] space-y-10">
+    <section v-if="live.length || environments.isError.value" class="space-y-4" aria-labelledby="live-heading">
+      <h2 id="live-heading" class="text-xl font-semibold tracking-tight">Running</h2>
+      <FormError
+        v-if="environments.isError.value"
+        :message="environments.error.value?.message ?? 'Failed to load'"
+      />
+      <ul v-else class="card divide-y divide-line">
+        <li v-for="e in live" :key="e.id" class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+          <span class="size-2 shrink-0 rounded-full" :class="STATES[e.state].dot" aria-hidden="true" />
+          <div class="min-w-0 flex-1">
+            <p class="truncate font-medium">{{ e.templateName }}</p>
+            <p class="truncate text-xs text-ink-3" :title="dateTime(e.createdAt)">
+              {{ STATES[e.state].text }} on {{ e.nodeName ?? "a removed node" }} · started {{ ago(e.createdAt) }}
+            </p>
+          </div>
+          <RouterLink
+            v-if="e.state === 'running'"
+            :to="{ name: 'session', params: { id: e.id } }"
+            class="btn-primary min-h-9 shrink-0 px-3 pointer-coarse:min-h-11"
+          >
+            <MonitorPlay class="size-4" aria-hidden="true" />
+            Connect
+          </RouterLink>
+          <button
+            class="btn-ghost min-h-9 shrink-0 px-3 hover:border-danger/60 hover:text-danger pointer-coarse:min-h-11"
+            :disabled="e.state === 'stopping' || (stop.isPending.value && stop.variables.value?.id === e.id)"
+            @click="stop.mutate(e)"
+          >
+            <Square class="size-4" aria-hidden="true" />
+            Stop
+          </button>
+          <WarningNote :message="e.warning" class="basis-full" />
+        </li>
+      </ul>
+    </section>
+
     <section class="space-y-4" aria-labelledby="launch-heading">
       <h2 id="launch-heading" class="sr-only">Launch</h2>
 
@@ -285,6 +330,7 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
                 :controller-error="controllerApps.errors[t.id]"
                 :fps-error="appFps.errors[t.id]"
                 :running="live.some((e) => e.templateId === t.id)"
+                :instance="instanceOf.get(t.id)"
                 :placements="placements.missing.value ? undefined : placements.byTemplate.value[t.id]"
                 :busy="launch.isPending.value && launch.variables.value?.template.id === t.id"
                 :disabled="session.user?.role === 'guest'"
@@ -300,47 +346,6 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
     </section>
 
     <FormError :message="error" />
-
-    <section class="space-y-4" aria-labelledby="live-heading">
-      <h2 id="live-heading" class="text-xl font-semibold tracking-tight">Your environments</h2>
-      <p v-if="environments.isPending.value" class="text-sm text-ink-3">Loading…</p>
-      <FormError
-        v-else-if="environments.isError.value"
-        :message="environments.error.value?.message ?? 'Failed to load'"
-      />
-      <div v-else-if="!live.length" class="card px-6 py-10 text-center">
-        <p class="font-medium">Nothing running</p>
-        <p class="mt-1 text-sm text-ink-2">Launch one above. It runs on a node until you stop it.</p>
-      </div>
-      <ul v-else class="card divide-y divide-line">
-        <li v-for="e in live" :key="e.id" class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
-          <span class="size-2 shrink-0 rounded-full" :class="STATES[e.state].dot" aria-hidden="true" />
-          <div class="min-w-0 flex-1">
-            <p class="truncate font-medium">{{ e.templateName }}</p>
-            <p class="truncate text-xs text-ink-3" :title="dateTime(e.createdAt)">
-              {{ STATES[e.state].text }} on {{ e.nodeName ?? "a removed node" }} · started {{ ago(e.createdAt) }}
-            </p>
-          </div>
-          <RouterLink
-            v-if="e.state === 'running'"
-            :to="{ name: 'session', params: { id: e.id } }"
-            class="btn-primary min-h-9 shrink-0 px-3 pointer-coarse:min-h-11"
-          >
-            <MonitorPlay class="size-4" aria-hidden="true" />
-            Connect
-          </RouterLink>
-          <button
-            class="btn-ghost min-h-9 shrink-0 px-3 hover:border-danger/60 hover:text-danger pointer-coarse:min-h-11"
-            :disabled="e.state === 'stopping' || (stop.isPending.value && stop.variables.value?.id === e.id)"
-            @click="stop.mutate(e)"
-          >
-            <Square class="size-4" aria-hidden="true" />
-            Stop
-          </button>
-          <WarningNote :message="e.warning" class="basis-full" />
-        </li>
-      </ul>
-    </section>
 
     <section v-if="ended.length" class="space-y-4" aria-labelledby="ended-heading">
       <h2 id="ended-heading" class="text-xl font-semibold tracking-tight">Recently ended</h2>
