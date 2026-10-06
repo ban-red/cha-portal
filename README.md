@@ -49,7 +49,7 @@ The full design is in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Development
 
-You need Rust ≥ 1.93 and [Bun](https://bun.sh) ≥ 1.4 (the JS tooling is Bun only). The portal and agent build on macOS and Linux; `cha-streamer` and the environment images build on a Linux node, in the streamer's dev container ([`deploy/streamer/compose.dev.yaml`](deploy/streamer/compose.dev.yaml)).
+You need Rust ≥ 1.93, [Bun](https://bun.sh) ≥ 1.4 (the JS tooling is Bun only) and Python 3 (for `check.sh`'s script tests). The portal and agent build on macOS and Linux; `cha-streamer` and the environment images build on a Linux node, in the streamer's dev container ([`deploy/streamer/compose.dev.yaml`](deploy/streamer/compose.dev.yaml)).
 
 ```bash
 bun install
