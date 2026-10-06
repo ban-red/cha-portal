@@ -280,7 +280,8 @@ impl Docker {
         }
     }
 
-    /// Pulls `image` (which must name a registry it can reach).
+    /// Pulls `image` (which must name a registry it can reach: see
+    /// [`names_registry`]).
     pub async fn pull(&self, image: &str) -> Result<()> {
         let (name, tag) = match image.rsplit_once(':') {
             Some((n, t)) if !t.contains('/') => (n, t),
@@ -566,6 +567,17 @@ pub(crate) fn encode(s: &str) -> String {
     out
 }
 
+/// Whether `image` names its registry (`ghcr.io/owner/name:tag`,
+/// `localhost:5000/name`), so a pull goes where its name says. A bare name
+/// (`cha/streamer:dev`) is one we build locally: pulled, it would come from
+/// whoever owns that namespace on Docker Hub, so the agent never pulls one.
+pub fn names_registry(image: &str) -> bool {
+    match image.split_once('/') {
+        Some((host, _)) => host.contains('.') || host.contains(':') || host == "localhost",
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,6 +603,16 @@ mod tests {
         let mut raw = vec![1, 0, 0, 0, 0, 0, 0, 9];
         raw.extend(b"cut");
         assert_eq!(demux(&raw), "cut");
+    }
+
+    #[test]
+    fn only_names_with_a_registry_are_pulled() {
+        assert!(names_registry("ghcr.io/ban-red/cha-streamer:0.1.0"));
+        assert!(names_registry("localhost:5000/cha-streamer"));
+        assert!(names_registry("localhost/cha-streamer"));
+        assert!(!names_registry("cha/streamer:dev"));
+        assert!(!names_registry("cha/env-chrome:dev"));
+        assert!(!names_registry("ubuntu"));
     }
 
     #[test]

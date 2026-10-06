@@ -68,7 +68,7 @@ use tracing::{debug, info, warn};
 
 use crate::crashlog::{self, Tail};
 use crate::devices::DeviceProbes;
-use crate::docker::{ContainerEvent, ContainerMount, Docker, encode};
+use crate::docker::{ContainerEvent, ContainerMount, Docker, encode, names_registry};
 use crate::storage::{DataRoot, Seed, plan_seed};
 
 const LABEL_ENV: &str = "sh.cha.env";
@@ -388,6 +388,16 @@ impl DockerRuntime {
     /// agent, clears out dead ones, and starts watching for exits.
     pub async fn new(docker: Docker, mut config: DockerConfig) -> Result<Arc<Self>> {
         docker.ping().await?;
+        // A published streamer image is pulled now, not at the first launch:
+        // the device probes and the checks below run in it.
+        if names_registry(&config.streamer_image)
+            && !docker.image_exists(&config.streamer_image).await?
+        {
+            info!(image = %config.streamer_image, "pulling the streamer image");
+            if let Err(err) = docker.pull(&config.streamer_image).await {
+                warn!(image = %config.streamer_image, "can't pull the streamer image: {err:#}");
+            }
+        }
         config.nvidia_wine_dir = Self::settle_nvidia_wine_dir(&docker, &config).await;
         let render_gid = render_gid(&config.render_node);
         if render_gid.is_none() {
@@ -830,10 +840,16 @@ impl DockerRuntime {
         if self.docker.image_exists(image).await? {
             return Ok(());
         }
+        if !names_registry(image) {
+            bail!(
+                "{image} isn't on this node: build it (`docker compose -f images/compose.yaml build`, and for the streamer `docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .`)"
+            );
+        }
         info!(%image, "pulling");
-        self.docker.pull(image).await.with_context(|| {
-            format!("{image} isn't on this node and couldn't be pulled (build it with `docker compose -f images/compose.yaml build`)")
-        })
+        self.docker
+            .pull(image)
+            .await
+            .with_context(|| format!("{image} isn't on this node and couldn't be pulled"))
     }
 
     fn allocate(&self, id: &str) -> Result<u16> {

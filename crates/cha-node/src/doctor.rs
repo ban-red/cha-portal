@@ -13,7 +13,7 @@ use cha_wire::{HOME_VOLUME_PREFIX, parse_home_volume_name};
 use serde_json::json;
 
 use crate::Identity;
-use crate::docker::Docker;
+use crate::docker::{Docker, names_registry};
 use crate::environments::{
     APP_UID, DockerConfig, SANDBOX_APPARMOR, browser_seccomp, catalog_images, catalog_per_user,
     nvidia_present,
@@ -146,10 +146,19 @@ async fn images(docker: &Docker, config: &DockerConfig) -> Check {
         } else {
             Level::Warn
         };
-        check(level, "Images", format!("missing {}", missing.join(", "))).fix(
-            "docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev . && \
-             docker compose -f images/compose.yaml build",
-        )
+        let mut fixes = Vec::new();
+        if missing.contains(&config.streamer_image) {
+            fixes.push(if names_registry(&config.streamer_image) {
+                format!("docker pull {}", config.streamer_image)
+            } else {
+                "docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev ."
+                    .to_string()
+            });
+        }
+        if missing.iter().any(|i| *i != config.streamer_image) {
+            fixes.push("docker compose -f images/compose.yaml build".to_string());
+        }
+        check(level, "Images", format!("missing {}", missing.join(", "))).fix(fixes.join(" && "))
     }
 }
 
