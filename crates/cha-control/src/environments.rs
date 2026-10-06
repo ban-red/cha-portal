@@ -1042,10 +1042,7 @@ mod tests {
             urls[0],
             "https://192.168.1.5:7602/media?codec=hevc&token=tok"
         );
-        assert_eq!(
-            urls[2],
-            "https://[fd7a::1]:7602/media?codec=hevc&token=tok"
-        );
+        assert_eq!(urls[2], "https://[fd7a::1]:7602/media?codec=hevc&token=tok");
         assert!(webtransport_urls(&json!({ "wt_port": 0 }), "hevc", "tok").is_none());
     }
 }
