@@ -48,6 +48,22 @@
 
    It checks Docker, the images, the GPU through CDI, NVIDIA's Wine DLLs for DLSS, PyroWave's Vulkan device, `/dev/uinput` and `/dev/uhid`, the kernel modules for the DualSense and Steam Controller, the Steam sandbox, whether the host files above are installed and current, the data root and any shared directories kept outside it, the home volumes left from before app data moved, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself. The agent also logs a warning when it starts if the host files are missing or old.
 
+## Published images
+
+A release (a `v*` tag) publishes three images to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, each tagged with the version (`0.1.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all three, since the portal, agent and streamer change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.1.0 --owner ban-red`). The environment images (`images/`) aren't published yet: build them on the node as in step 2.
+
+To use them, set the image variables and pull instead of building:
+
+```bash
+CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.1.0 docker compose -f deploy/portal/compose.yaml pull
+```
+
+```bash
+CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.1.0 docker compose -f deploy/portal/compose.yaml up -d
+```
+
+On a node, set `CHA_NODE_IMAGE` the same way, and `CHA_STREAMER_IMAGE=ghcr.io/ban-red/cha-streamer:0.1.0` (in `deploy/node/.env`, so every run gets them). The agent pulls the streamer image when it starts, if the node doesn't have it. It only ever pulls an image whose name includes its registry: a bare name like `cha/streamer:dev` is a local build, and pulling it would fetch whatever Docker Hub's `cha` namespace holds. To update, change the version and pull again; leave `--build` off, or compose builds from source instead.
+
 ## Reaching nodes
 
 The stream goes straight from the node to the browser; the portal only brokers it. A browser needs a UDP path to the node:
@@ -80,7 +96,8 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_PORTAL_URL` | (required) | The portal's URL: `https://`, or `http://` to this machine (a tunnel) |
 | `CHA_ALLOW_INSECURE_PORTAL` | `false` | Development only: allow plain `http://` to another machine, e.g. a dev portal on your LAN (`CHA_LISTEN=0.0.0.0:7677 bun run dev`). The node's traffic, which can start containers here, then crosses the network unencrypted |
 | `CHA_JOIN_TOKEN` | | One-time, to enroll |
-| `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image |
+| `CHA_NODE_IMAGE` | `cha-node:dev` | The agent's image, for the compose file: the local build, or a published one ([Published images](#published-images)) |
+| `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image: the local build, or a published one, which the agent pulls when it starts |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
 | `CHA_UHID` | `/dev/uhid` | For virtual DualSense and Steam Controllers; empty goes without (no `uhid` module), and those fall back to an Xbox 360 pad |
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |
@@ -119,6 +136,7 @@ An environment runs on one **device** of a node (`docs/devices.md`), and the use
 | Variable | Default | What |
 |---|---|---|
 | `CHA_BIND` | `127.0.0.1:7676` | Where the compose file publishes the portal |
+| `CHA_PORTAL_IMAGE` | `cha-portal:dev` | The portal's image: the local build, or a published one ([Published images](#published-images)) |
 | `CHA_SECURE_COOKIES` | `true` | Keep it on behind HTTPS |
 | `CHA_DOMAIN` | | For the `tls` profile (Caddy) |
 | `CHA_STUN_URLS` | | STUN for players, comma-separated |

@@ -91,6 +91,8 @@ The portal and the node on the same Linux machine, with the browser anywhere on 
    docker compose -f images/compose.yaml build
    ```
 
+   From a release, you can pull the portal, agent and streamer images instead of building them: see [Published images](deploy/README.md#published-images). The environment images are always built here for now.
+
 6. **Install the host files** (udev rules, the Steam sandbox's AppArmor profile, the `uinput`/`uhid` modules). The script prints one line for each and is safe to run again:
 
    ```bash

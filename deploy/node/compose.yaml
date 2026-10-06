@@ -15,7 +15,9 @@ services:
     build:
       context: ../..
       dockerfile: deploy/node/Dockerfile
-    image: cha-node:dev
+    # A published image (ghcr.io/ban-red/cha-node:0.1.0) or, by default, the
+    # one `--build` makes here.
+    image: ${CHA_NODE_IMAGE:-cha-node:dev}
     restart: unless-stopped
     # Host networking, so the inventory reports the machine's own addresses.
     network_mode: host

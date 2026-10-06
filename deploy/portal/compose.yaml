@@ -23,7 +23,9 @@ services:
     build:
       context: ../..
       dockerfile: deploy/portal/Dockerfile
-    image: cha-portal:dev
+    # A published image (ghcr.io/ban-red/cha-portal:0.1.0) or, by default, the
+    # one `--build` makes here.
+    image: ${CHA_PORTAL_IMAGE:-cha-portal:dev}
     restart: unless-stopped
     ports:
       # Localhost by default: for tailscale serve or a proxy on this host.
