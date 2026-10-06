@@ -1,6 +1,8 @@
 // Typed calls to cha-control's `/api`. Same-origin cookies carry the session;
 // every mutating call sends JSON (the server's CSRF defence relies on it).
 
+import type { ThemePrefs } from "./themes";
+
 export type Role = "admin" | "user" | "guest";
 
 export interface User {
@@ -316,6 +318,10 @@ export const api = {
   /** `null` goes back to the app's default. Applies from the app's next launch. */
   setAppFps: (template: string, fps: Fps | null) =>
     request<unknown>("PUT", `/apps/settings/${encodeURIComponent(template)}`, { fps }),
+  /** The signed-in user's saved interface preferences (empty until they save any). 404 on an older server. */
+  prefs: () => request<{ prefs: Partial<ThemePrefs> }>("GET", "/me/prefs"),
+  /** Replaces the stored preferences whole. */
+  setPrefs: (prefs: Partial<ThemePrefs>) => request<{ prefs: Partial<ThemePrefs> }>("PUT", "/me/prefs", { prefs }),
   adminStorage: () => request<AdminStorageInfo>("GET", "/admin/storage"),
   setAdminStorage: (template: string, body: { defaultPersistent?: boolean; sharedAccess?: SharedAccess }) =>
     request<AdminStorageApp>("PUT", `/admin/storage/${encodeURIComponent(template)}`, body),

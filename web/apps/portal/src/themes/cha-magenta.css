@@ -39,7 +39,8 @@
 
 /* Dark (the base) */
 :root,
-:root[data-theme="cha-magenta"] {
+:root[data-theme="cha-magenta"],
+[data-theme-preview="cha-magenta"] {
   color-scheme: dark;
 
   --cha-canvas: var(--cha-plum-950);
@@ -74,7 +75,8 @@
 
 /* Light */
 :root:not([data-theme])[data-appearance="light"],
-:root[data-theme="cha-magenta"][data-appearance="light"] {
+:root[data-theme="cha-magenta"][data-appearance="light"],
+[data-theme-preview="cha-magenta"][data-appearance="light"] {
   color-scheme: light;
 
   --cha-canvas: var(--cha-plum-50);
@@ -109,7 +111,8 @@
 
 /* Dark, contrast "more": AAA text, stronger lines, a clearer selected state */
 :root:not([data-theme])[data-contrast="more"],
-:root[data-theme="cha-magenta"][data-contrast="more"] {
+:root[data-theme="cha-magenta"][data-contrast="more"],
+[data-theme-preview="cha-magenta"][data-contrast="more"] {
   --cha-line: oklch(0.5 0.06 337);
   --cha-line-strong: oklch(0.78 0.06 338);
 
@@ -133,7 +136,8 @@
 
 /* Light, contrast "more" */
 :root:not([data-theme])[data-appearance="light"][data-contrast="more"],
-:root[data-theme="cha-magenta"][data-appearance="light"][data-contrast="more"] {
+:root[data-theme="cha-magenta"][data-appearance="light"][data-contrast="more"],
+[data-theme-preview="cha-magenta"][data-appearance="light"][data-contrast="more"] {
   color-scheme: light;
 
   --cha-canvas: var(--cha-plum-50);

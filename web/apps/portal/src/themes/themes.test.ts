@@ -79,7 +79,9 @@ export function contrast(a: Rgb, b: Rgb): number {
 // ---- theme file parsing ------------------------------------------------------------------
 
 interface Block {
-  theme: string | null; // from [data-theme="x"]; null for a bare :root
+  theme: string | null; // from [data-theme="x"] or [data-theme-preview="x"]; null for a bare :root
+  /** The selector is the scoped form for the Appearance page's miniatures. */
+  preview: boolean;
   appearance: "dark" | "light" | null;
   contrast: "more" | "standard" | null;
   /** The selector reads :root:not([data-theme]): the no-attribute (default theme) copy. */
@@ -103,7 +105,8 @@ export function parseBlocks(css: string): Block[] {
     for (const sel of m[1]!.split(",")) {
       const attr = (n: string) => new RegExp(`\\[data-${n}=["']?([\\w-]+)["']?\\]`).exec(sel)?.[1] ?? null;
       out.push({
-        theme: attr("theme"),
+        theme: attr("theme") ?? attr("theme-preview"),
+        preview: sel.includes("[data-theme-preview"),
         appearance: attr("appearance") as Block["appearance"],
         contrast: attr("contrast") as Block["contrast"],
         noTheme: sel.includes(":not([data-theme])"),
@@ -234,6 +237,26 @@ for (const theme of themes) {
     }
   });
 }
+
+describe("scoped preview selectors", () => {
+  // The Appearance page draws each theme's miniature under [data-theme-preview="id"], with
+  // data-appearance and data-contrast copied onto the same element. Every :root[data-theme]
+  // block must have a scoped twin with identical values, and the reverse.
+  for (const t of themes) {
+    test(`${t.id}: every themed block has an identical preview block`, () => {
+      const key = (b: Block) => `${b.appearance}/${b.contrast}`;
+      const themed = t.blocks.filter((b) => b.theme === t.id && !b.preview);
+      const previews = t.blocks.filter((b) => b.preview);
+      expect(themed.length).toBeGreaterThan(0);
+      expect(previews.length).toBe(themed.length);
+      for (const b of themed) {
+        const twin = previews.find((p) => key(p) === key(b));
+        expect(twin, `${t.id}: no preview block for ${key(b)}`).toBeDefined();
+        expect(twin!.vars).toEqual(b.vars);
+      }
+    });
+  }
+});
 
 describe("the default theme", () => {
   const theme = themes.find((t) => t.id === DEFAULT_THEME)!;

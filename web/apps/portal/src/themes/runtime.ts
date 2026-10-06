@@ -155,10 +155,30 @@ export function setForcedDark(on: boolean): void {
   applyPrefs(prefsRef.value);
 }
 
+/** Called after the user changes a preference (not when the server's copy is adopted). */
+type ChangeListener = (prefs: ThemePrefs) => void;
+const changeListeners = new Set<ChangeListener>();
+
+export function onPrefsChange(fn: ChangeListener): () => void {
+  changeListeners.add(fn);
+  return () => changeListeners.delete(fn);
+}
+
+/** Applies and caches prefs without telling the sync (the server's copy, say). */
+export function replacePrefs(prefs: ThemePrefs): void {
+  prefsRef.value = prefs;
+  savePrefs(prefs);
+  applyPrefs(prefs);
+}
+
+export function currentPrefs(): ThemePrefs {
+  return { ...prefsRef.value };
+}
+
+/** The user's change: applied and cached at once; the sync sends it to the server. */
 export function setPrefs(partial: Partial<ThemePrefs>): void {
-  prefsRef.value = parsePrefs({ ...prefsRef.value, ...partial });
-  savePrefs(prefsRef.value);
-  applyPrefs(prefsRef.value);
+  replacePrefs(parsePrefs({ ...prefsRef.value, ...partial }));
+  for (const fn of changeListeners) fn(currentPrefs());
 }
 
 export function useTheme() {

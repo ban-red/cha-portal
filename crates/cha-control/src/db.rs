@@ -839,3 +839,29 @@ pub async fn setting_or_insert(
         .await?;
     Ok(setting(db, key).await?.unwrap_or_else(|| value.to_string()))
 }
+
+/// The user's stored preferences (a JSON object as text), if they've saved any.
+pub async fn user_prefs(db: &SqlitePool, user_id: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT prefs FROM user_prefs WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
+}
+
+/// Replaces the user's stored preferences.
+pub async fn set_user_prefs(
+    db: &SqlitePool,
+    user_id: &str,
+    prefs: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO user_prefs (user_id, prefs, updated_at) VALUES (?1, ?2, ?3) \
+         ON CONFLICT (user_id) DO UPDATE SET prefs = ?2, updated_at = ?3",
+    )
+    .bind(user_id)
+    .bind(prefs)
+    .bind(now())
+    .execute(db)
+    .await?;
+    Ok(())
+}

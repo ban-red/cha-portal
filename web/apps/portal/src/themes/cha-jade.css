@@ -1,7 +1,8 @@
 /* Cha – Jade: the portal's original dark look, with its contrast fixed.
    Every role is a solid colour (scrim aside), so the contrast test can check every pair.
    Dark is the base; light and contrast "more" are variants (light defines every role). */
-:root[data-theme="cha-jade"] {
+:root[data-theme="cha-jade"],
+[data-theme-preview="cha-jade"] {
   color-scheme: dark;
 
   --cha-canvas: #0a0f11;
@@ -35,7 +36,8 @@
 }
 
 /* Light */
-:root[data-theme="cha-jade"][data-appearance="light"] {
+:root[data-theme="cha-jade"][data-appearance="light"],
+[data-theme-preview="cha-jade"][data-appearance="light"] {
   color-scheme: light;
 
   --cha-canvas: #f3f8f8;
@@ -69,7 +71,8 @@
 }
 
 /* Dark, contrast "more" */
-:root[data-theme="cha-jade"][data-contrast="more"] {
+:root[data-theme="cha-jade"][data-contrast="more"],
+[data-theme-preview="cha-jade"][data-contrast="more"] {
   --cha-line: #46606a;
   --cha-line-strong: #8fb0ba;
 
@@ -93,7 +96,8 @@
 }
 
 /* Light, contrast "more" */
-:root[data-theme="cha-jade"][data-appearance="light"][data-contrast="more"] {
+:root[data-theme="cha-jade"][data-appearance="light"][data-contrast="more"],
+[data-theme-preview="cha-jade"][data-appearance="light"][data-contrast="more"] {
   color-scheme: light;
 
   --cha-canvas: #f3f8f8;

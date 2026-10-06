@@ -16,6 +16,7 @@ pub mod error;
 pub mod ice;
 pub mod nodes;
 pub mod placement;
+pub mod prefs;
 pub mod storage;
 
 use std::net::SocketAddr;

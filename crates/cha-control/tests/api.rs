@@ -1365,3 +1365,106 @@ async fn only_admins_touch_the_defaults() {
         .await;
     assert_eq!(app_of(&listed.body, "steam")["sharedAccess"], "write");
 }
+
+#[tokio::test]
+async fn preferences_round_trip_per_user() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, _) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+
+    let empty = p.call("GET", "/api/me/prefs", Some(&alice), None).await;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert_eq!(empty.body, json!({ "prefs": {} }));
+
+    let prefs = json!({ "theme": "cha-jade", "appearance": "light", "contrast": "more" });
+    let put = p
+        .call(
+            "PUT",
+            "/api/me/prefs",
+            Some(&alice),
+            Some(json!({ "prefs": prefs })),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.body);
+    let got = p.call("GET", "/api/me/prefs", Some(&alice), None).await;
+    assert_eq!(got.body, json!({ "prefs": prefs }));
+
+    // A second PUT replaces the object whole.
+    p.call(
+        "PUT",
+        "/api/me/prefs",
+        Some(&alice),
+        Some(json!({ "prefs": { "motion": "reduced" } })),
+    )
+    .await;
+    let got = p.call("GET", "/api/me/prefs", Some(&alice), None).await;
+    assert_eq!(got.body, json!({ "prefs": { "motion": "reduced" } }));
+
+    // Bob sees none of it.
+    let bobs = p.call("GET", "/api/me/prefs", Some(&bob), None).await;
+    assert_eq!(bobs.body, json!({ "prefs": {} }));
+}
+
+#[tokio::test]
+async fn bad_preferences_are_refused() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let bad = [
+        json!({ "prefs": { "colour": "red" } }),
+        json!({ "prefs": { "appearance": "sepia" } }),
+        json!({ "prefs": { "contrast": "high" } }),
+        json!({ "prefs": { "motion": "none" } }),
+        json!({ "prefs": { "transparency": 1 } }),
+        json!({ "prefs": { "theme": "Cha Jade" } }),
+        json!({ "prefs": { "theme": "a".repeat(41) } }),
+        json!({ "prefs": [] }),
+        json!({ "prefs": "dark" }),
+        json!({ "prefs": null }),
+        json!({}),
+    ];
+    for body in bad {
+        let r = p
+            .call("PUT", "/api/me/prefs", Some(&admin), Some(body.clone()))
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{body}: {}", r.body);
+    }
+    // The key set is closed, so the 4 KiB cap on the stored object is a backstop; a body
+    // far past the request limit is refused unread.
+    let huge = json!({ "prefs": {}, "pad": "x".repeat(32 * 1024) });
+    let r = p
+        .call("PUT", "/api/me/prefs", Some(&admin), Some(huge))
+        .await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
+    // Nothing was stored by any of that.
+    let got = p.call("GET", "/api/me/prefs", Some(&admin), None).await;
+    assert_eq!(got.body, json!({ "prefs": {} }));
+}
+
+#[tokio::test]
+async fn preferences_need_a_session_and_guests_can_save() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    assert_eq!(
+        p.call("GET", "/api/me/prefs", None, None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        p.call("PUT", "/api/me/prefs", None, Some(json!({ "prefs": {} })))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let (guest, _) = p.account(&admin, "guest1", "guest").await;
+    let put = p
+        .call(
+            "PUT",
+            "/api/me/prefs",
+            Some(&guest),
+            Some(json!({ "prefs": { "appearance": "dark" } })),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.body);
+    let got = p.call("GET", "/api/me/prefs", Some(&guest), None).await;
+    assert_eq!(got.body, json!({ "prefs": { "appearance": "dark" } }));
+}
