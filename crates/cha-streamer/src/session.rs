@@ -44,6 +44,10 @@ const STATS_INTERVAL: Duration = Duration::from_millis(500);
 const SYSTEM_INTERVAL: Duration = Duration::from_secs(1);
 const DRAIN: Duration = Duration::from_secs(1);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a peer has, from its offer, to finish ICE and DTLS. An ICE-lite
+/// peer that never sends a check isn't reported disconnected, and would hold
+/// its seat forever.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct SessionParams {
     pub codec: Codec,
@@ -271,6 +275,13 @@ impl Session {
             {
                 return Ok(());
             }
+            if !self.connected && now >= self.epoch + CONNECT_TIMEOUT {
+                warn!(
+                    id = self.handler.seat.id,
+                    "webrtc peer never connected {CONNECT_TIMEOUT:?} after its offer: freeing its seat"
+                );
+                bail!("no connection {CONNECT_TIMEOUT:?} after the offer");
+            }
             if let Some(at) = self.subscribed_at
                 && self.stats.frames_sent == 0
                 && now >= at + FIRST_FRAME_TIMEOUT
@@ -305,6 +316,9 @@ impl Session {
             let mut deadline = rtc_deadline
                 .min(self.next_stats_at)
                 .min(self.next_system_at);
+            if !self.connected {
+                deadline = deadline.min(self.epoch + CONNECT_TIMEOUT);
+            }
             if let Some(until) = self.sending_until.filter(|_| self.finished_at.is_none()) {
                 deadline = deadline.min(until);
             }

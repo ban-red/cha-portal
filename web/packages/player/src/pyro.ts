@@ -22,8 +22,16 @@ export class PyroPresenter {
   private readonly ctx: GPUCanvasContext;
   private readonly renderer: YuvRenderer;
   private colorSet = false;
+  /** Called once if the GPU device is lost (a driver reset, a GPU switch), with why. Not for our own `destroy()`. */
+  onLost?: (reason: string) => void;
+  private lostReason: string | null = null;
 
   private constructor(private readonly pw: PyroWaveDevice) {
+    void pw.device.lost.then((info) => {
+      if (info.reason === "destroyed") return;
+      this.lostReason = info.message || "the WebGPU device was lost";
+      this.onLost?.(this.lostReason);
+    });
     const ctx = this.canvas.getContext("webgpu");
     if (!ctx) throw new Error("no WebGPU canvas");
     this.ctx = ctx;
@@ -45,6 +53,7 @@ export class PyroPresenter {
    * `partial`), as a VideoFrame stamped `id`; null if nothing decodable.
    */
   decode(data: Uint8Array, id: number, partial: boolean): VideoFrame | null {
+    if (this.lostReason) throw new Error(this.lostReason);
     const header = sequenceHeader(data);
     if (!header) return null;
     const { width, height, chroma } = header;

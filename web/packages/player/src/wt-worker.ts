@@ -147,7 +147,12 @@ function sentAt(ts: number): number | null {
 self.onmessage = (e: MessageEvent<ToWorker>) => {
   const msg = e.data;
   if (msg.type === "start") {
-    void start(msg.urls, msg.certHash);
+    // Any failure to open (a throw from `new WebTransport`, a stream that won't open) reaches the page as `closed`.
+    start(msg.urls, msg.certHash).catch((err: unknown) => {
+      const reason = `WebTransport failed to open: ${err instanceof Error ? err.message : String(err)}`;
+      if (session) session.close(reason);
+      else post({ type: "closed", reason });
+    });
   } else if (msg.type === "send") {
     session?.send(msg.line);
   } else if (msg.type === "clock") {
@@ -242,7 +247,7 @@ class Session {
   }
 
   send(line: string): void {
-    void this.writer?.write(this.encoder.encode(line.endsWith("\n") ? line : line + "\n")).catch(() => {});
+    this.writer?.write(this.encoder.encode(line.endsWith("\n") ? line : line + "\n")).catch(() => this.close("control write failed"));
   }
 
   close(reason: string): void {
@@ -263,7 +268,7 @@ class Session {
     let buf = "";
     for (;;) {
       const { value, done } = await reader.read().catch(() => ({ value: undefined, done: true }));
-      if (done || !value) return;
+      if (done || !value) return this.close("control stream ended");
       buf += text.decode(value, { stream: true });
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
@@ -278,7 +283,7 @@ class Session {
     const reader = this.wt.datagrams.readable.getReader();
     for (;;) {
       const { value, done } = await reader.read().catch(() => ({ value: undefined, done: true }));
-      if (done || !value) return;
+      if (done || !value) return this.close("datagrams ended");
       const d = value as Uint8Array;
       this.bytes += d.byteLength;
       this.reportBytes += d.byteLength;

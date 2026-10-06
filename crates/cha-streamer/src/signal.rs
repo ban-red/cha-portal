@@ -422,7 +422,16 @@ pub fn main() -> Result<()> {
     };
     let viewers = {
         let media = Arc::clone(&media);
-        Viewers::new(Box::new(move || media.set_client_cursor(false)))
+        let gamepads = gamepads.clone();
+        Viewers::new(Box::new(move || {
+            media.set_client_cursor(false);
+            // What the old controller still holds (a key, a stick) would
+            // stay held forever: its page can't send the release.
+            media.release_input();
+            if let Some(pads) = &gamepads {
+                pads.release_all();
+            }
+        }))
     };
     let state = Arc::new(AppState {
         media,

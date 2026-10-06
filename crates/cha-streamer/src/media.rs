@@ -517,6 +517,11 @@ impl Media {
         true
     }
 
+    /// Lifts every held key and pointer button.
+    pub fn release_input(&self) {
+        let _ = self.compositor.send(Command::ReleaseInput);
+    }
+
     pub fn input(&self, input: Input) {
         let _ = self.compositor.send(Command::Input(input));
     }

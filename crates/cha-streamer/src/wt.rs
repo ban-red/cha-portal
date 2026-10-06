@@ -49,6 +49,10 @@ use crate::viewers::{Seat, Viewer, Viewers};
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
 const SYSTEM_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a page has, once its session is accepted, to open the control
+/// stream. Our own keep-alive holds an idle connection open, so without this
+/// a page that never opens it keeps its seat forever.
+const CONTROL_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 /// QUIC's datagram send buffer. Our own backlog rules (below) keep it nearly
 /// empty; the size only has to take a PyroWave frame or two.
 const SEND_BUFFER: usize = 8 << 20;
@@ -195,7 +199,13 @@ async fn run(
 ) -> Result<()> {
     let epoch = Instant::now();
     let (mut ctl_send, ctl_recv) = tokio::select! {
-        bi = conn.accept_bi() => bi.context("waiting for the page's control stream")?,
+        bi = tokio::time::timeout(CONTROL_STREAM_TIMEOUT, conn.accept_bi()) => match bi {
+            Ok(bi) => bi.context("waiting for the page's control stream")?,
+            Err(_) => {
+                conn.close(VarInt::from_u32(3), b"no control stream");
+                bail!("the page opened no control stream in {CONTROL_STREAM_TIMEOUT:?}: freeing its seat");
+            }
+        },
         _ = &mut stopped => return Ok(()),
     };
     let max_datagram = conn

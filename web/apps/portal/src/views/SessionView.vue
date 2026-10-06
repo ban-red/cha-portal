@@ -28,7 +28,8 @@ import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, useTemplateRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import { ApiError, api } from "../api";
+import { api } from "../api";
+import { backoffDelay, classifyConnectError } from "../reconnect";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import PowerOffDialog from "../components/PowerOffDialog.vue";
 import RecordingDialog from "../components/RecordingDialog.vue";
@@ -335,6 +336,109 @@ let player: Player | null = null;
 let retries = 0;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let leaving = false;
+
+// ---- Staying connected: reconnects back off, wake on the network or the page coming back ----
+
+/** An automatic reconnect is scheduled (so the Reconnect button isn't needed). */
+const retryPending = ref(false);
+/** Times the stream came back on its own after dropping. */
+const reconnects = ref(0);
+/** The last drop was followed by an automatic reconnect that hasn't connected yet. */
+let recovering = false;
+/** The environment isn't running: reconnect when the page's environment query says it is. */
+let waitingForRunning = false;
+/** A connect failed in a way retrying won't fix; only the user (or the network/page coming back) tries again. */
+let halted = false;
+
+function cancelRetry() {
+  clearTimeout(retryTimer);
+  retryTimer = undefined;
+  retryPending.value = false;
+}
+
+/** Schedules the next automatic reconnect with backoff; offline, it waits for the `online` event instead. */
+function scheduleRetry() {
+  cancelRetry();
+  if (leaving || halted || waitingForRunning) return;
+  if (navigator.onLine === false) {
+    problem.value = OFFLINE_NOTE;
+    return;
+  }
+  retries++;
+  retryPending.value = true;
+  retryTimer = setTimeout(() => {
+    retryPending.value = false;
+    recovering = true;
+    void connect();
+  }, backoffDelay(retries));
+}
+
+const OFFLINE_NOTE = "Offline, waiting for the network…";
+
+/** The network or the page came back: try now rather than at the end of the backoff. */
+function reconnectNow() {
+  if (leaving || (state.value !== "disconnected" && state.value !== "failed")) return;
+  retries = 0;
+  halted = false;
+  waitingForRunning = false;
+  cancelRetry();
+  if (navigator.onLine === false) {
+    problem.value = OFFLINE_NOTE;
+    return;
+  }
+  recovering = true;
+  void connect();
+}
+const onOnline = () => reconnectNow();
+const onPageShow = () => reconnectNow();
+const onVisible = () => {
+  if (document.visibilityState === "visible") reconnectNow();
+};
+const onOffline = () => {
+  if (state.value !== "connected") problem.value = OFFLINE_NOTE;
+};
+
+// Reconnect on its own when an environment that stopped is running again.
+watch(
+  () => env.dataUpdatedAt.value,
+  () => {
+    if (waitingForRunning && env.data.value?.state === "running") {
+      waitingForRunning = false;
+      retries = 0;
+      recovering = true;
+      void connect();
+    }
+  },
+);
+
+/** What a failed connect() means: back off and retry, wait for the environment, sign in again, or stop and say why. */
+function onConnectError(err: unknown) {
+  const failure = classifyConnectError(err);
+  const message = err instanceof Error ? err.message : String(err);
+  switch (failure.kind) {
+    case "retry":
+      problem.value = message;
+      if (!retryPending.value) scheduleRetry(); // the failed state usually scheduled it already
+      break;
+    case "wait-running":
+      cancelRetry();
+      waitingForRunning = true;
+      problem.value = `${failure.reason}. Reconnecting when it is running again.`;
+      void env.refetch();
+      break;
+    case "login":
+      cancelRetry();
+      halted = true;
+      session.user = null;
+      void router.replace({ name: "login", query: { next: route.fullPath } });
+      break;
+    case "stop":
+      cancelRetry();
+      halted = true;
+      problem.value = failure.reason;
+      break;
+  }
+}
 /** The latest connect() call: an older one still awaiting gives way. */
 let attempt = 0;
 
@@ -354,7 +458,9 @@ function applyProfile(key: string) {
 }
 
 async function connect() {
-  clearTimeout(retryTimer);
+  cancelRetry();
+  halted = false;
+  waitingForRunning = false;
   player?.close();
   if (!video.value) return;
   problem.value = null;
@@ -434,23 +540,25 @@ async function connect() {
       state.value = s;
       if (s === "connected") {
         retries = 0;
+        cancelRetry(); // a drop that healed itself must not tear the stream down a second later
+        halted = false;
+        waitingForRunning = false;
+        if (recovering) reconnects.value++;
+        recovering = false;
         if (!mouseOn.value) p.setMouseEnabled(false);
       }
       if (detail) problem.value = detail;
       // The status comes with the connection; the next one brings it again.
       if (s === "disconnected" || s === "failed") setup.value = null;
       // A dropped connection (Wi-Fi blip, node restart) comes back on its own.
-      if ((s === "disconnected" || s === "failed") && !leaving && retries < 3) {
-        retries++;
-        retryTimer = setTimeout(connect, 1000 * retries);
-      }
+      if ((s === "disconnected" || s === "failed") && !leaving) scheduleRetry();
     },
   });
   player = p;
   try {
     await p.connect();
   } catch (err) {
-    problem.value = err instanceof ApiError ? err.message : err instanceof Error ? err.message : String(err);
+    if (player === p && !leaving) onConnectError(err);
   }
 }
 
@@ -654,13 +762,21 @@ onMounted(() => {
   setForcedDark(true);
   document.addEventListener("fullscreenchange", onFullscreen);
   document.addEventListener("pointerdown", onDocPointerDown);
+  window.addEventListener("online", onOnline);
+  window.addEventListener("offline", onOffline);
+  window.addEventListener("pageshow", onPageShow);
+  document.addEventListener("visibilitychange", onVisible);
   void connect();
 });
 
 onBeforeUnmount(() => {
   setForcedDark(false);
   leaving = true;
-  clearTimeout(retryTimer);
+  cancelRetry();
+  window.removeEventListener("online", onOnline);
+  window.removeEventListener("offline", onOffline);
+  window.removeEventListener("pageshow", onPageShow);
+  document.removeEventListener("visibilitychange", onVisible);
   clearTimeout(hideTimer);
   clearInterval(statsTimer);
   cancelRecording();
@@ -1002,6 +1118,7 @@ const STATUS: Record<PlayerState, string> = {
       :transport="transport"
       :connected="state === 'connected'"
       :recording-left="recordingLeft"
+      :reconnects="reconnects"
       :probe="probe"
       :toolbar-inset="toolbar ? toolbarHeight : 0"
       @record="startRecording"
@@ -1057,7 +1174,13 @@ const STATUS: Record<PlayerState, string> = {
           The environment is {{ env.data.value.state }}<template v-if="env.data.value.detail">: {{ env.data.value.detail }}</template>.
         </p>
         <EnvironmentLog v-if="env.data.value?.log" :log="env.data.value.log" class="mt-3" />
-        <button v-if="state === 'failed' || problem" class="btn-primary mt-4" @click="(retries = 0), connect()">Reconnect</button>
+        <button
+          v-if="state === 'failed' || problem || (state === 'disconnected' && !retryPending)"
+          class="btn-primary mt-4"
+          @click="(retries = 0), connect()"
+        >
+          Reconnect
+        </button>
       </div>
     </div>
   </div>

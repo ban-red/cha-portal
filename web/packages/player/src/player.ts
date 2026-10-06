@@ -12,6 +12,7 @@ import { AudioJitter } from "./audio-jitter";
 import { ControllerManager, type ManagedController } from "./controllers";
 import type { CaptureView } from "./captureMode";
 import { InputCapture } from "./input";
+import { judgeLiveness, shouldReconnectOnResume } from "./liveness";
 import { overlayAnswer, parseOverlay, type OverlayLevel, type OverlayState } from "./overlay";
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
@@ -219,7 +220,15 @@ interface VideoPipeline {
   /** Until a keyframe, a (new) decoder can't take anything. */
   sawKey: boolean;
   closed: boolean;
+  /** PyroWave: its WebGPU device was already replaced once; a second loss reconnects. */
+  pyroRebuilt?: boolean;
 }
+
+/** How long the WebTransport worker may take to open the session before the player gives up on it. */
+const WT_READY_TIMEOUT_MS = 10_000;
+/** This many video decoder or track failures within `RECOVERY_WINDOW_MS` mean a fresh connection is needed. */
+const RECOVERY_LIMIT = 3;
+const RECOVERY_WINDOW_MS = 10_000;
 
 /** How long a codec switch may take before the player reconnects instead. */
 const SWITCH_TIMEOUT_MS = 3000;
@@ -287,6 +296,9 @@ export class Player {
   private audioTrack: MediaStreamTrack | null = null;
   private muted: boolean;
   transport: Transport | null = null;
+  /** When the node last sent anything, and when it last answered a ping (performance.now). */
+  private lastInbound = 0;
+  private lastPong = 0;
   private wt: {
     worker: Worker;
     frames: WritableStreamDefaultWriter<VideoFrame>;
@@ -301,6 +313,9 @@ export class Player {
      * or `restartAudio()`.
      */
     audioRestarts: number;
+    /** Times the video decoder or track was rebuilt, and when the recent ones were (performance.now). */
+    videoRestarts: number;
+    videoFailures: number[];
     /** The stream being shown (the streamer starts at 0) and its decoder. */
     stream: number;
     pipeline: VideoPipeline;
@@ -692,6 +707,43 @@ export class Player {
     this.options.onState?.(state, detail);
   }
 
+  /** The link is gone: say so, and the page reconnects with a fresh pipeline. */
+  private lose(detail: string): void {
+    if (this.state === "connected") this.setState("disconnected", detail);
+  }
+
+  /**
+   * Watches for a node that went quiet (a dead Wi-Fi link, a sleeping laptop) without the transport
+   * saying so. The node answers a ping every second and sends other messages, so four seconds of
+   * nothing while the page is in front is a dead link; a still screen is no reason, since video
+   * isn't what is counted. A page that comes back to the front with an old last answer reconnects
+   * at once.
+   */
+  private watchLiveness(): void {
+    this.lastInbound = this.lastPong = performance.now();
+    let tickedAt = performance.now();
+    const timer = setInterval(() => {
+      const t = performance.now();
+      const verdict = judgeLiveness({
+        silentMs: t - this.lastInbound,
+        tickGapMs: t - tickedAt,
+        visible: document.visibilityState === "visible",
+      });
+      tickedAt = t;
+      if (verdict === "frozen") this.lastInbound = t; // slept: give the link a fresh few seconds to prove itself
+      else if (verdict === "dead") this.lose("no data from the node");
+    }, 1000);
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (shouldReconnectOnResume(performance.now() - this.lastPong)) this.lose("no data from the node");
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    this.cleanup.push(() => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    });
+  }
+
   private send(msg: Record<string, unknown>): void {
     if (this.wt) this.wt.worker.postMessage({ type: "send", line: JSON.stringify(msg) } satisfies ToWorker);
     else if (this.control?.readyState === "open") this.control.send(JSON.stringify(msg) + "\n");
@@ -762,6 +814,7 @@ export class Player {
     ping();
     const pinger = setInterval(ping, 1000);
     this.cleanup.push(() => clearInterval(pinger));
+    this.watchLiveness();
     if (!this.wt) this.reportRates();
 
     // The picture follows the element's size (in device pixels, capped).
@@ -874,8 +927,10 @@ export class Player {
     } catch {
       return;
     }
+    this.lastInbound = performance.now();
     switch (msg.t) {
       case "pong": {
+        this.lastPong = this.lastInbound;
         const now = performance.timeOrigin + performance.now();
         const rtt = now - msg.c!;
         if (!this.offset || rtt < this.offset.rtt) {
@@ -1164,6 +1219,8 @@ export class Player {
       jitterTimer: undefined,
       soundWriter: sound.writable.getWriter(),
       audioRestarts: 0,
+      videoRestarts: 0,
+      videoFailures: [],
       stream: 0,
       pipeline: null as unknown as VideoPipeline,
       switching: null,
@@ -1197,10 +1254,26 @@ export class Player {
     void this.playAudio();
 
     const ready = new Promise<void>((resolve, reject) => {
+      // The worker failing (a script error, a message it can't read) or never answering ends the
+      // attempt: before it opened, connect() falls back to WebRTC; after, the page reconnects.
+      const timer = setTimeout(() => reject(new Error("WebTransport didn't open in time")), WT_READY_TIMEOUT_MS);
+      const fail = (reason: string) => {
+        clearTimeout(timer);
+        if (this.wt !== wt) return;
+        this.lose(reason);
+        reject(new Error(reason));
+      };
+      worker.onerror = (e) => {
+        e.preventDefault();
+        fail(`the WebTransport worker failed${e.message ? `: ${e.message}` : ""}`);
+      };
+      worker.onmessageerror = () => fail("the WebTransport worker sent a message the page couldn't read");
       worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const msg = e.data;
         switch (msg.type) {
           case "ready": {
+            clearTimeout(timer);
+            this.lastInbound = performance.now();
             this.transport = "webtransport";
             this.options.onTransport?.("webtransport");
             this.onControlOpen();
@@ -1212,6 +1285,7 @@ export class Player {
             this.onServerMessage(msg.line);
             break;
           case "video":
+            this.lastInbound = performance.now();
             if (msg.stream !== wt.stream) {
               // The first frame in the codec switched to; stragglers of an
               // older stream (the worker drops most) are ignored.
@@ -1221,6 +1295,7 @@ export class Player {
             this.decodeVideo(wt, msg);
             break;
           case "audio":
+            this.lastInbound = performance.now();
             wt.jitter.push(msg.id, msg.sendTs, msg.at, msg.data);
             this.drainAudio(wt);
             break;
@@ -1240,6 +1315,7 @@ export class Player {
             break;
           }
           case "closed":
+            clearTimeout(timer);
             if (this.wt !== wt) break;
             if (this.state === "connected") this.setState("disconnected", msg.reason);
             reject(new Error(msg.reason));
@@ -1252,11 +1328,78 @@ export class Player {
     await ready;
   }
 
+  /** Writes a decoded frame to the video track; a failed write means the track broke, so it is rebuilt. */
+  private writeFrame(wt: NonNullable<Player["wt"]>, frame: VideoFrame): void {
+    const writer = wt.frames;
+    writer.write(frame).catch(() => {
+      try {
+        frame.close();
+      } catch {
+        // Already closed.
+      }
+      if (this.wt === wt && wt.frames === writer) this.rebuildVideoTrack(wt);
+    });
+  }
+
+  /** Counts a video failure; true once there have been too many lately for patching to be worth it. */
+  private tooManyVideoFailures(wt: NonNullable<Player["wt"]>): boolean {
+    const t = performance.now();
+    wt.videoFailures = wt.videoFailures.filter((at) => t - at < RECOVERY_WINDOW_MS);
+    wt.videoFailures.push(t);
+    wt.videoRestarts++;
+    return wt.videoFailures.length >= RECOVERY_LIMIT;
+  }
+
+  /** A new video track for the `<video>` element, and playback restarted on it (as `rebuildSoundTrack` does for sound). */
+  private rebuildVideoTrack(wt: NonNullable<Player["wt"]>): void {
+    if (this.tooManyVideoFailures(wt)) return this.lose("the video track keeps failing");
+    try {
+      const old = wt.frames;
+      const frames = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
+      wt.frames = frames.writable.getWriter();
+      void old.close().catch(() => undefined);
+      const { video } = this.options;
+      video.srcObject = new MediaStream([frames]);
+      void video.play().catch(() => {});
+      this.send({ t: "keyframe" });
+    } catch {
+      this.lose("the video track couldn't restart");
+    }
+  }
+
+  /** The WebGPU device behind PyroWave was lost, or decoding threw: one new presenter, else reconnect. */
+  private recoverPyro(wt: NonNullable<Player["wt"]>, p: VideoPipeline, reason: string): void {
+    if (p.closed || this.wt !== wt || (wt.pipeline !== p && wt.switching?.pipeline !== p) || !p.pyro) return;
+    const dead = p.pyro;
+    p.pyro = null; // frames wait for the replacement
+    setTimeout(() => {
+      try {
+        dead.destroy();
+      } catch {
+        // Already lost.
+      }
+    }, 1000);
+    if (p.pyroRebuilt) return this.lose(`PyroWave's GPU failed again: ${reason}`);
+    p.pyroRebuilt = true;
+    wt.videoRestarts++;
+    PyroPresenter.create().then(
+      (next) => {
+        if (p.closed || this.wt !== wt) return next.destroy();
+        next.onLost = (why) => this.recoverPyro(wt, p, why);
+        p.pyro = next;
+        this.send({ t: "keyframe" }); // frames stand alone, but the next one should come soon
+      },
+      (err: unknown) => this.lose(`PyroWave's GPU couldn't restart: ${err instanceof Error ? err.message : String(err)}`),
+    );
+  }
+
   /** A decoder for `codec`'s frames, writing into the session's video track. */
   private async newPipeline(wt: NonNullable<Player["wt"]>, codec: Codec): Promise<VideoPipeline> {
     const p: VideoPipeline = { codec, pyro: null, video: null, sawKey: false, closed: false };
-    if (isPyroWave(codec)) p.pyro = await PyroPresenter.create();
-    else p.video = this.newVideoDecoder(wt, p);
+    if (isPyroWave(codec)) {
+      p.pyro = await PyroPresenter.create();
+      p.pyro.onLost = (reason) => this.recoverPyro(wt, p, reason);
+    } else p.video = this.newVideoDecoder(wt, p);
     return p;
   }
 
@@ -1268,14 +1411,20 @@ export class Player {
           this.pushDecodeMs(wt, performance.now() - sent.decodeAt);
           this.noteDelivery(wt, sent.ts);
         }
-        void wt.frames.write(frame); // the sink closes it
+        this.writeFrame(wt, frame); // the sink closes it
       },
       error: () => {
-        // An error closes the decoder: a new one, from the next keyframe.
+        // An error closes the decoder: a new one, from the next keyframe. Too many in a row, or a
+        // new one that can't start, and the page reconnects for a fresh pipeline.
         if (p.closed || this.wt !== wt) return;
+        if (this.tooManyVideoFailures(wt)) return this.lose("the video decoder keeps failing");
         p.sawKey = false;
         this.send({ t: "keyframe" });
-        p.video = this.newVideoDecoder(wt, p);
+        try {
+          p.video = this.newVideoDecoder(wt, p);
+        } catch {
+          this.lose("the video decoder couldn't restart");
+        }
       },
     });
     decoder.configure(this.decoderConfig(p.codec as HwCodec));
@@ -1287,7 +1436,8 @@ export class Player {
     p.closed = true;
     if (p.video && p.video.state !== "closed") p.video.close();
     // Frames it made may still be on their way to the screen.
-    if (p.pyro) setTimeout(() => p.pyro!.destroy(), 1000);
+    const pyro = p.pyro;
+    if (pyro) setTimeout(() => pyro.destroy(), 1000);
   }
 
   /** The switch's stream has started: decode it from now on. */
@@ -1305,14 +1455,21 @@ export class Player {
     wt.arrivals.push({ at: msg.lastAt, sendUs: msg.sendTs });
     while (wt.arrivals.length > 2 && msg.lastAt - wt.arrivals[1]!.at > 1000) wt.arrivals.shift();
     const p = wt.pipeline;
-    if (p.pyro) {
+    if (isPyroWave(p.codec)) {
+      if (!p.pyro) return; // its GPU is being replaced
       const started = performance.now();
       this.noteSent(wt, msg.id, msg.sendTs, started);
-      const frame = p.pyro.decode(new Uint8Array(msg.data), msg.id, msg.partial ?? false);
+      let frame: VideoFrame | null;
+      try {
+        frame = p.pyro.decode(new Uint8Array(msg.data), msg.id, msg.partial ?? false);
+      } catch (err) {
+        this.recoverPyro(wt, p, err instanceof Error ? err.message : String(err));
+        return;
+      }
       if (frame) {
         this.pushDecodeMs(wt, performance.now() - started);
         this.noteDelivery(wt, msg.sendTs);
-        void wt.frames.write(frame);
+        this.writeFrame(wt, frame);
       }
       return;
     }

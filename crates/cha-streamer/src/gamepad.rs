@@ -669,6 +669,18 @@ impl Gamepads {
             .collect()
     }
 
+    /// Puts every pad made so far back to rest: sticks centered, buttons up.
+    pub fn release_all(&self) {
+        let count = self.pads.lock().expect("pads lock").len();
+        for i in 0..count {
+            self.update(&PadState {
+                i,
+                gone: true,
+                ..PadState::default()
+            });
+        }
+    }
+
     /// Applies one state message from the page, making the pad if needed.
     pub fn update(&self, state: &PadState) {
         if state.i >= MAX_PADS {

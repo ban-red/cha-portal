@@ -75,6 +75,13 @@ impl State {
             }
             Input::Button { code, pressed } => {
                 if pressed {
+                    if !self.buttons_down.contains(&code) {
+                        self.buttons_down.push(code);
+                    }
+                } else {
+                    self.buttons_down.retain(|&b| b != code);
+                }
+                if pressed {
                     self.focus_under_pointer(serial);
                 }
                 pointer.button(
@@ -132,6 +139,15 @@ impl State {
                     |_, _, _| FilterResult::Forward,
                 );
             }
+        }
+    }
+
+    /// Releases whatever is held: the page that held it is gone, or no longer
+    /// has the floor, and would never send the key-up. Does nothing when
+    /// nothing is held.
+    pub(super) fn release_input(&mut self) {
+        for input in release_events(&self.keys_down, &self.buttons_down) {
+            self.input(input);
         }
     }
 
@@ -219,5 +235,48 @@ impl State {
                 constraint.activate();
             }
         });
+    }
+}
+
+/// The key-ups and button-ups that release what is held.
+fn release_events(keys: &[u32], buttons: &[u32]) -> Vec<Input> {
+    buttons
+        .iter()
+        .map(|&code| Input::Button {
+            code,
+            pressed: false,
+        })
+        .chain(keys.iter().map(|&code| Input::Key {
+            code,
+            pressed: false,
+        }))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn releasing_lifts_every_held_key_and_button() {
+        assert!(release_events(&[], &[]).is_empty());
+        let events = release_events(&[17, 42], &[0x110]);
+        assert_eq!(
+            events,
+            [
+                Input::Button {
+                    code: 0x110,
+                    pressed: false
+                },
+                Input::Key {
+                    code: 17,
+                    pressed: false
+                },
+                Input::Key {
+                    code: 42,
+                    pressed: false
+                },
+            ]
+        );
     }
 }

@@ -123,6 +123,9 @@ pub enum Command {
     /// Composite at the next encode tick even if nothing changed (a new
     /// encoder needs a first frame).
     ForceFrame,
+    /// Lift every key and pointer button the page still holds down (its
+    /// session ended or lost the floor).
+    ReleaseInput,
     /// The browser's clipboard text, for apps to paste.
     SetClipboard(Arc<str>),
     /// The page draws the cursor (desktop mode) or wants it in the picture.
@@ -359,6 +362,8 @@ pub struct State {
     arrow: smithay::backend::renderer::element::memory::MemoryRenderBuffer,
     /// evdev codes currently held, so browser key repeats don't double-press.
     pub keys_down: Vec<u32>,
+    /// Pointer buttons (`BTN_*`) currently held.
+    pub buttons_down: Vec<u32>,
     /// New windows to give the keyboard once they first show a buffer.
     pub focus_on_map: Vec<WlSurface>,
 
@@ -559,6 +564,7 @@ impl State {
             clipboard: published.clipboard,
             arrow: cursor::arrow(),
             keys_down: Vec::new(),
+            buttons_down: Vec::new(),
             focus_on_map: Vec::new(),
             renderer,
             pool,
@@ -579,6 +585,7 @@ impl State {
         match command {
             Command::Input(input) => self.input(input),
             Command::Resize { width, height } => self.resize(width, height),
+            Command::ReleaseInput => self.release_input(),
             Command::ForceFrame => self.force_frame = true,
             Command::SetFps(fps) => self.set_fps(fps),
             Command::ClientCursor(on) => {

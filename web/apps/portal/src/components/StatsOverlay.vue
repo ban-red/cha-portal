@@ -15,6 +15,8 @@ const props = defineProps<{
   transport: "webtransport" | "webrtc" | null;
   connected: boolean;
   recordingLeft: number | null;
+  /** Times the stream came back on its own after dropping, this visit. */
+  reconnects?: number;
   probe: ProbeResult | null;
   /** The height of the toolbar while it shows (0 when folded): the top corners sit below it, or take its space. */
   toolbarInset?: number;
@@ -43,16 +45,17 @@ const hot = (v: number, limit = 90) => (v >= limit ? "text-warn" : "");
 
 const word = computed(() => props.health.summary);
 const codecText = computed(() => codecTag(props.stats?.codec ?? props.codec, props.transport));
+const reconnectText = computed(() => (props.reconnects ? `${props.reconnects} reconnect${props.reconnects === 1 ? "" : "s"}` : ""));
 const compactLine = computed(() => {
   const s = props.stats;
-  return [`${num(s?.fps ?? null, 0)} fps`, `${num(s?.latencyMs ?? null)} ms`, `${num(s?.mbps ?? null)} Mbit/s`, codecText.value].join(" · ");
+  return [`${num(s?.fps ?? null, 0)} fps`, `${num(s?.latencyMs ?? null)} ms`, `${num(s?.mbps ?? null)} Mbit/s`, codecText.value, reconnectText.value].filter(Boolean).join(" · ");
 });
 /** What a folded section still shows on its heading: its headline numbers, amber when health.ts found them bad. */
 const summary = computed<Record<SectionId, { text: string; cls: string }>>(() => {
   const s = props.stats;
   const n = node.value;
   return {
-    stream: { text: [codecText.value, `${num(s?.fps ?? null, 0)} fps`, `${num(s?.mbps ?? null)} Mbit/s`].filter(Boolean).join(" · "), cls: bad("stutter", "freeze") },
+    stream: { text: [codecText.value, `${num(s?.fps ?? null, 0)} fps`, `${num(s?.mbps ?? null)} Mbit/s`, reconnectText.value].filter(Boolean).join(" · "), cls: bad("stutter", "freeze") },
     latency: { text: `${num(s?.latencyMs ?? null)} ms · decode ${num(s?.decodeMs ?? null)} ms`, cls: bad("latency", "decode") },
     network: { text: `${num(s?.rttMs ?? null)} ms · ${s?.packetsLost ?? 0} lost · ${s?.framesDropped ?? 0} dropped`, cls: bad("rtt", "loss", "recovered", "dropped") },
     node: {
