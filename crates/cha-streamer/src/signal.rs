@@ -90,7 +90,8 @@ struct Args {
     run: Option<String>,
     /// Where signalling (HTTP) listens. The agent runs streamers on
     /// 127.0.0.1: browsers reach them through the portal, not directly.
-    #[arg(long, default_value = "0.0.0.0")]
+    /// Pass `--listen 0.0.0.0` to open it to the LAN (the dev loop).
+    #[arg(long, default_value = "127.0.0.1")]
     listen: IpAddr,
     /// Signalling (HTTP) port.
     #[arg(long, default_value_t = 7660)]
@@ -615,7 +616,7 @@ async fn media_offer_handler(
         codec,
         secs: query_value(&query, "secs")
             .and_then(|v| v.parse::<f64>().ok())
-            .map_or(15, |v| v as u32),
+            .map_or(0, |v| v as u32),
         hosts: match query_value(&query, "host")
             .map(|h| if h == "localhost" { "127.0.0.1" } else { h })
             .and_then(|h| h.parse().ok())

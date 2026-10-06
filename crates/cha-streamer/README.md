@@ -328,7 +328,7 @@ docker compose -f deploy/streamer/compose.dev.yaml exec dev cargo build --releas
 ```
 
 ```bash
-docker compose -f deploy/streamer/compose.dev.yaml exec dev /target/release/cha-streamer --run 'google-chrome-stable --no-sandbox --ozone-platform=wayland --no-first-run --force-device-scale-factor=1 --user-data-dir=/tmp/chrome-profile --kiosk file:///src/spikes/s2-compositor/bench/page/live.html'
+docker compose -f deploy/streamer/compose.dev.yaml exec dev /target/release/cha-streamer --listen 0.0.0.0 --run 'google-chrome-stable --no-sandbox --ozone-platform=wayland --no-first-run --force-device-scale-factor=1 --user-data-dir=/tmp/chrome-profile --kiosk file:///src/spikes/s2-compositor/bench/page/live.html'
 ```
 
 - Chrome runs with `--no-sandbox` only because the dev container runs as root. The environment images in P1.4 run apps unprivileged.
