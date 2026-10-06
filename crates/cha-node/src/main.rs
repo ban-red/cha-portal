@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use cha_node::docker::{DEFAULT_SOCKET, Docker};
-use cha_node::environments::{DockerConfig, DockerRuntime};
+use cha_node::environments::{DockerConfig, DockerRuntime, PublishedImages};
 use cha_node::storage::{DataRoot, parse_shared_dirs};
 use cha_node::{
     Agent, Identity, check_portal_transport, doctor, enroll, hostfiles, init_tls, inventory,
@@ -94,6 +94,15 @@ struct Args {
         default_value = "/usr/lib/x86_64-linux-gnu/nvidia/wine"
     )]
     nvidia_wine_dir: String,
+    /// Run the catalog's apps from published images: the registry and owner,
+    /// e.g. `ghcr.io/ban-red`, so `cha/env-chrome:dev` runs as
+    /// `ghcr.io/ban-red/cha-env-chrome:<CHA_IMAGE_TAG>`, pulled when missing.
+    /// Empty runs the local builds.
+    #[arg(long, env = "CHA_IMAGE_REGISTRY")]
+    image_registry: Option<String>,
+    /// The release of the published app images (`0.1.0`).
+    #[arg(long, env = "CHA_IMAGE_TAG")]
+    image_tag: Option<String>,
 }
 
 #[tokio::main]
@@ -206,6 +215,10 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
         shared_dirs,
         nvidia_wine_dir: parse_nvidia_wine_dir(&args.nvidia_wine_dir)?,
         log_dir: Some(args.state_dir.join("logs")),
+        app_images: PublishedImages::from_settings(
+            args.image_registry.as_deref(),
+            args.image_tag.as_deref(),
+        )?,
     })
 }
 

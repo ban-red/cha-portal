@@ -231,6 +231,76 @@ pub struct DockerConfig {
     /// Where the logs of environments that died are kept (the agent's state
     /// directory's `logs`); `None` keeps none.
     pub log_dir: Option<PathBuf>,
+    /// Run the catalog's apps from their published images
+    /// (`CHA_IMAGE_REGISTRY`, `CHA_IMAGE_TAG`); `None` runs the local builds
+    /// the catalog names (`cha/env-chrome:dev`).
+    pub app_images: Option<PublishedImages>,
+}
+
+impl DockerConfig {
+    /// The image an app runs from: the catalog's name, or its published copy.
+    pub fn app_image(&self, image: &str) -> String {
+        self.app_images
+            .as_ref()
+            .and_then(|p| p.image_for(image))
+            .unwrap_or_else(|| image.to_string())
+    }
+}
+
+/// Where the catalog's apps are published: `ghcr.io/ban-red` and a release,
+/// so `cha/env-chrome:dev` runs as `ghcr.io/ban-red/cha-env-chrome:0.1.0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedImages {
+    registry: String,
+    tag: String,
+}
+
+impl PublishedImages {
+    /// From `CHA_IMAGE_REGISTRY` and `CHA_IMAGE_TAG`: none without a
+    /// registry (a tag alone is ignored, so compose can always pass one). The
+    /// registry must name its host, so pulls never fall back to Docker Hub.
+    pub fn from_settings(registry: Option<&str>, tag: Option<&str>) -> Result<Option<Self>> {
+        let registry = registry.map(str::trim).unwrap_or_default();
+        if registry.is_empty() {
+            return Ok(None);
+        }
+        let registry = registry.trim_end_matches('/');
+        if !names_registry(&format!("{registry}/image")) {
+            bail!(
+                "CHA_IMAGE_REGISTRY must start with a registry's host, e.g. ghcr.io/ban-red: {registry}"
+            );
+        }
+        if !registry
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "./:-_".contains(c))
+        {
+            bail!("CHA_IMAGE_REGISTRY isn't a registry path: {registry}");
+        }
+        let tag = tag.map(str::trim).unwrap_or_default();
+        let tag = tag.strip_prefix('v').unwrap_or(tag);
+        if tag.is_empty()
+            || tag.len() > 128
+            || !tag
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+        {
+            bail!(
+                "CHA_IMAGE_REGISTRY needs CHA_IMAGE_TAG, the release to run (e.g. 0.1.0): {tag:?}"
+            );
+        }
+        Ok(Some(Self {
+            registry: registry.to_string(),
+            tag: tag.to_string(),
+        }))
+    }
+
+    /// The published copy of a catalog image; only the catalog's own `cha/`
+    /// images have one.
+    pub fn image_for(&self, image: &str) -> Option<String> {
+        let name = image.strip_prefix("cha/")?;
+        let name = name.split_once(':').map_or(name, |(name, _)| name);
+        Some(format!("{}/cha-{name}:{}", self.registry, self.tag))
+    }
 }
 
 pub struct DockerRuntime {
@@ -666,6 +736,7 @@ impl DockerRuntime {
     }
 
     async fn start_environment(&self, mut spec: EnvironmentSpec) -> Result<StreamerEndpoint> {
+        spec.image = self.config.app_image(&spec.image);
         check_storage(&spec)?;
         check_device(&spec)?;
         if let Some(port) = self
@@ -2039,6 +2110,7 @@ mod tests {
                 shared_dirs,
                 nvidia_wine_dir: None,
                 log_dir: None,
+                app_images: None,
             },
             render_gid: Some(992),
             probes: DeviceProbes::default(),
@@ -2077,6 +2149,46 @@ mod tests {
             template: "steam".into(),
             ..spec(SecurityProfile::Steam)
         }
+    }
+
+    #[test]
+    fn maps_catalog_images_to_their_published_copies() {
+        let p = PublishedImages::from_settings(Some("ghcr.io/ban-red/"), Some("v0.1.0"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            p.image_for("cha/env-chrome:dev").as_deref(),
+            Some("ghcr.io/ban-red/cha-env-chrome:0.1.0")
+        );
+        assert_eq!(
+            p.image_for("cha/env-steam").as_deref(),
+            Some("ghcr.io/ban-red/cha-env-steam:0.1.0")
+        );
+        assert_eq!(p.image_for("ubuntu:26.04"), None);
+        assert_eq!(p.image_for("ghcr.io/x/y:1"), None);
+    }
+
+    #[test]
+    fn reads_the_published_image_settings() {
+        assert_eq!(
+            PublishedImages::from_settings(None, Some("0.1.0")).unwrap(),
+            None
+        );
+        assert_eq!(
+            PublishedImages::from_settings(Some(" "), None).unwrap(),
+            None
+        );
+        assert!(PublishedImages::from_settings(Some("ghcr.io/ban-red"), None).is_err());
+        assert!(PublishedImages::from_settings(Some("ghcr.io/ban-red"), Some("")).is_err());
+        assert!(PublishedImages::from_settings(Some("ghcr.io/ban-red"), Some("1 2")).is_err());
+        // A bare namespace would be Docker Hub's.
+        assert!(PublishedImages::from_settings(Some("ban-red"), Some("0.1.0")).is_err());
+        assert!(PublishedImages::from_settings(Some("ghcr.io/Ban Red"), Some("0.1.0")).is_err());
+        assert!(
+            PublishedImages::from_settings(Some("localhost:5000/cha"), Some("sha-1a2b3c4"))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

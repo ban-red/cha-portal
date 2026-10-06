@@ -128,7 +128,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
 async fn images(docker: &Docker, config: &DockerConfig) -> Check {
     let mut missing = Vec::new();
     let mut wanted = vec![config.streamer_image.clone()];
-    wanted.extend(catalog_images());
+    wanted.extend(catalog_images().iter().map(|i| config.app_image(i)));
     for image in &wanted {
         if !docker.image_exists(image).await.unwrap_or(false) {
             missing.push(image.clone());
@@ -155,8 +155,19 @@ async fn images(docker: &Docker, config: &DockerConfig) -> Check {
                     .to_string()
             });
         }
-        if missing.iter().any(|i| *i != config.streamer_image) {
-            fixes.push("docker compose -f images/compose.yaml build".to_string());
+        let apps: Vec<&String> = missing
+            .iter()
+            .filter(|i| **i != config.streamer_image)
+            .collect();
+        if !apps.is_empty() {
+            fixes.push(if config.app_images.is_some() {
+                apps.iter()
+                    .map(|i| format!("docker pull {i}"))
+                    .collect::<Vec<_>>()
+                    .join(" && ")
+            } else {
+                "docker compose -f images/compose.yaml build".to_string()
+            });
         }
         check(level, "Images", format!("missing {}", missing.join(", "))).fix(fixes.join(" && "))
     }
