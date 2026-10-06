@@ -7,6 +7,7 @@ import {
   supportsWebTransport,
   HEALTH_WINDOW,
   assessHealth,
+  summarizeRecording,
   isPyroWave,
   hidUnavailableReason,
   type Codec,
@@ -15,6 +16,7 @@ import {
   type ManagedController,
   type PlayerState,
   type ProbeResult,
+  type RecordingSummary,
   type SetupStatus,
   type StatsSnapshot,
   type Transport,
@@ -25,6 +27,7 @@ import { useRoute } from "vue-router";
 
 import { ApiError, api } from "../api";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
+import RecordingDialog from "../components/RecordingDialog.vue";
 import WarningNote from "../components/WarningNote.vue";
 
 // The environment, full screen. The portal brokers the connection; the picture
@@ -391,7 +394,70 @@ const statsTimer = setInterval(async () => {
   statsHistory.push(snapshot);
   if (statsHistory.length > HEALTH_WINDOW) statsHistory.shift();
   health.value = assessHealth(statsHistory, { visible });
+  if (recording) {
+    recording.snapshots.push(snapshot);
+    recording.health.push(health.value);
+  }
 }, 1000);
+
+// ---- Record 30 s: a measurement for the exit pass ----
+
+const RECORD_S = 30;
+let recording: {
+  startedAt: number;
+  snapshots: StatsSnapshot[];
+  health: HealthAssessment[];
+  stopLatencies: () => number[];
+  timer: ReturnType<typeof setInterval>;
+} | null = null;
+/** Seconds left while recording, else null. */
+const recordingLeft = ref<number | null>(null);
+const recordingResult = ref<RecordingSummary | null>(null);
+
+function startRecording() {
+  if (!player || recording) return;
+  const started = Date.now();
+  recordingResult.value = null;
+  recordingLeft.value = RECORD_S;
+  recording = {
+    startedAt: started,
+    snapshots: [],
+    health: [],
+    stopLatencies: player.collectLatencies(),
+    timer: setInterval(() => {
+      // Wall clock, so a hidden tab (no snapshots then) doesn't stretch the run.
+      const left = Math.max(0, RECORD_S - Math.round((Date.now() - started) / 1000));
+      recordingLeft.value = left;
+      if (left === 0) finishRecording();
+    }, 250),
+  };
+}
+
+function finishRecording() {
+  const r = recording;
+  if (!r) return;
+  recording = null;
+  clearInterval(r.timer);
+  recordingLeft.value = null;
+  recordingResult.value = summarizeRecording(r.snapshots, r.health, {
+    userAgent: navigator.userAgent,
+    transport: transport.value,
+    environment: id.value,
+    app: env.data.value?.templateName ?? null,
+    startedAt: r.startedAt,
+    durationS: RECORD_S,
+    latencySamples: r.stopLatencies(),
+  });
+}
+
+/** Abandons a run that is still going (the page is leaving); nothing is summarised. */
+function cancelRecording() {
+  if (!recording) return;
+  clearInterval(recording.timer);
+  recording.stopLatencies();
+  recording = null;
+  recordingLeft.value = null;
+}
 const GRADE_TEXT: Record<string, string> = { A: "text-accent", B: "text-accent", C: "text-warn", D: "text-warn", F: "text-danger" };
 const gradeText = (grade: string | null) => (grade ? GRADE_TEXT[grade] : "text-ink-3");
 const SEVERITY_TEXT = { minor: "text-ink-2", major: "text-warn", critical: "text-danger" };
@@ -426,6 +492,7 @@ onBeforeUnmount(() => {
   clearTimeout(retryTimer);
   clearTimeout(hideTimer);
   clearInterval(statsTimer);
+  cancelRecording();
   document.removeEventListener("fullscreenchange", onFullscreen);
   player?.close();
   if (document.fullscreenElement) void document.exitFullscreen();
@@ -595,6 +662,8 @@ const STATUS: Record<PlayerState, string> = {
       </button>
     </div>
 
+    <RecordingDialog :summary="recordingResult" @close="recordingResult = null" />
+
     <!-- Stats -->
     <div
       v-if="showStats"
@@ -620,6 +689,17 @@ const STATUS: Record<PlayerState, string> = {
       <div class="text-ink">send → shown {{ fmt(stats?.latencyMs ?? null, 1, " ms") }}</div>
       <div>decode {{ fmt(stats?.decodeMs ?? null, 2, " ms") }} · jitter buf {{ fmt(stats?.jitterMs ?? null, 2, " ms") }}</div>
       <div>lost {{ stats?.packetsLost ?? 0 }} · dropped {{ stats?.framesDropped ?? 0 }} · audio buf {{ fmt(stats?.audioJitterMs ?? null, 0, " ms") }}</div>
+      <div class="mt-1 border-t border-line pt-1">
+        <button
+          type="button"
+          class="rounded px-1 text-ink-3 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="state !== 'connected' || recordingLeft !== null"
+          title="Collect 30 s of stats, then copy a summary"
+          @click="startRecording"
+        >
+          {{ recordingLeft === null ? "Record 30 s" : `Recording… ${recordingLeft} s` }}
+        </button>
+      </div>
       <div v-if="stats?.node" class="mt-1 border-t border-line pt-1">
         <div>
           CPU <span :class="hot(stats.node.cpu)">{{ fmt(stats.node.cpu, 0, "%") }}</span>

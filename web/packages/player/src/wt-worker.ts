@@ -58,7 +58,7 @@ export type FromWorker =
       /** Intra only: some of the frame's packets were lost. */
       partial?: boolean;
     }
-  | { type: "audio"; id: number; sendTs: number; data: ArrayBuffer }
+  | { type: "audio"; id: number; sendTs: number; /** When it arrived (epoch ms, the worker's clock). */ at: number; data: ArrayBuffer }
   | { type: "lost"; frames: number }
   /** Frames rebuilt from parity (FEC) since the last such message. */
   | { type: "recovered"; frames: number }
@@ -287,7 +287,7 @@ class Session {
       const sendTs = v.getUint32(12, true);
       if (kind === KIND_AUDIO) {
         const data = d.slice(HEADER_LEN);
-        post({ type: "audio", id, sendTs, data: data.buffer }, [data.buffer]);
+        post({ type: "audio", id, sendTs, at: now(), data: data.buffer }, [data.buffer]);
         continue;
       }
       if (kind !== KIND_VIDEO) continue;

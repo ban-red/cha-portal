@@ -29,6 +29,7 @@ function snap(over: Partial<StatsSnapshot> = {}): StatsSnapshot {
     fps: 60,
     targetFps: 60,
     sentFps: 60,
+    shownSentFps: null,
     mbps: 60,
     decodeMs: 3,
     jitterMs: null,
@@ -101,6 +102,12 @@ describe("assessHealth", () => {
 
     test("an unknown send rate (older streamer) judges neither stutter nor freeze", () => {
       const h = assessHealth(run(8, { fps: 5, sentFps: null, frameGapMs: 900 }), visible);
+      expect(h).toMatchObject({ grade: "A", issues: [] });
+    });
+
+    test("a burst then a still screen is smooth: shown is judged over the send rate's own span", () => {
+      // The last second shows nothing, but over the reports' span every sent frame showed.
+      const h = assessHealth(run(8, { fps: 0, sentFps: 12, shownSentFps: 12, frameGapMs: 4 }), visible);
       expect(h).toMatchObject({ grade: "A", issues: [] });
     });
 

@@ -13,6 +13,12 @@ export interface StatsSnapshot {
    * desktop sends almost none: judge `fps` against this, not `targetFps`.
    */
   sentFps: number | null;
+  /**
+   * Frames per second shown over the same span as `sentFps` (between its first and last report,
+   * shifted by the latency), so a burst of sends then a still screen compares like with like.
+   * Null without `sentFps`; judge stutter with this and fall back to `fps`.
+   */
+  shownSentFps: number | null;
   mbps: number | null;
   /** Average decode time per frame over the last interval. */
   decodeMs: number | null;
@@ -145,6 +151,7 @@ export class StatsReader {
       fps: typeof i.framesPerSecond === "number" ? i.framesPerSecond : null,
       targetFps: null,
       sentFps: null,
+      shownSentFps: null,
       mbps: prev ? ((now.bytes - prev.bytes) * 8) / ((now.at - prev.at) * 1000) : null,
       decodeMs: prev ? per(now.decodeTime - prev.decodeTime, now.decoded - prev.decoded) : null,
       jitterMs: prev ? per(now.jitterDelay - prev.jitterDelay, now.emitted - prev.emitted) : null,

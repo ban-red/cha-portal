@@ -8,6 +8,7 @@
 // carries input, resize requests and clock pings up, and per-frame send times
 // down. The portal brokers the session; media flows straight from the node.
 
+import { AudioJitter } from "./audio-jitter";
 import { ControllerManager, type ManagedController } from "./controllers";
 import { InputCapture } from "./input";
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
@@ -245,11 +246,16 @@ export class Player {
   /** The node's latest resource report, and when it came. */
   /** The streamer's cumulative `frames_sent` at each recent `stats` message, for the send rate. */
   private sentCounts: { at: number; frames: number }[] = [];
+  /** Presented-frame counts (requestVideoFrameCallback's `presentedFrames`) by local time, for `shownSentFps`. */
+  private presented: { at: number; n: number }[] = [];
+  /** The count of the newest entry trimmed from `presented`. */
+  private presentedBefore: number | null = null;
   private nodeStats: { stats: Omit<NodeStats, "ageMs">; at: number } | null = null;
   private pointerSpot: { x: number; y: number; drawn: boolean } | null = null;
   /** The environment's latest cursor, and the images seen so far by id. */
   private cursor: ServerMessage | null = null;
   private readonly cursorImages = new Map<string, CursorImage>();
+  private readonly latencySinks = new Set<number[]>();
   private readonly audio: HTMLAudioElement;
   private audioTrack: MediaStreamTrack | null = null;
   private muted: boolean;
@@ -258,6 +264,10 @@ export class Player {
     worker: Worker;
     frames: WritableStreamDefaultWriter<VideoFrame>;
     audio: AudioDecoder;
+    /** Orders and paces the audio packets (audio-jitter.ts), the timer for the next one's slot, and the sound's writer. */
+    jitter: AudioJitter<ArrayBuffer>;
+    jitterTimer: ReturnType<typeof setTimeout> | undefined;
+    soundWriter: WritableStreamDefaultWriter<AudioData>;
     /** The stream being shown (the streamer starts at 0) and its decoder. */
     stream: number;
     pipeline: VideoPipeline;
@@ -275,7 +285,8 @@ export class Player {
     /** Server send → decoded per frame, the last second's. */
     delivery: { at: number; ms: number }[];
     /** When frames arrived (the worker's clock), the last second's and one before. */
-    arrivals: number[];
+    /** Each frame's arrival (epoch ms) and send time (the streamer's µs clock, 32-bit), the last second's. */
+    arrivals: { at: number; sendUs: number }[];
   } | null = null;
 
   constructor(private readonly options: PlayerOptions) {
@@ -457,6 +468,8 @@ export class Player {
     this.options.onControllers?.([]);
     this.nodeStats = null;
     this.sentCounts = [];
+    this.presented = [];
+    this.presentedBefore = null;
     this.fpsChange?.fail(new Error("the session closed"));
     this.control?.close();
     this.pc?.close();
@@ -505,13 +518,33 @@ export class Player {
     else return null;
     const ageMs = this.nodeStats ? performance.now() - this.nodeStats.at : Infinity;
     snapshot.targetFps = this.streamFps;
-    snapshot.sentFps = this.sentFps();
+    const sent = this.sentRates(latencyMs ?? 0);
+    snapshot.sentFps = sent?.sent ?? null;
+    snapshot.shownSentFps = sent?.shown ?? null;
     snapshot.node = this.nodeStats && ageMs <= NODE_STATS_FRESH_MS ? { ...this.nodeStats.stats, ageMs } : null;
     return snapshot;
   }
 
-  /** Frames per second the streamer sent over its last few reports; null with under two, or none lately. */
-  private sentFps(): number | null {
+  /**
+   * Starts keeping every frame's send → shown time (ms, clock-synced) and returns a function that
+   * stops and hands them back, for a measurement's true p95 and p99 (the stats snapshot has only a
+   * p50 per second).
+   */
+  collectLatencies(): () => number[] {
+    const sink: number[] = [];
+    this.latencySinks.add(sink);
+    return () => {
+      this.latencySinks.delete(sink);
+      return sink;
+    };
+  }
+
+  /**
+   * Frames per second the streamer sent over its last few reports, and those shown here over the
+   * same span (moved on by the latency, as a frame sent at t shows at t + latency); null with under
+   * two reports, or none lately.
+   */
+  private sentRates(latencyMs: number): { sent: number; shown: number | null } | null {
     const now = performance.now();
     const c = this.sentCounts.filter((s) => now - s.at <= SENT_WINDOW_MS);
     this.sentCounts = c;
@@ -519,7 +552,24 @@ export class Player {
     const first = c[0]!;
     const last = c[c.length - 1]!;
     const dt = last.at - first.at;
-    return dt > 0 && last.frames >= first.frames ? ((last.frames - first.frames) * 1000) / dt : null;
+    if (dt <= 0 || last.frames < first.frames) return null;
+    const shift = last.at + latencyMs <= now ? latencyMs : 0;
+    const from = this.presentedAt(first.at + shift);
+    const to = this.presentedAt(last.at + shift);
+    return {
+      sent: ((last.frames - first.frames) * 1000) / dt,
+      shown: from === null || to === null ? null : ((to - from) * 1000) / dt,
+    };
+  }
+
+  /** Frames presented by local time `t`; null before the first. */
+  private presentedAt(t: number): number | null {
+    let n = this.presentedBefore;
+    for (const p of this.presented) {
+      if (p.at > t) return n ?? p.n - 1;
+      n = p.n;
+    }
+    return n;
   }
 
   /** Click → screen, `count` synthetic clicks (use with the test pattern). */
@@ -994,6 +1044,9 @@ export class Player {
         output: (data) => void soundWriter.write(data),
         error: () => undefined,
       }),
+      jitter: new AudioJitter<ArrayBuffer>(),
+      jitterTimer: undefined,
+      soundWriter,
       stream: 0,
       pipeline: null as unknown as VideoPipeline,
       switching: null,
@@ -1050,9 +1103,8 @@ export class Player {
             this.decodeVideo(wt, msg);
             break;
           case "audio":
-            if (wt.audio.state === "configured") {
-              wt.audio.decode(new EncodedAudioChunk({ type: "key", timestamp: msg.id * 10_000, data: msg.data }));
-            }
+            wt.jitter.push(msg.id, msg.sendTs, msg.at, msg.data);
+            this.drainAudio(wt);
             break;
           case "lost":
             wt.lost += msg.frames;
@@ -1129,8 +1181,8 @@ export class Player {
   }
 
   private decodeVideo(wt: NonNullable<Player["wt"]>, msg: Extract<FromWorker, { type: "video" }>): void {
-    wt.arrivals.push(msg.lastAt);
-    while (wt.arrivals.length > 2 && msg.lastAt - wt.arrivals[1]! > 1000) wt.arrivals.shift();
+    wt.arrivals.push({ at: msg.lastAt, sendUs: msg.sendTs });
+    while (wt.arrivals.length > 2 && msg.lastAt - wt.arrivals[1]!.at > 1000) wt.arrivals.shift();
     const p = wt.pipeline;
     if (p.pyro) {
       const started = performance.now();
@@ -1179,6 +1231,7 @@ export class Player {
     this.wt = null;
     wt.worker.postMessage({ type: "close" } satisfies ToWorker);
     setTimeout(() => wt.worker.terminate(), 500);
+    clearTimeout(wt.jitterTimer);
     if (wt.audio.state !== "closed") wt.audio.close();
     this.closePipeline(wt.pipeline);
     if (wt.switching) {
@@ -1188,12 +1241,51 @@ export class Player {
     }
   }
 
+  /** Plays what the jitter buffer says is due, and sets a timer for the next slot. */
+  private drainAudio(wt: NonNullable<Player["wt"]>): void {
+    clearTimeout(wt.jitterTimer);
+    if (this.wt !== wt) return;
+    const now = performance.timeOrigin + performance.now();
+    for (const o of wt.jitter.poll(now)) {
+      if (o.kind === "play") {
+        if (wt.audio.state === "configured") {
+          wt.audio.decode(new EncodedAudioChunk({ type: "key", timestamp: o.id * 10_000, data: o.data }));
+        }
+      } else {
+        // WebCodecs has no Opus PLC: 10 ms of silence keeps the sound's timeline and the sink fed.
+        void wt.soundWriter
+          .write(
+            new AudioData({
+              format: "f32-planar",
+              sampleRate: 48_000,
+              numberOfFrames: 480,
+              numberOfChannels: 2,
+              timestamp: o.id * 10_000,
+              data: new Float32Array(960),
+            }),
+          )
+          .catch(() => undefined);
+      }
+    }
+    const wait = wt.jitter.nextDueMs(performance.timeOrigin + performance.now());
+    if (wait !== null) wt.jitterTimer = setTimeout(() => this.drainAudio(wt), Math.max(1, wait));
+  }
+
+  /**
+   * The longest stall between frames over the last second: how much longer than the streamer's own
+   * spacing a frame took to follow the one before it. A still screen sends nothing, and the wait
+   * since the last frame isn't counted, so silence from the node is no freeze; a stall shows when
+   * the late frame lands (and in the shown rate meanwhile). Null before two frames.
+   */
   private frameGap(wt: NonNullable<Player["wt"]>): number | null {
     const now = performance.timeOrigin + performance.now();
     const a = wt.arrivals;
-    if (!a.length) return null;
-    let gap = now - a[a.length - 1]!;
-    for (let i = 1; i < a.length; i++) if (now - a[i]! <= 1000) gap = Math.max(gap, a[i]! - a[i - 1]!);
+    let gap: number | null = null;
+    for (let i = 1; i < a.length; i++) {
+      if (now - a[i]!.at > 1000) continue;
+      const sentApart = ((a[i]!.sendUs - a[i - 1]!.sendUs) >>> 0) / 1000;
+      gap = Math.max(gap ?? 0, a[i]!.at - a[i - 1]!.at - sentApart);
+    }
     return gap;
   }
 
@@ -1220,6 +1312,7 @@ export class Player {
       fps: wt.shown.length,
       targetFps: null,
       sentFps: null,
+      shownSentFps: null,
       mbps: wt.mbps,
       decodeMs: decode,
       jitterMs: null,
@@ -1231,12 +1324,17 @@ export class Player {
       ...this.deliveryStats(wt),
       frameGapMs: this.frameGap(wt),
       node: null,
-      audioJitterMs: null,
+      audioJitterMs: wt.jitter.delayMs,
     };
   }
 
   private onFrame(md: VideoFrameCallbackMetadata): void {
     this.probe?.onFrame(md);
+    const now = performance.now();
+    this.presented.push({ at: now, n: md.presentedFrames });
+    while (this.presented.length > 1 && now - this.presented[0]!.at > SENT_WINDOW_MS + 2000) {
+      this.presentedBefore = this.presented.shift()!.n;
+    }
     let at: number | null = null;
     if (this.wt) {
       // The frame's timestamp is its id, in µs units.
@@ -1257,7 +1355,9 @@ export class Player {
       }
     }
     if (at !== null) {
-      this.latencies.push(performance.timeOrigin + md.presentationTime - at);
+      const latency = performance.timeOrigin + md.presentationTime - at;
+      this.latencies.push(latency);
+      for (const sink of this.latencySinks) sink.push(latency);
       if (this.latencies.length > 240) this.latencies.splice(0, this.latencies.length - 240);
     }
   }

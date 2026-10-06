@@ -201,6 +201,9 @@ function rateFinding(rate: number, band: Band, text: (rate: number) => string): 
   return l > 0 ? { level: l, detail: text(rate) } : null;
 }
 
+/** Frames per second shown over the send rate's span, or the last second's on a snapshot without it. */
+const shownOfSent = (s: StatsSnapshot) => s.shownSentFps ?? s.fps;
+
 /** Whether the stream is WebTransport, which has delivery times and frame gaps that WebRTC lacks. */
 const isWebTransport = (window: StatsSnapshot[]) => window.some((s) => s.deliveryMs !== null || s.frameGapMs !== null);
 
@@ -212,10 +215,15 @@ const CHECKS: Check[] = [
     weight: WEIGHT.stutter,
     hint: "Frames are being sent but not all of them show. Check the other lines: if the network is fine, try 60 fps or another codec; if it isn't, a cable beats Wi-Fi.",
     find(window) {
-      const busy = window.filter((s) => s.sentFps !== null && s.sentFps >= BUSY_SENT_FPS && s.fps !== null);
-      const l = windowLevel(busy.map((s) => levelBelow(s.fps! / s.sentFps!, FPS_RATIO)));
+      // Shown over the same span as sent: the last second's `fps` against a few seconds' send
+      // rate would call a burst followed by a still screen a stutter.
+      const busy = window.filter((s) => s.sentFps !== null && s.sentFps >= BUSY_SENT_FPS && shownOfSent(s) !== null);
+      const l = windowLevel(busy.map((s) => levelBelow(shownOfSent(s)! / s.sentFps!, FPS_RATIO)));
       if (l === 0) return null;
-      return { level: l, detail: `${mean(busy.map((s) => s.fps!)).toFixed(0)} fps shown of ${mean(busy.map((s) => s.sentFps!)).toFixed(0)} sent` };
+      return {
+        level: l,
+        detail: `${mean(busy.map((s) => shownOfSent(s)!)).toFixed(0)} fps shown of ${mean(busy.map((s) => s.sentFps!)).toFixed(0)} sent`,
+      };
     },
   },
   {
@@ -260,7 +268,7 @@ const CHECKS: Check[] = [
         // sending at 10 fps has 100 ms between frames, so the gap must also beat 3 send intervals.
         if (s.sentFps === null || s.sentFps < BUSY_SENT_FPS) continue;
         // A WebRTC page has no gap measure, but a second with no frames at all is one.
-        const gap = s.frameGapMs !== null ? s.frameGapMs : s.fps === 0 ? 1000 : null;
+        const gap = s.frameGapMs !== null ? s.frameGapMs : shownOfSent(s) === 0 ? 1000 : null;
         if (gap === null) continue;
         const from = Math.max(50, FREEZE_BUDGETS * budgetMs, (FREEZE_BUDGETS * 1000) / s.sentFps);
         levels.push(level(gap, { from, to: FREEZE.to }));

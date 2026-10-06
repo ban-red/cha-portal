@@ -24,6 +24,14 @@ export {
   type HealthIssue,
   type IssueSeverity,
 } from "./health";
+export {
+  FREEZE_MS,
+  recordingMarkdown,
+  summarizeRecording,
+  type RecordingMeta,
+  type RecordingSummary,
+  type Spread,
+} from "./recording";
 export type { NodeStats, StatsSnapshot } from "./stats";
 export type { ProbeResult } from "./probe";
 export {
