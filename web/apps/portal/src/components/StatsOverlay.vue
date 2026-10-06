@@ -16,8 +16,8 @@ const props = defineProps<{
   connected: boolean;
   recordingLeft: number | null;
   probe: ProbeResult | null;
-  /** The toolbar is showing: the top corners sit below it; folded, they take its space. */
-  toolbarOpen?: boolean;
+  /** The height of the toolbar while it shows (0 when folded): the top corners sit below it, or take its space. */
+  toolbarInset?: number;
 }>();
 const prefs = defineModel<OverlayPrefs>({ required: true });
 const emit = defineEmits<{ record: [] }>();
@@ -65,14 +65,12 @@ const summary = computed<Record<SectionId, { text: string; cls: string }>>(() =>
 
 const copiedId = ref<string | null>(null);
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
-function issueReport(issue: HealthIssue): string {
+function issueReport(issues: HealthIssue[]): string {
   const s = props.stats;
   const n = node.value;
   const ms = (v: number | null | undefined, d = 1) => `${num(v, d)} ms`;
   const lines = [
-    `${issue.title}: ${issue.detail}`,
-    issue.hint,
-    "",
+    ...issues.flatMap((i) => [`${i.title}: ${i.detail}`, i.hint, ""]),
     `Health: ${props.health.grade ?? "not measured"}${props.health.score !== null ? ` (${props.health.score}/100)` : ""}, ${props.health.summary}`,
     `Stream: ${codecText.value || "–"}, ${s?.width ?? "–"}×${s?.height ?? "–"}, ${num(s?.fps ?? null, 0)}${s?.targetFps ? ` of ${s.targetFps}` : ""} fps, ${num(s?.mbps ?? null)} Mbit/s`,
     `Latency: send → shown ${ms(s?.latencyMs)}, decode ${ms(s?.decodeMs, 2)}, jitter buffer ${ms(s?.jitterMs, 2)}, audio buffer ${ms(s?.audioJitterMs, 0)}`,
@@ -89,10 +87,11 @@ function issueReport(issue: HealthIssue): string {
   lines.push(`Browser: ${navigator.userAgent}`);
   return lines.join("\n");
 }
-async function copyIssue(issue: HealthIssue) {
+/** Copy one warning, or all of them (`id` "all"), with the numbers around them. */
+async function copyIssues(issues: HealthIssue[], id: string) {
   try {
-    await navigator.clipboard.writeText(issueReport(issue));
-    copiedId.value = issue.id;
+    await navigator.clipboard.writeText(issueReport(issues));
+    copiedId.value = id;
   } catch {
     copiedId.value = null; // clipboard blocked: nothing to confirm
     return;
@@ -100,6 +99,7 @@ async function copyIssue(issue: HealthIssue) {
   clearTimeout(copiedTimer);
   copiedTimer = setTimeout(() => (copiedId.value = null), 1500);
 }
+const copyIssue = (issue: HealthIssue) => copyIssues([issue], issue.id);
 onBeforeUnmount(() => clearTimeout(copiedTimer));
 
 const topIssue = computed(() => props.health.issues[0] ?? null);
@@ -109,15 +109,14 @@ const node = computed(() => props.stats?.node ?? null);
 
 // The top corners sit below the toolbar (top-3, 42 px tall), which is wider than the gap beside it
 // on most laptop screens.
-const CORNER_CLASS = computed<Record<Corner, string>>(() => {
-  const top = props.toolbarOpen ? "top-16" : "top-3";
-  return {
-    "top-left": `${top} left-3`,
-    "top-right": `${top} right-3`,
-    "bottom-left": "bottom-3 left-3",
-    "bottom-right": "bottom-3 right-3",
-  };
-});
+const CORNER_CLASS: Record<Corner, string> = {
+  "top-left": "left-3",
+  "top-right": "right-3",
+  "bottom-left": "bottom-3 left-3",
+  "bottom-right": "bottom-3 right-3",
+};
+/** The top corners' offset: 12 px, or below the toolbar (12 px above it, 10 px gap) while it shows. */
+const topStyle = computed(() => (prefs.value.corner.startsWith("top") ? { top: `${props.toolbarInset ? props.toolbarInset + 22 : 12}px` } : {}));
 const panel = useTemplateRef<HTMLElement>("panel");
 /** Where the panel is while it is being dragged, in its container's pixels. */
 const dragAt = ref<{ left: number; top: number } | null>(null);
@@ -239,6 +238,7 @@ const panelStyle = computed(() => {
     textShadow: `0 0 ${(2 + 4 * t).toFixed(1)}px rgb(0 0 0 / ${(0.35 + 0.55 * t).toFixed(2)}), 0 1px 1px rgb(0 0 0 / ${(0.5 * t).toFixed(2)})`,
   };
   const at = dragAt.value ?? freePos.value;
+  if (!at) Object.assign(style, topStyle.value);
   if (at) {
     style.left = `${at.left}px`;
     style.top = `${at.top}px`;
@@ -260,6 +260,7 @@ const BTN =
     type="button"
     class="absolute z-10 rounded-md border border-line bg-panel/60 px-1.5 font-mono text-2xs leading-5 opacity-30 backdrop-blur-md transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-focus"
     :class="CORNER_CLASS[prefs.corner]"
+    :style="topStyle"
     :aria-label="`Show the stats panel, stream health ${health.grade ?? 'not measured'}`"
     title="Show stats"
     @click="patch({ open: true })"
@@ -270,7 +271,7 @@ const BTN =
     v-else
     ref="panel"
     aria-label="Stream statistics"
-    class="absolute z-10 max-h-[calc(100%-5rem)] max-w-[calc(100%-1.5rem)] flex flex-col overflow-hidden rounded-lg border border-line font-mono text-2xs leading-5 text-ink shadow-lg backdrop-blur-md transparency-reduced:backdrop-blur-none [font-variant-numeric:tabular-nums]"
+    class="absolute z-10 transition-[top] duration-200 max-h-[calc(100%-5rem)] max-w-[calc(100%-1.5rem)] flex flex-col overflow-hidden rounded-lg border border-line font-mono text-2xs leading-5 text-ink shadow-lg backdrop-blur-md transparency-reduced:backdrop-blur-none [font-variant-numeric:tabular-nums]"
     :class="[placedFree ? '' : CORNER_CLASS[prefs.corner], prefs.compact || prefs.collapsed ? 'w-max' : 'w-64']"
     :style="panelStyle"
     @keydown.esc="menuOpen = false"
@@ -386,7 +387,18 @@ const BTN =
 
       <!-- Full -->
       <template v-else>
-        <div v-if="health.issues.length" class="mb-1 space-y-1">
+        <div v-if="health.issues.length > 1" class="mb-0.5 flex items-center justify-between text-ink-2">
+          <span>{{ health.issues.length }} warnings</span>
+          <button
+            type="button"
+            class="rounded px-1 hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-focus"
+            title="Copy every warning and the stream numbers"
+            @click="copyIssues(health.issues, 'all')"
+          >
+            {{ copiedId === "all" ? "Copied" : "Copy all" }}
+          </button>
+        </div>
+        <div v-if="health.issues.length" class="mb-1 max-h-40 space-y-1 overflow-y-auto overscroll-contain pr-1" tabindex="0" aria-label="Health warnings">
           <div v-for="issue in health.issues" :key="issue.id">
             <div><span :class="SEVERITY_TEXT[issue.severity]">{{ issue.title }}</span> <span class="text-ink-2">· {{ issue.detail }}</span><button
             type="button"

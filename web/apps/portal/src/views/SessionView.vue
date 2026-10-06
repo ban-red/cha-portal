@@ -25,14 +25,17 @@ import {
   type Transport,
 } from "@cha/player";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { useRoute } from "vue-router";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, useTemplateRef, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { ApiError, api } from "../api";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
+import PowerOffDialog from "../components/PowerOffDialog.vue";
 import RecordingDialog from "../components/RecordingDialog.vue";
 import StatsOverlay from "../components/StatsOverlay.vue";
+import { useSession } from "../stores/session";
 import { setForcedDark } from "../themes/runtime";
+import { loadToolbarPrefs, saveToolbarPrefs, toolbarKey, type ToolbarPrefs } from "../toolbarPrefs";
 import { PREFS_KEY, parsePrefs, type OverlayPrefs } from "../statsOverlay";
 import WarningNote from "../components/WarningNote.vue";
 
@@ -42,6 +45,18 @@ import WarningNote from "../components/WarningNote.vue";
 const route = useRoute();
 const id = computed(() => String(route.params.id));
 const queryClient = useQueryClient();
+const router = useRouter();
+const session = useSession();
+
+// ---- Remembered toolbar settings: per user and app type, applied once the app type is known ----
+
+let profileKey: string | null = null;
+/** Saved frame rate and overlay level, applied when the stream reports them (they need the controls). */
+let pendingFps: number | undefined;
+let pendingOverlay: number | undefined;
+const remember = (patch: ToolbarPrefs) => {
+  if (profileKey) saveToolbarPrefs(profileKey, patch);
+};
 const env = useQuery({ queryKey: ["environment", id], queryFn: () => api.environment(id.value), refetchInterval: 5000 });
 
 const video = ref<HTMLVideoElement | null>(null);
@@ -107,6 +122,7 @@ function setTransport(t: TransportChoice) {
   } catch {
     // Private mode: just this session.
   }
+  remember({ transport: t });
   retries = 0;
   void connect();
 }
@@ -160,6 +176,7 @@ async function setFps(rate: FrameRate, select: HTMLSelectElement) {
   problem.value = null;
   try {
     await player.setFps(rate);
+    remember({ fps: rate });
   } catch (err) {
     problem.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -172,15 +189,30 @@ async function setFps(rate: FrameRate, select: HTMLSelectElement) {
  * The app's performance overlay (Steam's MangoHud): the level now, whoever set
  * it, or null when the app has none (then the page offers nothing).
  */
+// A saved frame rate or overlay level is applied once, when the stream first reports its own
+// (only the session with the controls may change them; on a fixed-size app there is no choice).
+watch(fps, (rate) => {
+  const want = pendingFps;
+  if (rate === null || want === undefined) return;
+  pendingFps = undefined;
+  if (want !== rate && player && hasControl.value && !fixedSize.value) void player.setFps(want as FrameRate).catch(() => {});
+});
 const OVERLAY_LABEL: Record<OverlayLevel, string> = { 0: "Off", 1: "FPS", 2: "Bar", 3: "Detailed", 4: "Full" };
 const perfOverlay = ref<OverlayState | null>(null);
 const overlaySwitching = ref(false);
+watch(perfOverlay, (level) => {
+  const want = pendingOverlay;
+  if (level === null || want === undefined) return;
+  pendingOverlay = undefined;
+  if (want !== level && player && hasControl.value) void player.setOverlay(want as OverlayLevel).catch(() => {});
+});
 async function setOverlay(level: OverlayLevel, select: HTMLSelectElement) {
   if (!player || overlaySwitching.value) return;
   overlaySwitching.value = true;
   problem.value = null;
   try {
     await player.setOverlay(level);
+    remember({ overlay: level });
   } catch (err) {
     problem.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -197,7 +229,49 @@ function onCaptureButton() {
   if (capture.value.recapture) player?.turnOffMouseCapture();
   else void player?.lockPointer();
 }
-const controllerMenu = ref(false);
+/** The toolbar's mouse switch: off, the mouse is not sent (the keyboard and controllers still are). It outlasts a reconnect. */
+const mouseOn = ref(true);
+function toggleMouse() {
+  mouseOn.value = !mouseOn.value;
+  player?.setMouseEnabled(mouseOn.value);
+  remember({ mouse: mouseOn.value });
+}
+// ---- Power off: a short countdown the user can cancel, then the environment is stopped ----
+
+const powerOff = ref(false);
+const powerOffError = ref<string | null>(null);
+function askPowerOff() {
+  menu.value = null;
+  powerOffError.value = null;
+  powerOff.value = true;
+}
+async function confirmPowerOff() {
+  const wasLeaving = leaving;
+  leaving = true; // the stream ending is expected: no reconnect
+  try {
+    await api.stopEnvironment(id.value);
+    void queryClient.invalidateQueries({ queryKey: ["environments"] });
+    await router.push("/");
+  } catch (err) {
+    leaving = wasLeaving;
+    powerOffError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** The toolbar's open dropdown, if any. */
+type MenuName = "stream" | "sound" | "controllers";
+const menu = ref<MenuName | null>(null);
+const toggleMenu = (name: MenuName) => {
+  menu.value = menu.value === name ? null : name;
+  if (menu.value !== "controllers") controllerNote.value = null;
+};
+const ICON_BTN = "btn-ghost relative grid size-8 place-items-center border-0 p-0";
+const MENU_BOX = "absolute top-full z-20 mt-2 w-64 rounded-xl border border-line bg-panel p-3 text-left text-xs whitespace-normal shadow-lg";
+const SELECT = "w-full rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2 disabled:opacity-50";
+/** A click anywhere outside an open dropdown closes it. */
+function onDocPointerDown(e: PointerEvent) {
+  if (menu.value && !(e.target as Element | null)?.closest("[data-menu]")) closeMenu();
+}
 const controllerNote = ref<string | null>(null);
 const hidReason = hidUnavailableReason();
 async function connectController() {
@@ -210,8 +284,8 @@ async function connectController() {
     controllerNote.value = err instanceof Error ? err.message : String(err);
   }
 }
-function closeControllerMenu() {
-  controllerMenu.value = false;
+function closeMenu() {
+  menu.value = null;
   controllerNote.value = null;
 }
 /** What the app's long setup is doing (a first-run download), over the black picture. */
@@ -236,6 +310,7 @@ function toggleSound() {
   } catch {
     // Private mode: just this session.
   }
+  remember({ muted: muted.value });
   player?.setMuted(muted.value);
 }
 function onVolume(e: Event) {
@@ -245,6 +320,7 @@ function onVolume(e: Event) {
   } catch {
     // Private mode: just this session.
   }
+  remember({ volume: volume.value });
   player?.setVolume(volume.value / 100);
   // Turning it up is asking for sound.
   if (muted.value && volume.value > 0) toggleSound();
@@ -262,6 +338,21 @@ let leaving = false;
 /** The latest connect() call: an older one still awaiting gives way. */
 let attempt = 0;
 
+/** Load this user's saved settings for the app type, and set the toolbar to them. */
+function applyProfile(key: string) {
+  profileKey = key;
+  const saved = loadToolbarPrefs(key);
+  if (saved.codec && (codecs.value.includes(saved.codec as Codec) || (wtSupported && PYROWAVE.includes(saved.codec as Codec)))) {
+    codec.value = saved.codec as Codec;
+  }
+  if (saved.transport) transportChoice.value = saved.transport;
+  if (saved.muted !== undefined) muted.value = saved.muted;
+  if (saved.volume !== undefined) volume.value = saved.volume;
+  if (saved.mouse !== undefined) mouseOn.value = saved.mouse;
+  pendingFps = saved.fps;
+  pendingOverlay = saved.overlay;
+}
+
 async function connect() {
   clearTimeout(retryTimer);
   player?.close();
@@ -278,16 +369,18 @@ async function connect() {
     .catch(() => []);
   // Whether its display has a fixed size (Steam's), which the picture then
   // keeps, and which codecs its device encodes (a CPU one only H.264).
-  const { fixed, offered } = await Promise.all([
+  const { fixed, offered, templateId } = await Promise.all([
     queryClient.fetchQuery({ queryKey: ["environment", id], queryFn: () => api.environment(id.value), staleTime: 5000 }),
     queryClient.fetchQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 }),
   ])
     .then(([e, templates]) => ({
       fixed: !!templates.find((t) => t.id === e.templateId)?.fixedSize,
       offered: e.codecs ?? null,
+      templateId: e.templateId,
     }))
-    .catch(() => ({ fixed: false, offered: null }));
+    .catch(() => ({ fixed: false, offered: null, templateId: null }));
   if (leaving || mine !== attempt || !video.value) return;
+  if (!profileKey && templateId && session.user?.id) applyProfile(toolbarKey(session.user.id, templateId));
   fixedSize.value = fixed;
   deviceCodecs.value = offered;
   // A choice its device can't encode falls back to the first it can.
@@ -339,7 +432,10 @@ async function connect() {
     onState: (s, detail) => {
       if (player !== p) return;
       state.value = s;
-      if (s === "connected") retries = 0;
+      if (s === "connected") {
+        retries = 0;
+        if (!mouseOn.value) p.setMouseEnabled(false);
+      }
       if (detail) problem.value = detail;
       // The status comes with the connection; the next one brings it again.
       if (s === "disconnected" || s === "failed") setup.value = null;
@@ -365,6 +461,7 @@ async function setCodec(c: Codec) {
   } catch {
     // Private mode: just this session.
   }
+  remember({ codec: c });
   retries = 0;
   if (!player || state.value !== "connected") return connect();
   // Over WebTransport the session switches in place; otherwise it reconnects.
@@ -400,12 +497,26 @@ function onPointerMove(e: PointerEvent) {
 function hideToolbar() {
   clearTimeout(hideTimer);
   hover.value = false;
-  controllerMenu.value = false;
+  menu.value = null;
   expanded.value = false;
   (document.activeElement as HTMLElement | null)?.blur();
   video.value?.focus();
 }
-const toolbar = computed(() => state.value !== "connected" || expanded.value || hover.value || controllerMenu.value);
+// Wrapped onto more rows on a narrow screen, the toolbar is taller; the stats panel sits below
+// whatever height it has.
+const toolbarEl = useTemplateRef<HTMLElement>("toolbarEl");
+const toolbarHeight = ref(0);
+let toolbarWatch: ResizeObserver | null = null;
+watch(toolbarEl, (el) => {
+  toolbarWatch?.disconnect();
+  toolbarWatch = null;
+  if (!el) return;
+  toolbarHeight.value = el.offsetHeight;
+  toolbarWatch = new ResizeObserver(() => (toolbarHeight.value = el.offsetHeight));
+  toolbarWatch.observe(el);
+});
+onBeforeUnmount(() => toolbarWatch?.disconnect());
+const toolbar = computed(() => state.value !== "connected" || expanded.value || hover.value || menu.value !== null);
 
 const fullscreen = ref(false);
 async function toggleFullscreen() {
@@ -542,6 +653,7 @@ onMounted(() => {
   // The stream view stays dark and theme-neutral, whatever appearance the user picked.
   setForcedDark(true);
   document.addEventListener("fullscreenchange", onFullscreen);
+  document.addEventListener("pointerdown", onDocPointerDown);
   void connect();
 });
 
@@ -553,6 +665,7 @@ onBeforeUnmount(() => {
   clearInterval(statsTimer);
   cancelRecording();
   document.removeEventListener("fullscreenchange", onFullscreen);
+  document.removeEventListener("pointerdown", onDocPointerDown);
   player?.close();
   if (document.fullscreenElement) void document.exitFullscreen();
 });
@@ -576,7 +689,7 @@ const STATUS: Record<PlayerState, string> = {
       class="pointer-events-none absolute top-1/2 left-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line bg-panel/80 px-4 py-2 text-sm shadow backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none"
       role="status"
     >
-      Click to capture the mouse
+      Click for exclusive input
     </div>
 
     <!-- The toolbar, folded: a thin bar to hover or click -->
@@ -596,7 +709,8 @@ const STATUS: Record<PlayerState, string> = {
 
     <!-- Toolbar -->
     <div
-      class="absolute top-3 left-1/2 z-30 flex origin-top -translate-x-1/2 items-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 whitespace-nowrap shadow-lg backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none transition duration-200"
+      ref="toolbarEl"
+      class="absolute inset-x-2 top-3 z-30 mx-auto flex w-max max-w-[calc(100%-1rem)] origin-top flex-wrap items-center justify-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 shadow-lg backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none transition duration-200"
       :class="toolbar ? 'opacity-100' : 'pointer-events-none -translate-y-3 scale-y-50 opacity-0'"
       :inert="!toolbar"
       @pointerenter="hover = true"
@@ -607,50 +721,18 @@ const STATUS: Record<PlayerState, string> = {
       @focusin="expand"
     >
       <RouterLink to="/" class="btn-ghost border-0 px-3 py-1.5 text-xs" title="Back to the dashboard (it keeps running)">← Back</RouterLink>
+      <button
+        :class="[ICON_BTN, 'hover:text-danger']"
+        aria-label="Power off"
+        title="Power off this app (a 5 second countdown, which you can cancel)"
+        @click="askPowerOff"
+      >
+        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 1.5v6" />
+          <path d="M4.6 3.9a5.5 5.5 0 1 0 6.8 0" />
+        </svg>
+      </button>
       <span class="max-w-48 truncate px-2 text-sm font-medium">{{ env.data.value?.templateName ?? "…" }}</span>
-      <select
-        class="rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2"
-        :value="codec"
-        title="Video codec"
-        @change="setCodec(($event.target as HTMLSelectElement).value as Codec)"
-      >
-        <option v-for="c in availableCodecs" :key="c" :value="c">{{ CODEC_LABEL[c] ?? c.toUpperCase() }}</option>
-      </select>
-      <select
-        v-if="!fixedSize && fps !== null"
-        :disabled="fpsSwitching || !hasControl || state !== 'connected'"
-        class="rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2"
-        :value="fps"
-        :title="hasControl ? 'Frame rate' : 'Only the session with the controls changes the frame rate'"
-        aria-label="Frame rate"
-        @change="setFps(Number(($event.target as HTMLSelectElement).value) as FrameRate, $event.target as HTMLSelectElement)"
-      >
-        <option v-for="rate in FRAME_RATES" :key="rate" :value="rate">{{ rate }} fps</option>
-      </select>
-      <select
-        v-if="perfOverlay !== null"
-        :disabled="overlaySwitching || !hasControl || state !== 'connected'"
-        class="rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2"
-        :value="perfOverlay"
-        :title="hasControl ? 'Performance overlay' : 'Only the session with the controls changes the overlay'"
-        aria-label="Performance overlay"
-        @change="setOverlay(Number(($event.target as HTMLSelectElement).value) as OverlayLevel, $event.target as HTMLSelectElement)"
-      >
-        <option v-if="perfOverlay === 'custom'" value="custom" disabled>Overlay: custom</option>
-        <option v-for="(label, level) in OVERLAY_LABEL" :key="level" :value="level">Overlay: {{ label }}</option>
-      </select>
-      <select
-        v-if="wtSupported"
-        :disabled="isPyroWave(codec)"
-        class="rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2"
-        :value="transportChoice"
-        :title="transport ? `Connected over ${transport === 'webtransport' ? 'WebTransport' : 'WebRTC'}` : 'Transport'"
-        @change="setTransport(($event.target as HTMLSelectElement).value as TransportChoice)"
-      >
-        <option value="auto">Auto{{ transport ? ` (${transport === "webtransport" ? "WT" : "RTC"})` : "" }}</option>
-        <option value="webtransport">WebTransport</option>
-        <option value="webrtc">WebRTC</option>
-      </select>
       <span v-if="viewers > 1" class="px-2 text-xs text-ink-2" :title="`${viewers} sessions are watching this environment`">
         {{ viewers }} watching
       </span>
@@ -662,56 +744,183 @@ const STATUS: Record<PlayerState, string> = {
       >
         Viewing · Take control
       </button>
+
+      <!-- Stream settings -->
+      <div class="relative" data-menu @keydown.esc="closeMenu">
+        <button
+          :class="[ICON_BTN, menu === 'stream' && 'bg-line/60 text-accent']"
+          aria-haspopup="true"
+          :aria-expanded="menu === 'stream'"
+          aria-controls="stream-menu"
+          aria-label="Stream settings"
+          title="Stream settings: codec, frame rate, transport"
+          @click="toggleMenu('stream')"
+        >
+          <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" /><circle cx="5" cy="4" r="1.6" fill="var(--color-panel)" /><circle cx="10.5" cy="8" r="1.6" fill="var(--color-panel)" /><circle cx="6.5" cy="12" r="1.6" fill="var(--color-panel)" /></svg>
+        </button>
+        <div v-if="menu === 'stream'" id="stream-menu" :class="[MENU_BOX, 'left-0 space-y-2']">
+          <label class="block">
+            <span class="mb-0.5 block text-ink-2">Video codec</span>
+            <select :class="SELECT" :value="codec" @change="setCodec(($event.target as HTMLSelectElement).value as Codec)">
+              <option v-for="c in availableCodecs" :key="c" :value="c">{{ CODEC_LABEL[c] ?? c.toUpperCase() }}</option>
+            </select>
+          </label>
+          <label v-if="!fixedSize && fps !== null" class="block">
+            <span class="mb-0.5 block text-ink-2">Frame rate</span>
+            <select
+              :class="SELECT"
+              :disabled="fpsSwitching || !hasControl || state !== 'connected'"
+              :value="fps"
+              :title="hasControl ? 'Frame rate' : 'Only the session with the controls changes the frame rate'"
+              @change="setFps(Number(($event.target as HTMLSelectElement).value) as FrameRate, $event.target as HTMLSelectElement)"
+            >
+              <option v-for="rate in FRAME_RATES" :key="rate" :value="rate">{{ rate }} fps</option>
+            </select>
+          </label>
+          <label v-if="perfOverlay !== null" class="block">
+            <span class="mb-0.5 block text-ink-2">Steam Gamescope Overlay</span>
+            <select
+              :class="SELECT"
+              :disabled="overlaySwitching || !hasControl || state !== 'connected'"
+              :value="perfOverlay"
+              :title="hasControl ? 'Steam Gamescope Overlay' : 'Only the session with the controls changes the overlay'"
+              @change="setOverlay(Number(($event.target as HTMLSelectElement).value) as OverlayLevel, $event.target as HTMLSelectElement)"
+            >
+              <option v-if="perfOverlay === 'custom'" value="custom" disabled>Custom</option>
+              <option v-for="(label, level) in OVERLAY_LABEL" :key="level" :value="level">{{ label }}</option>
+            </select>
+          </label>
+          <label v-if="wtSupported" class="block">
+            <span class="mb-0.5 block text-ink-2">Transport</span>
+            <select
+              :class="SELECT"
+              :disabled="isPyroWave(codec)"
+              :value="transportChoice"
+              :title="transport ? `Connected over ${transport === 'webtransport' ? 'WebTransport' : 'WebRTC'}` : 'Transport'"
+              @change="setTransport(($event.target as HTMLSelectElement).value as TransportChoice)"
+            >
+              <option value="auto">Auto{{ transport ? ` (${transport === "webtransport" ? "WT" : "RTC"})` : "" }}</option>
+              <option value="webtransport">WebTransport</option>
+              <option value="webrtc">WebRTC</option>
+            </select>
+          </label>
+          <button
+            v-if="env.data.value?.templateId === 'test-pattern'"
+            class="btn-ghost w-full px-3 py-1 text-xs"
+            :disabled="probing || state !== 'connected'"
+            title="25 synthetic clicks; times click → flash on screen"
+            @click="runProbe"
+          >
+            {{ probing ? "Probing…" : "Run the click probe" }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Input -->
       <button
-        class="btn-ghost border-0 px-3 py-1.5 text-xs"
-        :class="capture.recapture && 'text-accent'"
+        :class="[ICON_BTN, capture.recapture && 'text-accent']"
+        :disabled="!mouseOn"
         :aria-pressed="capture.recapture"
+        :aria-label="capture.recapture ? 'Exclusive input on' : 'Exclusive input'"
         :title="
-          capture.recapture
-            ? 'Clicking the picture captures the mouse; click here to turn that off'
-            : 'Raw mouse for games; Esc releases it (hold Esc in full screen on Chrome)'
+          !mouseOn
+            ? 'Turn the mouse on to use exclusive input'
+            : capture.recapture
+              ? 'Exclusive input on: clicking the picture captures the mouse; click here to turn that off'
+              : 'Exclusive input: the mouse is captured for games; Esc releases it (hold Esc in full screen on Chrome)'
         "
         @click="onCaptureButton"
       >
-        {{ capture.recapture ? "Mouse capture on" : "Capture mouse" }}
+        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="8" cy="8" r="3.5" />
+          <path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3" />
+          <circle v-if="capture.recapture" cx="8" cy="8" r="0.8" fill="currentColor" />
+        </svg>
       </button>
       <button
-        class="btn-ghost border-0 px-3 py-1.5 text-xs"
-        :class="audioBlocked && !muted && 'text-accent'"
-        :title="audioBlocked && !muted ? 'Click to let the browser play sound' : 'Sound on or off'"
-        @click="onSoundButton"
+        :class="[ICON_BTN, !mouseOn && 'text-warn']"
+        :aria-pressed="!mouseOn"
+        :aria-label="mouseOn ? 'Turn the mouse off' : 'Turn the mouse on'"
+        :title="mouseOn ? 'Mouse on: click to stop sending the mouse (the keyboard still works)' : 'Mouse off: click to send the mouse again'"
+        @click="toggleMouse"
       >
-        {{ muted ? "Sound off" : audioBlocked ? "Enable sound" : "Sound on" }}
+        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="4.5" y="1.5" width="7" height="13" rx="3.5" />
+          <path d="M8 4.5v2.5" />
+          <path v-if="!mouseOn" d="M2 2l12 12" />
+        </svg>
       </button>
-      <input
-        type="range"
-        min="0"
-        max="100"
-        step="5"
-        class="w-20 accent-accent"
-        :value="muted ? 0 : volume"
-        :aria-valuetext="muted ? 'Sound off' : `${volume}%`"
-        :title="muted ? 'Sound off' : `Volume ${volume}%`"
-        aria-label="Volume"
-        @input="onVolume"
-      />
-      <div class="relative" @keydown.esc="closeControllerMenu">
+
+      <!-- Sound -->
+      <div class="relative" data-menu @keydown.esc="closeMenu">
         <button
-          class="btn-ghost border-0 px-3 py-1.5 text-xs"
-          :class="controllers.length > 0 && 'text-accent'"
+          :class="[ICON_BTN, menu === 'sound' && 'bg-line/60', audioBlocked && !muted ? 'text-accent' : muted && 'text-ink-2']"
           aria-haspopup="true"
-          :aria-expanded="controllerMenu"
-          aria-controls="controller-menu"
-          :title="controllers.length ? `${controllers.length} controller(s) sending input` : 'No controller yet'"
-          @click="controllerMenu = !controllerMenu"
+          :aria-expanded="menu === 'sound'"
+          aria-controls="sound-menu"
+          :aria-label="muted ? 'Sound off' : audioBlocked ? 'Enable sound' : 'Sound on'"
+          :title="audioBlocked && !muted ? 'The browser is blocking sound: open this and click Enable sound' : muted ? 'Sound off' : `Sound on, volume ${volume}%`"
+          @click="toggleMenu('sound')"
         >
-          Controllers{{ controllers.length ? ` · ${controllers.length}` : "" }}
+          <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2.5 6h2.5l3-2.5v9L5 10H2.5z" />
+            <path v-if="muted" d="M11 6l3 4M14 6l-3 4" />
+            <path v-else d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.3 3.8a6 6 0 0 1 0 8.4" />
+          </svg>
         </button>
-        <div
-          v-if="controllerMenu"
-          id="controller-menu"
-          class="absolute top-full right-0 z-20 mt-2 w-64 rounded-xl border border-line bg-panel p-3 text-left text-xs whitespace-normal shadow-lg"
+        <div v-if="menu === 'sound'" id="sound-menu" :class="[MENU_BOX, 'left-0 space-y-2']">
+          <button
+            class="btn-ghost w-full px-3 py-1 text-xs"
+            :class="audioBlocked && !muted && 'text-accent'"
+            :title="audioBlocked && !muted ? 'Click to let the browser play sound' : 'Sound on or off'"
+            @click="onSoundButton"
+          >
+            {{ muted ? "Turn sound on" : audioBlocked ? "Enable sound" : "Turn sound off" }}
+          </button>
+          <label class="flex items-center gap-2">
+            <span class="text-ink-2">Volume</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              class="min-w-0 flex-1 accent-accent"
+              :value="muted ? 0 : volume"
+              :aria-valuetext="muted ? 'Sound off' : `${volume}%`"
+              @input="onVolume"
+            />
+            <span class="w-8 text-right">{{ muted ? 0 : volume }}%</span>
+          </label>
+          <button
+            v-if="!muted"
+            class="btn-ghost w-full px-3 py-1 text-xs"
+            title="Sound went quiet? This rebuilds the page's sound decoder and playback without reconnecting"
+            @click="player?.restartAudio()"
+          >
+            Restart sound
+          </button>
+        </div>
+      </div>
+
+      <!-- Controllers -->
+      <div class="relative" data-menu @keydown.esc="closeMenu">
+        <button
+          :class="[ICON_BTN, controllers.length > 0 && 'text-accent', menu === 'controllers' && 'bg-line/60']"
+          aria-haspopup="true"
+          :aria-expanded="menu === 'controllers'"
+          aria-controls="controller-menu"
+          :aria-label="`Controllers${controllers.length ? `, ${controllers.length} sending input` : ''}`"
+          :title="controllers.length ? `${controllers.length} controller(s) sending input` : 'No controller yet'"
+          @click="toggleMenu('controllers')"
         >
+          <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="1.5" y="4.5" width="13" height="7.5" rx="3.5" />
+            <path d="M5 6.7v3M3.5 8.2h3" />
+            <circle cx="10.5" cy="7.3" r=".6" fill="currentColor" /><circle cx="12" cy="9.1" r=".6" fill="currentColor" />
+          </svg>
+          <span v-if="controllers.length" class="absolute -top-0.5 -right-0.5 grid min-w-3.5 place-items-center rounded-full bg-accent px-1 text-[9px] leading-3.5 font-semibold text-accent-ink">{{ controllers.length }}</span>
+        </button>
+        <div v-if="menu === 'controllers'" id="controller-menu" :class="[MENU_BOX, 'right-0 p-3']">
           <ul v-if="controllers.length" class="mb-3 space-y-1">
             <li v-for="c in controllers" :key="c.id" class="flex justify-between gap-2">
               <span class="truncate">{{ c.info.name }}</span>
@@ -734,21 +943,30 @@ const STATUS: Record<PlayerState, string> = {
           <p v-if="controllerNote" role="status" class="mt-2 text-warn">{{ controllerNote }}</p>
         </div>
       </div>
-      <button class="btn-ghost border-0 px-3 py-1.5 text-xs" @click="toggleFullscreen">
-        {{ fullscreen ? "Exit full screen" : "Full screen" }}
-      </button>
-      <button class="btn-ghost border-0 px-3 py-1.5 text-xs" :class="overlay.open && 'text-accent'" :aria-pressed="overlay.open" @click="overlay = { ...overlay, open: !overlay.open }">
-        Stats
-        <span v-if="health.grade" class="ml-1 font-mono font-semibold" :class="gradeText(health.grade)" :title="`Stream health: ${health.summary}`">{{ health.grade }}</span>
+
+      <!-- View -->
+      <button
+        :class="ICON_BTN"
+        :aria-label="fullscreen ? 'Exit full screen' : 'Full screen'"
+        :title="fullscreen ? 'Exit full screen' : 'Full screen'"
+        @click="toggleFullscreen"
+      >
+        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path v-if="fullscreen" d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4" />
+          <path v-else d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" />
+        </svg>
       </button>
       <button
-        v-if="env.data.value?.templateId === 'test-pattern'"
-        class="btn-ghost border-0 px-3 py-1.5 text-xs"
-        :disabled="probing || state !== 'connected'"
-        title="25 synthetic clicks; times click → flash on screen"
-        @click="runProbe"
+        :class="[ICON_BTN, 'w-auto gap-1 px-2', overlay.open && 'text-accent']"
+        :aria-pressed="overlay.open"
+        aria-label="Stats"
+        :title="overlay.open ? 'Hide the stats panel' : 'Show the stats panel'"
+        @click="overlay = { ...overlay, open: !overlay.open }"
       >
-        {{ probing ? "Probing…" : "Probe" }}
+        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+          <path d="M3 13V8M8 13V3M13 13V6" />
+        </svg>
+        <span v-if="health.grade" class="font-mono text-xs font-semibold" :class="gradeText(health.grade)" :title="`Stream health: ${health.summary}`">{{ health.grade }}</span>
       </button>
       <!-- Floats on the toolbar's lower edge, in the middle -->
       <button
@@ -765,6 +983,13 @@ const STATUS: Record<PlayerState, string> = {
       </button>
     </div>
 
+    <PowerOffDialog
+      :open="powerOff"
+      :name="env.data.value?.templateName ?? 'the app'"
+      :failed="powerOffError"
+      @cancel="powerOff = false"
+      @confirm="confirmPowerOff"
+    />
     <RecordingDialog :summary="recordingResult" @close="recordingResult = null" />
 
     <!-- Stats: under the toolbar (z-30) -->
@@ -778,7 +1003,7 @@ const STATUS: Record<PlayerState, string> = {
       :connected="state === 'connected'"
       :recording-left="recordingLeft"
       :probe="probe"
-      :toolbar-open="toolbar"
+      :toolbar-inset="toolbar ? toolbarHeight : 0"
       @record="startRecording"
     />
 

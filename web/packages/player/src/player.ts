@@ -264,6 +264,8 @@ export class Player {
   private overlayChange: { done: (level: OverlayState | null) => void; fail: (err: Error) => void } | null = null;
   /** This page has the controls (streamers before P2.6 don't say: assume so). */
   private hasControl = true;
+  /** False while the page's mouse is switched off (the toolbar's button). */
+  private mouseEnabled = true;
   /** Where a viewer's page draws the controller's pointer. */
   private pointerEl: HTMLElement | null = null;
   /** The node's latest resource report, and when it came. */
@@ -588,6 +590,14 @@ export class Player {
     return this.input?.lockPointer() ?? Promise.resolve();
   }
 
+  /** Stop (or resume) sending the mouse to the environment; the keyboard and controllers carry on. */
+  setMouseEnabled(on: boolean): void {
+    this.mouseEnabled = on;
+    this.input?.setMouseEnabled(on);
+    this.applyCursor();
+    this.placePointer();
+  }
+
   /** Leave recapture mode: clicks go to the stream again. */
   turnOffMouseCapture(): void {
     this.input?.turnOffCapture();
@@ -717,6 +727,7 @@ export class Player {
       onPaste: (text) => this.send({ t: "clipboard", text }),
       onCapture: (view) => this.options.onMouseCapture?.(view),
     });
+    this.input.setMouseEnabled(this.mouseEnabled);
     this.pads?.stop();
     const pads = new ControllerManager({ send: (m) => this.sendInput(m) });
     pads.onChange((list) => this.options.onControllers?.(list));
@@ -994,6 +1005,10 @@ export class Player {
   private applyCursor(): void {
     const msg = this.cursor;
     const { video } = this.options;
+    if (!this.mouseEnabled) {
+      video.style.cursor = "not-allowed";
+      return;
+    }
     if (!this.hasControl) {
       // A viewer's own mouse is its own; the controller's pointer is drawn over the picture.
       video.style.cursor = "";

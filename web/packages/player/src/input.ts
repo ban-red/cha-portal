@@ -38,6 +38,8 @@ export class InputCapture {
   private readonly capture = new CaptureMode();
   private hintTimer: ReturnType<typeof setTimeout> | null = null;
   private keyboardLock = false;
+  /** Off: the mouse (moves, buttons, wheel) is not sent; the keyboard still is. */
+  private mouseOn = true;
   private heldPaste: { code: string; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(
@@ -75,6 +77,20 @@ export class InputCapture {
       this.lockChanged();
     });
     on(document, "fullscreenchange", () => this.syncKeyboardLock());
+  }
+
+  /** Turn the mouse's input to the environment off or on. Off lets go of held buttons and of a captured pointer. */
+  setMouseEnabled(on: boolean): void {
+    if (on === this.mouseOn) return;
+    this.mouseOn = on;
+    if (on) return;
+    for (const b of this.buttons) this.send({ k: "button", b, down: false });
+    this.buttons.clear();
+    if (this.locked) document.exitPointerLock();
+  }
+
+  get mouseEnabled(): boolean {
+    return this.mouseOn;
   }
 
   /** Mouse capture, for the UI. */
@@ -159,7 +175,7 @@ export class InputCapture {
    * one per Esc, the first with no cursor anywhere.
    */
   async lockPointer(): Promise<void> {
-    if (this.locked || this.locking) return;
+    if (!this.mouseOn || this.locked || this.locking) return;
     this.locking = true;
     // Keys go to the stream while the mouse is captured, not to the button that asked.
     this.video.focus();
@@ -204,6 +220,7 @@ export class InputCapture {
   }
 
   private move(e: PointerEvent): void {
+    if (!this.mouseOn) return;
     // Moving over the hint is interaction: it stays.
     if (this.capture.view.hint) this.armHint();
     if (this.locked) {
@@ -221,6 +238,11 @@ export class InputCapture {
   }
 
   private button(e: PointerEvent, down: boolean): void {
+    if (!this.mouseOn) {
+      // Clicking the picture still gives it the keyboard.
+      if (down) this.video.focus();
+      return;
+    }
     if (!this.locked) {
       // After the browser took the mouse back, a click captures it again; it is not the app's.
       if (down && this.capture.pointerDown(e.button) === "recapture") {
@@ -248,6 +270,7 @@ export class InputCapture {
   }
 
   private wheel(e: WheelEvent): void {
+    if (!this.mouseOn) return;
     // deltaMode 1 (lines) is rare on desktops; treat a line as ~40 px.
     const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
     this.send({ k: "wheel", dx: e.deltaX * unit, dy: e.deltaY * unit });
