@@ -227,7 +227,8 @@ Each phase ships on its own and passes `./scripts/check.sh`.
 
 ### Left for later
 
-- Catalog app icons and logos (the `icon` field in `images/catalog.json`).
+(Done since: the catalog's `icon` field and the apps' own logos, sourced in `images/README.md`.)
+
 - A custom accent hue.
 - The notifications bell (the portal has no notification source).
 - The stream view's own overlays (`SessionView`, `StatsOverlay`), to be swept once the parallel work there lands.

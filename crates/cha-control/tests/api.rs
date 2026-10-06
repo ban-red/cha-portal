@@ -1499,3 +1499,50 @@ async fn preferences_need_a_session_and_guests_can_save() {
     let got = p.call("GET", "/api/me/prefs", Some(&guest), None).await;
     assert_eq!(got.body, json!({ "prefs": { "appearance": "dark" } }));
 }
+
+#[tokio::test]
+async fn catalog_logos_are_inert_images() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let catalog = p.call("GET", "/api/catalog", Some(&admin), None).await;
+    let chrome = catalog
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "chrome")
+        .unwrap();
+    assert_eq!(chrome["icon"], "icon.svg");
+
+    let req = Request::builder()
+        .uri("/api/catalog/chrome/icon")
+        .header(header::COOKIE, &admin)
+        .body(Body::empty())
+        .unwrap();
+    let res = p.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "image/svg+xml");
+    assert_eq!(res.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert!(
+        res.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .starts_with("default-src 'none'")
+    );
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
+
+    // The test pattern has no logo; nobody signed in gets nothing.
+    assert_eq!(
+        p.call("GET", "/api/catalog/test-pattern/icon", Some(&admin), None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        p.call("GET", "/api/catalog/chrome/icon", None, None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+}

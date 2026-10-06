@@ -12,6 +12,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use axum::extract::{Path, State};
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cha_wire::{
@@ -52,6 +54,7 @@ const HEIGHT: u32 = 1440;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/catalog", get(list_catalog))
+        .route("/catalog/{id}/icon", get(catalog_icon))
         .route("/environments", get(list).post(launch))
         .route("/environments/{id}", get(show).delete(stop))
         .route("/environments/{id}/connect", post(connect))
@@ -69,6 +72,10 @@ pub struct Template {
     pub image: String,
     /// `browser`, `desktop`, `test`, …
     pub class: String,
+    /// Its logo, an SVG beside its image (`images/<id>/<icon>`), served at
+    /// `/api/catalog/<id>/icon`; absent, the portal draws a generic icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub security: SecurityProfile,
     pub shm_mb: u32,
     /// Users keep their data for it between launches (their home in it
@@ -117,6 +124,39 @@ pub(crate) fn template(id: &str) -> Option<&'static Template> {
 
 async fn list_catalog(_: CurrentUser) -> Json<&'static [Template]> {
     Json(catalog())
+}
+
+/// The logos the catalog names, built in like the catalog itself. A test
+/// checks this list against `icon` in `images/catalog.json`.
+const ICONS: &[(&str, &[u8])] = &[
+    ("chrome", include_bytes!("../../../images/chrome/icon.svg")),
+    (
+        "firefox",
+        include_bytes!("../../../images/firefox/icon.svg"),
+    ),
+    ("kde", include_bytes!("../../../images/kde/icon.svg")),
+    ("steam", include_bytes!("../../../images/steam/icon.svg")),
+    ("xfce", include_bytes!("../../../images/xfce/icon.svg")),
+];
+
+/// A template's logo. Served as an inert image: no scripts, nothing fetched.
+async fn catalog_icon(_: CurrentUser, Path(id): Path<String>) -> ApiResult<Response> {
+    let Some((_, svg)) = ICONS.iter().find(|(t, _)| *t == id) else {
+        return Err(ApiError::NotFound("no icon for that template".into()));
+    };
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "private, max-age=86400"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; style-src 'unsafe-inline'",
+            ),
+        ],
+        *svg,
+    )
+        .into_response())
 }
 
 // ---- Views ----
@@ -867,6 +907,31 @@ mod tests {
                 .filter(|t| t.id != "steam")
                 .all(|t| !t.needs_gpu)
         );
+    }
+
+    #[test]
+    fn every_catalog_icon_is_built_in_and_inert() {
+        let named: Vec<&str> = catalog()
+            .iter()
+            .filter(|t| t.icon.is_some())
+            .map(|t| t.id.as_str())
+            .collect();
+        let built: Vec<&str> = ICONS.iter().map(|(id, _)| *id).collect();
+        for id in &named {
+            assert!(built.contains(id), "{id}: icon not in ICONS");
+        }
+        for id in &built {
+            assert!(named.contains(id), "{id}: in ICONS but not the catalog");
+        }
+        for (id, svg) in ICONS {
+            let svg = std::str::from_utf8(svg).unwrap();
+            assert!(svg.contains("<svg"), "{id}: not an SVG");
+            assert!(
+                svg.contains("viewBox"),
+                "{id}: no viewBox, so it won't scale"
+            );
+            assert!(!svg.contains("<script"), "{id}: has a script");
+        }
     }
 
     #[test]

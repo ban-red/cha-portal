@@ -15,6 +15,7 @@
       "description": "Chrome on the GPU, with its sandbox on.",
       "image": "cha/env-chrome:dev",
       "class": "browser",
+      "icon": "icon.svg",
       "security": "browser",
       "shmMb": 1024
     },
@@ -24,6 +25,7 @@
       "description": "Firefox on the GPU, with its sandbox on.",
       "image": "cha/env-firefox:dev",
       "class": "browser",
+      "icon": "icon.svg",
       "security": "browser",
       "shmMb": 1024
     },
@@ -33,6 +35,7 @@
       "description": "A full XFCE desktop: panel, file manager, terminal.",
       "image": "cha/env-xfce:dev",
       "class": "desktop",
+      "icon": "icon.svg",
       "security": "standard",
       "shmMb": 1024
     },
@@ -42,6 +45,7 @@
       "description": "A full Plasma desktop: panel, Dolphin, Konsole, System Settings.",
       "image": "cha/env-kde:dev",
       "class": "desktop",
+      "icon": "icon.svg",
       "security": "standard",
       "shmMb": 512
     },
@@ -51,6 +55,7 @@
       "description": "Steam's Big Picture in gamescope, for a controller. Your library and login stay between launches while you keep your app data. Games can also go into a library shared by all users, installed once.",
       "image": "cha/env-steam:dev",
       "class": "gaming",
+      "icon": "icon.svg",
       "security": "steam",
       "shmMb": 2048,
       "persistent": true,

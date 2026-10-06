@@ -47,6 +47,7 @@ docker compose -f images/compose.yaml build
 - **Display size.** The page sizes the picture to its element, and the streamer resizes the app's output to match, which suits desktop apps. An app whose display has a fixed size (Steam's gamescope starts at `CHA_WIDTH`×`CHA_HEIGHT`, and letterboxes and rescales pointer motion in any other output) sets `"fixedSize": true` in the catalog: the page then never asks for a resize, and the browser letterboxes the picture instead.
 - **Device.** An environment runs on an NVIDIA GPU, an Intel or AMD GPU (VA-API) or, with no GPU, the CPU (`docs/devices.md`); the user picks from the launch menu, and by default the portal picks the best the nodes offer. A template that needs real 3D (Steam, games) sets `"needsGpu": true` in the catalog and never runs on the CPU (software rendering and x264 suit desktops and browsers at modest sizes, nothing more). Absent is false. The images are the same whatever the device: the node gives the app the GPU it runs on (CDI for NVIDIA, a render node for VA-API, nothing for the CPU), and Mesa in the base image picks it up.
 - **`/dev/shm`** is sized per template; browsers need more than Docker's default 64 MB.
+- **Logo.** A template may set `"icon": "icon.svg"` in the catalog, for an SVG in its image's directory. The portal builds it in (listed in `ICONS` in `crates/cha-control/src/environments.rs`, which a test checks against the catalog) and serves it at `/api/catalog/<id>/icon` as an inert image (`Content-Security-Policy: default-src 'none'`, no scripts). The SVG needs a `viewBox` so it scales. Without one, the card shows a generic icon for the template's class.
 - **App data.** What an app keeps between launches lives on the node, as plain directories under its data root (`CHA_DATA_ROOT`, `/srv/cha-portal` unless the owner sets another), and is the user's and the admin's to control in the portal: [`deploy/README.md`](../deploy/README.md#app-data) has the layout, permissions and rollout. The contract with an image:
   - **The home, per user and app.** On or off for each (user, app), by the user; the default per app is the admin's, initially the catalog's (`"persistent": true`: Steam). On, `users/<user id>/<template id>` is mounted as the app's home, `/home/cha`: 1000:1000, mode 0700, made by the agent, and filled from the image's own `/home/cha` the first time (what a Docker volume used to do). After that the image's copy is ignored: don't put anything in `/home/cha` that an image update must replace. Off, the home is the container's and goes with it.
   - **Stopping never removes it.** Resetting does, on the user's say: the node deletes the directory, and the next launch starts from the image's home again. That, and changing the setting, are refused while an environment of the app is live.
@@ -63,6 +64,18 @@ docker compose -f images/compose.yaml build
     - **A directory Steam can't write isn't listed:** Steam refuses a library folder it can't write ("New Steam library folder must be writable"), so read-only sharing is for apps other than Steam, and Steam needs `write`. (Not tried with a game: the refusal is what Steam's own messages and users' reports say.)
     - **What is shared is the downloaded games and their install state** (`steamapps/common`, `appmanifest_*.acf`). Each user's account must own a game to play it. Proton prefixes and shader caches are each user's own (`perUser` above). Two users updating the same game at once can clash: the shared library is experimental.
     - **Steam's old prefixes** in an external library's own `steamapps/compatdata` are hidden under the per-user directories, not migrated: Steam Cloud covers most saves.
+
+## Logos
+
+Each logo is the app's own, unmodified apart from an added `viewBox`, and is shown only to say which app a card launches. They are trademarks of their owners whatever their copyright licence; using them doesn't mean the owners endorse Cha Portal. Sources, from Wikimedia Commons, downloaded 2026-10-06:
+
+| File | Source | Licence on Commons |
+|---|---|---|
+| `chrome/icon.svg` | [Google_Chrome_icon_(February_2022).svg](https://commons.wikimedia.org/wiki/File:Google_Chrome_icon_(February_2022).svg) | Public domain (Google trademark) |
+| `firefox/icon.svg` | [Firefox_logo,_2019.svg](https://commons.wikimedia.org/wiki/File:Firefox_logo,_2019.svg) | MPL 2.0 (Mozilla trademark) |
+| `kde/icon.svg` | [KDE_logo.svg](https://commons.wikimedia.org/wiki/File:KDE_logo.svg) | LGPL (KDE trademark) |
+| `steam/icon.svg` | [Steam_icon_logo.svg](https://commons.wikimedia.org/wiki/File:Steam_icon_logo.svg) | Public domain (Valve trademark) |
+| `xfce/icon.svg` | [Xfce_logo-footprint.svg](https://commons.wikimedia.org/wiki/File:Xfce_logo-footprint.svg) | LGPL |
 
 ## Known gaps
 

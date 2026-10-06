@@ -114,6 +114,8 @@ export interface Template {
   image: string;
   /** "browser", "desktop", "test", … */
   class: string;
+  /** It has a logo, served at `catalogIconUrl(id)`. */
+  icon?: string;
   security: SecurityProfile;
   shmMb: number;
   /** Its display has a fixed size: the page never asks for a resize. */
@@ -345,3 +347,6 @@ export const api = {
       body,
     ),
 };
+
+/** A catalog template's logo (only for templates with `icon`). */
+export const catalogIconUrl = (id: string) => `/api/catalog/${encodeURIComponent(id)}/icon`;

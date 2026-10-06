@@ -4,9 +4,9 @@
 // the Controller and Frame rate selects sit side by side only when there is room for their
 // full option text.
 import { Activity, AppWindow, Database, Gamepad2, Globe, Monitor, Pin } from "lucide-vue-next";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 
-import type { AppSettings, ControllerApp, PlacementChoice, Placements, Template } from "../api";
+import { catalogIconUrl, type AppSettings, type ControllerApp, type PlacementChoice, type Placements, type Template } from "../api";
 import { FPS_CHOICES } from "../appFps";
 import { KINDS, kindLabel } from "../controllerKinds";
 import FormError from "./FormError.vue";
@@ -38,6 +38,11 @@ const emit = defineEmits<{
 
 const ICONS = { browser: Globe, desktop: Monitor, gaming: Gamepad2, test: Activity } as const;
 const icon = computed(() => ICONS[props.template.class as keyof typeof ICONS] ?? AppWindow);
+// The app's own logo when the catalog has one (and it loads); the generic icon otherwise.
+const logoFailed = ref(false);
+const logo = computed(() => (props.template.icon && !logoFailed.value ? catalogIconUrl(props.template.id) : null));
+const TILE = "grid place-items-center rounded-lg";
+const tileTone = computed(() => (logo.value ? "border border-line bg-panel-2" : "bg-accent-soft text-accent"));
 
 const t = computed(() => props.template);
 const controllerText = computed(() =>
@@ -55,8 +60,9 @@ const SELECT = "field min-h-9 pointer-coarse:min-h-11 truncate";
       <div
         class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 @min-[26rem]:grid-cols-[auto_minmax(0,1fr)_auto]"
       >
-        <div class="col-start-1 row-start-1 grid size-14 place-items-center rounded-lg bg-accent-soft text-accent">
-          <component :is="icon" class="size-7" aria-hidden="true" />
+        <div class="col-start-1 row-start-1 size-14" :class="[TILE, tileTone]">
+          <img v-if="logo" :src="logo" alt="" class="size-9 object-contain" draggable="false" @error="logoFailed = true" />
+          <component :is="icon" v-else class="size-7" aria-hidden="true" />
         </div>
         <div class="col-span-2 col-start-1 row-start-2 min-w-0 @min-[26rem]:col-span-1 @min-[26rem]:col-start-2 @min-[26rem]:row-start-1">
           <h3 class="text-xl leading-7 font-semibold tracking-tight">{{ t.name }}</h3>
@@ -139,8 +145,9 @@ const SELECT = "field min-h-9 pointer-coarse:min-h-11 truncate";
     <div
       class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 p-3 [grid-template-areas:'tile_text_pin''meta_meta_launch'] @min-[44rem]:grid-cols-[auto_minmax(0,1fr)_auto_auto_11rem] @min-[44rem]:gap-x-4 @min-[44rem]:[grid-template-areas:'tile_text_meta_pin_launch']"
     >
-      <div class="grid size-11 place-items-center rounded-lg bg-accent-soft text-accent [grid-area:tile]">
-        <component :is="icon" class="size-6" aria-hidden="true" />
+      <div class="size-11 [grid-area:tile]" :class="[TILE, tileTone]">
+        <img v-if="logo" :src="logo" alt="" class="size-7 object-contain" draggable="false" @error="logoFailed = true" />
+        <component :is="icon" v-else class="size-6" aria-hidden="true" />
       </div>
       <div class="min-w-0 [grid-area:text]">
         <div class="flex items-center gap-2">
