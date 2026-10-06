@@ -63,11 +63,11 @@ function setSharedAccess(app: AdminStorageApp, event: Event) {
 </script>
 
 <template>
-  <div class="mx-auto max-w-3xl space-y-6">
+  <div class="max-w-3xl space-y-6">
     <div class="space-y-1 text-sm text-ink-2">
       <p>
         What each app does by default. Users can still choose for themselves under
-        <RouterLink to="/settings/storage" class="text-accent hover:underline">Storage</RouterLink>.
+        <RouterLink to="/settings/storage" class="text-accent underline underline-offset-2 hover:text-ink">Storage</RouterLink>.
       </p>
       <p>Shared data is one folder every user can use, instead of each keeping their own copy.</p>
     </div>
@@ -76,19 +76,19 @@ function setSharedAccess(app: AdminStorageApp, event: Event) {
     <NotAvailable v-else-if="notAvailable(storage.error.value)" />
     <FormError v-else-if="storage.isError.value" :message="storage.error.value?.message ?? 'Failed to load'" />
     <div v-else-if="!apps.length" class="card px-6 py-10 text-center">
-      <p class="font-medium">No apps</p>
+      <p class="text-base font-medium">No apps</p>
       <p class="mt-1 text-sm text-ink-2">Nothing here keeps data yet.</p>
     </div>
 
     <ul v-else class="card divide-y divide-line">
       <li v-for="app in apps" :key="app.template" class="px-4 py-4 sm:px-5">
-        <h2 :id="`${app.template}-name`" class="font-semibold">{{ app.name }}</h2>
+        <h2 :id="`${app.template}-name`" class="text-base font-semibold">{{ app.name }}</h2>
         <p v-if="app.sharedAccess !== 'none'" class="mt-0.5 font-mono text-xs break-all text-ink-3">
           {{ sharedPath(root, app) }}
           <span v-if="app.sharedPath" class="font-sans">· set on the node (CHA_SHARED_DIRS)</span>
         </p>
 
-        <div class="mt-3 flex flex-wrap items-center gap-x-8 gap-y-3">
+        <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-8">
           <div class="flex items-center gap-3">
             <ToggleSwitch
               :model-value="app.defaultPersistent"
@@ -97,7 +97,7 @@ function setSharedAccess(app: AdminStorageApp, event: Event) {
             />
             <span :id="`${app.template}-default`" class="text-sm">Default: keep data</span>
           </div>
-          <div class="flex items-center gap-3">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <label :for="`${app.template}-shared`" class="text-sm">
               <span class="sr-only">{{ app.name }}: </span>Shared data
             </label>

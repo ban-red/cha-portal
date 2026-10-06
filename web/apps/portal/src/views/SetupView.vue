@@ -41,24 +41,25 @@ async function submit() {
     <form class="space-y-4" @submit.prevent="submit">
       <div>
         <label class="label" for="token">Setup token</label>
-        <input id="token" v-model="token" class="field font-mono" autocomplete="off" spellcheck="false" required />
-        <p class="mt-1.5 text-xs text-ink-3">Printed in the cha-control log on first start.</p>
+        <input id="token" v-model="token" name="setup-token" class="field font-mono" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="token-hint" required />
+        <p id="token-hint" class="mt-1.5 text-xs text-ink-3">Printed in the cha-control log on first start.</p>
       </div>
       <div>
         <label class="label" for="username">Username</label>
-        <input id="username" v-model="username" class="field" autocomplete="username" required />
+        <input id="username" v-model="username" name="username" class="field" autocomplete="username" autocapitalize="none" spellcheck="false" required />
       </div>
       <div>
-        <label class="label" for="display">Display name <span class="normal-case text-ink-3">(optional)</span></label>
-        <input id="display" v-model="displayName" class="field" autocomplete="name" />
+        <label class="label" for="display">Display name <span class="font-normal text-ink-3">(optional)</span></label>
+        <input id="display" v-model="displayName" name="name" class="field" autocomplete="name" />
       </div>
       <div>
         <label class="label" for="password">Password</label>
-        <input id="password" v-model="password" type="password" class="field" autocomplete="new-password" minlength="10" required />
+        <input id="password" v-model="password" name="new-password" type="password" class="field" autocomplete="new-password" minlength="10" aria-describedby="password-hint" required />
+        <p id="password-hint" class="mt-1.5 text-xs text-ink-3">At least 10 characters.</p>
       </div>
       <div>
         <label class="label" for="confirm">Confirm password</label>
-        <input id="confirm" v-model="confirm" type="password" class="field" autocomplete="new-password" required />
+        <input id="confirm" v-model="confirm" name="confirm-password" type="password" class="field" autocomplete="new-password" required />
       </div>
       <FormError :message="error" />
       <button type="submit" class="btn-primary w-full" :disabled="busy">

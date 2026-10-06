@@ -569,6 +569,7 @@ Delivers **features 1 and 2, Chrome/Firefox/XFCE for feature 3, and the browser 
 - `@cha/player`: WebRTC transport, pointer/keyboard lock (both APIs), Gamepad API, stats HUD (`getStats()` + `requestVideoFrameCallback`), the S2 click → screen probe built in; WebSocket + WebCodecs fallback.
 - Remote access documented via Tailscale (overlay candidates plus the portal on `*.ts.net`). An optional coturn profile with TURN-TLS on 443 and portal-minted credentials.
 - Portal SPA: dashboard (catalog, my environments, launch/connect/stop), node admin, fullscreen session view with overlay.
+- Portal themes and UI pass (done 2026-10-06): Cha – Magenta and Cha – Jade, light, dark and more contrast, with contrast checked by a test. See [`docs/plans/theming.md`](plans/theming.md) and [ADR 0005](adr/0005-theme-token-contract.md).
 - **Exit:**
   - Chrome, Firefox and XFCE environments work with keyboard, mouse, controller and sound in Chrome, Firefox and Safari, on LAN and over WAN (port-forward or mesh).
   - `cha-streamer` matches or beats S2's numbers on the same node (§9 Phase 0, S2).

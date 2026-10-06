@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronRight, Copy } from "lucide-vue-next";
 import { ref } from "vue";
 
 // What an environment's containers last logged when it died: its node removes
@@ -23,11 +24,13 @@ async function copy() {
 
 <template>
   <details v-if="log?.length" class="group text-left text-sm">
-    <summary class="w-fit cursor-pointer text-xs text-ink-2 select-none hover:text-ink">
+    <summary class="inline-flex min-h-8 w-fit cursor-pointer items-center gap-1 text-sm text-ink-2 select-none hover:text-ink pointer-coarse:min-h-11">
+      <ChevronRight class="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />
       <span class="group-open:hidden">Show log</span><span class="hidden group-open:inline">Hide log</span>
     </summary>
     <div class="relative mt-2">
-      <button type="button" class="btn-ghost absolute top-1 right-3 px-2 py-0.5 text-xs" @click="copy">
+      <button type="button" class="btn-ghost absolute top-1 right-3 bg-canvas px-2.5 py-1 text-xs" @click="copy">
+        <Copy class="size-3.5" aria-hidden="true" />
         {{ copied ? "Copied" : "Copy" }}
       </button>
       <pre

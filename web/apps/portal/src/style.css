@@ -50,6 +50,8 @@
   --color-ok: var(--cha-ok);
   --color-warn: var(--cha-warn);
   --color-danger: var(--cha-danger);
+  --color-danger-fill: var(--cha-danger-fill);
+  --color-on-danger: var(--cha-on-danger);
   --color-info: var(--cha-info);
   --color-scrim: var(--cha-scrim);
   --color-chart-1: var(--cha-chart-1);
@@ -104,21 +106,29 @@
 
 /* Reusable building blocks, as utilities so they compose with @apply and variants. */
 @utility field {
-  @apply w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-sm text-ink transition placeholder:text-ink-3
-    focus:border-focus focus:outline-none;
+  @apply min-h-9 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-sm text-ink transition placeholder:text-ink-3
+    focus:border-focus focus:outline-none pointer-coarse:min-h-11;
 }
 @utility label {
-  @apply mb-1.5 block text-xs font-medium tracking-wide text-ink-2 uppercase;
+  @apply mb-1.5 block text-sm font-medium text-ink-2;
 }
 @utility btn {
-  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition
-    disabled:cursor-not-allowed disabled:opacity-50;
+  @apply inline-flex min-h-9 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition
+    disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11;
 }
 @utility btn-primary {
   @apply btn bg-accent-fill text-on-accent hover:bg-accent-fill-hover;
 }
 @utility btn-ghost {
   @apply btn border border-line-strong text-ink-2 hover:border-ink-3 hover:text-ink;
+}
+/* A destructive confirm: a solid danger fill with its own text colour (on-danger, 4.5:1 or
+   better in every theme). Hover darkens the fill, so contrast only goes up. */
+@utility btn-danger {
+  @apply btn bg-danger-fill text-on-danger;
+  &:hover:not(:disabled, [aria-disabled="true"]) {
+    background-color: color-mix(in oklab, var(--cha-danger-fill) 82%, oklch(0 0 0));
+  }
 }
 @utility card {
   @apply rounded-xl border border-line bg-panel;

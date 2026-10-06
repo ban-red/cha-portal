@@ -222,6 +222,12 @@ for (const theme of themes) {
         expect(failures).toEqual([]);
       });
 
+      test(`${v.appearance}/${v.contrast}: on-danger is readable on danger-fill`, () => {
+        failures.length = 0;
+        check("on-danger", "danger-fill", 4.5);
+        expect(failures).toEqual([]);
+      });
+
       test(`${v.appearance}/${v.contrast}: line-strong and focus reach 3:1 on every surface`, () => {
         failures.length = 0;
         for (const fg of ["line-strong", "focus"]) for (const bg of SURFACES) check(fg, bg, 3);

@@ -1,6 +1,6 @@
 # Themes, and a UI pass to go with them
 
-Status: T1–T4 done; T5 (sweep and verification) next.
+Status: Done (T1–T5). Real-browser, keyboard-only and VoiceOver passes were dropped by the owner.
 
 Goal: the portal gets themes that are easy to adjust and accessible by construction. **Cha – Magenta** (the dark magenta mock below) becomes the first theme and the default. The same pass moves the shell and the Environments page to the mock's layout and makes both work cleanly from a phone up to a 1440p display.
 
@@ -214,6 +214,23 @@ Each phase ships on its own and passes `./scripts/check.sh`.
 2. Screenshots at 375, 768, 1280 and 1440 px in dark, light and contrast "more", from **real Chrome** on the M4 (the in-app browser pane isn't a faithful reference), plus Safari.
 3. A keyboard-only pass over every flow, and a VoiceOver pass over the shell, Environments and Appearance.
 4. Docs: an ADR "Theme token contract" (the roles, the tiers, the contrast gate); this file's status; the portal README section on themes and how to add one.
+
+**T5 as done.** The sweep covered every view and component that was left: `ControllersView`, `StorageView`, `AdminStorageView`, `NodesView`, `UsersView`, `AuditView`, `LoginView`, `SetupView`, `AuthCard`, `ConfirmDialog`, `RecordingDialog`, `ControllerDiagram`, `AppControllerKinds`, `NodeUsage`, `EnvironmentLog`, `FormError`, `WarningNote`, `NotAvailable`, `ToggleSwitch` and `DevLoginButton`.
+
+- Roles only (the raw-colour check passes), `accent` versus `ok` sorted, control edges on `line-strong`, no colour-alone status (icons beside warn and danger notes, a "High" word and icon on node meters).
+- Buttons, fields and selects are 36 px on a fine pointer and 44 px under `pointer-coarse:` (set once in `btn` and `field`); the switch's hit area is 44 px tall.
+- Lucide icons replace the ad-hoc ones; section headings follow the Appearance page; labels are sentence case.
+- Tables and lists don't scroll the page sideways at 375 px; forms are one column below `sm`.
+- `ConfirmDialog` and `RecordingDialog` use `scrim`, take focus on open, close on Esc and return focus to the opener. A new `btn-danger` utility (new roles `danger-fill` and `on-danger`, 4.5:1 or better in every variant, added to the test) styles the destructive confirm.
+- Login and Setup are centred under the brand mark with a label on every field and `autocomplete` set.
+- ADR [0005](../adr/0005-theme-token-contract.md) records the contract. The screenshot, keyboard-only and VoiceOver passes in the original T5 list were not done.
+
+### Left for later
+
+- Catalog app icons and logos (the `icon` field in `images/catalog.json`).
+- A custom accent hue.
+- The notifications bell (the portal has no notification source).
+- The stream view's own overlays (`SessionView`, `StatsOverlay`), to be swept once the parallel work there lands.
 
 ## Decisions (owner, 2026-10-06)
 

@@ -63,6 +63,8 @@
   --cha-ok: oklch(0.773 0.153 163.2);
   --cha-warn: oklch(0.837 0.164 84.4);
   --cha-danger: oklch(0.739 0.162 12.1);
+  --cha-danger-fill: oklch(0.52 0.2 22);
+  --cha-on-danger: oklch(1 0 0);
   --cha-info: oklch(0.76 0.12 245);
 
   --cha-scrim: oklch(0.1 0.03 336 / 0.62);
@@ -100,6 +102,8 @@
   --cha-ok: oklch(0.508 0.105 165.6);
   --cha-warn: oklch(0.473 0.125 46.2);
   --cha-danger: oklch(0.519 0.197 22.2);
+  --cha-danger-fill: oklch(0.5 0.2 25);
+  --cha-on-danger: oklch(1 0 0);
   --cha-info: oklch(0.5 0.15 255);
 
   --cha-scrim: oklch(0.2 0.04 336 / 0.4);
@@ -131,6 +135,8 @@
   --cha-ok: oklch(0.83 0.16 163);
   --cha-warn: oklch(0.88 0.16 85);
   --cha-danger: oklch(0.8 0.15 12);
+  --cha-danger-fill: oklch(0.46 0.19 25);
+  --cha-on-danger: oklch(1 0 0);
   --cha-info: oklch(0.82 0.11 245);
 
   --cha-scrim: oklch(0.05 0.02 336 / 0.75);
@@ -163,6 +169,8 @@
   --cha-ok: oklch(0.4 0.1 165);
   --cha-warn: oklch(0.42 0.1 50);
   --cha-danger: oklch(0.46 0.19 22);
+  --cha-danger-fill: oklch(0.46 0.19 25);
+  --cha-on-danger: oklch(1 0 0);
   --cha-info: oklch(0.42 0.15 255);
 
   --cha-scrim: oklch(0.15 0.03 336 / 0.55);

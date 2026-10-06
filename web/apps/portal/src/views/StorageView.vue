@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
+import { RotateCcw } from "lucide-vue-next";
 import { computed, onBeforeUnmount, reactive, ref } from "vue";
 
 import { ApiError, api, type StorageApp } from "../api";
@@ -130,7 +131,7 @@ function resetKeeps(app: StorageApp): string | null {
 </script>
 
 <template>
-  <div class="mx-auto max-w-3xl space-y-6">
+  <div class="max-w-3xl space-y-6">
     <div class="space-y-1 text-sm text-ink-2">
       <p>
         Choose which apps keep their data between launches. An app that doesn't keep its data starts fresh every time.
@@ -141,7 +142,7 @@ function resetKeeps(app: StorageApp): string | null {
       </p>
       <p v-if="session.isAdmin">
         Defaults and shared data for everyone are under
-        <RouterLink to="/admin/storage" class="text-accent hover:underline">App data</RouterLink>.
+        <RouterLink to="/admin/storage" class="text-accent underline underline-offset-2 hover:text-ink">App data</RouterLink>.
       </p>
     </div>
 
@@ -149,13 +150,13 @@ function resetKeeps(app: StorageApp): string | null {
     <NotAvailable v-else-if="notAvailable(storage.error.value)" />
     <FormError v-else-if="storage.isError.value" :message="storage.error.value?.message ?? 'Failed to load'" />
     <div v-else-if="!apps.length" class="card px-6 py-10 text-center">
-      <p class="font-medium">No apps</p>
+      <p class="text-base font-medium">No apps</p>
       <p class="mt-1 text-sm text-ink-2">Nothing here keeps data yet.</p>
     </div>
 
     <ul v-else class="card divide-y divide-line">
       <li v-for="app in apps" :key="app.template" class="px-4 py-4 sm:px-5">
-        <h2 :id="`${app.template}-name`" class="font-semibold">{{ app.name }}</h2>
+        <h2 :id="`${app.template}-name`" class="text-base font-semibold">{{ app.name }}</h2>
         <p class="mt-0.5 font-mono text-xs break-all text-ink-3">{{ dataPath(root, app.template) }}</p>
         <template v-if="app.sharedAccess !== 'none'">
           <p class="mt-1 text-xs text-ink-2">
@@ -181,12 +182,14 @@ function resetKeeps(app: StorageApp): string | null {
           </div>
           <button
             :id="`${app.template}-reset`"
-            class="btn-ghost shrink-0 px-3 py-1 text-xs hover:border-danger/60 hover:text-danger"
+            type="button"
+            class="btn-ghost shrink-0 px-3 py-1.5 hover:border-danger/60 hover:text-danger"
             :disabled="app.live"
             :title="app.live ? 'Stop it to reset its data' : undefined"
             :aria-labelledby="`${app.template}-reset ${app.template}-name`"
             @click="askReset(app)"
           >
+            <RotateCcw class="size-4" aria-hidden="true" />
             Reset data…
           </button>
         </div>

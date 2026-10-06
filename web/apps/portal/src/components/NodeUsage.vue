@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { TriangleAlert } from "lucide-vue-next";
 import { computed } from "vue";
 
 import type { NodeUsage } from "../api";
@@ -6,7 +7,7 @@ import { gigabytes } from "../format";
 
 const props = defineProps<{ usage: NodeUsage }>();
 
-/** Bars turn amber from here. */
+/** A meter reads "High" (with an icon and a warm colour) from here. */
 const HIGH = 90;
 
 const clamp = (pct: number) => Math.min(100, Math.max(0, pct));
@@ -15,62 +16,86 @@ const share = (used?: number, total?: number) => (used !== undefined && total ? 
 
 const memPct = computed(() => share(props.usage.memUsed, props.usage.memTotal));
 const load = computed(() => props.usage.load.map((l) => l.toFixed(2)).join(" "));
+
+interface Meter {
+  label: string;
+  pct: number;
+  /** What is printed beside the label. */
+  value: string;
+}
+const cpu = computed<Meter>(() => ({ label: "CPU", pct: props.usage.cpu, value: `${Math.round(props.usage.cpu)}%` }));
+const ram = computed<Meter>(() => ({
+  label: "RAM",
+  pct: memPct.value,
+  value: `${gigabytes(props.usage.memUsed)} / ${gigabytes(props.usage.memTotal)}`,
+}));
+const gpuMeters = computed(() =>
+  props.usage.gpus.map((gpu) => {
+    const meters: Meter[] = [];
+    if (gpu.util !== undefined) meters.push({ label: "GPU", pct: gpu.util, value: `${gpu.util}%` });
+    if (gpu.vramUsed !== undefined && gpu.vramTotal) {
+      meters.push({
+        label: "VRAM",
+        pct: share(gpu.vramUsed, gpu.vramTotal),
+        value: `${gigabytes(gpu.vramUsed)} / ${gigabytes(gpu.vramTotal)}`,
+      });
+    }
+    return { gpu, meters };
+  }),
+);
 </script>
 
 <template>
-  <section class="mt-4 space-y-2.5 rounded-lg border border-line bg-canvas p-3 text-xs">
+  <section class="mt-4 space-y-2.5 rounded-lg border border-line bg-canvas p-3 text-xs" aria-label="Live usage">
     <h3 class="flex items-center justify-between text-ink-3">
-      <span class="font-medium tracking-wide uppercase">Live</span>
+      <span class="font-medium">Live</span>
       <span>{{ usage.environments }} {{ usage.environments === 1 ? "environment" : "environments" }}</span>
     </h3>
 
-    <div>
-      <div class="flex items-baseline justify-between gap-3">
-        <span class="text-ink-2">CPU</span>
-        <span class="tabular-nums" :class="high(usage.cpu) ? 'text-warn' : 'text-ink'">{{ Math.round(usage.cpu) }}%</span>
-      </div>
-      <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-line">
-        <div class="h-full rounded-full transition-[width]" :class="high(usage.cpu) ? 'bg-warn' : 'bg-accent'" :style="{ width: clamp(usage.cpu) + '%' }" />
-      </div>
-      <p class="mt-1 text-ink-3">{{ usage.cores }} cores · load {{ load }}</p>
-    </div>
-
-    <div>
-      <div class="flex items-baseline justify-between gap-3">
-        <span class="text-ink-2">RAM</span>
-        <span class="tabular-nums" :class="high(memPct) ? 'text-warn' : 'text-ink'">
-          {{ gigabytes(usage.memUsed) }} / {{ gigabytes(usage.memTotal) }}
-        </span>
-      </div>
-      <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-line">
-        <div class="h-full rounded-full transition-[width]" :class="high(memPct) ? 'bg-warn' : 'bg-accent'" :style="{ width: clamp(memPct) + '%' }" />
-      </div>
-    </div>
-
-    <div v-for="gpu in usage.gpus" :key="gpu.index" class="space-y-1">
-      <p class="truncate text-ink-2">{{ gpu.name || `GPU ${gpu.index}` }}</p>
-      <div v-if="gpu.util !== undefined">
+    <template v-for="(m, i) in [cpu, ram]" :key="m.label">
+      <div>
         <div class="flex items-baseline justify-between gap-3">
-          <span class="text-ink-3">GPU</span>
-          <span class="tabular-nums" :class="high(gpu.util) ? 'text-warn' : 'text-ink'">{{ gpu.util }}%</span>
-        </div>
-        <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-line">
-          <div class="h-full rounded-full transition-[width]" :class="high(gpu.util) ? 'bg-warn' : 'bg-accent'" :style="{ width: clamp(gpu.util) + '%' }" />
-        </div>
-      </div>
-      <div v-if="gpu.vramUsed !== undefined && gpu.vramTotal">
-        <div class="flex items-baseline justify-between gap-3">
-          <span class="text-ink-3">VRAM</span>
-          <span class="tabular-nums" :class="high(share(gpu.vramUsed, gpu.vramTotal)) ? 'text-warn' : 'text-ink'">
-            {{ gigabytes(gpu.vramUsed) }} / {{ gigabytes(gpu.vramTotal) }}
+          <span class="text-ink-2">{{ m.label }}</span>
+          <span class="inline-flex items-center gap-1 tabular-nums" :class="high(m.pct) ? 'text-warn' : 'text-ink'">
+            <template v-if="high(m.pct)"><TriangleAlert class="size-3.5" aria-hidden="true" /><span class="font-medium">High</span></template>
+            {{ m.value }}
           </span>
         </div>
-        <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-line">
-          <div
-            class="h-full rounded-full transition-[width]"
-            :class="high(share(gpu.vramUsed, gpu.vramTotal)) ? 'bg-warn' : 'bg-accent'"
-            :style="{ width: clamp(share(gpu.vramUsed, gpu.vramTotal)) + '%' }"
-          />
+        <div
+          class="mt-1 h-1.5 overflow-hidden rounded-full bg-line"
+          role="meter"
+          :aria-label="m.label"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-valuenow="Math.round(clamp(m.pct))"
+          :aria-valuetext="`${m.value}${high(m.pct) ? ', high' : ''}`"
+        >
+          <div class="h-full rounded-full transition-[width]" :class="high(m.pct) ? 'bg-warn' : 'bg-info'" :style="{ width: clamp(m.pct) + '%' }" />
+        </div>
+        <p v-if="i === 0" class="mt-1 text-ink-3">{{ usage.cores }} cores · load {{ load }}</p>
+      </div>
+    </template>
+
+    <div v-for="{ gpu, meters } in gpuMeters" :key="gpu.index" class="space-y-1">
+      <p class="truncate text-ink-2">{{ gpu.name || `GPU ${gpu.index}` }}</p>
+      <div v-for="m in meters" :key="m.label">
+        <div class="flex items-baseline justify-between gap-3">
+          <span class="text-ink-3">{{ m.label }}</span>
+          <span class="inline-flex items-center gap-1 tabular-nums" :class="high(m.pct) ? 'text-warn' : 'text-ink'">
+            <template v-if="high(m.pct)"><TriangleAlert class="size-3.5" aria-hidden="true" /><span class="font-medium">High</span></template>
+            {{ m.value }}
+          </span>
+        </div>
+        <div
+          class="mt-1 h-1.5 overflow-hidden rounded-full bg-line"
+          role="meter"
+          :aria-label="`${gpu.name || `GPU ${gpu.index}`} ${m.label}`"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-valuenow="Math.round(clamp(m.pct))"
+          :aria-valuetext="`${m.value}${high(m.pct) ? ', high' : ''}`"
+        >
+          <div class="h-full rounded-full transition-[width]" :class="high(m.pct) ? 'bg-warn' : 'bg-info'" :style="{ width: clamp(m.pct) + '%' }" />
         </div>
       </div>
       <p class="flex flex-wrap gap-x-3 text-ink-3 tabular-nums">

@@ -37,11 +37,11 @@ async function submit() {
     <form class="space-y-4" @submit.prevent="submit">
       <div>
         <label class="label" for="username">Username</label>
-        <input id="username" v-model="username" class="field" autocomplete="username" autofocus required />
+        <input id="username" v-model="username" name="username" class="field" autocomplete="username" autocapitalize="none" spellcheck="false" autofocus required />
       </div>
       <div>
         <label class="label" for="password">Password</label>
-        <input id="password" v-model="password" type="password" class="field" autocomplete="current-password" required />
+        <input id="password" v-model="password" name="password" type="password" class="field" autocomplete="current-password" required />
       </div>
       <FormError :message="error" />
       <button type="submit" class="btn-primary w-full" :disabled="busy">{{ busy ? "Signing in…" : "Sign in" }}</button>

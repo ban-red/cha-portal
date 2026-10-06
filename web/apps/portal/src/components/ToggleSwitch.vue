@@ -16,7 +16,7 @@ function toggle() {
     role="switch"
     :aria-checked="modelValue"
     :aria-disabled="disabled || undefined"
-    class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition before:absolute before:-inset-2 before:content-['']
+    class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition before:absolute before:-inset-x-2 before:-inset-y-2.5 before:content-['']
       motion-reduce:transition-none"
     :class="[
       modelValue ? 'border-accent-fill bg-accent-fill hover:bg-accent-fill-hover' : 'border-line-strong bg-panel-2 hover:border-ink-3',

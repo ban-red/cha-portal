@@ -11,7 +11,7 @@ const { query, apps, missing, errors, choose } = useControllerApps();
 <template>
   <section v-if="!missing && (query.isPending.value || query.isError.value || apps.length)" class="space-y-3" aria-labelledby="in-apps">
     <div class="space-y-1">
-      <h2 id="in-apps" class="font-semibold">In your apps</h2>
+      <h2 id="in-apps" class="text-lg font-semibold tracking-tight">In your apps</h2>
       <p class="text-sm text-ink-2">
         Whatever controller you use, an app sees the one you pick here. A choice applies from the app's next launch.
       </p>
@@ -42,7 +42,7 @@ const { query, apps, missing, errors, choose } = useControllerApps();
       </ul>
       <dl id="kinds-about" class="space-y-1 text-xs text-ink-2">
         <div v-for="k in KINDS" :key="k.kind" class="flex gap-2">
-          <dt class="w-28 shrink-0 font-medium text-ink">{{ k.label }}</dt>
+          <dt class="w-24 shrink-0 font-medium text-ink sm:w-28">{{ k.label }}</dt>
           <dd>{{ k.about }}</dd>
         </div>
       </dl>

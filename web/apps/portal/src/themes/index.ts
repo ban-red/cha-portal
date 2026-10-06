@@ -21,6 +21,8 @@ export const ROLES = [
   "ok",
   "warn",
   "danger",
+  "danger-fill",
+  "on-danger",
   "info",
   "scrim",
   "chart-1",

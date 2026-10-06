@@ -205,7 +205,7 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
 </script>
 
 <template>
-  <div class="mx-auto max-w-3xl space-y-6">
+  <div class="max-w-3xl space-y-6">
     <div class="space-y-1 text-sm text-ink-2">
       <p>
         The controllers this browser can see, and what a session would send to an environment. A controller
@@ -215,7 +215,7 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
 
     <div class="card flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-5">
       <div class="min-w-0 text-sm">
-        <p class="font-medium">Connect a controller…</p>
+        <p class="text-base font-medium">Connect a controller…</p>
         <p :id="hidReason ? 'hid-reason' : undefined" class="mt-0.5 text-xs text-ink-3">
           {{
             hidReason ??
@@ -229,7 +229,8 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
           <span id="raw-label">Raw view</span>
         </div>
         <button
-          class="btn-primary shrink-0 px-3 py-1.5 text-xs"
+          type="button"
+          class="btn-primary shrink-0"
           :disabled="!!hidReason || connecting"
           :aria-describedby="hidReason ? 'hid-reason' : undefined"
           @click="connect"
@@ -245,7 +246,7 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
     </div>
 
     <div v-if="!controllers.length" class="card space-y-3 px-6 py-8 text-sm">
-      <p class="text-base font-medium">No controllers yet</p>
+      <p class="text-lg font-semibold tracking-tight">No controllers yet</p>
       <ul class="list-disc space-y-1.5 pl-5 text-ink-2">
         <li>Press a button on the controller with this page in front: browsers show a controller only after its first press.</li>
         <li>
@@ -272,7 +273,7 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
       <li v-for="c in controllers" :key="c.id" class="card px-4 py-4 sm:px-5" :aria-labelledby="`${c.id}-name`">
         <div class="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
           <div class="min-w-0">
-            <h2 :id="`${c.id}-name`" class="font-semibold">{{ c.info.name }}</h2>
+            <h2 :id="`${c.id}-name`" class="text-base font-semibold">{{ c.info.name }}</h2>
             <p class="mt-0.5 text-xs text-ink-2">
               {{ BACKEND[c.info.backend] }} · {{ TYPE[c.info.type] }}
               <template v-if="c.info.vendorId !== undefined">
@@ -287,24 +288,27 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
           <div class="flex shrink-0 flex-wrap gap-2">
             <button
               v-if="c.info.capabilities.rumble"
-              class="btn-ghost px-3 py-1 text-xs"
-              :aria-label="`Rumble ${c.info.name}`"
+              type="button"
+              class="btn-ghost px-3 py-1.5 text-xs"
+              :aria-label="`Test rumble on ${c.info.name}`"
               @click="rumble(c)"
             >
               Test rumble
             </button>
             <button
               v-if="c.info.capabilities.lightbar"
-              class="btn-ghost px-3 py-1 text-xs"
-              :aria-label="`Change the lightbar colour of ${c.info.name}`"
+              type="button"
+              class="btn-ghost px-3 py-1.5 text-xs"
+              :aria-label="`Test lightbar on ${c.info.name}: change its colour`"
               @click="testLight(c)"
             >
               Test lightbar
             </button>
             <button
               v-if="c.info.capabilities.triggers"
-              class="btn-ghost px-3 py-1 text-xs"
-              :aria-label="`Make the triggers of ${c.info.name} resist for a few seconds`"
+              type="button"
+              class="btn-ghost px-3 py-1.5 text-xs"
+              :aria-label="`Test triggers on ${c.info.name}: they resist for a few seconds`"
               @click="testTriggers(c)"
             >
               Test triggers

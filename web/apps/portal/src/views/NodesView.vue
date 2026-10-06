@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
+import { Check, Copy, Plus, TriangleAlert, X } from "lucide-vue-next";
 import { computed, ref } from "vue";
 
 import { ApiError, api, type NodeInfo } from "../api";
@@ -101,13 +102,17 @@ function status(node: NodeInfo): { text: string; dot: string } {
 </script>
 
 <template>
-  <div class="mx-auto max-w-5xl space-y-6">
-    <div class="flex items-center justify-between gap-4">
-      <p class="text-sm text-ink-2">Machines that run environments. Each runs the <code class="font-mono text-ink">cha-node</code> agent.</p>
-      <button class="shrink-0" :class="showAdd ? 'btn-ghost' : 'btn-primary'" @click="toggleAdd">{{ showAdd ? "Close" : "Add node" }}</button>
+  <div class="max-w-5xl space-y-6">
+    <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+      <p class="min-w-0 text-sm text-ink-2">Machines that run environments. Each runs the <code class="font-mono text-ink">cha-node</code> agent.</p>
+      <button type="button" class="shrink-0" :class="showAdd ? 'btn-ghost' : 'btn-primary'" :aria-expanded="showAdd" aria-controls="add-node" @click="toggleAdd">
+        <X v-if="showAdd" class="size-4" aria-hidden="true" />
+        <Plus v-else class="size-4" aria-hidden="true" />
+        {{ showAdd ? "Close" : "Add node" }}
+      </button>
     </div>
 
-    <section v-if="showAdd" class="card space-y-4 p-5">
+    <section v-if="showAdd" id="add-node" class="card max-w-3xl space-y-4 p-5" aria-label="Add a node">
       <template v-if="!issued">
         <p class="text-sm text-ink-2">
           Create a one-time join token, then run the agent on the new machine with it. The node keeps its own key
@@ -115,10 +120,10 @@ function status(node: NodeInfo): { text: string; dot: string } {
         </p>
         <form class="flex flex-col gap-3 sm:flex-row sm:items-end" @submit.prevent="(joinError = null), createToken.mutate()">
           <div class="flex-1">
-            <label class="label" for="j-label">Label <span class="normal-case text-ink-3">(optional, for the audit log)</span></label>
+            <label class="label" for="j-label">Label <span class="font-normal text-ink-3">(optional, for the audit log)</span></label>
             <input id="j-label" v-model="label" class="field" maxlength="64" autocomplete="off" placeholder="e.g. rack GPU box" />
           </div>
-          <button type="submit" class="btn-primary" :disabled="createToken.isPending.value">
+          <button type="submit" class="btn-primary max-sm:w-full" :disabled="createToken.isPending.value">
             {{ createToken.isPending.value ? "Creating…" : "Create join token" }}
           </button>
         </form>
@@ -132,10 +137,15 @@ function status(node: NodeInfo): { text: string; dot: string } {
         </p>
         <div class="flex items-start gap-2 rounded-lg border border-line bg-canvas p-3">
           <code ref="commandEl" class="min-w-0 flex-1 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap text-ink">{{ command }}</code>
-          <button class="btn-ghost shrink-0 px-3 py-1 text-xs" @click="copyCommand">{{ copied ? "Copied" : "Copy" }}</button>
+          <button type="button" class="btn-ghost shrink-0 px-3 py-1 text-xs" @click="copyCommand">
+            <Check v-if="copied" class="size-3.5 text-ok" aria-hidden="true" />
+            <Copy v-else class="size-3.5" aria-hidden="true" />
+            {{ copied ? "Copied" : "Copy" }}
+          </button>
         </div>
-        <p v-if="onLocalhost" class="text-xs text-warn">
-          You're browsing the portal on localhost: if the node is another machine, replace the URL with one it can reach.
+        <p v-if="onLocalhost" class="flex items-start gap-2 text-xs text-warn">
+          <TriangleAlert class="size-4 shrink-0" aria-hidden="true" />
+          <span>You're browsing the portal on localhost: if the node is another machine, replace the URL with one it can reach.</span>
         </p>
         <p class="text-xs text-ink-3">
           Add <code class="font-mono">--name</code> to choose its name here (it defaults to the hostname), and
@@ -158,9 +168,9 @@ function status(node: NodeInfo): { text: string; dot: string } {
       <article v-for="node in nodes.data.value" :key="node.id" class="card flex flex-col p-5">
         <header class="flex items-start justify-between gap-3">
           <div class="min-w-0">
-            <h2 class="truncate font-semibold">{{ node.name }}</h2>
+            <h2 class="truncate text-base font-semibold">{{ node.name }}</h2>
             <p class="mt-1 flex items-center gap-2 text-xs text-ink-2">
-              <span class="size-2 shrink-0 rounded-full" :class="status(node).dot" />
+              <span class="size-2 shrink-0 rounded-full" :class="status(node).dot" aria-hidden="true" />
               {{ status(node).text }}
             </p>
           </div>
@@ -169,7 +179,7 @@ function status(node: NodeInfo): { text: string; dot: string } {
           </span>
         </header>
 
-        <dl v-if="node.inventory" class="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dl v-if="node.inventory" class="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
           <dt class="text-ink-3">Host</dt>
           <dd class="truncate">{{ node.inventory.hostname }} · {{ node.inventory.os }} · {{ node.inventory.arch }}</dd>
           <dt class="text-ink-3">CPU / RAM</dt>
@@ -200,11 +210,12 @@ function status(node: NodeInfo): { text: string; dot: string } {
         <NodeUsage v-if="node.usage" :usage="node.usage" />
         <p v-else-if="node.online" class="mt-4 text-xs text-ink-3">No live data</p>
 
-        <footer class="mt-5 flex items-center gap-2 border-t border-line pt-4">
-          <span class="mr-auto text-xs text-ink-3" :title="dateTime(node.enrolledAt)">Enrolled {{ ago(node.enrolledAt) }}</span>
+        <footer class="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-4">
+          <span class="mr-auto min-w-0 text-xs text-ink-3" :title="dateTime(node.enrolledAt)">Enrolled {{ ago(node.enrolledAt) }}</span>
           <span v-if="pings[node.id]" class="text-xs text-ink-2">{{ pings[node.id] }}</span>
-          <button class="btn-ghost px-3 py-1 text-xs" :disabled="!node.online" @click="ping(node)">Ping</button>
+          <button type="button" class="btn-ghost px-3 py-1 text-xs" :disabled="!node.online" @click="ping(node)">Ping</button>
           <button
+            type="button"
             class="btn-ghost px-3 py-1 text-xs hover:border-danger/60 hover:text-danger"
             :disabled="remove.isPending.value"
             @click="confirmRemove(node)"
