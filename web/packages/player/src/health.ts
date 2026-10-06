@@ -139,11 +139,18 @@ const WEIGHT = {
   partial: 8,
   skipped: 20,
   soundRestart: 10,
+  soundOut: 25,
   rtt: 12,
   freeze: 45,
   node: 30,
   audio: 10,
 };
+
+/** Decoded sound counts as sound above this peak (0..1); the output plays nothing under the second. */
+const SOUND_PRESENT = 0.01;
+const SOUND_PLAYED = 0.0005;
+/** Seconds of sound in and none out before it is reported. */
+const SOUND_OUT_SECONDS = 4;
 
 const FALLBACK_FPS = 60;
 
@@ -437,6 +444,26 @@ const CHECKS: Check[] = [
       if (n <= 0) return null;
       // One in the window is a note; several is real trouble.
       return { level: Math.min(1, 0.2 + 0.2 * (n - 1)), detail: `sound rebuilt ${n} time${n === 1 ? "" : "s"}` };
+    },
+  },
+  {
+    id: "sound-out",
+    title: "Sound not reaching the speakers",
+    summary: "No sound output",
+    weight: WEIGHT.soundOut,
+    hint: "Sound is arriving and decoding, but the browser's audio output plays none of it. Use Restart sound; if that doesn't help, check the computer's output device, and quit and reopen the browser, which has cleared this before.",
+    find(window) {
+      // "Sound in it": the decoded sound handed to the output had a sample above SOUND_PRESENT in
+      // that second, while the output played a peak under SOUND_PLAYED (the stats are null while the
+      // output waits for a click, which isn't this). Several seconds of it, not a blip.
+      const dead = window.filter(
+        (s) => s.audioInPeak != null && s.audioOutPeak != null && s.audioInPeak > SOUND_PRESENT && s.audioOutPeak < SOUND_PLAYED,
+      );
+      if (dead.length < SOUND_OUT_SECONDS) return null;
+      return {
+        level: Math.min(1, 0.6 + 0.1 * (dead.length - SOUND_OUT_SECONDS)),
+        detail: `sound arriving (peak ${mean(dead.map((s) => s.audioInPeak!)).toFixed(2)}) but ${dead.length} s of silence played`,
+      };
     },
   },
   {

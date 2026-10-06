@@ -44,6 +44,17 @@ export interface StatsSnapshot {
    * a failed write, or a restart asked for. Each is a few ms of sound lost instead of the rest.
    */
   audioRestarts?: number;
+  /**
+   * The Web Audio sound output (WebTransport): the largest sample it actually played over the last
+   * second (0..1, before the volume; null while its context isn't running or waiting for a click),
+   * the same for the sound handed to it (what it should have played), the underruns and drops of
+   * its queue since the session began, and how much it holds now.
+   */
+  audioOutPeak?: number | null;
+  audioInPeak?: number | null;
+  audioOutUnderruns?: number;
+  audioOutDrops?: number;
+  audioOutQueueMs?: number;
   framesDropped: number;
   /** Server send → shown here, p50 over the last second (clock-synced). */
   latencyMs: number | null;

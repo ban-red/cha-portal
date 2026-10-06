@@ -316,6 +316,18 @@ describe("assessHealth", () => {
       expect(often.issues[0]!.severity).not.toBe("minor");
     });
 
+    test("sound arriving but not played is reported, not before several seconds", () => {
+      const dead = assessHealth(run(8, { audioInPeak: 0.3, audioOutPeak: 0 }), visible);
+      expect(ids(dead)).toEqual(["sound-out"]);
+      expect(dead.issues[0]!.severity).not.toBe("minor");
+      expect(ids(assessHealth(run(8, (i) => ({ audioInPeak: 0.3, audioOutPeak: i < 3 ? 0 : 0.3 })), visible))).toEqual([]);
+    });
+    test("silence in, a muted-by-autoplay output (null) or played sound are not it", () => {
+      expect(ids(assessHealth(run(8, { audioInPeak: 0, audioOutPeak: 0 }), visible))).toEqual([]);
+      expect(ids(assessHealth(run(8, { audioInPeak: 0.3, audioOutPeak: null }), visible))).toEqual([]);
+      expect(ids(assessHealth(run(8, { audioInPeak: 0.3, audioOutPeak: 0.3 }), visible))).toEqual([]);
+    });
+
     test("a growing audio buffer", () => {
       const h = assessHealth(run(8, { audioJitterMs: 150 }), visible);
       expect(ids(h)).toEqual(["audio"]);

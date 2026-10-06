@@ -9,6 +9,7 @@
 // down. The portal brokers the session; media flows straight from the node.
 
 import { AudioJitter } from "./audio-jitter";
+import { AudioOut } from "./audio-out";
 import { ControllerManager, type ManagedController } from "./controllers";
 import type { CaptureView } from "./captureMode";
 import { InputCapture } from "./input";
@@ -303,14 +304,20 @@ export class Player {
     worker: Worker;
     frames: WritableStreamDefaultWriter<VideoFrame>;
     audio: AudioDecoder;
-    /** Orders and paces the audio packets (audio-jitter.ts), the timer for the next one's slot, and the sound's writer. */
+    /**
+     * Orders and paces the audio packets (audio-jitter.ts), the timer for the next one's slot, and
+     * where the sound goes: the Web Audio output (`out`), or without Web Audio worklets a track
+     * writer feeding the `<audio>` element.
+     */
     jitter: AudioJitter<ArrayBuffer>;
     jitterTimer: ReturnType<typeof setTimeout> | undefined;
-    soundWriter: WritableStreamDefaultWriter<AudioData>;
+    soundWriter: WritableStreamDefaultWriter<AudioData> | null;
+    out: AudioOut | null;
     /**
      * Times the sound was rebuilt: its decoder after an error (a WebCodecs decoder that errs closes
-     * for good, and the sound stopped for the rest of the session), its track after a failed write,
-     * or `restartAudio()`.
+     * for good, and the sound stopped for the rest of the session), its output after it broke (a
+     * context that wouldn't resume or closed, a worklet that played nothing) or its track after a
+     * failed write, or `restartAudio()`.
      */
     audioRestarts: number;
     /** Times the video decoder or track was rebuilt, and when the recent ones were (performance.now). */
@@ -581,15 +588,22 @@ export class Player {
   setMuted(muted: boolean): void {
     this.muted = muted;
     this.audio.muted = muted;
+    this.wt?.out?.setMuted(muted);
     if (!muted) void this.playAudio();
   }
 
   /** Sound's level, 0..1, on this page only (the environment's own volume stays). */
   setVolume(volume: number): void {
     this.audio.volume = clampVolume(volume);
+    this.wt?.out?.setVolume(this.audio.volume);
   }
 
   private async playAudio(): Promise<void> {
+    const out = this.wt?.out;
+    if (out) {
+      if (!this.muted) out.resume();
+      return;
+    }
     if (this.muted || !this.audio.srcObject || !this.audio.paused) return;
     try {
       await this.audio.play();
@@ -692,7 +706,8 @@ export class Player {
       this.options.video,
       (m) => this.sendInput(m),
       (us) => this.toLocal(us),
-      this.muted ? null : this.audioTrack,
+      this.muted || this.wt?.out ? null : this.audioTrack,
+      this.muted ? null : (this.wt?.out?.tap() ?? null),
     );
     this.probe = probe;
     try {
@@ -1221,7 +1236,8 @@ export class Player {
     const { video } = this.options;
     const worker = new Worker(new URL("./wt-worker.ts", import.meta.url), { type: "module" });
     const frames = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
-    const sound = new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
+    // Web Audio plays the sound; without it the old track and `<audio>` element do.
+    const sound = AudioOut.supported() ? null : new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
     const wt: NonNullable<Player["wt"]> = {
       worker,
       frames: frames.writable.getWriter(),
@@ -1229,7 +1245,8 @@ export class Player {
       audio: null as unknown as AudioDecoder,
       jitter: new AudioJitter<ArrayBuffer>(),
       jitterTimer: undefined,
-      soundWriter: sound.writable.getWriter(),
+      soundWriter: sound?.writable.getWriter() ?? null,
+      out: null,
       audioRestarts: 0,
       videoRestarts: 0,
       videoFailures: [],
@@ -1261,8 +1278,12 @@ export class Player {
     video.muted = true;
     video.playsInline = true;
     void video.play().catch(() => {});
-    this.audioTrack = sound;
-    this.audio.srcObject = new MediaStream([sound]);
+    if (sound) {
+      this.audioTrack = sound;
+      this.audio.srcObject = new MediaStream([sound]);
+    } else {
+      wt.out = this.newAudioOut(wt);
+    }
     void this.playAudio();
 
     const ready = new Promise<void>((resolve, reject) => {
@@ -1523,6 +1544,9 @@ export class Player {
     setTimeout(() => wt.worker.terminate(), 500);
     clearTimeout(wt.jitterTimer);
     if (wt.audio.state !== "closed") wt.audio.close();
+    wt.out?.close();
+    wt.out = null;
+    void wt.soundWriter?.close().catch(() => undefined);
     this.closePipeline(wt.pipeline);
     if (wt.switching) {
       this.closePipeline(wt.switching.pipeline);
@@ -1548,9 +1572,34 @@ export class Player {
     return decoder;
   }
 
-  /** Writes decoded sound to the track; a failed write means the track broke, so it is rebuilt. */
+  /** The Web Audio output for the sound; it says when it is blocked and counts its own rebuilds. */
+  private newAudioOut(wt: NonNullable<Player["wt"]>): AudioOut {
+    return new AudioOut({
+      muted: this.muted,
+      volume: this.audio.volume,
+      onBlocked: (blocked) => {
+        if (this.wt === wt) this.options.onAudioBlocked?.(blocked);
+      },
+      onRebuild: () => {
+        if (this.wt === wt) wt.audioRestarts++;
+      },
+    });
+  }
+
+  /**
+   * Plays decoded sound: Web Audio's worklet, or (without it) the track, where a failed write
+   * means the track broke, so it is rebuilt.
+   */
   private writeSound(wt: NonNullable<Player["wt"]>, data: AudioData): void {
+    if (wt.out) {
+      wt.out.push(data);
+      return;
+    }
     const writer = wt.soundWriter;
+    if (!writer) {
+      data.close();
+      return;
+    }
     writer.write(data).catch(() => {
       if (this.wt === wt && wt.soundWriter === writer) this.rebuildSoundTrack(wt);
     });
@@ -1562,7 +1611,7 @@ export class Player {
     const old = wt.soundWriter;
     const sound = new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
     wt.soundWriter = sound.writable.getWriter();
-    void old.close().catch(() => undefined);
+    void old?.close().catch(() => undefined);
     this.audioTrack = sound;
     this.audio.srcObject = new MediaStream([sound]);
     void this.playAudio();
@@ -1579,6 +1628,11 @@ export class Player {
       const old = wt.audio;
       wt.audio = this.newAudioDecoder(wt);
       if (old.state !== "closed") old.close();
+      if (wt.out) {
+        wt.audioRestarts++;
+        wt.out.restart();
+        return;
+      }
       this.rebuildSoundTrack(wt);
       return;
     }
@@ -1648,6 +1702,19 @@ export class Player {
     return { deliveryMs: percentile(ms, 0.5), deliveryP95Ms: percentile(ms, 0.95) };
   }
 
+  /** What the Web Audio output actually played, for the stats (nothing on the track path). */
+  private soundStats(wt: NonNullable<Player["wt"]>): Partial<StatsSnapshot> {
+    const s = wt.out?.stats();
+    if (!s) return {};
+    return {
+      audioOutPeak: s.outPeak,
+      audioInPeak: s.inPeak,
+      audioOutUnderruns: s.underruns,
+      audioOutDrops: s.drops,
+      audioOutQueueMs: s.queuedMs,
+    };
+  }
+
   private webTransportStats(latencyMs: number | null): StatsSnapshot {
     const wt = this.wt!;
     const t = performance.now();
@@ -1677,6 +1744,7 @@ export class Player {
       frameGapMs: this.frameGap(wt),
       node: null,
       audioJitterMs: wt.jitter.delayMs,
+      ...this.soundStats(wt),
     };
   }
 

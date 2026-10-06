@@ -68,13 +68,15 @@ export class ClickProbe {
   private armed: Sample | null = null;
   private readonly ctx2d: CanvasRenderingContext2D;
   private timer?: ReturnType<typeof setInterval>;
-  private audio: { ctx: AudioContext; node: AudioWorkletNode } | null = null;
+  private audio: { ctx: AudioContext; node: AudioWorkletNode; borrowed: boolean } | null = null;
 
   constructor(
     private readonly video: HTMLVideoElement,
     private readonly send: (msg: Record<string, unknown>) => void,
     private readonly toLocal: (serverUs: number) => number | null,
     private readonly audioTrack: MediaStreamTrack | null = null,
+    /** The player's own Web Audio output (WebTransport): the tone is caught in its graph, in its context. */
+    private readonly tap: { ctx: AudioContext; source: AudioNode } | null = null,
   ) {
     const c = document.createElement("canvas");
     c.width = c.height = 4;
@@ -109,7 +111,8 @@ export class ClickProbe {
 
   stop(): void {
     clearInterval(this.timer);
-    void this.audio?.ctx.close().catch(() => {});
+    if (this.audio?.borrowed) this.audio.node.disconnect();
+    else void this.audio?.ctx.close().catch(() => {});
     this.audio = null;
   }
 
@@ -135,8 +138,26 @@ export class ClickProbe {
     this.pending = null;
   }
 
-  /** Taps the audio track for tone onsets; without one, video only. */
+  /** Taps the sound for tone onsets (the output's worklet, else the audio track); without either, video only. */
   private async listen(): Promise<void> {
+    if (this.tap) {
+      // The tone is read where the output plays it, so its context time maps straight to the speakers.
+      const { ctx, source } = this.tap;
+      try {
+        const url = URL.createObjectURL(new Blob([ONSET_WORKLET], { type: "text/javascript" }));
+        await ctx.audioWorklet.addModule(url);
+        URL.revokeObjectURL(url);
+        const node = new AudioWorkletNode(ctx, "cha-onset");
+        source.connect(node);
+        // Pulled by the destination; it outputs silence.
+        node.connect(ctx.destination);
+        node.port.onmessage = (e: MessageEvent<number>) => this.heard(e.data);
+        this.audio = { ctx, node, borrowed: true };
+      } catch {
+        // video only
+      }
+      return;
+    }
     if (!this.audioTrack || this.audioTrack.readyState !== "live") return;
     let ctx: AudioContext | null = null;
     try {
@@ -150,7 +171,7 @@ export class ClickProbe {
       node.connect(ctx.destination);
       node.port.onmessage = (e: MessageEvent<number>) => this.heard(e.data);
       await ctx.resume();
-      this.audio = { ctx, node };
+      this.audio = { ctx, node, borrowed: false };
     } catch {
       void ctx?.close().catch(() => {});
     }
