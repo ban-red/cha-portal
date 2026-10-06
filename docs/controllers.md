@@ -102,27 +102,34 @@ with a `hidraw` node and no input devices; the node's `hidraw` answers feature
 report 1 (settings, attributes, the serial), and output reports `0x80`
 (rumble) and `0x81` (a trackpad pulse) come back as `rumble` and `haptic`.
 
-- **Steam Input on the Steam Controller kind: Steam has it, Proton games
-  don't.** Steam opens the virtual controller over `hidraw` (2026 model,
-  `28de:1303`, 2026-10-06): its menus, the Steam button and Quick Access work.
-  Steam Input then hands a game its own virtual Xbox pad (`28de:11ff`), which it
-  makes through `/dev/uinput`; the app has none (`Couldn't initialize virtual
-  gamepad: Couldn't open /dev/uinput for writing` in Steam's console log), so
-  that pad never exists. Steam also tells games to ignore every physical Steam
-  Controller (`SDL_GAMECONTROLLER_IGNORE_DEVICES`, both models), and Proton's
-  winebus applies that list to SDL and hidraw alike, so a Proton game sees no
-  controller at all (Cyberpunk 2077). An earlier note here said Cyberpunk
-  played through Steam Input on 2026-10-05: Steam's logs show that was the
-  Xbox 360 pad. The Bluetooth controllers have no evdev pad of their own, so an
-  app that doesn't use Steam Input sees no pad from them either.
-  - **Workaround, per game:** the launch option
+- **Steam Input on the Steam Controller kind.** Steam opens the virtual
+  controller over `hidraw` (2026 model, `28de:1303`): its menus, the Steam
+  button and Quick Access work. Steam Input then hands a game its own virtual
+  Xbox pad (`28de:11ff`), which it makes through `/dev/uinput`. The app has no
+  `/dev/uinput` (it could make keyboards and mice on the node with it), so the
+  Steam image loads a shim into Steam (`images/steam/uinput-shim/`) that fakes
+  that file and asks the streamer's broker for the device; the broker allows
+  only a gamepad, makes it, and passes it into the app like our own pads
+  (`crates/cha-streamer/README.md`, `docs/plans/steam-virtual-gamepad.md`).
+  Steam also tells games to ignore every physical Steam Controller
+  (`SDL_GAMECONTROLLER_IGNORE_DEVICES`), and Proton's winebus applies that list
+  to SDL and hidraw alike: without Steam's pad, a Proton game sees no controller.
+  - **Verified 2026-10-06:** Steam makes its pad through the shim (the legacy
+    uinput calls, "Microsoft X-Box 360 pad 0", rumble asked for) and re-makes it
+    when a game starts; the broker follows. Balatro (Proton) plays with no
+    launch options. Steam calls are logged to `/run/cha/uinput-shim.log` in the
+    app.
+  - **Not yet verified:** Cyberpunk 2077, rumble through the relay, and Steam's
+    exit leaving no device behind.
+  - **Known problem:** after Steam's in-game menu closes, the game ignores input
+    until it gets a click, although the pad's events still arrive and gamescope
+    gives the game the X focus back (Balatro; the same with the launch-option
+    workaround below). Under investigation.
+  - **Workaround without the shim:** the launch option
     `SDL_GAMECONTROLLER_IGNORE_DEVICES= PROTON_DISABLE_HIDRAW=1 %command%` lets
-    Proton's SDL read the controller itself (Balatro played, 2026-10-06). The
-    game then bypasses Steam Input: Steam's in-game menu shows no controller,
-    and after it closes the game needs a click to get its input back.
-  - **The fix** is to let Steam make its virtual pad: a uinput the app can only
-    make gamepads with, the device made by the streamer and passed into the app
-    like our own pads (planned).
+    Proton's SDL read the controller itself, bypassing Steam Input.
+  - An earlier note here said Cyberpunk played through Steam Input on
+    2026-10-05: Steam's logs show that was the Xbox 360 pad.
 - **More players.** Pads past those made at start (`--gamepads`) get evdev
   nodes but no `hidraw` in the app (the node mounts what `/info` listed at
   start).

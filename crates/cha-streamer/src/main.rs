@@ -67,6 +67,12 @@ mod system;
 #[cfg(target_os = "linux")]
 mod uhid;
 #[cfg(target_os = "linux")]
+mod uinput_broker;
+#[cfg(target_os = "linux")]
+mod uinput_policy;
+#[cfg(target_os = "linux")]
+mod uinput_proto;
+#[cfg(target_os = "linux")]
 mod viewers;
 #[cfg(target_os = "linux")]
 mod wt;

@@ -48,6 +48,15 @@ printf 'no_display\n' > "$MANGOHUD_CONFIGFILE"
 # and in the container's log, and when gamescope dies on an error says so on
 # the page and exits with its code: the container ends, the environment fails
 # and the node keeps the log tail. gamescope is not restarted.
+#
+# Steam makes its virtual Xbox pad through /dev/uinput, which the app doesn't
+# have. LD_PRELOAD loads libcha-uinput.so into steam (not into the helpers
+# above), which fakes that file and asks the streamer (the steam pad kind;
+# /run/cha/uinput.sock) to make the device. The dynamic loader expands $LIB to
+# lib/i386-linux-gnu for the 32-bit client and to lib/x86_64-linux-gnu for the
+# 64-bit helpers it starts (both are built). Without the streamer's socket the
+# shim leaves Steam as it was: no such device. Its log of what Steam asks for is
+# /run/cha/uinput-shim.log.
 exec steam-run dbus-run-session -- gamescope --backend wayland \
   -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" \
-  -e --mangoapp -- sh -c 'steam-touch-mode & (until cha-x11-clipboard; do sleep 1; done) & exec steam -gamepadui'
+  -e --mangoapp -- sh -c 'steam-touch-mode & (until cha-x11-clipboard; do sleep 1; done) & LD_PRELOAD="/opt/cha/\$LIB/libcha-uinput.so${LD_PRELOAD:+ $LD_PRELOAD}" exec steam -gamepadui'

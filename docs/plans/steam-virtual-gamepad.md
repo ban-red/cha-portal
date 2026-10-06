@@ -1,6 +1,6 @@
 # Steam's virtual gamepad
 
-Proposal, 2026-10-06. Nothing here is built.
+Proposal, 2026-10-06. Option (a) is implemented and tested against the node's kernel with test programs in both bitnesses. **Verified with Steam 2026-10-06:** Steam makes its pad through the shim with the legacy uinput API (`uinput_user_dev` written, `UI_DEV_CREATE`; `EV_ABS` X, Y, Z, RX, RY, RZ, HAT0X/Y, `EV_KEY` A, B, X, Y, TL, TR, SELECT, START, MODE, THUMBL, THUMBR, `FF_RUMBLE`, 16 effects), re-makes it when a game starts, and Balatro under Proton plays with it. Cyberpunk and rumble aren't checked yet (see *Implementation* at the end).
 
 ## Problem
 
@@ -79,3 +79,19 @@ Build **(a)**, with the streamer's broker as the whole trust boundary, so a late
 - **Unit:** the validator (allowed and refused bits, ranges, counts, rate), the protocol codec both bitnesses (16- and 24-byte `input_event`, `uinput_ff_upload`), device-limit and cleanup on disconnect, `udev_entry` for the new identity.
 - **Shim, in the dev container:** a C test program opens `/dev/uinput`, sets bits, creates, writes events, reads FF upload requests; run as i386 and amd64 against a fake broker, then against the real streamer on the node.
 - **Live on the node (owner's OK first):** `steam` kind, no launch options. Pass: Steam's console log no longer says it couldn't open uinput; `virtualgamepadinfo.txt` lists the `11ff` pad; Cyberpunk and Balatro see a controller and play; Steam's in-game menu shows the controller and focus returns after closing it; rumble reaches the Steam Controller; killing Steam leaves no device node, udev file or `/sys/devices/virtual/input` entry behind; two launches in a row work.
+
+## Implementation
+
+Built 2026-10-06 as designed in (a), with these differences:
+
+- **Files.** The shim is `images/steam/uinput-shim/` (`shim.c`, `proto.h`, `kabi.h`, `test.c`, `Makefile`, `run-tests.sh`); the streamer has `uinput_proto.rs` (the wire, with the byte layouts), `uinput_policy.rs` (the validator, rate cap and device slots) and `uinput_broker.rs`. The image builds the shim in a `uinput-shim` stage into `/opt/cha/lib/{i386-linux-gnu,x86_64-linux-gnu}/`, and `start-steam` sets `LD_PRELOAD` for `exec steam` only.
+- **No flag.** The broker starts when the environment's pad kind is `steam` (after the uhid fallback), so there is no `--steam-uinput` and no node agent change.
+- **Paths and failure.** The shim catches `open`, `open64`, `openat`, `openat64` and the `__open_2`-style fortified calls for `/dev/uinput` and `/dev/input/uinput`; without a broker the open fails with `ENOENT`, as the missing device did. It also catches `__read_chk`.
+- **Both uinput APIs.** Steam's was unknown, so the shim serves `UI_DEV_SETUP`/`UI_ABS_SETUP` and the legacy write of a `uinput_user_dev` (turned into the same `DEV_SETUP` and per-axis `ABS_SETUP` packets, for the axes set with `UI_SET_ABSBIT`), and answers `UI_GET_VERSION` (5) itself. `UI_SET_PHYS` is acknowledged and ignored. Every call on its descriptors is logged to `/run/cha/uinput-shim.log`.
+- **Identity.** Name and version come from the client (the name sanitised: printable ASCII, 79 characters, default "Steam Virtual Gamepad"); vendor, product and bus are ours. phys is `cha/pad<4+N>`, not `8+N`: our own pads are `cha/pad0..3`, and the host's rule matches `cha/pad*`.
+- **Protocol.** Every request but `FF_DONE` gets a `REPLY` with an errno (events too, so a refusal is `EINVAL` to the `write`); `EVENT` pushes `EV_FF` plays and gain, and `FF_UPLOAD`/`FF_ERASE` carry the kernel's requests. The shim hands the pushed ones to `read()` as `EV_UINPUT` events in the caller's `input_event` size (16 or 24 bytes) and fills `uinput_ff_upload` for its `UI_BEGIN_FF_UPLOAD` (96 bytes on i386, 104 on x86-64). Ioctls wait for their reply even on a non-blocking descriptor; pushed packets that arrive meanwhile are queued for `read()` (so a `poll` on the descriptor doesn't wake for those until the next `read()`: a known soft spot if Steam reads force feedback from a thread other than the one making ioctls).
+- **Device teardown.** Destroying a device while an app holds its node makes the kernel ask the owner to erase that app's effects and wait; the broker answers those on a second thread while it destroys.
+- **A kernel race** seen in the tests: when an app closes the pad's node (with effects loaded) at the moment the owner destroys the device, `UI_DEV_DESTROY` stalls (the shim gives up after 5 s with `ETIMEDOUT`; the kernel's own wait is 30 s). Only that connection's thread is affected. The tests close the app's side first.
+- **MSC_SCAN and other bits** are refused (with a once-only warning) until the log shows Steam needs them.
+
+Still open: questions 3 to 6 above, and everything that needs Steam itself (what it calls, whether it takes the answers, whether Proton games see the pad).

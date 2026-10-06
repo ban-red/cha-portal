@@ -26,6 +26,10 @@
 //! upload/erase requests for the app's effects, and the play/stop events
 //! become [`Rumble`]s. The uhid pads' output reports (rumble, lightbar, player
 //! LEDs, adaptive triggers, trackpad haptics) are parsed by their protocols.
+//!
+//! The `steam` kind also serves Steam's own virtual Xbox pad, which Steam
+//! makes through a fake `/dev/uinput`: [`crate::uinput_broker`] makes that
+//! device and shares its nodes through [`Gamepads::share_uinput`].
 
 use std::ffi::{CStr, c_int};
 use std::fs::OpenOptions;
@@ -50,12 +54,12 @@ use crate::uhid::{self, Device, Node};
 /// Pads one environment can have (the Gamepad API's usual four).
 pub const MAX_PADS: usize = 4;
 
-const EV_SYN: u16 = 0x00;
-const EV_KEY: u16 = 0x01;
-const EV_ABS: u16 = 0x03;
-const EV_FF: u16 = 0x15;
-const EV_UINPUT: u16 = 0x0101;
-const SYN_REPORT: u16 = 0;
+pub(crate) const EV_SYN: u16 = 0x00;
+pub(crate) const EV_KEY: u16 = 0x01;
+pub(crate) const EV_ABS: u16 = 0x03;
+pub(crate) const EV_FF: u16 = 0x15;
+pub(crate) const EV_UINPUT: u16 = 0x0101;
+pub(crate) const SYN_REPORT: u16 = 0;
 
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
@@ -74,8 +78,8 @@ const FF_SQUARE: u16 = 0x58;
 const FF_TRIANGLE: u16 = 0x59;
 const FF_SINE: u16 = 0x5a;
 const FF_GAIN: u16 = 0x60;
-const UI_FF_UPLOAD: u16 = 1;
-const UI_FF_ERASE: u16 = 2;
+pub(crate) const UI_FF_UPLOAD: u16 = 1;
+pub(crate) const UI_FF_ERASE: u16 = 2;
 
 const BTN_A: u16 = 0x130;
 const BTN_B: u16 = 0x131;
@@ -106,64 +110,68 @@ const BUTTONS: [(usize, u16); 11] = [
 ];
 
 // <linux/uinput.h>
-const UI_DEV_CREATE: libc::c_ulong = 0x5501;
-const UI_DEV_SETUP: libc::c_ulong = 0x405c_5503;
-const UI_ABS_SETUP: libc::c_ulong = 0x401c_5504;
-const UI_SET_EVBIT: libc::c_ulong = 0x4004_5564;
-const UI_SET_KEYBIT: libc::c_ulong = 0x4004_5565;
-const UI_SET_ABSBIT: libc::c_ulong = 0x4004_5567;
-const UI_SET_FFBIT: libc::c_ulong = 0x4004_556b;
-const UI_SET_PHYS: libc::c_ulong = 0x4008_556c;
-const UI_BEGIN_FF_UPLOAD: libc::c_ulong = ioc(3, 200, std::mem::size_of::<UinputFfUpload>());
-const UI_END_FF_UPLOAD: libc::c_ulong = ioc(1, 201, std::mem::size_of::<UinputFfUpload>());
-const UI_BEGIN_FF_ERASE: libc::c_ulong = ioc(3, 202, std::mem::size_of::<UinputFfErase>());
-const UI_END_FF_ERASE: libc::c_ulong = ioc(1, 203, std::mem::size_of::<UinputFfErase>());
+pub(crate) const UI_DEV_CREATE: libc::c_ulong = 0x5501;
+pub(crate) const UI_DEV_DESTROY: libc::c_ulong = 0x5502;
+pub(crate) const UI_DEV_SETUP: libc::c_ulong = 0x405c_5503;
+pub(crate) const UI_ABS_SETUP: libc::c_ulong = 0x401c_5504;
+pub(crate) const UI_SET_EVBIT: libc::c_ulong = 0x4004_5564;
+pub(crate) const UI_SET_KEYBIT: libc::c_ulong = 0x4004_5565;
+pub(crate) const UI_SET_ABSBIT: libc::c_ulong = 0x4004_5567;
+pub(crate) const UI_SET_FFBIT: libc::c_ulong = 0x4004_556b;
+pub(crate) const UI_SET_PHYS: libc::c_ulong = 0x4008_556c;
+pub(crate) const UI_BEGIN_FF_UPLOAD: libc::c_ulong =
+    ioc(3, 200, std::mem::size_of::<UinputFfUpload>());
+pub(crate) const UI_END_FF_UPLOAD: libc::c_ulong =
+    ioc(1, 201, std::mem::size_of::<UinputFfUpload>());
+pub(crate) const UI_BEGIN_FF_ERASE: libc::c_ulong =
+    ioc(3, 202, std::mem::size_of::<UinputFfErase>());
+pub(crate) const UI_END_FF_ERASE: libc::c_ulong = ioc(1, 203, std::mem::size_of::<UinputFfErase>());
 /// `_IOC(dir, 'U', nr, size)`: dir 1 is write, 3 read and write.
-const fn ioc(dir: libc::c_ulong, nr: libc::c_ulong, size: usize) -> libc::c_ulong {
+pub(crate) const fn ioc(dir: libc::c_ulong, nr: libc::c_ulong, size: usize) -> libc::c_ulong {
     (dir << 30) | ((size as libc::c_ulong) << 16) | (0x55 << 8) | nr
 }
-const fn ui_get_sysname(len: usize) -> libc::c_ulong {
+pub(crate) const fn ui_get_sysname(len: usize) -> libc::c_ulong {
     (2 << 30) | ((len as libc::c_ulong) << 16) | 0x552c
 }
 
 #[repr(C)]
-struct InputId {
-    bustype: u16,
-    vendor: u16,
-    product: u16,
-    version: u16,
+pub(crate) struct InputId {
+    pub(crate) bustype: u16,
+    pub(crate) vendor: u16,
+    pub(crate) product: u16,
+    pub(crate) version: u16,
 }
 
 #[repr(C)]
-struct UinputSetup {
-    id: InputId,
-    name: [u8; 80],
-    ff_effects_max: u32,
+pub(crate) struct UinputSetup {
+    pub(crate) id: InputId,
+    pub(crate) name: [u8; 80],
+    pub(crate) ff_effects_max: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-struct AbsInfo {
-    value: i32,
-    minimum: i32,
-    maximum: i32,
-    fuzz: i32,
-    flat: i32,
-    resolution: i32,
+pub(crate) struct AbsInfo {
+    pub(crate) value: i32,
+    pub(crate) minimum: i32,
+    pub(crate) maximum: i32,
+    pub(crate) fuzz: i32,
+    pub(crate) flat: i32,
+    pub(crate) resolution: i32,
 }
 
 #[repr(C)]
-struct UinputAbsSetup {
-    code: u16,
-    absinfo: AbsInfo,
+pub(crate) struct UinputAbsSetup {
+    pub(crate) code: u16,
+    pub(crate) absinfo: AbsInfo,
 }
 
 #[repr(C)]
-struct InputEvent {
-    time: libc::timeval,
-    kind: u16,
-    code: u16,
-    value: i32,
+pub(crate) struct InputEvent {
+    pub(crate) time: libc::timeval,
+    pub(crate) kind: u16,
+    pub(crate) code: u16,
+    pub(crate) value: i32,
 }
 
 /// `struct ff_effect`'s union, as the kernel lays it out on 64-bit: its
@@ -172,42 +180,42 @@ struct InputEvent {
 /// waveform and period, then an s16 magnitude.
 #[repr(C, align(8))]
 #[derive(Clone, Copy, Default)]
-struct FfUnion([u8; 32]);
+pub(crate) struct FfUnion(pub(crate) [u8; 32]);
 
 impl FfUnion {
-    fn u16_at(&self, at: usize) -> u16 {
+    pub(crate) fn u16_at(&self, at: usize) -> u16 {
         u16::from_ne_bytes([self.0[at], self.0[at + 1]])
     }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-struct FfEffect {
-    kind: u16,
-    id: i16,
-    direction: u16,
-    trigger_button: u16,
-    trigger_interval: u16,
-    replay_length: u16,
-    replay_delay: u16,
-    u: FfUnion,
+pub(crate) struct FfEffect {
+    pub(crate) kind: u16,
+    pub(crate) id: i16,
+    pub(crate) direction: u16,
+    pub(crate) trigger_button: u16,
+    pub(crate) trigger_interval: u16,
+    pub(crate) replay_length: u16,
+    pub(crate) replay_delay: u16,
+    pub(crate) u: FfUnion,
 }
 
 #[repr(C)]
 #[derive(Default)]
-struct UinputFfUpload {
-    request_id: u32,
-    retval: i32,
-    effect: FfEffect,
-    old: FfEffect,
+pub(crate) struct UinputFfUpload {
+    pub(crate) request_id: u32,
+    pub(crate) retval: i32,
+    pub(crate) effect: FfEffect,
+    pub(crate) old: FfEffect,
 }
 
 #[repr(C)]
 #[derive(Default)]
-struct UinputFfErase {
-    request_id: u32,
-    retval: i32,
-    effect_id: u32,
+pub(crate) struct UinputFfErase {
+    pub(crate) request_id: u32,
+    pub(crate) retval: i32,
+    pub(crate) effect_id: u32,
 }
 
 /// One pad's state from the page: `navigator.getGamepads()[i]`, standard
@@ -500,7 +508,7 @@ impl Drop for HidPad {
 
 /// What udev's database says about a device: how the app tells the pads from
 /// other devices.
-struct Identity {
+pub(crate) struct Identity {
     /// udev's `ID_BUS`.
     bus: &'static str,
     vendor: &'static str,
@@ -520,6 +528,14 @@ const DUALSENSE: Identity = Identity {
     vendor: "054c",
     product: "0ce6",
     serial: "Sony_Interactive_Entertainment_DualSense_Wireless_Controller",
+};
+
+/// The Xbox 360 pad Steam makes for games ([`crate::uinput_broker`]).
+pub(crate) const STEAM_VIRTUAL_PAD: Identity = Identity {
+    bus: "usb",
+    vendor: "28de",
+    product: "11ff",
+    serial: "Valve_Software_Steam_Virtual_Gamepad",
 };
 
 const STEAM_CONTROLLER: Identity = Identity {
@@ -902,16 +918,12 @@ impl Gamepads {
         if unsafe { libc::ioctl(raw, UI_DEV_CREATE) } < 0 {
             return Err(std::io::Error::last_os_error()).context("UI_DEV_CREATE");
         }
-        let mut sysname = [0u8; 64];
-        // SAFETY: the buffer is as long as the length in the request.
-        if unsafe { libc::ioctl(raw, ui_get_sysname(sysname.len()), sysname.as_mut_ptr()) } < 0 {
-            return Err(std::io::Error::last_os_error()).context("UI_GET_SYSNAME");
-        }
-        let sysname = CStr::from_bytes_until_nul(&sysname)
-            .context("sysname")?
-            .to_string_lossy()
-            .into_owned();
-        let nodes = self.share(&sysname)?;
+        let sysname = get_sysname(raw)?;
+        let nodes: Vec<String> = self
+            .share(&sysname, &XBOX_360)?
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
         info!(pad = index, device = %sysname, ?nodes, "gamepad: virtual Xbox 360 controller");
         let stop = Arc::new(AtomicBool::new(false));
         // The thread reads through its own descriptor on the same device.
@@ -935,14 +947,14 @@ impl Gamepads {
     }
 
     /// Mirrors a uinput device's nodes and udev entries into the app's volumes.
-    fn share(&self, sysname: &str) -> Result<Vec<String>> {
+    fn share(&self, sysname: &str, identity: &Identity) -> Result<Vec<Node>> {
         let sys = Path::new("/sys/devices/virtual/input").join(sysname);
         // The evdev and joydev handlers attach as the device registers;
         // allow them a moment.
         let deadline = Instant::now() + Duration::from_secs(1);
-        let mut nodes = Vec::new();
-        while nodes.iter().all(|n: &String| !n.starts_with("event")) {
-            nodes = std::fs::read_dir(&sys)
+        let mut names = Vec::new();
+        while names.iter().all(|n: &String| !n.starts_with("event")) {
+            names = std::fs::read_dir(&sys)
                 .with_context(|| format!("reading {}", sys.display()))?
                 .flatten()
                 .filter_map(|e| e.file_name().into_string().ok())
@@ -953,21 +965,41 @@ impl Gamepads {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        for node in &nodes {
-            let dev = std::fs::read_to_string(sys.join(node).join("dev"))?;
+        let mut nodes = Vec::new();
+        for name in names {
+            let dev = std::fs::read_to_string(sys.join(&name).join("dev"))?;
             let (major, minor) = dev
                 .trim()
                 .split_once(':')
                 .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
                 .context("parsing the device number")?;
-            let node = Node {
-                name: node.clone(),
-                major,
-                minor,
-            };
-            self.install(&self.dev_dir, &node, Class::Joystick, &XBOX_360)?;
+            let node = Node { name, major, minor };
+            self.install(&self.dev_dir, &node, Class::Joystick, identity)?;
+            nodes.push(node);
         }
         Ok(nodes)
+    }
+
+    /// The uinput device a broker client made: its nodes and udev entries in
+    /// the app's volumes.
+    pub(crate) fn share_uinput(&self, sysname: &str, identity: &Identity) -> Result<Vec<Node>> {
+        self.share(sysname, identity)
+    }
+
+    /// Takes a [`Gamepads::share_uinput`] device's nodes and udev entries away.
+    pub(crate) fn unshare(&self, nodes: &[Node]) {
+        for node in nodes {
+            let _ = std::fs::remove_file(self.dev_dir.join(&node.name));
+            let _ = std::fs::remove_file(
+                self.udev_dir
+                    .join(format!("c{}:{}", node.major, node.minor)),
+            );
+        }
+    }
+
+    /// The streamer's own `/dev/uinput`.
+    pub(crate) fn uinput(&self) -> &Path {
+        &self.uinput
     }
 
     /// Makes a device node in `dir` for the app, and its udev entry.
@@ -1292,7 +1324,7 @@ fn serve_force_feedback(
     }
 }
 
-fn event(kind: u16, code: u16, value: i32) -> InputEvent {
+pub(crate) fn event(kind: u16, code: u16, value: i32) -> InputEvent {
     InputEvent {
         // The kernel stamps events written to uinput.
         time: libc::timeval {
@@ -1344,7 +1376,20 @@ fn events(state: &PadState) -> Vec<(u16, u16, i32)> {
     events
 }
 
-fn ioctl_int(fd: c_int, request: libc::c_ulong, value: c_int) -> Result<()> {
+/// The kernel's name for a created uinput device (`input42`).
+pub(crate) fn get_sysname(fd: c_int) -> Result<String> {
+    let mut sysname = [0u8; 64];
+    // SAFETY: the buffer is as long as the length in the request.
+    if unsafe { libc::ioctl(fd, ui_get_sysname(sysname.len()), sysname.as_mut_ptr()) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("UI_GET_SYSNAME");
+    }
+    Ok(CStr::from_bytes_until_nul(&sysname)
+        .context("sysname")?
+        .to_string_lossy()
+        .into_owned())
+}
+
+pub(crate) fn ioctl_int(fd: c_int, request: libc::c_ulong, value: c_int) -> Result<()> {
     // SAFETY: the UI_SET_*BIT requests take an int by value.
     if unsafe { libc::ioctl(fd, request, value) } < 0 {
         return Err(std::io::Error::last_os_error()).with_context(|| format!("ioctl {request:#x}"));

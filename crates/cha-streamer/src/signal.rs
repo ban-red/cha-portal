@@ -29,6 +29,7 @@ use crate::overlay::Overlay;
 use crate::pyro::PyroSettings;
 use crate::session;
 use crate::status::SetupStatus;
+use crate::uinput_broker::UinputBroker;
 use crate::viewers::{Role, Viewer, Viewers};
 use crate::wt;
 use crate::x11_clipboard::X11Clipboard;
@@ -354,6 +355,21 @@ pub fn main() -> Result<()> {
             }
         }
     });
+    // Steam makes its virtual Xbox pad through a fake /dev/uinput (the image's
+    // LD_PRELOAD shim), which this serves; it lives as long as the streamer.
+    let _uinput_broker = gamepads
+        .as_ref()
+        .filter(|pads| pads.kind() == GamepadKind::Steam)
+        .and_then(|pads| {
+            let socket = runtime_dir.join(crate::uinput_proto::SOCKET_NAME);
+            match UinputBroker::start(Arc::clone(pads), &socket, args.app_uid) {
+                Ok(broker) => Some(broker),
+                Err(err) => {
+                    warn!("no uinput for Steam: {err:#}");
+                    None
+                }
+            }
+        });
     if let Some(command) = args.run.clone() {
         keep_running(command, handle.socket_name.to_string_lossy().into_owned());
     }

@@ -18,6 +18,11 @@
 # - mangoapp is upstream MangoHud's, because Ubuntu's package is built without
 #   NVML and shows no NVIDIA GPU statistics (NVML is loaded at run time, and the
 #   node's CDI spec brings libnvidia-ml).
+#
+# Steam makes the virtual Xbox pad it gives games through /dev/uinput, which
+# the app doesn't get (a game could make keyboards and mice on the node with
+# it): libcha-uinput.so, loaded into Steam by start-steam's LD_PRELOAD, fakes
+# that file and asks the streamer's broker for the device (uinput-shim/).
 FROM rust:1.93-trixie AS build
 WORKDIR /src
 COPY . .
@@ -71,6 +76,18 @@ RUN git clone --depth 1 --branch v0.8.2 https://github.com/flightlessmango/Mango
  && ldd /out/usr/bin/mangoapp | awk '/=> \//{print $3}' \
     | xargs dpkg-query -S | cut -d: -f1 | sort -u > /out/runtime-packages
 
+# The /dev/uinput shim, for the i386 client and the 64-bit helpers that load it
+# too, in /opt/cha/lib/<triplet>/ where the loader's $LIB looks.
+FROM base AS uinput-shim
+USER root
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update && apt-get install -y --no-install-recommends gcc gcc-multilib make libc6-dev
+WORKDIR /src
+COPY images/steam/uinput-shim/ .
+RUN make OUT=/out/opt/cha
+
 FROM base
 USER root
 COPY --from=gamescope /out/gamescope_*.deb /tmp/
@@ -100,6 +117,7 @@ RUN dpkg --add-architecture i386 \
 RUN install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
 COPY --from=build /usr/local/bin/cha-x11-clipboard /usr/local/bin/
 COPY --from=mangoapp /out/usr/bin/mangoapp /usr/local/bin/
+COPY --from=uinput-shim /out/opt/cha /opt/cha
 COPY images/steam/start-steam images/steam/steam-touch-mode images/steam/steam-status images/steam/steam-library images/steam/steam-per-user-dirs images/steam/steam-run /usr/local/bin/
 # Debian puts gamescope and steam in /usr/games.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games
