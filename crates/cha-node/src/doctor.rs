@@ -1000,7 +1000,7 @@ ff_memless 20480 1 hid_playstation, Live 0x0000000000000000
 1011 987 0:61 / / rw,relatime master:1 - overlay overlay rw,lowerdir=/x
 1020 1011 0:62 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
 1030 1011 259:2 /srv/cha-portal /srv/cha-portal rw,relatime - ext4 /dev/nvme0n1p2 rw
-1040 1011 0:53 /steam /mnt/games/steam ro,relatime shared:200 - nfs4 192.168.1.30:/mnt/user/games ro,vers=4.2,hard,nconnect=4
+1040 1011 0:53 /steam /mnt/games/steam ro,relatime shared:200 - nfs4 192.168.1.50:/mnt/user/games ro,vers=4.2,hard,nconnect=4
 1041 1011 0:54 / /mnt/with\\040space rw - cifs //nas/share rw
 ";
 
@@ -1009,7 +1009,7 @@ ff_memless 20480 1 hid_playstation, Live 0x0000000000000000
         let nfs = mount_for(MOUNTINFO, Path::new("/mnt/games/steam"));
         assert_eq!(
             nfs,
-            Some(("nfs4".into(), "192.168.1.30:/mnt/user/games".into()))
+            Some(("nfs4".into(), "192.168.1.50:/mnt/user/games".into()))
         );
         assert_eq!(
             mount_for(
@@ -1061,7 +1061,7 @@ ff_memless 20480 1 hid_playstation, Live 0x0000000000000000
     fn healthy() -> SharedLook {
         SharedLook {
             stat: Some(Ok(stat(0o777, 99, 100))),
-            fs: Some(("nfs4".into(), "192.168.1.30:/mnt/user/games".into())),
+            fs: Some(("nfs4".into(), "192.168.1.50:/mnt/user/games".into())),
             missing: vec![],
             looks_unmounted: false,
         }
@@ -1080,7 +1080,7 @@ ff_memless 20480 1 hid_playstation, Live 0x0000000000000000
         let c = describe_shared("Shared (steam)".into(), dir, &per_user(), &healthy());
         assert!(c.level == Level::Ok);
         assert!(
-            c.detail.contains("nfs4 (192.168.1.30:/mnt/user/games)"),
+            c.detail.contains("nfs4 (192.168.1.50:/mnt/user/games)"),
             "{}",
             c.detail
         );
