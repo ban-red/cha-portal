@@ -15,6 +15,7 @@ export {
   type Transport,
   type WebTransportOffer,
 } from "./player";
+export { CaptureMode, type CaptureState, type CaptureView } from "./captureMode";
 export {
   assessHealth,
   HEALTH_WINDOW,

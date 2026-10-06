@@ -154,6 +154,21 @@ struct StreamerView {
     webrtc_port: i64,
 }
 
+/// What a device's streamer offers. The inventory lists an NVIDIA GPU's NVENC
+/// codecs; its streamer also makes PyroWave (Vulkan, on the same GPU), which
+/// the page asks for over WebTransport.
+fn device_codecs(device: Device) -> Vec<String> {
+    let mut codecs = device.codecs;
+    if device.kind == DeviceKind::Nvidia {
+        for c in PYROWAVE_CODECS {
+            if !codecs.iter().any(|have| have == c) {
+                codecs.push(c.into());
+            }
+        }
+    }
+    codecs
+}
+
 fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>, viewer: &User) -> EnvironmentView {
     let node = row.node_id.as_ref().and_then(|id| nodes.get(id));
     let inventory = node
@@ -166,7 +181,7 @@ fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>, viewer: &User) ->
             Some(id) => devices.into_iter().find(|d| d.id == id),
             None => devices.into_iter().find(|d| d.kind == DeviceKind::Nvidia),
         };
-        device.map(|d| d.codecs)
+        device.map(device_codecs)
     });
     let host = inventory.and_then(|inv| inv.addresses.into_iter().next());
     let streamer = match (row.state.as_str(), row.http_port, row.webrtc_port) {
@@ -919,6 +934,22 @@ mod tests {
         assert_eq!(spec.gamepad, None);
         assert_eq!(plain.storage, None);
         assert_eq!(plain.home, None);
+    }
+
+    #[test]
+    fn an_nvidia_device_offers_pyrowave_too() {
+        assert_eq!(
+            device_codecs(test_device(DeviceKind::Nvidia)),
+            ["h264", "pyrowave420", "pyrowave444"]
+        );
+        let mut listed = test_device(DeviceKind::Nvidia);
+        listed.codecs.push("pyrowave444".into());
+        assert_eq!(
+            device_codecs(listed),
+            ["h264", "pyrowave444", "pyrowave420"]
+        );
+        assert_eq!(device_codecs(test_device(DeviceKind::Vaapi)), ["h264"]);
+        assert_eq!(device_codecs(test_device(DeviceKind::Cpu)), ["h264"]);
     }
 
     fn test_device(kind: DeviceKind) -> Device {

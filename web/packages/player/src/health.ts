@@ -102,8 +102,13 @@ const NODE_VRAM = { from: 95, to: 100 };
 const NODE_ENC = { from: 95, to: 100 };
 /** The streamer's CPU as a share of the whole machine, or of one core when the core count is unknown. */
 const STREAMER_CPU = { from: 90, to: 100 };
-/** Audio jitter-buffer wait, ms: NetEq is kept near its minimum (tens of ms), so growth means late packets. */
-const AUDIO_JITTER = { from: 40, to: 200 };
+/**
+ * Audio buffer, ms. WebTransport: our own buffer, which sits at 0 on a calm LAN and grows (to at
+ * most 80 ms) only to cover late packets. WebRTC: the browser's NetEq, which holds 30–60 ms on a
+ * perfect LAN in Chrome and Safari, so only well past that means late packets.
+ */
+const AUDIO_JITTER_WT = { from: 20, to: 80 };
+const AUDIO_JITTER_RTC = { from: 100, to: 300 };
 
 /** Score points an issue costs at level 1; at lower levels, in proportion. */
 const WEIGHT = {
@@ -382,7 +387,8 @@ const CHECKS: Check[] = [
     hint: "Audio packets are arriving late, so sound may crackle or lag. It follows the network: a cable helps.",
     find(window) {
       const v = values(window, (s) => s.audioJitterMs);
-      const l = windowLevel(v.map((d) => level(d, AUDIO_JITTER)));
+      const band = isWebTransport(window) ? AUDIO_JITTER_WT : AUDIO_JITTER_RTC;
+      const l = windowLevel(v.map((d) => level(d, band)));
       if (l === 0) return null;
       return { level: l, detail: `audio buffer at ${ms(mean(v))}` };
     },

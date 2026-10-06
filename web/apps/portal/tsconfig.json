@@ -14,5 +14,6 @@
     "jsx": "preserve",
     "types": ["vite/client", "@webgpu/types"]
   },
-  "include": ["src/**/*.ts", "src/**/*.vue"]
+  "include": ["src/**/*.ts", "src/**/*.vue"],
+  "exclude": ["src/**/*.test.ts"]
 }

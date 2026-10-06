@@ -285,6 +285,14 @@ describe("assessHealth", () => {
     test("a normal one", () => {
       expect(assessHealth(run(8, { audioJitterMs: 15 }), visible).grade).toBe("A");
     });
+    test("NetEq's usual 30–60 ms on WebRTC is no issue, but well past it is", () => {
+      const rtc = { deliveryMs: null, deliveryP95Ms: null, frameGapMs: null };
+      expect(assessHealth(run(8, { ...rtc, audioJitterMs: 50 }), visible).grade).toBe("A");
+      expect(ids(assessHealth(run(8, { ...rtc, audioJitterMs: 200 }), visible))).toEqual(["audio"]);
+    });
+    test("our WebTransport buffer growing past 20 ms is late packets", () => {
+      expect(ids(assessHealth(run(8, { audioJitterMs: 50 }), visible))).toEqual(["audio"]);
+    });
   });
 
   describe("spikes and sustained trouble", () => {

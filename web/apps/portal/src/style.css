@@ -36,6 +36,27 @@
     color: var(--color-ink);
     -webkit-font-smoothing: antialiased;
   }
+  /* Thin, quiet scrollbars: the standard properties, with a WebKit fallback for older Safari. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--color-ink-3) 55%, transparent) transparent;
+  }
+  @supports not (scrollbar-width: thin) {
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: color-mix(in oklab, var(--color-ink-3) 55%, transparent);
+      border-radius: 9999px;
+      border: 2px solid transparent;
+      background-clip: content-box;
+    }
+    ::-webkit-scrollbar-track,
+    ::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+  }
   ::selection {
     background: color-mix(in oklab, var(--color-accent) 35%, transparent);
   }

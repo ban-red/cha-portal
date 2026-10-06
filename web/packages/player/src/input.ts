@@ -8,6 +8,8 @@
 // event (no permission prompt) supplies the local clipboard, which goes up
 // first, so the app pastes what was copied here.
 
+import { CaptureMode, type CaptureView } from "./captureMode";
+
 type Send = (msg: Record<string, unknown>) => void;
 
 export interface InputOptions {
@@ -15,10 +17,14 @@ export interface InputOptions {
   onPaste?: (text: string) => void;
   /** Send ⌘ as Ctrl, so the Mac's shortcuts work in Linux apps (default: on Macs). */
   commandAsControl?: boolean;
+  /** Mouse capture changed: captured, released by the browser (recapture mode), or off. */
+  onCapture?: (view: CaptureView) => void;
 }
 
 /** How long a paste shortcut waits for the browser's paste event. */
 const PASTE_WAIT_MS = 150;
+/** How long the recapture hint stays without any interaction. */
+const HINT_MS = 4000;
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 export class InputCapture {
@@ -29,6 +35,9 @@ export class InputCapture {
   /** Keys pressed while ⌘ was down: macOS never sends their keyups. */
   private readonly commandChord = new Set<string>();
   /** A paste shortcut's key, held until the paste event (or a timeout). */
+  private readonly capture = new CaptureMode();
+  private hintTimer: ReturnType<typeof setTimeout> | null = null;
+  private keyboardLock = false;
   private heldPaste: { code: string; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(
@@ -61,24 +70,123 @@ export class InputCapture {
     // Losing focus mid-press would leave keys and buttons stuck down remotely.
     on(video, "blur", () => this.releaseAll());
     on(window, "blur", () => this.releaseAll());
-    on(document, "pointerlockchange", () => this.releaseAll());
+    on(document, "pointerlockchange", () => {
+      this.releaseAll();
+      this.lockChanged();
+    });
+    on(document, "fullscreenchange", () => this.syncKeyboardLock());
   }
+
+  /** Mouse capture, for the UI. */
+  get captureView(): CaptureView {
+    return this.capture.view;
+  }
+
+  /** Every key, Esc and browser shortcuts included, goes to the stream (Chromium, full screen, captured). */
+  get keyboardLocked(): boolean {
+    return this.keyboardLock;
+  }
+
+  /** Leave recapture mode: clicks go to the stream again, with the client-side cursor. */
+  turnOffCapture(): void {
+    this.capture.turnOff();
+    this.clearHintTimer();
+    this.emitCapture();
+  }
+
+  /** Hide the hint now (the user acted on it). */
+  hideHint(): void {
+    this.capture.hideHint();
+    this.clearHintTimer();
+    this.emitCapture();
+  }
+
+  private emitCapture(): void {
+    this.options.onCapture?.(this.capture.view);
+  }
+
+  private clearHintTimer(): void {
+    if (this.hintTimer) clearTimeout(this.hintTimer);
+    this.hintTimer = null;
+  }
+
+  /** (Re)start the hint's countdown; it is only shown while released. */
+  private armHint(): void {
+    this.clearHintTimer();
+    if (!this.capture.view.hint) return;
+    this.hintTimer = setTimeout(() => {
+      this.hintTimer = null;
+      this.capture.hideHint();
+      this.emitCapture();
+    }, HINT_MS);
+  }
+
+  private lockChanged(): void {
+    if (this.locked) this.capture.locked();
+    else this.capture.unlocked();
+    this.armHint();
+    this.emitCapture();
+    this.syncKeyboardLock();
+  }
+
+  /** Keyboard Lock needs full screen, and we want it only while the mouse is captured too. */
+  private syncKeyboardLock(): void {
+    const kb = (navigator as Navigator & { keyboard?: { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void } })
+      .keyboard;
+    if (!kb?.lock) return;
+    const want = !!document.fullscreenElement && this.locked;
+    if (want === this.keyboardLock) return;
+    this.keyboardLock = want;
+    if (want) {
+      kb.lock().catch(() => {
+        this.keyboardLock = false;
+      });
+    } else {
+      kb.unlock?.();
+    }
+  }
+
+  /** A lock request is in flight. */
+  private locking = false;
 
   get locked(): boolean {
     return document.pointerLockElement === this.video;
   }
 
-  /** Raw mouse for games: the pointer disappears and moves relatively. */
+  /**
+   * Raw mouse for games: the pointer disappears and moves relatively. One lock at a time: Safari
+   * has no raw (unadjusted) movement, and asking with it and then again without left two locks,
+   * one per Esc, the first with no cursor anywhere.
+   */
   async lockPointer(): Promise<void> {
+    if (this.locked || this.locking) return;
+    this.locking = true;
+    // Keys go to the stream while the mouse is captured, not to the button that asked.
+    this.video.focus();
     try {
-      await this.video.requestPointerLock({ unadjustedMovement: true });
-    } catch {
-      // No raw input here (e.g. Chrome on Linux): accelerated is still usable.
-      await this.video.requestPointerLock();
+      // Raw movement is Chromium's (Chrome, Edge); elsewhere ask plainly, once.
+      if (!("userAgentData" in navigator)) {
+        await this.video.requestPointerLock();
+        return;
+      }
+      try {
+        await this.video.requestPointerLock({ unadjustedMovement: true });
+      } catch {
+        // No raw input here (e.g. Chrome on Linux): accelerated is still usable, unless the
+        // first request locked after all.
+        if (!this.locked) await this.video.requestPointerLock();
+      }
+    } finally {
+      this.locking = false;
     }
   }
 
   dispose(): void {
+    this.clearHintTimer();
+    if (this.keyboardLock) {
+      this.keyboardLock = false;
+      (navigator as Navigator & { keyboard?: { unlock?: () => void } }).keyboard?.unlock?.();
+    }
     this.releaseAll();
     this.cleanup.forEach((f) => f());
     this.video.style.cursor = "";
@@ -96,6 +204,8 @@ export class InputCapture {
   }
 
   private move(e: PointerEvent): void {
+    // Moving over the hint is interaction: it stays.
+    if (this.capture.view.hint) this.armHint();
     if (this.locked) {
       // Movement is in CSS pixels; the remote pointer moves in stream pixels.
       // The picture is letterboxed (object-fit: contain), so scale by its
@@ -111,6 +221,18 @@ export class InputCapture {
   }
 
   private button(e: PointerEvent, down: boolean): void {
+    if (!this.locked) {
+      // After the browser took the mouse back, a click captures it again; it is not the app's.
+      if (down && this.capture.pointerDown(e.button) === "recapture") {
+        e.preventDefault();
+        void this.lockPointer();
+        return;
+      }
+      if (!down && this.capture.pointerUp(e.button) === "swallow") {
+        e.preventDefault();
+        return;
+      }
+    }
     if (down) {
       this.video.focus();
       if (!this.locked) {

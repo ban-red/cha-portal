@@ -13,6 +13,7 @@ import {
   type Codec,
   type FrameRate,
   type HealthAssessment,
+  type CaptureView,
   type ManagedController,
   type PlayerState,
   type ProbeResult,
@@ -22,12 +23,14 @@ import {
   type Transport,
 } from "@cha/player";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import { ApiError, api } from "../api";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import RecordingDialog from "../components/RecordingDialog.vue";
+import StatsOverlay from "../components/StatsOverlay.vue";
+import { PREFS_KEY, parsePrefs, type OverlayPrefs } from "../statsOverlay";
 import WarningNote from "../components/WarningNote.vue";
 
 // The environment, full screen. The portal brokers the connection; the picture
@@ -164,6 +167,12 @@ async function setFps(rate: FrameRate, select: HTMLSelectElement) {
 }
 /** The controllers this page sends, and the menu to add one (WebHID needs a click). */
 const controllers = ref<ManagedController[]>([]);
+/** Mouse capture after the browser let go (Esc): clicks recapture, and a hint says so. */
+const capture = ref<CaptureView>({ state: "idle", recapture: false, hint: false });
+function onCaptureButton() {
+  if (capture.value.recapture) player?.turnOffMouseCapture();
+  else void player?.lockPointer();
+}
 const controllerMenu = ref(false);
 const controllerNote = ref<string | null>(null);
 const hidReason = hidUnavailableReason();
@@ -295,6 +304,9 @@ async function connect() {
     onControllers: (list) => {
       if (player === p) controllers.value = list;
     },
+    onMouseCapture: (view) => {
+      if (player === p) capture.value = view;
+    },
     signal: async (offer, c) => (await api.connect(id.value, { codec: c, offer })).answer!,
     onState: (s, detail) => {
       if (player !== p) return;
@@ -356,6 +368,15 @@ function onPointerMove(e: PointerEvent) {
   if (e.clientY < 72) clearTimeout(hideTimer);
   else collapseSoon();
 }
+/** Fold the toolbar now, without waiting for the pointer to leave. */
+function hideToolbar() {
+  clearTimeout(hideTimer);
+  hover.value = false;
+  controllerMenu.value = false;
+  expanded.value = false;
+  (document.activeElement as HTMLElement | null)?.blur();
+  video.value?.focus();
+}
 const toolbar = computed(() => state.value !== "connected" || expanded.value || hover.value || controllerMenu.value);
 
 const fullscreen = ref(false);
@@ -373,7 +394,21 @@ const onFullscreen = () => (fullscreen.value = !!document.fullscreenElement);
 
 // ---- Stats and the probe ----
 
-const showStats = ref(false);
+const overlay = ref<OverlayPrefs>(loadPrefs());
+function loadPrefs(): OverlayPrefs {
+  try {
+    return parsePrefs(localStorage.getItem(PREFS_KEY));
+  } catch {
+    return parsePrefs(null);
+  }
+}
+watch(overlay, (p) => {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+  } catch {
+    // private window or blocked storage: the panel just starts at its defaults next time
+  }
+});
 const stats = ref<StatsSnapshot | null>(null);
 // The health grade is judged from the last few snapshots, so the timer reads them (one getStats a
 // second, cheap) whether or not the panel is open, and the toolbar's letter stays current. A hidden
@@ -460,14 +495,7 @@ function cancelRecording() {
 }
 const GRADE_TEXT: Record<string, string> = { A: "text-accent", B: "text-accent", C: "text-warn", D: "text-warn", F: "text-danger" };
 const gradeText = (grade: string | null) => (grade ? GRADE_TEXT[grade] : "text-ink-3");
-const SEVERITY_TEXT = { minor: "text-ink-2", major: "text-warn", critical: "text-danger" };
-const fmt = (v: number | null, digits = 1, unit = "") => (v === null || Number.isNaN(v) ? "–" : `${v.toFixed(digits)}${unit}`);
 
-/** Bytes as GB, one decimal. */
-const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
-const pct = (used: number, total: number) => (total > 0 ? (used / total) * 100 : 0);
-/** Amber for a value at or over `limit` percent (°C for the temperature). */
-const hot = (v: number, limit = 90) => (v >= limit ? "text-warn" : "");
 
 const probing = ref(false);
 const probe = ref<ProbeResult | null>(null);
@@ -510,6 +538,15 @@ const STATUS: Record<PlayerState, string> = {
 <template>
   <div class="fixed inset-0 bg-black select-none" @pointermove="onPointerMove">
     <video ref="video" class="absolute inset-0 size-full object-contain outline-none" autoplay muted playsinline />
+
+    <!-- After Esc released the mouse: a click on the picture captures it again -->
+    <div
+      v-if="capture.hint"
+      class="pointer-events-none absolute top-1/2 left-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line bg-panel/80 px-4 py-2 text-sm shadow backdrop-blur"
+      role="status"
+    >
+      Click to capture the mouse
+    </div>
 
     <!-- The toolbar, folded: a thin bar to hover or click -->
     <button
@@ -582,8 +619,18 @@ const STATUS: Record<PlayerState, string> = {
       >
         Viewing · Take control
       </button>
-      <button class="btn-ghost border-0 px-3 py-1.5 text-xs" title="Raw mouse for games; Esc releases it" @click="player?.lockPointer()">
-        Capture mouse
+      <button
+        class="btn-ghost border-0 px-3 py-1.5 text-xs"
+        :class="capture.recapture && 'text-accent'"
+        :aria-pressed="capture.recapture"
+        :title="
+          capture.recapture
+            ? 'Clicking the picture captures the mouse; click here to turn that off'
+            : 'Raw mouse for games; Esc releases it (hold Esc in full screen on Chrome)'
+        "
+        @click="onCaptureButton"
+      >
+        {{ capture.recapture ? "Mouse capture on" : "Capture mouse" }}
       </button>
       <button
         class="btn-ghost border-0 px-3 py-1.5 text-xs"
@@ -647,7 +694,7 @@ const STATUS: Record<PlayerState, string> = {
       <button class="btn-ghost border-0 px-3 py-1.5 text-xs" @click="toggleFullscreen">
         {{ fullscreen ? "Exit full screen" : "Full screen" }}
       </button>
-      <button class="btn-ghost border-0 px-3 py-1.5 text-xs" :class="showStats && 'text-accent'" @click="showStats = !showStats">
+      <button class="btn-ghost border-0 px-3 py-1.5 text-xs" :class="overlay.open && 'text-accent'" :aria-pressed="overlay.open" @click="overlay = { ...overlay, open: !overlay.open }">
         Stats
         <span v-if="health.grade" class="ml-1 font-mono font-semibold" :class="gradeText(health.grade)" :title="`Stream health: ${health.summary}`">{{ health.grade }}</span>
       </button>
@@ -660,83 +707,37 @@ const STATUS: Record<PlayerState, string> = {
       >
         {{ probing ? "Probing…" : "Probe" }}
       </button>
+      <!-- Floats on the toolbar's lower edge, in the middle -->
+      <button
+        type="button"
+        class="absolute top-full left-1/2 grid h-5 w-9 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-line bg-panel text-ink-2 shadow transition hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+        :disabled="state !== 'connected'"
+        aria-label="Hide the toolbar"
+        title="Hide the toolbar (hover the thin bar at the top to bring it back)"
+        @click="hideToolbar"
+      >
+        <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 10l4-4 4 4" />
+        </svg>
+      </button>
     </div>
 
     <RecordingDialog :summary="recordingResult" @close="recordingResult = null" />
 
-    <!-- Stats -->
-    <div
-      v-if="showStats"
-      class="absolute top-3 left-3 z-10 rounded-lg border border-line bg-panel/90 px-3 py-2 font-mono text-[11px] leading-5 text-ink-2 backdrop-blur"
-    >
-      <div class="mb-1 border-b border-line pb-1">
-        <div class="flex items-center gap-2">
-          <span class="w-8 text-center text-3xl leading-8 font-semibold" :class="gradeText(health.grade)" aria-label="Stream health grade">{{ health.grade ?? "–" }}</span>
-          <div>
-            <div class="text-xs text-ink">{{ health.summary }}</div>
-            <div v-if="health.score !== null" class="text-ink-3">health {{ health.score }}/100</div>
-          </div>
-        </div>
-        <ul v-if="health.issues.length" class="mt-1 max-w-xs space-y-1.5">
-          <li v-for="issue in health.issues" :key="issue.id">
-            <div><span :class="SEVERITY_TEXT[issue.severity]">{{ issue.title }}</span> · {{ issue.detail }}</div>
-            <div class="text-ink-3">{{ issue.hint }}</div>
-          </li>
-        </ul>
-      </div>
-      <div>{{ stats?.codec ?? codec.toUpperCase() }} · {{ stats?.width ?? "–" }}×{{ stats?.height ?? "–" }} · {{ fmt(stats?.fps ?? null, 0) }}{{ stats?.targetFps ? ` of ${stats.targetFps}` : "" }} fps</div>
-      <div>{{ fmt(stats?.mbps ?? null, 1, " Mbit/s") }} · RTT {{ fmt(stats?.rttMs ?? null, 1, " ms") }}</div>
-      <div class="text-ink">send → shown {{ fmt(stats?.latencyMs ?? null, 1, " ms") }}</div>
-      <div>decode {{ fmt(stats?.decodeMs ?? null, 2, " ms") }} · jitter buf {{ fmt(stats?.jitterMs ?? null, 2, " ms") }}</div>
-      <div>lost {{ stats?.packetsLost ?? 0 }} · dropped {{ stats?.framesDropped ?? 0 }} · audio buf {{ fmt(stats?.audioJitterMs ?? null, 0, " ms") }}</div>
-      <div class="mt-1 border-t border-line pt-1">
-        <button
-          type="button"
-          class="rounded px-1 text-ink-3 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
-          :disabled="state !== 'connected' || recordingLeft !== null"
-          title="Collect 30 s of stats, then copy a summary"
-          @click="startRecording"
-        >
-          {{ recordingLeft === null ? "Record 30 s" : `Recording… ${recordingLeft} s` }}
-        </button>
-      </div>
-      <div v-if="stats?.node" class="mt-1 border-t border-line pt-1">
-        <div>
-          CPU <span :class="hot(stats.node.cpu)">{{ fmt(stats.node.cpu, 0, "%") }}</span>
-          <template v-if="stats.node.cores"> ({{ stats.node.cores }} cores)</template> · load {{ fmt(stats.node.load1, 1) }}
-        </div>
-        <div>
-          RAM <span :class="hot(pct(stats.node.memUsed, stats.node.memTotal))">{{ gb(stats.node.memUsed) }}</span> / {{ gb(stats.node.memTotal) }} GB
-        </div>
-        <div v-if="stats.node.gpu !== undefined || stats.node.vramTotal !== undefined">
-          GPU
-          <template v-if="stats.node.gpu !== undefined"><span :class="hot(stats.node.gpu)">{{ fmt(stats.node.gpu, 0, "%") }}</span></template>
-          <template v-if="stats.node.vramUsed !== undefined && stats.node.vramTotal !== undefined">
-            · VRAM <span :class="hot(pct(stats.node.vramUsed, stats.node.vramTotal))">{{ gb(stats.node.vramUsed) }}</span> / {{ gb(stats.node.vramTotal) }} GB
-          </template>
-          <template v-if="stats.node.temp !== undefined"> · <span :class="hot(stats.node.temp, 85)">{{ stats.node.temp }} °C</span></template>
-          <template v-if="stats.node.power !== undefined">
-            · <span :class="stats.node.powerLimit ? hot(pct(stats.node.power, stats.node.powerLimit)) : ''">{{ fmt(stats.node.power, 0) }}</span
-            ><template v-if="stats.node.powerLimit">/{{ fmt(stats.node.powerLimit, 0) }}</template> W
-          </template>
-          <template v-if="stats.node.clock !== undefined"> · {{ stats.node.clock }} MHz</template>
-        </div>
-        <div v-if="stats.node.enc !== undefined || stats.node.dec !== undefined">
-          <template v-if="stats.node.enc !== undefined">NVENC <span :class="hot(stats.node.enc)">{{ fmt(stats.node.enc, 0, "%") }}</span></template>
-          <template v-if="stats.node.enc !== undefined && stats.node.dec !== undefined"> · </template>
-          <template v-if="stats.node.dec !== undefined">NVDEC <span :class="hot(stats.node.dec)">{{ fmt(stats.node.dec, 0, "%") }}</span></template>
-        </div>
-        <div>streamer CPU {{ fmt(stats.node.streamerCpu, 0, "%") }}</div>
-      </div>
-      <div v-if="probe" class="mt-1 border-t border-line pt-1 text-accent">
-        click → shown {{ fmt(probe.clickToPresentedMs.p50) }} / {{ fmt(probe.clickToPresentedMs.p95) }} ms
-        ({{ probe.samples }}, {{ probe.missed }} missed)
-        <template v-if="probe.audioSamples">
-          <br />click → sound {{ fmt(probe.clickToAudioMs.p50) }} / {{ fmt(probe.clickToAudioMs.p95) }} ms · A/V
-          {{ fmt(probe.avOffsetMs.p50) }} ms
-        </template>
-      </div>
-    </div>
+    <!-- Stats: under the toolbar (z-30) -->
+    <StatsOverlay
+      v-if="state === 'connected' || overlay.open"
+      v-model="overlay"
+      :stats="stats"
+      :health="health"
+      :codec="codec"
+      :transport="transport"
+      :connected="state === 'connected'"
+      :recording-left="recordingLeft"
+      :probe="probe"
+      :toolbar-open="toolbar"
+      @record="startRecording"
+    />
 
     <!-- What the node noticed about this environment, which stays until it's gone -->
     <div

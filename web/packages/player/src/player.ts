@@ -10,6 +10,7 @@
 
 import { AudioJitter } from "./audio-jitter";
 import { ControllerManager, type ManagedController } from "./controllers";
+import type { CaptureView } from "./captureMode";
 import { InputCapture } from "./input";
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
@@ -115,6 +116,11 @@ export interface PlayerOptions {
   onFps?: (fps: number) => void;
   /** The controllers this page sends (Gamepad API or WebHID), now and whenever one arrives or leaves. */
   onControllers?: (controllers: ManagedController[]) => void;
+  /**
+   * Mouse capture: `recapture` is on after the browser released the mouse (Esc) and a click on
+   * the picture captures it again; `hint` asks for "Click to capture the mouse" to be shown.
+   */
+  onMouseCapture?: (view: CaptureView) => void;
 }
 
 /**
@@ -466,6 +472,7 @@ export class Player {
     this.pads?.stop();
     this.pads = null;
     this.options.onControllers?.([]);
+    this.options.onMouseCapture?.({ state: "idle", recapture: false, hint: false });
     this.nodeStats = null;
     this.sentCounts = [];
     this.presented = [];
@@ -477,6 +484,9 @@ export class Player {
     this.audio.srcObject = null;
     this.audioTrack = null;
     this.sentAt.clear();
+    // Each session has its own clock (the streamer's session epoch): a new one (a reconnect, or a
+    // codec switch over WebRTC) must sync again, or every latency is off by the time between them.
+    this.offset = null;
     this.latencies.length = 0;
     this.rtcDelivery.length = 0;
     this.lastSize = "";
@@ -505,9 +515,20 @@ export class Player {
     }
   }
 
-  /** Raw relative mouse (games). Esc releases it. */
+  /** Raw relative mouse (games). Esc releases it (hold Esc in Chromium full screen, which locks the keyboard). */
   lockPointer(): Promise<void> {
+    this.input?.hideHint();
     return this.input?.lockPointer() ?? Promise.resolve();
+  }
+
+  /** Leave recapture mode: clicks go to the stream again. */
+  turnOffMouseCapture(): void {
+    this.input?.turnOffCapture();
+  }
+
+  /** Chromium's Keyboard Lock is on: Esc and browser shortcuts reach the stream. */
+  get keyboardLocked(): boolean {
+    return this.input?.keyboardLocked ?? false;
   }
 
   async readStats(): Promise<StatsSnapshot | null> {
@@ -626,6 +647,7 @@ export class Player {
     const { video } = this.options;
     this.input = new InputCapture(video, (m) => this.sendInput(m), {
       onPaste: (text) => this.send({ t: "clipboard", text }),
+      onCapture: (view) => this.options.onMouseCapture?.(view),
     });
     this.pads?.stop();
     const pads = new ControllerManager({ send: (m) => this.sendInput(m) });
