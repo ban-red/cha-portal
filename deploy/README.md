@@ -50,9 +50,9 @@
 
 ## Published images
 
-A release (a `v*` tag) publishes three images to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, each tagged with the version (`0.1.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all three, since the portal, agent and streamer change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.1.0 --owner ban-red`). The environment images (`images/`) aren't published yet: build them on the node as in step 2.
+A release (a `v*` tag) publishes every image to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, and the environments, `cha-env-test-pattern`, `-chrome`, `-firefox`, `-xfce`, `-kde` and `-steam` (with their base, `cha-env-base`). Each is tagged with the version (`0.1.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all of them, since they change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.1.0 --owner ban-red`). The Chrome and Steam images contain Google Chrome and Valve's Steam bootstrap, under their owners' terms.
 
-For a portal and a node on one machine, [`quickstart/compose.yaml`](quickstart/compose.yaml) runs both from these images ([SETUP.md](../SETUP.md#quick-start-published-images)). With the separate stacks, set the image variables and pull instead of building:
+For a portal and a node on one machine, [`quickstart/compose.yaml`](quickstart/compose.yaml) runs both from these images ([SETUP.md](../SETUP.md#quick-start)). With the separate stacks, set the image variables and pull instead of building:
 
 ```bash
 CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.1.0 docker compose -f deploy/portal/compose.yaml pull
@@ -63,6 +63,8 @@ CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.1.0 docker compose -f deploy/porta
 ```
 
 On a node, set `CHA_NODE_IMAGE` the same way, and `CHA_STREAMER_IMAGE=ghcr.io/ban-red/cha-streamer:0.1.0` (in `deploy/node/.env`, so every run gets them). The agent pulls the streamer image when it starts, if the node doesn't have it. It only ever pulls an image whose name includes its registry: a bare name like `cha/streamer:dev` is a local build, and pulling it would fetch whatever Docker Hub's `cha` namespace holds. To update, change the version and pull again; leave `--build` off, or compose builds from source instead.
+
+For the environments, set `CHA_IMAGE_REGISTRY=ghcr.io/ban-red` and `CHA_IMAGE_TAG=0.1.0` on the node. The agent then runs each catalog image from its published copy (`cha/env-chrome:dev` as `ghcr.io/ban-red/cha-env-chrome:0.1.0`), and pulls it on the first launch that needs it; pull them ahead of time to spare that first launch the download (Steam's is the largest). Without `CHA_IMAGE_REGISTRY` it runs the images built on the node.
 
 ## Reaching nodes
 
@@ -98,6 +100,8 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_JOIN_TOKEN` | | One-time, to enroll |
 | `CHA_NODE_IMAGE` | `cha-node:dev` | The agent's image, for the compose file: the local build, or a published one ([Published images](#published-images)) |
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image: the local build, or a published one, which the agent pulls when it starts |
+| `CHA_IMAGE_REGISTRY` | | Run the environments from published images, e.g. `ghcr.io/ban-red` ([Published images](#published-images)); empty runs the ones built on the node. Must name a registry's host |
+| `CHA_IMAGE_TAG` | | The release of those images, e.g. `0.1.0`; needed with `CHA_IMAGE_REGISTRY` |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
 | `CHA_UHID` | `/dev/uhid` | For virtual DualSense and Steam Controllers; empty goes without (no `uhid` module), and those fall back to an Xbox 360 pad |
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |

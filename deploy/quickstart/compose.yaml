@@ -1,7 +1,8 @@
 # Cha Portal on one machine, from the published images: the portal and a
 # node's agent side by side (SETUP.md, "Quick start"). The agent pulls the
-# streamer image itself; the environment images are built here first:
-#   docker compose -f images/compose.yaml build
+# streamer image itself. The environment images are either built here
+# (docker compose -f images/compose.yaml build) or the release's published
+# ones (CHA_IMAGE_REGISTRY below); deploy/quickstart/setup.sh does either.
 #
 # Set the release in deploy/quickstart/.env (CHA_VERSION=0.1.0), then:
 #   docker compose -f deploy/quickstart/compose.yaml up -d portal
@@ -50,6 +51,11 @@ services:
       CHA_JOIN_TOKEN: ${CHA_JOIN_TOKEN:-}
       CHA_NODE_NAME: ${CHA_NODE_NAME:-}
       CHA_STREAMER_IMAGE: ghcr.io/ban-red/cha-streamer:${CHA_VERSION:?set CHA_VERSION to a release, e.g. 0.1.0}
+      # The environments: empty runs the ones built here (cha/env-*:dev);
+      # ghcr.io/ban-red (setup.sh sets it, unless --build) runs the release's
+      # published ones, which the agent pulls when missing.
+      CHA_IMAGE_REGISTRY: ${CHA_IMAGE_REGISTRY:-}
+      CHA_IMAGE_TAG: ${CHA_VERSION:?set CHA_VERSION to a release, e.g. 0.1.0}
       CHA_UINPUT: ${CHA_UINPUT-/dev/uinput}
       CHA_UHID: ${CHA_UHID-/dev/uhid}
       CHA_PUBLIC_ADDRESS: ${CHA_PUBLIC_ADDRESS:-}
