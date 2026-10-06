@@ -52,7 +52,7 @@
 
 A release (a `v*` tag) publishes three images to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, each tagged with the version (`0.1.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all three, since the portal, agent and streamer change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.1.0 --owner ban-red`). The environment images (`images/`) aren't published yet: build them on the node as in step 2.
 
-To use them, set the image variables and pull instead of building:
+For a portal and a node on one machine, [`quickstart/compose.yaml`](quickstart/compose.yaml) runs both from these images ([SETUP.md](../SETUP.md#quick-start-published-images)). With the separate stacks, set the image variables and pull instead of building:
 
 ```bash
 CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.1.0 docker compose -f deploy/portal/compose.yaml pull

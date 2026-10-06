@@ -2,11 +2,13 @@
 
 This walks through a first install, from nothing to a stream in your browser. [`deploy/README.md`](deploy/README.md) is the reference for every setting; this guide links to it rather than repeating it.
 
-Cha Portal is pre-release: you build every image from source, and updates can break things. Read the warning in the [README](README.md) first.
+Cha Portal is pre-release, and updates can break things. Read the warning in the [README](README.md) first.
 
 - [Before you start](#before-you-start)
-- [Quick start: one machine](#quick-start-one-machine)
+- [Quick start: published images](#quick-start-published-images)
+- [One machine, from source](#one-machine-from-source)
 - [Full setup: a portal and separate nodes](#full-setup-a-portal-and-separate-nodes)
+- [Without HTTPS (a trusted LAN only)](#without-https-a-trusted-lan-only)
 - [First launch](#first-launch)
 - [Optional extras](#optional-extras)
 - [Updating, backups and removal](#updating-backups-and-removal)
@@ -45,7 +47,77 @@ docker run --rm --device nvidia.com/gpu=all ubuntu nvidia-smi
 
 Run the `generate` command again after every driver update.
 
-## Quick start: one machine
+## Quick start: published images
+
+The portal and the node on one Linux machine, from the images a release publishes (`ghcr.io/ban-red/cha-portal`, `cha-node` and `cha-streamer`) and one compose file, [`deploy/quickstart/compose.yaml`](deploy/quickstart/compose.yaml). Only the environment images (Chrome, Firefox, XFCE, KDE, Steam, the test pattern) are still built here. Until the first release is tagged there are no published images to pull: follow [One machine, from source](#one-machine-from-source) instead.
+
+Install Tailscale on the machine and on the device you'll play from, and enable **MagicDNS** and **HTTPS Certificates** in the Tailscale admin console under **DNS**.
+
+1. **Get the code**, for the environment images and the host files:
+
+   ```bash
+   git clone https://github.com/ban-red/cha-portal.git
+   ```
+
+   ```bash
+   cd cha-portal
+   ```
+
+2. **Pick the release.** Copy the example settings and set `CHA_VERSION` to the release you want:
+
+   ```bash
+   cp deploy/quickstart/.env.example deploy/quickstart/.env
+   ```
+
+   Compose reads `deploy/quickstart/.env` on every run, so the portal, the agent and the streamer always stay on the same version. The other settings in [`deploy/README.md`](deploy/README.md) go in the same file.
+
+3. **Build the environment images.** This is the slow step:
+
+   ```bash
+   docker compose -f images/compose.yaml build
+   ```
+
+4. **Install the host files** (udev rules, the Steam sandbox's AppArmor profile, the `uinput`/`uhid` modules):
+
+   ```bash
+   sudo deploy/node/host/install.sh
+   ```
+
+5. **Start the portal**, and serve it over HTTPS on your tailnet. The quick start's portal listens on port 7676 on every interface, so it also answers on the LAN; set `CHA_BIND=127.0.0.1:7676` in `.env` to keep it to this machine, and do so on a machine with a public address, since Docker's published ports bypass ufw and firewalld:
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml up -d portal
+   ```
+
+   ```bash
+   sudo tailscale serve --bg 7676
+   ```
+
+   `tailscale serve status` prints the portal's URL, `https://<machine>.<tailnet>.ts.net`.
+
+6. **Create the first admin** with the one-time setup token from the portal's log:
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml logs portal
+   ```
+
+7. **Start the node.** In the portal, open **Admin → Nodes → Add node**, copy the join token, and start the agent with it. On its first start the agent pulls the streamer image, then enrolls:
+
+   ```bash
+   CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/quickstart/compose.yaml up -d
+   ```
+
+   The token is used once; the node's identity is kept in the `agent-state` volume. On a machine without an NVIDIA GPU, first delete the agent's `devices:` lines from the compose file.
+
+8. **Check the node**, and fix what it reports:
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml run --rm agent --doctor
+   ```
+
+Then go to [First launch](#first-launch). To update, set the new `CHA_VERSION` in `.env`, rebuild the environment images and run `docker compose -f deploy/quickstart/compose.yaml pull`, then `up -d`.
+
+## One machine, from source
 
 The portal and the node on the same Linux machine, with the browser anywhere on your tailnet. Install Tailscale on that machine and on the device you'll play from, and enable **MagicDNS** and **HTTPS Certificates** in the Tailscale admin console under **DNS**.
 
@@ -121,13 +193,13 @@ Don't run the portal with `--dev-login` here. Behind `tailscale serve`, every re
 
 The same steps, split across machines. The portal can run on any small always-on machine; each GPU server is a node.
 
-**On the portal's machine:** steps 1–4 above. With Tailscale, the portal is at `https://<portal-host>.<tailnet>.ts.net` ([guide](docs/guides/tailscale.md)). With a public domain instead, set `CHA_DOMAIN` and add the `tls` profile (Caddy, ports 80 and 443):
+**On the portal's machine:** steps 1–4 of [One machine, from source](#one-machine-from-source). With Tailscale, the portal is at `https://<portal-host>.<tailnet>.ts.net` ([guide](docs/guides/tailscale.md)). With a public domain instead, set `CHA_DOMAIN` and add the `tls` profile (Caddy, ports 80 and 443):
 
 ```bash
 CHA_DOMAIN=portal.example.com docker compose -f deploy/portal/compose.yaml --profile tls up -d --build
 ```
 
-**On each node:** clone the repository, then steps 5 and 6. Enroll and check it with the portal's HTTPS URL:
+**On each node:** clone the repository, then steps 5 and 6 of the same section. Enroll and check it with the portal's HTTPS URL:
 
 ```bash
 CHA_PORTAL_URL=https://portal-host.your-tailnet.ts.net CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
@@ -138,6 +210,43 @@ CHA_PORTAL_URL=https://portal-host.your-tailnet.ts.net docker compose -f deploy/
 ```
 
 Set `CHA_NODE_NAME` to name a node in the portal. Every node needs its own join token. The portal only brokers sessions: the browser needs a UDP path to each node (ports 7600–7647 by default), and on a LAN or tailnet it already has one. For anything else, see [Reaching nodes](deploy/README.md#reaching-nodes).
+
+## Without HTTPS (a trusted LAN only)
+
+If every device on your network is yours and you'd rather skip Tailscale and certificates, the portal can serve plain HTTP on the LAN. Know what that costs first:
+
+- **Anyone on the network can take over the portal.** Passwords, session cookies and media tokens cross it unencrypted. With separate nodes, so do the portal's commands to them, and those commands start containers: someone who can tamper with that traffic can run their own on your nodes, as root-equivalent (see [SECURITY.md](SECURITY.md)).
+- **The browser holds back features.** On a plain-HTTP page, Chrome gives no gamepads or controllers (the Gamepad API and WebHID), no keyboard lock (Esc, Cmd and shortcuts go to your own browser, not the environment) and no WebTransport, so streams use WebRTC only. Picture, sound, keyboard and mouse still work.
+- **Never forward the portal's port to the internet** like this.
+
+A browser on the same machine, at `http://localhost:7676`, counts as secure and keeps every feature: none of this applies to it.
+
+**The portal.** Listen on the LAN, and stop marking the session cookie Secure, or browsers won't keep it over HTTP and sign-in never sticks. The [quick start](#quick-start-published-images) already listens on the LAN, so it needs only one line in `deploy/quickstart/.env`:
+
+```bash
+CHA_SECURE_COOKIES=false
+```
+
+With the separate stacks, `deploy/portal/compose.yaml` listens on localhost by default, so set both:
+
+```bash
+CHA_BIND=0.0.0.0:7676
+CHA_SECURE_COOKIES=false
+```
+
+Skip the `tailscale serve` step, and open `http://<portal-host>:7676`.
+
+**A node on the same machine** needs nothing more: the agent reaches the portal over loopback, which never leaves the machine.
+
+**A node on another machine** must be told to accept plain HTTP to the portal, or it refuses to connect:
+
+```bash
+CHA_PORTAL_URL=http://portal-host.lan:7676 CHA_ALLOW_INSECURE_PORTAL=true CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d
+```
+
+Put both `CHA_PORTAL_URL` and `CHA_ALLOW_INSECURE_PORTAL=true` in `deploy/node/.env`, so later runs and `--doctor` get them too. The agent logs a warning on every start while the flag is set.
+
+**Getting the browser features back, in Chrome only:** open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, add `http://<portal-host>:7676`, enable it and relaunch. Chrome then treats the portal as secure, so gamepads, keyboard lock and WebTransport work again. The traffic is still unencrypted, and the flag applies to that one Chrome profile.
 
 ## First launch
 

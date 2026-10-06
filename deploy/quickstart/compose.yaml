@@ -1,0 +1,79 @@
+# Cha Portal on one machine, from the published images: the portal and a
+# node's agent side by side (SETUP.md, "Quick start"). The agent pulls the
+# streamer image itself; the environment images are built here first:
+#   docker compose -f images/compose.yaml build
+#
+# Set the release in deploy/quickstart/.env (CHA_VERSION=0.1.0), then:
+#   docker compose -f deploy/quickstart/compose.yaml up -d portal
+#   CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/quickstart/compose.yaml up -d
+#
+# Every setting here is the same as in deploy/portal and deploy/node; see
+# deploy/README.md for what each one does.
+name: cha
+
+services:
+  portal:
+    image: ghcr.io/ban-red/cha-portal:${CHA_VERSION:?set CHA_VERSION to a release, e.g. 0.1.0}
+    restart: unless-stopped
+    ports:
+      # Every interface by default, so the portal answers on this machine's LAN
+      # address as well as on localhost. Serve it over HTTPS with
+      # `tailscale serve --bg 7676`, and use the https:// URL that prints.
+      # Plain http://<this machine>:7676 from another device reaches the portal,
+      # but sign-in only sticks with CHA_SECURE_COOKIES=false, and the browser
+      # then holds back gamepads, keyboard lock and WebTransport (SETUP.md,
+      # "Without HTTPS"). Docker's published ports go around ufw and firewalld:
+      # on a machine with a public address, or to keep the portal off the LAN,
+      # set CHA_BIND=127.0.0.1:7676 (tailscale serve still reaches it).
+      - ${CHA_BIND:-0.0.0.0:7676}:7676
+    environment:
+      # The session cookie is marked Secure, which browsers keep only over
+      # HTTPS (or on localhost). false for plain HTTP on a trusted LAN.
+      CHA_SECURE_COOKIES: ${CHA_SECURE_COOKIES:-true}
+      CHA_STUN_URLS: ${CHA_STUN_URLS:-}
+      CHA_TURN_URLS: ${CHA_TURN_URLS:-}
+      CHA_TURN_SECRET: ${CHA_TURN_SECRET:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - portal-data:/var/lib/cha
+
+  agent:
+    image: ghcr.io/ban-red/cha-node:${CHA_VERSION:?set CHA_VERSION to a release, e.g. 0.1.0}
+    restart: unless-stopped
+    depends_on: [portal]
+    # Host networking, so the inventory reports the machine's own addresses;
+    # the portal is then on this machine's loopback, which needs no TLS.
+    network_mode: host
+    environment:
+      CHA_PORTAL_URL: http://127.0.0.1:7676
+      # Only for the first start: a token from Admin → Nodes → Add node.
+      CHA_JOIN_TOKEN: ${CHA_JOIN_TOKEN:-}
+      CHA_NODE_NAME: ${CHA_NODE_NAME:-}
+      CHA_STREAMER_IMAGE: ghcr.io/ban-red/cha-streamer:${CHA_VERSION:?set CHA_VERSION to a release, e.g. 0.1.0}
+      CHA_UINPUT: ${CHA_UINPUT-/dev/uinput}
+      CHA_UHID: ${CHA_UHID-/dev/uhid}
+      CHA_PUBLIC_ADDRESS: ${CHA_PUBLIC_ADDRESS:-}
+      CHA_DATA_ROOT: ${CHA_DATA_ROOT:-/srv/cha-portal}
+      CHA_SHARED_DIRS: ${CHA_SHARED_DIRS:-}
+      CHA_NVIDIA_WINE_DIR: ${CHA_NVIDIA_WINE_DIR-/usr/lib/x86_64-linux-gnu/nvidia/wine}
+      RUST_LOG: ${RUST_LOG:-info}
+    # NVIDIA through CDI. On a machine without an NVIDIA GPU, delete these two
+    # lines: Intel, AMD and CPU-only nodes need nothing here.
+    devices:
+      - nvidia.com/gpu=all
+    volumes:
+      - agent-state:/var/lib/cha-node
+      - /etc/os-release:/run/host/os-release:ro
+      - /etc/udev/rules.d:/run/host/etc/udev/rules.d:ro
+      - /etc/apparmor.d:/run/host/etc/apparmor.d:ro
+      - /etc/modules-load.d:/run/host/etc/modules-load.d:ro
+      - ${CHA_DATA_ROOT:-/srv/cha-portal}:${CHA_DATA_ROOT:-/srv/cha-portal}
+      # A Steam library on a NAS (CHA_SHARED_DIRS=steam=/mnt/games/steam):
+      # - /mnt/games/steam:/mnt/games/steam:ro
+      # The agent starts environments as containers: it is root-equivalent on
+      # this machine (SECURITY.md).
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  portal-data:
+  agent-state:
