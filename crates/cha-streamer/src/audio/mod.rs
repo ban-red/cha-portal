@@ -25,6 +25,8 @@ pub const RATE: u32 = 48_000;
 pub const FRAME: usize = 480;
 const TICK: Duration = Duration::from_millis(10);
 const BITRATE_BPS: i32 = 128_000;
+/// While someone listens, how often the mix's level is logged (ticks).
+const LEVEL_LOG_TICKS: u32 = 1000;
 
 /// One Opus frame.
 pub struct AudioPacket {
@@ -74,6 +76,7 @@ impl Audio {
         let mut samples: u64 = 0;
         let mut next = Instant::now();
         let mut listening = false;
+        let mut level = Level::default();
         loop {
             next += TICK;
             let now = Instant::now();
@@ -90,8 +93,15 @@ impl Audio {
             }
             mix.fill(0.0);
             self.sink.mix(&mut mix);
+            // An app's NaN or infinity would stay NaN through the clamp and
+            // can leave Opus encoding nothing but silence: it is silence here.
             for v in &mut mix {
+                if !v.is_finite() {
+                    *v = 0.0;
+                    level.invalid += 1;
+                }
                 *v = v.clamp(-1.0, 1.0);
+                level.peak = level.peak.max(v.abs());
             }
             samples += FRAME as u64;
 
@@ -112,6 +122,18 @@ impl Audio {
                     continue;
                 }
             };
+            level.ticks += 1;
+            level.bytes += n as u64;
+            if level.ticks >= LEVEL_LOG_TICKS {
+                // What the sessions get, so a silent stream shows where it went quiet.
+                info!(
+                    peak = level.peak,
+                    invalid_samples = level.invalid,
+                    packet_bytes_avg = level.bytes / u64::from(level.ticks),
+                    "audio: mix level"
+                );
+                level = Level::default();
+            }
             let data = Bytes::copy_from_slice(&packet[..n]);
             let at = Instant::now();
             for tx in subscribers.iter() {
@@ -124,4 +146,13 @@ impl Audio {
             }
         }
     }
+}
+
+/// The mix over the last few seconds, for the log.
+#[derive(Default)]
+struct Level {
+    ticks: u32,
+    peak: f32,
+    invalid: u64,
+    bytes: u64,
 }
