@@ -113,8 +113,9 @@ report 1 (settings, attributes, the serial), and output reports `0x80`
 - **More players.** Pads past those made at start (`--gamepads`) get evdev
   nodes but no `hidraw` in the app (the node mounts what `/info` listed at
   start).
-- **Late viewers** don't get the lightbar and player LEDs set before they
-  connected.
+- **Late viewers** get the lightbar, player LEDs and trigger effects as the
+  apps last set them when they gain the controls (the streamer keeps the last
+  of each per pad). Rumble and haptics aren't replayed. Unit-tested only so far.
 - **The Steam Controller's descriptor** (a single vendor collection with the
   reports' ids and sizes SDL and the kernel use: feature 1, inputs `0x45`,
   `0x43`, `0x79`, outputs `0x80`, `0x81`) is ours; no dump of a real 2026

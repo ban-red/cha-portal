@@ -177,6 +177,8 @@ struct AppState {
     /// The sessions watching, and which one has the controls (plan §3.4).
     viewers: Arc<Viewers>,
     webrtc_port: u16,
+    /// The WebRTC sockets, shared by all WebRTC sessions.
+    hubs: Arc<crate::rtc_hub::Hubs>,
     hosts: Vec<IpAddr>,
     public: Vec<IpAddr>,
     /// WebTransport: its port (0 for none) and certificate's SHA-256.
@@ -410,6 +412,7 @@ pub fn main() -> Result<()> {
         auth,
         viewers,
         webrtc_port: args.webrtc_port,
+        hubs: Arc::default(),
         hosts,
         public: args.public_address.clone(),
         wt_port: if wt.is_some() { args.wt_port } else { 0 },
@@ -572,8 +575,8 @@ async fn media_offer_handler(
         .and_then(Codec::from_name)
         .filter(|c| state.media.codecs().contains(&VideoCodec::Hw(*c)))
         .ok_or_else(|| bad_request(anyhow!("unknown stream {name}")))?;
-    // A new WebRTC session replaces the last (each binds the WebRTC port);
-    // WebTransport ones stay.
+    // WebRTC sessions share one set of sockets; they and WebTransport ones
+    // coexist, up to the viewer limit.
     let seat = state
         .viewers
         .join(viewer, true)
@@ -594,6 +597,7 @@ async fn media_offer_handler(
         },
         public: state.public.clone(),
         port: state.webrtc_port,
+        hubs: Arc::clone(&state.hubs),
         media: Arc::clone(&state.media),
         audio: state.audio.clone(),
         gamepads: state.gamepads.clone(),

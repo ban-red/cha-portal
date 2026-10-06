@@ -7,7 +7,7 @@
 //! DataChannel, WebTransport on the session's first bidirectional stream.
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorShape, CursorWatch, PointerSpot, PointerWatch};
-use crate::gamepad::{EVENT_CLASSES, Gamepads, MAX_PADS, PadEvent, PadState};
+use crate::gamepad::{EVENT_CLASSES, Gamepads, MAX_PADS, PadEvent, PadMemory, PadState};
 use crate::input::BrowserInput;
 use crate::media::Media;
 use crate::status::{Status, StatusWatch};
@@ -466,6 +466,10 @@ impl PadLimit {
 pub struct PadFeed {
     rx: Option<broadcast::Receiver<PadEvent>>,
     limit: PadLimit,
+    /// What the apps last set (lightbar, player LEDs, triggers).
+    memory: Option<Arc<Mutex<PadMemory>>>,
+    /// Whether the session had the controls when last checked.
+    had_control: bool,
 }
 
 impl PadFeed {
@@ -473,7 +477,23 @@ impl PadFeed {
         Self {
             rx: gamepads.map(Gamepads::events),
             limit: PadLimit::default(),
+            memory: gamepads.map(Gamepads::memory),
+            had_control: false,
         }
+    }
+
+    /// Call whenever the session's floor may have changed (and once when its
+    /// control channel opens): the lightbar, player LEDs and trigger effects
+    /// the apps set before the session had the controls, when it has just
+    /// gained them. Empty otherwise.
+    pub fn replay_on_gain(&mut self, has_control: bool) -> Vec<ServerMsg> {
+        let gained = has_control && !self.had_control;
+        self.had_control = has_control;
+        let Some(memory) = self.memory.as_ref().filter(|_| gained) else {
+            return Vec::new();
+        };
+        let events = memory.lock().unwrap_or_else(|e| e.into_inner()).replay();
+        events.into_iter().map(pad_msg).collect()
     }
 
     /// The next message (rumble, haptics, lightbar, ...); never resolves
@@ -811,5 +831,79 @@ mod tests {
             ..StreamerStats::default()
         };
         assert_eq!(line(known)["fps"], 90);
+    }
+
+    #[test]
+    fn a_session_that_gains_the_controls_hears_the_last_lightbar_and_leds() {
+        use crate::gamepad::{Led, Players, Rumble, Side, Trigger};
+        let memory = Arc::new(Mutex::new(PadMemory::default()));
+        {
+            let mut m = memory.lock().unwrap();
+            m.remember(PadEvent::Led(Led {
+                slot: 0,
+                r: 1,
+                g: 2,
+                b: 3,
+            }));
+            m.remember(PadEvent::Led(Led {
+                slot: 0,
+                r: 9,
+                g: 8,
+                b: 7,
+            }));
+            m.remember(PadEvent::Led(Led {
+                slot: 1,
+                r: 4,
+                g: 5,
+                b: 6,
+            }));
+            m.remember(PadEvent::Players(Players { slot: 0, mask: 4 }));
+            m.remember(PadEvent::Trigger(Trigger {
+                slot: 0,
+                side: Side::Left,
+                effect: [1; 11],
+            }));
+            // Moments, not state: not kept.
+            m.remember(PadEvent::Rumble(Rumble {
+                slot: 0,
+                lo: 1.0,
+                hi: 1.0,
+                ms: 100,
+            }));
+        }
+        let mut feed = PadFeed {
+            rx: None,
+            limit: PadLimit::default(),
+            memory: Some(memory),
+            had_control: false,
+        };
+        let lines = |msgs: Vec<ServerMsg>| msgs.iter().map(line).collect::<Vec<_>>();
+        assert!(
+            feed.replay_on_gain(false).is_empty(),
+            "a watcher hears nothing"
+        );
+        let gained = lines(feed.replay_on_gain(true));
+        assert_eq!(
+            gained,
+            [
+                r#"{"t":"led","i":0,"r":9,"g":8,"b":7}"#,
+                r#"{"t":"players","i":0,"mask":4}"#,
+                r#"{"t":"trigger","i":0,"side":"left","effect":[1,1,1,1,1,1,1,1,1,1,1]}"#,
+                r#"{"t":"led","i":1,"r":4,"g":5,"b":6}"#,
+            ],
+            "the newest of each, pad by pad"
+        );
+        assert!(feed.replay_on_gain(true).is_empty(), "once per gain");
+        assert!(feed.replay_on_gain(false).is_empty());
+        assert_eq!(
+            feed.replay_on_gain(true).len(),
+            4,
+            "again after a take-over"
+        );
+        let mut none = PadFeed::new(None);
+        assert!(
+            none.replay_on_gain(true).is_empty(),
+            "no pads, nothing to say"
+        );
     }
 }

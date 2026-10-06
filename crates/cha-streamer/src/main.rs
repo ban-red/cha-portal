@@ -51,6 +51,8 @@ mod pyro;
 #[cfg(target_os = "linux")]
 mod rate;
 #[cfg(target_os = "linux")]
+mod rtc_hub;
+#[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
 mod signal;

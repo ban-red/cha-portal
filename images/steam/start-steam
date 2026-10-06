@@ -25,17 +25,19 @@ fi
 # GTK 4's Vulkan renderer fails under gamescope's WSI layer (Steam's zenity
 # dialogs crashed): GL instead.
 export GSK_RENDERER=gl
-# A home's first launch downloads ~500 MB before Steam has a window, and the
-# picture stays black. steam-status follows Steam's logs and tells the page
-# what it is doing (the environment's setup status, images/README.md); it ends
-# when Steam's UI is up, or with this process.
-steam-status &
 # Two helpers run beside Steam, in gamescope's environment (its X display):
 # - Big Picture sets gamescope's touch click mode to "passthrough", which
 #   drops the pointer's motion; steam-touch-mode puts the mode back;
 # - gamescope doesn't pass the clipboard between our compositor and its X
 #   server; cha-x11-clipboard bridges it to the streamer, as in XFCE (it
 #   exits when X does; after any other exit it starts again).
-exec dbus-run-session -- gamescope --backend wayland \
+# steam-run starts steam-status (a home's first launch downloads ~500 MB
+# before Steam has a window, and the picture stays black: it tells the page
+# what Steam is doing, the environment's setup status, images/README.md),
+# keeps gamescope's and Steam's output in ~/.local/state/cha/gamescope.log
+# and in the container's log, and when gamescope dies on an error says so on
+# the page and exits with its code: the container ends, the environment fails
+# and the node keeps the log tail. gamescope is not restarted.
+exec steam-run dbus-run-session -- gamescope --backend wayland \
   -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" \
   -e -- sh -c 'steam-touch-mode & (until cha-x11-clipboard; do sleep 1; done) & exec steam -gamepadui'

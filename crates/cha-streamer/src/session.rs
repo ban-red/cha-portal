@@ -20,7 +20,6 @@ use str0m::media::{Frequency, MediaKind, MediaTime, Mid};
 use str0m::net::{Protocol, Receive};
 use str0m::rtp::{AbsCaptureTime, Extension, ExtensionMap};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
-use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::sleep_until;
@@ -36,6 +35,7 @@ use crate::control::{
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace};
 use crate::rate::{MIN_BPS, RateControl, Report, Sample, VIDEO_SHARE, Verdict, parse_report};
+use crate::rtc_hub::{Datagram, Hubs, Peer};
 use crate::status::StatusWatch;
 use crate::system::Sampler;
 use crate::viewers::Seat;
@@ -55,13 +55,18 @@ pub struct SessionParams {
     /// Port-forwarded public addresses, announced on the first socket's port.
     pub public: Vec<IpAddr>,
     pub port: u16,
+    /// The WebRTC sockets every session of the environment shares.
+    pub hubs: Arc<Hubs>,
     pub media: Arc<Media>,
     /// Sound, if the browser asks for it (an audio m-line in its offer).
     pub audio: Option<Arc<Audio>>,
     pub gamepads: Option<Arc<Gamepads>>,
 }
 
-/// A running session; dropping `stop` (or sending on it) ends it.
+/// A running session; dropping `stop` (or sending on it) ends it. The viewers
+/// table holds it for as long as the session has a seat (nothing stops a
+/// session from outside now that WebRTC ones coexist).
+#[allow(dead_code)]
 pub struct Running {
     pub stop: oneshot::Sender<()>,
     pub handle: JoinHandle<()>,
@@ -73,65 +78,29 @@ pub async fn start(
     seat: Seat,
     offer: SdpOffer,
 ) -> Result<(SdpAnswer, Running)> {
-    let mut sockets = Vec::new();
-    for host in &params.hosts {
-        let socket = match UdpSocket::bind(SocketAddr::new(*host, params.port)).await {
-            Ok(socket) => socket,
-            Err(_) => match UdpSocket::bind(SocketAddr::new(*host, 0)).await {
-                Ok(socket) => socket,
-                Err(err) => {
-                    warn!(%host, "no UDP socket: {err}");
-                    continue;
-                }
-            },
-        };
-        sockets.push(socket);
-    }
-    if sockets.is_empty() {
-        bail!("no address to receive WebRTC on");
-    }
-    let locals = sockets
-        .iter()
-        .map(UdpSocket::local_addr)
-        .collect::<std::io::Result<Vec<_>>>()?;
-
-    let mut exts = ExtensionMap::standard();
-    exts.set(5, Extension::PlayoutDelay);
-    exts.set(6, Extension::AbsoluteCaptureTime);
-    let builder = Rtc::builder()
-        .set_ice_lite(true)
-        .clear_codecs()
-        .set_extension_map(exts);
-    let (builder, rtp_codec) = match params.codec {
-        Codec::H264 => (builder.enable_h264(true), RtpCodec::H264),
-        Codec::Hevc => (builder.enable_h265(true), RtpCodec::H265),
-        Codec::Av1 => (builder.enable_av1(true), RtpCodec::Av1),
-    };
-    let builder = builder.enable_opus(params.audio.is_some(), false);
-    let mut rtc = builder.build(Instant::now());
-    for local in &locals {
-        rtc.add_local_candidate(Candidate::host(*local, "udp")?)
-            .context("adding host candidate")?;
-    }
-    // A port-forward's public address: announced as a host candidate on the
-    // first socket's port (ICE-lite takes host candidates only). The
-    // browser's checks arrive, NAT-translated, on that socket.
-    for ip in &params.public {
-        let announced = SocketAddr::new(*ip, locals[0].port());
-        rtc.add_local_candidate(Candidate::host(announced, "udp")?)
-            .context("adding the public address")?;
-    }
+    let hub = params.hubs.get(&params.hosts, params.port).await?;
+    let locals = hub.locals.clone();
+    let (mut rtc, rtp_codec) = build_rtc(
+        params.codec,
+        params.audio.is_some(),
+        &locals,
+        &params.public,
+    )?;
     let answer = rtc.sdp_api().accept_offer(offer)?;
+    // Listening before the answer goes out, so the browser's first check
+    // finds this session.
+    let peer = hub.join(seat.id);
 
     info!(
         ?locals,
         codec = params.codec.name(),
         secs = params.secs,
+        id = seat.id,
         "webrtc session"
     );
     let (stop, stopped) = oneshot::channel();
     let handle = tokio::spawn(async move {
-        if let Err(err) = Session::new(rtc, sockets, locals, rtp_codec, params, seat, stopped)
+        if let Err(err) = Session::new(rtc, peer, locals, rtp_codec, params, seat, stopped)
             .run()
             .await
         {
@@ -141,10 +110,49 @@ pub async fn start(
     Ok((answer, Running { stop, handle }))
 }
 
+/// A str0m instance for one viewer: ICE-lite, our extensions, the one video
+/// codec the session carries, Opus if there's sound, and the addresses the
+/// browser may reach us on.
+fn build_rtc(
+    codec: Codec,
+    audio: bool,
+    locals: &[SocketAddr],
+    public: &[IpAddr],
+) -> Result<(Rtc, RtpCodec)> {
+    let mut exts = ExtensionMap::standard();
+    exts.set(5, Extension::PlayoutDelay);
+    exts.set(6, Extension::AbsoluteCaptureTime);
+    let builder = Rtc::builder()
+        .set_ice_lite(true)
+        .clear_codecs()
+        .set_extension_map(exts);
+    let (builder, rtp_codec) = match codec {
+        Codec::H264 => (builder.enable_h264(true), RtpCodec::H264),
+        Codec::Hevc => (builder.enable_h265(true), RtpCodec::H265),
+        Codec::Av1 => (builder.enable_av1(true), RtpCodec::Av1),
+    };
+    let builder = builder.enable_opus(audio, false);
+    let mut rtc = builder.build(Instant::now());
+    for local in locals {
+        rtc.add_local_candidate(Candidate::host(*local, "udp")?)
+            .context("adding host candidate")?;
+    }
+    // A port-forward's public address: announced as a host candidate on the
+    // first socket's port (ICE-lite takes host candidates only). The
+    // browser's checks arrive, NAT-translated, on that socket.
+    for ip in public {
+        let announced = SocketAddr::new(*ip, locals[0].port());
+        rtc.add_local_candidate(Candidate::host(announced, "udp")?)
+            .context("adding the public address")?;
+    }
+    Ok((rtc, rtp_codec))
+}
+
 struct Session {
     rtc: Rtc,
-    /// One per host candidate, all on the same port where possible.
-    sockets: Vec<UdpSocket>,
+    /// This session's end of the shared sockets: datagrams routed to it in,
+    /// and the way out.
+    peer: Peer,
     locals: Vec<SocketAddr>,
     epoch: Instant,
     rtp_codec: RtpCodec,
@@ -195,7 +203,7 @@ struct Session {
 impl Session {
     fn new(
         rtc: Rtc,
-        sockets: Vec<UdpSocket>,
+        peer: Peer,
         locals: Vec<SocketAddr>,
         rtp_codec: RtpCodec,
         params: SessionParams,
@@ -216,7 +224,7 @@ impl Session {
         };
         Self {
             rtc,
-            sockets,
+            peer,
             locals,
             epoch,
             rtp_codec,
@@ -256,7 +264,6 @@ impl Session {
     }
 
     async fn run(mut self) -> Result<()> {
-        let mut buf = vec![0u8; 2048];
         loop {
             let now = Instant::now();
             if let Some(done) = self.finished_at
@@ -303,9 +310,9 @@ impl Session {
             }
 
             tokio::select! {
-                received = recv_any(&self.sockets, &mut buf) => {
-                    let (n, source, socket) = received?;
-                    self.receive(&buf[..n], source, self.locals[socket])?;
+                datagram = self.peer.inbox.recv() => {
+                    let Some(datagram) = datagram else { return Ok(()) };
+                    self.receive(datagram)?;
                 }
                 packet = next_packet(&mut self.audio) => match packet {
                     Some(packet) => self.send_audio(packet)?,
@@ -325,6 +332,7 @@ impl Session {
                 () = self.handler.seat.changed() => {
                     let msg = floor_msg(&self.handler.seat);
                     self.send_control(&msg);
+                    self.replay_pads();
                 }
                 // What the apps do to the pads (rumble, lightbar, ...) is the controller's alone.
                 msg = self.rumble.next() => {
@@ -524,13 +532,7 @@ impl Session {
             match self.rtc.poll_output()? {
                 Output::Timeout(at) => return Ok(Some(at)),
                 Output::Transmit(t) => {
-                    // From the candidate str0m chose.
-                    let socket = self.locals.iter().position(|l| *l == t.source).unwrap_or(0);
-                    if let Err(err) = self.sockets[socket].try_send_to(&t.contents, t.destination)
-                        && err.kind() != std::io::ErrorKind::WouldBlock
-                    {
-                        return Err(err.into());
-                    }
+                    self.peer.hub.send(t.source, t.destination, &t.contents)?;
                 }
                 Output::Event(event) => {
                     if !self.handle_event(event) {
@@ -571,6 +573,7 @@ impl Session {
                 self.send_control(&ServerMsg::Hello { stream });
                 let floor = floor_msg(&self.handler.seat);
                 self.send_control(&floor);
+                self.replay_pads();
             }
             Event::ChannelData(data) if Some(data.id) == self.control => {
                 for line in String::from_utf8_lossy(&data.data).lines() {
@@ -580,6 +583,17 @@ impl Session {
             _ => {}
         }
         true
+    }
+
+    /// A session that has just gained the controls hears the lightbar,
+    /// player LEDs and trigger effects the apps set before it had them.
+    fn replay_pads(&mut self) {
+        if self.control.is_none() {
+            return;
+        }
+        for msg in self.rumble.replay_on_gain(self.handler.seat.has_control()) {
+            self.send_control(&msg);
+        }
     }
 
     fn handle_client_line(&mut self, line: &str) {
@@ -646,21 +660,25 @@ impl Session {
         }
     }
 
-    fn receive(
-        &mut self,
-        contents: &[u8],
-        source: SocketAddr,
-        destination: SocketAddr,
-    ) -> Result<()> {
+    /// One datagram from the shared socket. Only a session whose `Rtc`
+    /// accepts it (an ICE check with its username, traffic from its peer's
+    /// address) handles it; the others leave it alone.
+    fn receive(&mut self, datagram: Datagram) -> Result<()> {
+        let source = datagram.source;
         let input = Input::Receive(
             Instant::now(),
             Receive {
                 proto: Protocol::Udp,
                 source,
-                destination,
-                contents: contents.try_into()?,
+                destination: self.locals[datagram.socket],
+                contents: datagram.data.as_slice().try_into()?,
             },
         );
+        if !self.rtc.accepts(&input) {
+            self.peer.release(source);
+            return Ok(());
+        }
+        self.peer.claim(source);
         self.rtc.handle_input(input)?;
         Ok(())
     }
@@ -678,23 +696,6 @@ impl Session {
     }
 }
 
-/// The next datagram on any of `sockets`: its length, sender and socket.
-async fn recv_any(
-    sockets: &[UdpSocket],
-    buf: &mut [u8],
-) -> std::io::Result<(usize, SocketAddr, usize)> {
-    std::future::poll_fn(|cx| {
-        for (i, socket) in sockets.iter().enumerate() {
-            let mut read = tokio::io::ReadBuf::new(buf);
-            if let std::task::Poll::Ready(result) = socket.poll_recv_from(cx, &mut read) {
-                return std::task::Poll::Ready(result.map(|from| (read.filled().len(), from, i)));
-            }
-        }
-        std::task::Poll::Pending
-    })
-    .await
-}
-
 /// The next Opus frame, or never while not subscribed.
 async fn next_packet(audio: &mut Option<mpsc::Receiver<AudioPacket>>) -> Option<AudioPacket> {
     match audio {
@@ -708,5 +709,136 @@ async fn next_frame(frames: &mut Option<mpsc::Receiver<EncodedFrame>>) -> Option
     match frames {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use str0m::Rtc;
+    use str0m::change::SdpPendingOffer;
+
+    use super::*;
+    use crate::rtc_hub::Router;
+
+    /// A browser stand-in (a full ICE agent) and the viewer's `Rtc` it
+    /// negotiated with.
+    struct Pair {
+        client: Rtc,
+        client_addr: SocketAddr,
+        server: Rtc,
+    }
+
+    fn pair(client_addr: &str, server_addr: SocketAddr) -> Pair {
+        let client_addr: SocketAddr = client_addr.parse().unwrap();
+        let mut client = Rtc::builder().build(Instant::now());
+        client
+            .add_local_candidate(Candidate::host(client_addr, "udp").unwrap())
+            .unwrap();
+        let mut api = client.sdp_api();
+        api.add_channel("control".into());
+        let (offer, pending): (SdpOffer, SdpPendingOffer) = api.apply().unwrap();
+        let (mut server, _) = build_rtc(Codec::H264, false, &[server_addr], &[]).unwrap();
+        let answer = server.sdp_api().accept_offer(offer).unwrap();
+        client.sdp_api().accept_answer(pending, answer).unwrap();
+        Pair {
+            client,
+            client_addr,
+            server,
+        }
+    }
+
+    /// What the browser stand-in sends in its first moments (its STUN checks).
+    fn first_datagrams(pair: &mut Pair) -> Vec<Vec<u8>> {
+        let mut sent = Vec::new();
+        let mut now = Instant::now();
+        for _ in 0..20 {
+            loop {
+                match pair.client.poll_output().unwrap() {
+                    Output::Transmit(t) => {
+                        assert_eq!(t.source, pair.client_addr);
+                        sent.push(t.contents.to_vec());
+                    }
+                    Output::Timeout(_) => break,
+                    Output::Event(_) => {}
+                }
+            }
+            if !sent.is_empty() {
+                break;
+            }
+            now += Duration::from_millis(50);
+            pair.client.handle_input(Input::Timeout(now)).unwrap();
+        }
+        sent
+    }
+
+    fn input(data: &[u8], source: SocketAddr, destination: SocketAddr) -> Input<'_> {
+        Input::Receive(
+            Instant::now(),
+            Receive {
+                proto: Protocol::Udp,
+                source,
+                destination,
+                contents: data.try_into().unwrap(),
+            },
+        )
+    }
+
+    #[test]
+    fn each_viewers_checks_reach_its_own_rtc_only() {
+        let server_addr: SocketAddr = "192.0.2.100:4496".parse().unwrap();
+        let mut a = pair("192.0.2.1:50000", server_addr);
+        let mut b = pair("192.0.2.2:50001", server_addr);
+        let from_a = first_datagrams(&mut a);
+        let from_b = first_datagrams(&mut b);
+        assert!(
+            !from_a.is_empty() && !from_b.is_empty(),
+            "the checks went out"
+        );
+
+        // The demux, as the sessions run it: unclaimed senders are offered to
+        // every session's Rtc, and whichever accepts claims the address.
+        let router = Router::default();
+        let mut inbox_a = router.add(1);
+        let mut inbox_b = router.add(2);
+        let mut pump = |data: &[u8], source: SocketAddr| -> Vec<u64> {
+            router.dispatch(Datagram {
+                data: data.to_vec(),
+                source,
+                socket: 0,
+            });
+            let mut taken = Vec::new();
+            for (id, inbox, rtc) in [
+                (1, &mut inbox_a, &mut a.server),
+                (2, &mut inbox_b, &mut b.server),
+            ] {
+                while let Ok(d) = inbox.try_recv() {
+                    let i = input(&d.data, d.source, server_addr);
+                    if rtc.accepts(&i) {
+                        router.claim(d.source, id);
+                        rtc.handle_input(i).unwrap();
+                        taken.push(id);
+                    } else {
+                        router.release(d.source, id);
+                    }
+                }
+            }
+            taken
+        };
+        assert_eq!(
+            pump(&from_a[0], a.client_addr),
+            [1],
+            "A's check: A's Rtc alone"
+        );
+        assert_eq!(
+            pump(&from_b[0], b.client_addr),
+            [2],
+            "B's check: B's Rtc alone"
+        );
+        // Claimed now: more from either goes to its owner.
+        assert_eq!(pump(&from_a[0], a.client_addr), [1]);
+        assert_eq!(pump(&from_b[0], b.client_addr), [2]);
+        // Neither Rtc takes noise from an unknown sender.
+        let stranger: SocketAddr = "192.0.2.9:40000".parse().unwrap();
+        assert!(pump(&[0x16, 0xfe, 0xfd, 0, 0, 0, 0], stranger).is_empty());
     }
 }

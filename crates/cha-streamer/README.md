@@ -92,7 +92,7 @@ The Chromium fast path, `cha-stream/1` (plan §3.1), beside WebRTC on its own UD
 - **No silent eviction:** a frame QUIC's send buffer can't take whole isn't sent, and nothing after it is until a keyframe or a recovery frame (asked for at once, as under RFI below). The page also asks when a frame can't be completed or a gap shows.
 - **Congestion:** our own rate control and FEC (P2.5, below).
 - **Certificate:** self-signed, 13 days, ECDSA P-256; browsers accept it by its SHA-256 (`serverCertificateHashes`), which the portal hands out with the URLs (one per node address, each carrying the media token).
-- **Several viewers** (P2.6, below): WebTransport sessions coexist on the one endpoint.
+- **Several viewers** (P2.6, below): WebTransport sessions coexist on the one endpoint, and WebRTC ones share their one port.
 - **Codec switches in place** (`{"t":"codec","codec":…}` on the control stream). The session subscribes to the other encoder and keeps sending the current stream until that encoder's first frame. From there it sends the new codec under the next `stream` number (the header's stream byte), and the page starts that stream afresh. Answered with `{"t":"codec","codec":…,"stream":…}`, or an `error`. In the app's browser, every switch among H.264, HEVC, AV1 and both PyroWave modes left the picture without a gap over 35 ms, cold encoders included (a reconnect costs a new handshake and a blank picture).
 - **Stats** carry composited → encoded and encoded → sent percentiles per report window, so a codec's cost shows within half a second of switching to it.
 - **First numbers** (the app's browser, which wasn't painting, so no click → screen yet): H.264 at 1616×1256 decodes in 1.5–1.6 ms with nothing lost; click → sound 55 ms p50, against 85–90 over WebRTC (no NetEq buffer).
@@ -238,12 +238,18 @@ app ─libpulse─▶ our PulseAudio-protocol server ($XDG_RUNTIME_DIR/pulse/nat
 
 ## Viewers (P2.6)
 
-Up to four sessions watch an environment at once (`viewers.rs`, plan §3.4). Viewers with the same codec share its encoder. WebTransport sessions coexist; WebRTC ones go one at a time, since each binds the environment's WebRTC port.
+Up to four sessions watch an environment at once (`viewers.rs`, plan §3.4). Viewers with the same codec share its encoder. WebTransport and WebRTC sessions coexist, in any mix.
+
+- **WebRTC viewers share one UDP port** (`rtc_hub.rs`). The streamer binds `--webrtc-port` once per host address, for as long as any WebRTC session exists; every session has its own str0m `Rtc` (its own ICE credentials, DTLS and tracks) in its own task. A reader task takes each datagram off the sockets and routes it by the sender's address. An address no session has claimed (a browser's first STUN check, or a NAT rebinding) is offered to every session, and the one whose `Rtc::accepts` takes it (STUN by its ICE username, everything else by the nominated address) claims the address; later datagrams go to it alone. A session that is sent something it doesn't accept lets the address go. Output goes out of the socket whose address str0m names. The last session to leave frees the port; a session started right after retries the bind for about 160 ms before settling for another port.
+- **Rate control is per viewer, the encoder follows the slowest.** Each session runs its own rate control from its own page's reports and sets its own pace; a shared encoder runs at the lowest rate any live subscriber takes and holds when one is backed up (a viewer stuck for a second stops counting). Every WebRTC viewer gets the same encoded frames, written to its own video track, and its own Opus track.
+- **No takeover on reconnect.** A new WebRTC connection no longer stops the previous one. A tab that vanishes without closing keeps its seat until str0m sees ICE disconnect, so a reconnect during that window counts against the limit of four.
 
 - **One has the controls (the floor):** its keyboard, mouse, gamepads, resizes, cursor mode and clipboard reach the environment, and only it gets the apps' clipboard. The others watch: what they send is ignored.
 - **Who:** the newest owner session takes the floor on joining; an admin's only when no owner is watching. When the controller leaves, the newest session of the highest role that may control gets it. Owners and admins can take it (`{"t":"take_control"}`); viewers can't. Share links and their roles are Phase 3.
 - **Pages hear** `{"t":"floor","control","viewers"}` on every change. A watching page gets `{"t":"pointer","x","y","drawn"}` at encode ticks, and draws the controller's pointer over the picture when the controller's page draws its own cursor (`drawn` false).
 - Tested with an owner and an admin on one Chrome environment: the admin joined watching ("2 watching", the owner's pointer drawn where it was), took the controls, the owner took them back, and the admin's leaving left the owner in control. Both shared one HEVC encoder.
+- **Late viewers and the pads.** The streamer keeps the last lightbar colour, player-LED mask and adaptive-trigger effect per pad (`PadMemory`). A session that gains the controls, by joining as the controller or by taking them, is sent them at once (`led`, `players`, `trigger`), on either transport. Rumble and haptics are moments, not state, and aren't replayed.
+- **Unit-tested, not live:** two str0m clients' STUN checks reach only their own viewer's `Rtc` (`session.rs` tests); the router's claim, release and leave rules (`rtc_hub.rs`); the pad replay (`control.rs`). A live two-viewer WebRTC run (Chrome with Safari or Firefox) hasn't been done.
 
 ## Clipboard (P2.6)
 
@@ -315,8 +321,8 @@ docker compose -f deploy/streamer/compose.dev.yaml exec dev /target/release/cha-
 The agent starts one streamer container per environment, with signalling on `127.0.0.1` only: `--listen 127.0.0.1 --portal-key <key> --environment-id <id>`.
 
 - **Brokering.** A browser's offer reaches the streamer through the portal and the agent. It carries a **media token**: Ed25519, signed by the portal, valid for 60 s, for this environment only. The streamer checks it offline against the portal's key.
-- **Reconnects.** One viewer at a time. A new connection takes over: the old session stops first, which frees its UDP port. A reconnect gets a fresh keyframe, and the environment keeps running in between.
-- **Interactive sessions** have no time limit (`secs=0`). They end when the browser leaves or another connection takes over.
+- **Reconnects.** Viewers coexist (Viewers, P2.6); a new connection doesn't stop an old one, which leaves when its browser closes or ICE disconnects. A reconnect gets a fresh keyframe, and the environment keeps running in between.
+- **Interactive sessions** have no time limit (`secs=0`). They end when the browser leaves.
 - **Keyboard focus.** A new window gets the keyboard once it first shows a buffer. Chrome ignores a keyboard `enter` for a surface it hasn't drawn, and focusing the same surface again later sends nothing.
 
 ## Results (RTX 4090, Chrome 154 in the compositor, 2026-10-03/04)

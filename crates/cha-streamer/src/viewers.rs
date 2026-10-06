@@ -1,7 +1,7 @@
 //! Who's watching an environment and who has the controls (plan §3.4).
 //!
-//! Sessions coexist, up to `MAX_SESSIONS`; WebRTC ones one at a time, since
-//! each binds the environment's WebRTC port. One session has the floor: its
+//! Sessions coexist, up to `MAX_SESSIONS`, over either transport (WebRTC
+//! sessions share the environment's one UDP port, `rtc_hub`). One session has the floor: its
 //! keyboard, mouse, gamepads, resizes and clipboard reach the environment,
 //! and only it gets the apps' clipboard. The newest owner session takes it
 //! on joining; an admin's only when no owner is watching. When the
@@ -11,8 +11,6 @@
 //! Share links and their roles (viewer, controller, player-N) are Phase 3.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use tokio::sync::watch;
 use tracing::info;
 
@@ -51,8 +49,7 @@ impl Role {
 struct Entry {
     id: u64,
     viewer: Viewer,
-    webrtc: bool,
-    /// Set once the session runs, so a newer WebRTC session can stop it.
+    /// Set once the session runs.
     running: Option<Running>,
 }
 
@@ -82,23 +79,9 @@ impl Viewers {
         })
     }
 
-    /// A seat for a session about to start, after stopping the WebRTC
-    /// session it replaces; an error if the environment is full.
+    /// A seat for a session about to start; an error if the environment is
+    /// full.
     pub async fn join(self: &Arc<Self>, viewer: Viewer, webrtc: bool) -> Result<Seat, String> {
-        if webrtc {
-            let replaced = {
-                let mut inner = self.lock();
-                inner
-                    .entries
-                    .iter_mut()
-                    .find(|e| e.webrtc)
-                    .and_then(|e| e.running.take())
-            };
-            if let Some(old) = replaced {
-                let _ = old.stop.send(());
-                let _ = tokio::time::timeout(Duration::from_secs(2), old.handle).await;
-            }
-        }
         let mut inner = self.lock();
         if inner.entries.len() >= MAX_SESSIONS {
             return Err(format!(
@@ -112,7 +95,6 @@ impl Viewers {
         inner.entries.push(Entry {
             id,
             viewer,
-            webrtc,
             running: None,
         });
         // The newest owner takes the floor; anyone who may control takes an
@@ -230,6 +212,8 @@ impl Drop for Seat {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn viewer(user: &str, role: Role) -> Viewer {

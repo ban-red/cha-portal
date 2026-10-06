@@ -1,0 +1,234 @@
+#!/usr/bin/python3
+"""Runs gamescope (and so Steam) and keeps what it says, so an abort can be read.
+
+`start-steam` hands over to this: `steam-run COMMAND...`. It starts
+`steam-status` beside the command, copies the command's stdout and stderr (one
+stream) to its own stdout, where `docker logs` and the node's crash capture
+(crates/cha-node/src/crashlog.rs) read it, and keeps the same text in the
+persistent home: ~/.local/state/cha/gamescope.log for this run, and
+gamescope.log.1 ... for the last few before it, each capped (the newest part
+stays). gamescope aborted twice (exit 134) before anything was kept.
+
+When the command ends with an error, it says so in one line, in the log and on
+the container's stderr, and in the setup status (/run/cha/status, which the
+streamer shows over the picture): "gamescope crashed (SIGABRT)" rather than a
+black picture.
+
+It then exits with the command's own code. It does not start gamescope again:
+the container ends, so the environment fails and the node reads the log tail
+and keeps it (a restart would hide the crash behind a new black picture, and
+Steam's state after an abort in the middle of a frame is not one to trust).
+Only a stop (SIGTERM, SIGINT) is clean: it is passed on and the code is 0.
+
+Nothing here may keep Steam from starting: a log that can't be written is
+dropped, and the output still flows.
+"""
+
+import json
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
+
+KEEP_RUNS = 5
+MAX_RUN_BYTES = 1 << 20
+# After a cap is hit the newest part of this much stays.
+KEEP_ON_CAP = MAX_RUN_BYTES // 2
+# The streamer reads the status file every 250 ms; the container ends after.
+STATUS_HOLD = float(os.environ.get("CHA_STEAM_STATUS_HOLD", "2"))
+
+
+def stamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+class RunLog:
+    """This run's log file, after rotating the earlier ones. Every failure to
+    write is dropped (the log goes off and the rest carries on)."""
+
+    def __init__(self, directory):
+        self.path = os.path.join(directory, "gamescope.log")
+        self.size = 0
+        self.f = None
+        try:
+            os.makedirs(directory, exist_ok=True)
+            for n in range(KEEP_RUNS - 1, 0, -1):
+                old = self.path if n == 1 else f"{self.path}.{n - 1}"
+                if os.path.exists(old):
+                    os.replace(old, f"{self.path}.{n}")
+            self.f = open(self.path, "wb")
+        except OSError:
+            self.f = None
+
+    def write(self, data):
+        if self.f is None:
+            return
+        try:
+            self.f.write(data)
+            self.f.flush()
+            self.size += len(data)
+            if self.size > MAX_RUN_BYTES:
+                self.cap()
+        except OSError:
+            self.f = None
+
+    def cap(self):
+        """Over the limit: keep the newest part, behind a note."""
+        self.f.close()
+        with open(self.path, "rb") as f:
+            f.seek(-KEEP_ON_CAP, os.SEEK_END)
+            tail = f.read()
+        note = b"[steam-run: earlier output of this run dropped]\n"
+        self.f = open(self.path, "wb")
+        self.f.write(note + tail)
+        self.f.flush()
+        self.size = len(note) + len(tail)
+
+    def close(self):
+        if self.f is not None:
+            self.f.close()
+
+
+def describe(returncode):
+    """(exit code as a shell sees it, signal name or None) of a finished child.
+    `dbus-run-session` passes a signalled child on as 128 + the signal."""
+    code = 128 - returncode if returncode < 0 else returncode
+    sig = None
+    if returncode < 0:
+        sig = -returncode
+    elif 128 < returncode <= 128 + 64:
+        sig = returncode - 128
+    name = None
+    if sig is not None:
+        try:
+            name = signal.Signals(sig).name
+        except ValueError:
+            name = f"signal {sig}"
+    return code, name
+
+
+def summary(code, name, when):
+    """(the label for the page, the line for the logs)."""
+    if name is not None:
+        label = f"gamescope crashed ({name})"
+        return label, f"{label}, exit code {code}, {when}"
+    label = f"gamescope or Steam exited with code {code}"
+    return label, f"{label}, {when}"
+
+
+def publish(path, label):
+    """Writes the setup status whole (a temp file, then a rename)."""
+    try:
+        temp = f"{path}.{os.getpid()}"
+        with open(temp, "w") as f:
+            json.dump({"label": label}, f)
+        os.replace(temp, path)
+    except OSError:
+        pass
+
+
+def start_status():
+    try:
+        return subprocess.Popen(["steam-status"])
+    except OSError:
+        return None
+
+
+def stop_status(proc):
+    """Ends steam-status and waits: it clears the status as it ends, which
+    must be over before a crash is written there."""
+    if proc is None:
+        return
+    if proc.poll() is None:
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def pump(proc, log):
+    """Copies the child's output until it ends and the pipe is drained. Steam's
+    helpers may outlive it holding the pipe, so the child's end decides."""
+    fd = proc.stdout.fileno()
+    out = sys.stdout.buffer
+    while True:
+        ready, _, _ = select.select([fd], [], [], 0.2)
+        if ready:
+            data = os.read(fd, 65536)
+            if data:
+                try:
+                    out.write(data)
+                    out.flush()
+                except OSError:
+                    pass
+                log.write(data)
+                continue
+            if proc.poll() is None:
+                proc.wait()
+            return
+        if proc.poll() is not None:
+            # Gone: take what is left in the pipe, then stop.
+            while select.select([fd], [], [], 0)[0]:
+                data = os.read(fd, 65536)
+                if not data:
+                    break
+                try:
+                    out.write(data)
+                    out.flush()
+                except OSError:
+                    pass
+                log.write(data)
+            return
+
+
+def main(argv):
+    if not argv:
+        print("usage: steam-run COMMAND...", file=sys.stderr)
+        return 2
+    home = os.environ.get("HOME", "/home/cha")
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/cha")
+    log = RunLog(os.path.join(home, ".local/state/cha"))
+    log.write(f"[steam-run] {stamp()} starting: {' '.join(argv)}\n".encode())
+    status = start_status()
+    stopped = []
+    try:
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0
+        )
+    except OSError as e:
+        print(f"steam-run: can't start {argv[0]}: {e}", file=sys.stderr)
+        stop_status(status)
+        log.close()
+        return 127
+
+    def forward(signum, _frame):
+        stopped.append(signum)
+        try:
+            proc.send_signal(signum)
+        except OSError:
+            pass
+
+    signal.signal(signal.SIGTERM, forward)
+    signal.signal(signal.SIGINT, forward)
+    pump(proc, log)
+    code, name = describe(proc.returncode)
+    stop_status(status)
+    if stopped or code == 0:
+        log.write(f"[steam-run] {stamp()} ended, exit code {code}\n".encode())
+        log.close()
+        return 0
+    label, line = summary(code, name, stamp())
+    log.write(f"[steam-run] {line}\n".encode())
+    log.close()
+    print(f"steam-run: {line}", file=sys.stderr, flush=True)
+    publish(os.path.join(runtime, "status"), label)
+    time.sleep(STATUS_HOLD)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

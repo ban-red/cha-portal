@@ -354,6 +354,37 @@ pub enum PadEvent {
     Trigger(Trigger),
 }
 
+/// The last value of each state-like pad event (lightbar, player LEDs,
+/// trigger effects) per pad. Motors and haptics are moments, not state, and
+/// aren't kept.
+#[derive(Default)]
+pub struct PadMemory {
+    slots: [[Option<PadEvent>; EVENT_CLASSES]; MAX_PADS],
+}
+
+impl PadMemory {
+    pub fn remember(&mut self, event: PadEvent) {
+        if !matches!(
+            event,
+            PadEvent::Led(_) | PadEvent::Players(_) | PadEvent::Trigger(_)
+        ) {
+            return;
+        }
+        if let Some(slot) = self
+            .slots
+            .get_mut(event.slot())
+            .and_then(|pad| pad.get_mut(event.class()))
+        {
+            *slot = Some(event);
+        }
+    }
+
+    /// The kept events, pad by pad.
+    pub fn replay(&self) -> Vec<PadEvent> {
+        self.slots.iter().flatten().flatten().copied().collect()
+    }
+}
+
 /// How many kinds of [`PadEvent`] a pad has that supersede each other.
 pub const EVENT_CLASSES: usize = 7;
 
@@ -437,6 +468,9 @@ pub struct Gamepads {
     seed: u64,
     pads: Mutex<Vec<Slot>>,
     events: broadcast::Sender<PadEvent>,
+    /// The last lightbar, player LEDs and trigger effects, for viewers that
+    /// join later.
+    memory: Arc<Mutex<PadMemory>>,
 }
 
 /// One pad: a uinput device, or a uhid one.
@@ -556,7 +590,9 @@ impl Gamepads {
             seed: run_seed(),
             pads: Mutex::default(),
             events: broadcast::channel(64).0,
+            memory: Arc::default(),
         };
+        pads.remember_events();
         // A stale `hidraw/` goes first, whole.
         let _ = std::fs::remove_dir_all(&pads.hidraw_dir);
         for dir in [&pads.dev_dir, &pads.udev_dir] {
@@ -574,6 +610,30 @@ impl Gamepads {
 
     pub fn kind(&self) -> GamepadKind {
         self.kind
+    }
+
+    /// Keeps `memory` current from the event stream; ends with the pads.
+    fn remember_events(&self) {
+        let mut rx = self.events.subscribe();
+        let memory = Arc::clone(&self.memory);
+        std::thread::spawn(move || {
+            loop {
+                match rx.blocking_recv() {
+                    Ok(event) => memory
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remember(event),
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+
+    /// What a session that gains the controls should be told: the pads'
+    /// lightbar, player LEDs and trigger effects as the apps last set them.
+    pub fn memory(&self) -> Arc<Mutex<PadMemory>> {
+        Arc::clone(&self.memory)
     }
 
     /// What the apps do to the pads: motors, lightbars, triggers, haptics.

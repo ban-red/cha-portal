@@ -370,6 +370,11 @@ struct State {
     ports: BTreeMap<String, u16>,
     /// Environments being stopped on purpose (their containers' deaths aren't news).
     stopping: HashSet<String>,
+    /// Environments being started: id → what died meanwhile, if anything. The
+    /// launch owns their cleanup, so a death isn't acted on until it ends;
+    /// otherwise the watcher would remove one container while the launch
+    /// goes on to create the next, which then runs on with nothing beside it.
+    starting: HashMap<String, Option<String>>,
     /// Environment id → the (user, template) whose directory under the data
     /// root is its home: one environment per home, and no deleting a home
     /// that is in use.
@@ -440,7 +445,22 @@ impl DockerRuntime {
 
     async fn adopt(&self) -> Result<()> {
         let mut dead = HashSet::new();
-        for container in self.docker.list(LABEL_ENV).await? {
+        let listed = self.docker.list(LABEL_ENV).await?;
+        // An app with no streamer beside it (the launch died with the agent, or
+        // the streamer was removed) has nothing to stream: left as leftovers.
+        let streamers: HashSet<&String> = listed
+            .iter()
+            .filter(|c| c.labels.get(LABEL_ROLE).map(String::as_str) == Some("streamer"))
+            .filter_map(|c| c.labels.get(LABEL_ENV))
+            .collect();
+        for container in &listed {
+            if let Some(id) = container.labels.get(LABEL_ENV)
+                && !streamers.contains(id)
+            {
+                dead.insert(id.clone());
+            }
+        }
+        for container in listed.iter() {
             let Some(id) = container.labels.get(LABEL_ENV).cloned() else {
                 continue;
             };
@@ -586,8 +606,20 @@ impl DockerRuntime {
             return;
         };
         {
-            let state = self.state.lock().expect("state lock");
+            let mut state = self.state.lock().expect("state lock");
             if state.stopping.contains(&id) || !state.ports.contains_key(&id) {
+                return;
+            }
+            if let Some(died) = state.starting.get_mut(&id) {
+                // The launch finds out when it next looks, and cleans up.
+                let role = event
+                    .labels
+                    .get(LABEL_ROLE)
+                    .map_or("container", String::as_str);
+                died.get_or_insert_with(|| match event.exit_code {
+                    Some(code) => format!("the {role} exited with code {code} while starting"),
+                    None => format!("the {role} stopped while starting"),
+                });
                 return;
             }
         }
@@ -640,12 +672,29 @@ impl DockerRuntime {
             self.ensure_image(image).await?;
         }
         let port = self.allocate(&spec.id)?;
+        self.state
+            .lock()
+            .expect("state lock")
+            .starting
+            .insert(spec.id.clone(), None);
         let started = async {
             self.claim_home(&spec)?;
             self.prepare_storage(&mut spec).await?;
             self.create_containers(&spec, port).await
         }
         .await;
+        // Settled with the death check, so none slips between them.
+        let died = self
+            .state
+            .lock()
+            .expect("state lock")
+            .starting
+            .remove(&spec.id)
+            .flatten();
+        let started = match (started, died) {
+            (Ok(()), Some(died)) => Err(anyhow!(died)),
+            (started, _) => started,
+        };
         match started {
             Ok(()) => {
                 let overlays = self.per_user_overlays(&spec);
@@ -670,7 +719,11 @@ impl DockerRuntime {
                     state.ports.remove(&spec.id);
                     state.homes.remove(&spec.id);
                 }
-                let _ = self.remove(&spec.id).await;
+                // Everything this launch made, app and streamer both, whichever
+                // got as far as existing.
+                if let Err(err) = self.remove(&spec.id).await {
+                    warn!(id = %spec.id, "cleaning up after the failed start: {err:#}");
+                }
                 if let Some(why) = why
                     && tails.iter().any(|t| !t.lines.is_empty())
                 {
@@ -1006,6 +1059,7 @@ impl DockerRuntime {
             )
             .await?;
         self.docker.start(&streamer).await?;
+        self.streamer_still_up(&spec.id).await?;
         let hidraw = self.streamer_hidraw(spec, port).await?;
         let app = self
             .docker
@@ -1015,6 +1069,20 @@ impl DockerRuntime {
             )
             .await?;
         self.docker.start(&app).await
+    }
+
+    /// Fails if the streamer has already exited (the engine says a container
+    /// started before it finds out the process died): no app is made for a
+    /// streamer that isn't there.
+    async fn streamer_still_up(&self, id: &str) -> Result<()> {
+        let containers = self.docker.list(&format!("{LABEL_ENV}={id}")).await?;
+        let up = containers.iter().any(|c| {
+            c.labels.get(LABEL_ROLE).map(String::as_str) == Some("streamer") && c.state == "running"
+        });
+        if !up {
+            bail!("the streamer exited as it started");
+        }
+        Ok(())
     }
 
     /// The `hidraw` nodes the streamer made for `spec`'s controller, once it
@@ -1426,18 +1494,34 @@ impl DockerRuntime {
     /// runtime directory and the gamepads'. Its home volume, if it has one, is
     /// the user's and stays (`docker volume rm` it to start over).
     async fn remove(&self, id: &str) -> Result<()> {
-        let containers = self.docker.list(&format!("{LABEL_ENV}={id}")).await?;
-        let mut ordered: Vec<_> = containers.iter().collect();
-        ordered.sort_by_key(|c| c.labels.get(LABEL_ROLE).map(String::as_str) != Some("app"));
-        for container in ordered {
-            self.docker.remove(&container.id, 5).await?;
+        // Each step goes on whatever the one before said, so one stuck
+        // container doesn't leave the rest behind; the first error is the answer.
+        let mut first: Option<anyhow::Error> = None;
+        let mut note = |result: Result<()>| {
+            if let Err(err) = result {
+                first.get_or_insert(err);
+            }
+        };
+        match self.docker.list(&format!("{LABEL_ENV}={id}")).await {
+            Ok(containers) => {
+                let mut ordered: Vec<_> = containers.iter().collect();
+                ordered
+                    .sort_by_key(|c| c.labels.get(LABEL_ROLE).map(String::as_str) != Some("app"));
+                for container in ordered {
+                    note(self.docker.remove(&container.id, 5).await);
+                }
+            }
+            Err(err) => note(Err(err)),
         }
         for kind in ["input", "udev"] {
-            self.docker
-                .remove_volume(&format!("{}-{kind}", volume_name(id)))
-                .await?;
+            note(
+                self.docker
+                    .remove_volume(&format!("{}-{kind}", volume_name(id)))
+                    .await,
+            );
         }
-        self.docker.remove_volume(&volume_name(id)).await
+        note(self.docker.remove_volume(&volume_name(id)).await);
+        first.map_or(Ok(()), Err)
     }
 
     async fn connect_environment(&self, request: Connect) -> Result<Value> {
@@ -2476,6 +2560,8 @@ mod tests {
         missing_paths: Mutex<HashSet<String>>,
         /// What a container's log reads as (the engine's framed stream).
         logs: Mutex<Vec<u8>>,
+        /// A streamer that starts and straight away exits (no GPU memory).
+        streamer_exits: Mutex<bool>,
     }
 
     impl Engine {
@@ -2585,7 +2671,20 @@ mod tests {
             ("GET", "/exec/x1/json") => {
                 Json(json!({ "ExitCode": *engine.exec_exit.lock().unwrap() })).into_response()
             }
-            ("GET", "/containers/json") => Json(json!(*containers)).into_response(),
+            ("GET", "/containers/json") => {
+                // As the engine does for `label=key=value` (a bare `key` matches any).
+                let filter = encode(&format!("{LABEL_ENV}="));
+                let wanted = uri.split_once(&filter).map(|(_, rest)| {
+                    rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                        .next()
+                        .unwrap_or_default()
+                });
+                let listed: Vec<&Value> = containers
+                    .iter()
+                    .filter(|c| wanted.is_none_or(|id| c["Labels"][LABEL_ENV] == id))
+                    .collect();
+                Json(json!(listed)).into_response()
+            }
             ("POST", "/containers/create") => {
                 let name = uri.split_once("name=").unwrap().1.to_string();
                 let missing = engine.missing_paths.lock().unwrap();
@@ -2618,8 +2717,9 @@ mod tests {
             }
             ("POST", p) if p.ends_with("/start") => {
                 let id = container(p);
+                let dies = id.ends_with("streamer") && *engine.streamer_exits.lock().unwrap();
                 for c in containers.iter_mut().filter(|c| c["Id"] == id) {
-                    c["State"] = json!("running");
+                    c["State"] = json!(if dies { "exited" } else { "running" });
                 }
                 StatusCode::NO_CONTENT.into_response()
             }
@@ -2780,6 +2880,113 @@ mod tests {
         );
         // The containers went, with only their anonymous volumes (`v=true`).
         assert!(engine.containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_streamer_that_exits_at_startup_leaves_nothing_behind() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        *engine.streamer_exits.lock().unwrap() = true;
+
+        let err = rt.start_environment(steam_spec()).await.unwrap_err();
+
+        assert!(format!("{err:#}").contains("streamer exited"), "{err:#}");
+        // No app was made for it, and what was made is gone.
+        assert!(engine.containers.lock().unwrap().is_empty());
+        assert!(
+            engine.created().keys().all(|name| !name.ends_with("-app")),
+            "{:?}",
+            engine.created().keys()
+        );
+        assert_eq!(
+            engine.deleted_volumes(),
+            ["cha-env-e1-input", "cha-env-e1-udev", "cha-env-e1"]
+        );
+        let state = rt.state.lock().unwrap();
+        assert!(state.ports.is_empty() && state.homes.is_empty() && state.starting.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_app_that_fails_to_create_takes_the_streamer_with_it() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        // A bind source the app needs is missing, so its creation is refused.
+        let mut rt = rt;
+        rt.config.nvidia_wine_dir = Some(WINE_DIR.into());
+        engine
+            .missing_paths
+            .lock()
+            .unwrap()
+            .insert(WINE_DIR.to_string());
+        let spec = steam_spec();
+        let _ = rt.start_environment(spec).await.unwrap_err();
+        assert!(engine.containers.lock().unwrap().is_empty());
+        assert!(rt.state.lock().unwrap().starting.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_death_while_starting_is_the_launchs_to_clean_up() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        {
+            let mut state = rt.state.lock().unwrap();
+            state.ports.insert("e1".into(), 47000);
+            state.starting.insert("e1".into(), None);
+        }
+        engine.containers.lock().unwrap().push(json!({
+            "Id": "streamer1", "State": "exited",
+            "Labels": { LABEL_ENV: "e1", LABEL_ROLE: "streamer" },
+        }));
+        let mut exits = rt.exits.subscribe();
+
+        rt.on_event(ContainerEvent {
+            action: "die".into(),
+            id: "streamer1".into(),
+            labels: HashMap::from([
+                (LABEL_ENV.to_string(), "e1".to_string()),
+                (LABEL_ROLE.to_string(), "streamer".to_string()),
+            ]),
+            exit_code: Some(1),
+        })
+        .await;
+
+        // Nothing was removed or announced; the launch will see it.
+        assert_eq!(engine.containers.lock().unwrap().len(), 1);
+        assert!(exits.try_recv().is_err());
+        let state = rt.state.lock().unwrap();
+        assert!(state.ports.contains_key("e1"));
+        assert_eq!(
+            state.starting["e1"].as_deref(),
+            Some("the streamer exited with code 1 while starting")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_app_left_without_a_streamer_is_cleared_when_the_agent_starts() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        let labels = |env: &str, role: &str| json!({ LABEL_ENV: env, LABEL_ROLE: role, LABEL_HTTP_PORT: "47000" });
+        engine.containers.lock().unwrap().extend([
+            // e1 lost its streamer; e2 is whole.
+            json!({ "Id": "a1", "State": "running", "Labels": labels("e1", "app") }),
+            json!({ "Id": "s2", "State": "running", "Labels": labels("e2", "streamer") }),
+            json!({ "Id": "a2", "State": "running", "Labels": labels("e2", "app") }),
+        ]);
+
+        rt.adopt().await.unwrap();
+
+        let left: Vec<String> = engine
+            .containers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c["Id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(left, ["s2", "a2"]);
+        assert_eq!(
+            rt.state.lock().unwrap().ports.keys().collect::<Vec<_>>(),
+            ["e2"]
+        );
     }
 
     #[tokio::test]

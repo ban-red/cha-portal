@@ -264,6 +264,9 @@ async fn run(
     let mut status = Some(sessions.media.status());
     let mut rumble = PadFeed::new(sessions.gamepads.as_deref());
     let _ = out.send(floor_msg(&handler.seat));
+    for msg in rumble.replay_on_gain(handler.seat.has_control()) {
+        let _ = out.send(msg);
+    }
     let mut stats = StreamerStats::default();
     let mut report = interval_at(tokio::time::Instant::now() + STATS_INTERVAL, STATS_INTERVAL);
     report.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -322,6 +325,9 @@ async fn run(
             }
             () = handler.seat.changed() => {
                 let _ = out.send(floor_msg(&handler.seat));
+                for msg in rumble.replay_on_gain(handler.seat.has_control()) {
+                    let _ = out.send(msg);
+                }
             }
             // What the apps do to the pads (rumble, lightbar, ...) is the controller's alone.
             msg = rumble.next() => {
