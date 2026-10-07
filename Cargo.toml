@@ -14,6 +14,15 @@ cha-proto = { path = "crates/cha-proto" }
 debug = 1
 lto = "thin"
 
+# Full debug info made target/ grow by ~20 GB a day on macOS, where every
+# incremental rebuild leaves its object files behind for their debug info.
+# Line tables keep file:line in backtraces; dependencies carry none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # RSA key generation (the client's Moonlight identity, pairing) takes tens of
 # seconds in an unoptimised build, which the client's tests would pay.
 [profile.dev.package.num-bigint-dig]
