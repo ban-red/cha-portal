@@ -127,6 +127,11 @@ pub enum ToNode {
         /// [`ToPortal::MoonlightPaired`]; the same guard.
         #[serde(default)]
         moonlight: bool,
+        /// The portal reads the `GameStream*` messages of [`ToPortal`] and
+        /// sends the node's host [`NodeRequest::GameStreamPin`] and
+        /// [`NodeRequest::GameStreamDevices`]; the same guard.
+        #[serde(default)]
+        gamestream: bool,
     },
     Request {
         id: u64,
@@ -204,6 +209,40 @@ pub enum ToPortal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
+    /// A Moonlight client asked this node's GameStream host to pair and shows
+    /// a PIN; a signed-in user types it in the portal (ADR 0009). Only once
+    /// the welcome says the portal reads it.
+    GameStreamPairRequest {
+        /// Names the attempt in [`NodeRequest::GameStreamPin`] and the
+        /// answers below; unique on this node.
+        attempt_id: String,
+        /// What the client calls itself (its device name).
+        device_name: String,
+        /// The client's address.
+        address: String,
+        /// Seconds the attempt stays open.
+        expires_in_secs: u64,
+    },
+    /// The pairing of `attempt_id` finished: the client is paired, by its
+    /// certificate's fingerprint (SHA-256, lower-case hex). The portal keeps
+    /// the device and sends the node's whole list back.
+    GameStreamPaired {
+        attempt_id: String,
+        fingerprint: String,
+        /// The `uniqueid` the client stated: a label.
+        unique_id: String,
+        name: String,
+    },
+    /// The pairing of `attempt_id` ended without a device: the PIN was wrong,
+    /// or the client gave up.
+    GameStreamPairFailed {
+        attempt_id: String,
+        reason: String,
+    },
+    /// A client unpaired itself, over its own HTTPS connection.
+    GameStreamUnpaired {
+        fingerprint: String,
+    },
     Request {
         id: u64,
         request: PortalRequest,
@@ -260,6 +299,43 @@ pub enum NodeRequest {
     MoonlightApps {
         unique_id: String,
     },
+    /// The PIN a signed-in user typed for a [`ToPortal::GameStreamPairRequest`];
+    /// `user_id` becomes the paired device's owner. Refused when the attempt
+    /// is unknown or over.
+    GameStreamPin {
+        attempt_id: String,
+        pin: String,
+        user_id: String,
+    },
+    /// The devices paired with this node's GameStream host: the whole list,
+    /// which replaces what the node had. Sent after every welcome and every
+    /// change. Until the first one arrives the node counts nobody as paired.
+    GameStreamDevices {
+        devices: Vec<GameStreamDevice>,
+    },
+}
+
+/// A Moonlight client paired with a node's GameStream host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameStreamDevice {
+    /// SHA-256 of the client's certificate, lower-case hex: its identity.
+    pub fingerprint: String,
+    /// What it stated as `uniqueid` when pairing, if the portal knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_id: Option<String>,
+    pub name: String,
+    /// The portal user whose environments it sees.
+    pub user_id: String,
+}
+
+/// What a node's inventory says of its GameStream host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameStreamInfo {
+    /// The host's HTTP port, which a Moonlight client adds a host by.
+    pub http_port: u16,
+    /// What clients call the host.
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +369,9 @@ pub enum NodeResponse {
     MoonlightApps {
         apps: Vec<MoonlightApp>,
     },
+    /// A [`NodeRequest::GameStreamPin`] or [`NodeRequest::GameStreamDevices`]
+    /// was taken.
+    Accepted,
 }
 
 /// A Moonlight host a node found on its network (`_nvstream._tcp`).
@@ -581,6 +660,11 @@ pub struct Inventory {
     /// devices: [`Self::devices_or_derived`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub devices: Option<Vec<Device>>,
+    /// This node runs a GameStream host for Moonlight clients (ADR 0009).
+    /// Absent from agents that predate it, or have it off: the portal then
+    /// sends none of the `GameStream*` requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamestream: Option<GameStreamInfo>,
 }
 
 impl Inventory {
@@ -881,9 +965,92 @@ mod tests {
                 environment_warnings: false,
                 node_usage: false,
                 moonlight: false,
+                gamestream: false,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_gamestream_messages_round_trip() {
+        let to_portal = [
+            ToPortal::GameStreamPairRequest {
+                attempt_id: "a1".into(),
+                device_name: "Steam Deck".into(),
+                address: "192.168.1.9".into(),
+                expires_in_secs: 120,
+            },
+            ToPortal::GameStreamPaired {
+                attempt_id: "a1".into(),
+                fingerprint: "ab".repeat(32),
+                unique_id: "0123456789ABCDEF".into(),
+                name: "Steam Deck".into(),
+            },
+            ToPortal::GameStreamPairFailed {
+                attempt_id: "a1".into(),
+                reason: "wrong PIN".into(),
+            },
+            ToPortal::GameStreamUnpaired {
+                fingerprint: "ab".repeat(32),
+            },
+        ];
+        for msg in to_portal {
+            let text = serde_json::to_string(&msg).unwrap();
+            let back: ToPortal = serde_json::from_str(&text).unwrap();
+            assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        }
+        let device = GameStreamDevice {
+            fingerprint: "cd".repeat(32),
+            unique_id: None,
+            name: "Phone".into(),
+            user_id: "u1".into(),
+        };
+        let requests = [
+            NodeRequest::GameStreamPin {
+                attempt_id: "a1".into(),
+                pin: "1234".into(),
+                user_id: "u1".into(),
+            },
+            NodeRequest::GameStreamDevices {
+                devices: vec![device.clone()],
+            },
+        ];
+        for request in requests {
+            let text = serde_json::to_string(&ToNode::Request { id: 3, request }).unwrap();
+            let back: ToNode = serde_json::from_str(&text).unwrap();
+            assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        }
+        let said = serde_json::to_value(NodeRequest::GameStreamDevices {
+            devices: vec![device],
+        })
+        .unwrap();
+        assert_eq!(said["op"], "game_stream_devices");
+        assert!(said["devices"][0].get("unique_id").is_none());
+        let accepted = serde_json::to_string(&NodeResponse::Accepted).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<NodeResponse>(&accepted).unwrap(),
+            NodeResponse::Accepted
+        ));
+    }
+
+    #[test]
+    fn an_inventory_without_gamestream_says_so_by_leaving_it_out() {
+        let mut inventory = Inventory::default();
+        let plain = serde_json::to_value(&inventory).unwrap();
+        assert!(plain.get("gamestream").is_none());
+        let old: Inventory = serde_json::from_value(plain).unwrap();
+        assert_eq!(old.gamestream, None);
+        inventory.gamestream = Some(GameStreamInfo {
+            http_port: 47989,
+            name: "box".into(),
+        });
+        let said = serde_json::to_value(&inventory).unwrap();
+        assert_eq!(
+            said["gamestream"],
+            serde_json::json!({ "httpPort": 47989, "name": "box" })
+        );
+        let back: Inventory = serde_json::from_value(said).unwrap();
+        assert_eq!(back, inventory);
     }
 
     #[test]

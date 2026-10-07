@@ -7,12 +7,21 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = ["gamestream"]
+# This node's GameStream host for Moonlight clients (ADR 0009, G3): all of it
+# is `src/gamestream/` and the few lines that call it. Off, the node builds
+# without cha-gamestream; the environments still get their media ports with
+# CHA_GAMESTREAM but nothing serves them.
+gamestream = ["dep:cha-gamestream"]
+
 [dependencies]
 anyhow = "1"
 # The claim port (ADR 0007).
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 base64 = "0.22"
 bytes = "1"
+cha-gamestream = { path = "../cha-gamestream", optional = true }
 cha-sysinfo = { path = "../cha-sysinfo" }
 cha-wire = { path = "../cha-wire" }
 clap = { version = "4", features = ["derive", "env"] }

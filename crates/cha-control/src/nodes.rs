@@ -324,6 +324,7 @@ async fn serve_node(state: AppState, mut socket: WebSocket) -> anyhow::Result<()
         environment_warnings: true,
         node_usage: true,
         moonlight: true,
+        gamestream: true,
     };
     send(&mut socket, &welcome).await?;
     info!(%node_id, name = %node.name, %agent_version, "node connected");
@@ -333,6 +334,7 @@ async fn serve_node(state: AppState, mut socket: WebSocket) -> anyhow::Result<()
     // Its list is stale once it is gone (unless a newer connection took over).
     if state.nodes.connected_since(&node_id).await.is_none() {
         state.moonlight.forget(&node_id);
+        state.gamestream.forget_node(&node_id);
     }
     info!(%node_id, "node disconnected");
     result
@@ -390,6 +392,41 @@ async fn pump(
                     ToPortal::Inventory { inventory } => {
                         let json = serde_json::to_string(&inventory)?;
                         db::set_node_inventory(&state.db, node_id, &json).await?;
+                        tokio::spawn(crate::gamestream::inventory_changed(
+                            state.clone(),
+                            node_id.to_string(),
+                            inventory,
+                        ));
+                    }
+                    ToPortal::GameStreamPairRequest { attempt_id, device_name, address, expires_in_secs } => {
+                        let device_name = device_name.chars().take(64).collect();
+                        let address = address.chars().take(64).collect();
+                        state.gamestream.open(node_id, attempt_id, device_name, address, expires_in_secs);
+                    }
+                    ToPortal::GameStreamPaired { attempt_id, fingerprint, unique_id, name } => {
+                        tokio::spawn(crate::gamestream::paired(
+                            state.clone(),
+                            node_id.to_string(),
+                            attempt_id,
+                            fingerprint,
+                            unique_id,
+                            name,
+                        ));
+                    }
+                    ToPortal::GameStreamPairFailed { attempt_id, reason } => {
+                        tokio::spawn(crate::gamestream::pair_failed(
+                            state.clone(),
+                            node_id.to_string(),
+                            attempt_id,
+                            reason,
+                        ));
+                    }
+                    ToPortal::GameStreamUnpaired { fingerprint } => {
+                        tokio::spawn(crate::gamestream::unpaired(
+                            state.clone(),
+                            node_id.to_string(),
+                            fingerprint,
+                        ));
                     }
                     // These may ask the node things back, so they run apart from
                     // this loop, which carries the answers. What the portal

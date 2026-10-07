@@ -1,9 +1,13 @@
 use std::path::PathBuf;
+#[cfg(feature = "gamestream")]
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cha_node::claim::{self, ClaimConfig};
 use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime, PublishedImages};
+#[cfg(feature = "gamestream")]
+use cha_node::gamestream;
 use cha_node::moonlight::{self, Moonlight};
 use cha_node::storage::{DataRoot, parse_shared_dirs};
 use cha_node::{
@@ -79,17 +83,32 @@ struct Args {
     port_base: u16,
     #[arg(long, env = "CHA_MAX_ENVIRONMENTS", default_value_t = 16)]
     max_environments: u16,
-    /// Give each environment's streamer ports for a Moonlight session (ADR
-    /// 0009, G2): three UDP ports each from `CHA_GAMESTREAM_PORT_BASE`, and a
-    /// secret for the streamer's local API. Needs a streamer image built with
-    /// the `gamestream` feature (the published ones are). Off by default;
-    /// older streamers never get the arguments.
+    /// Let Moonlight clients play this node's environments (ADR 0009): each
+    /// environment's streamer gets ports for a session (three UDP ports each
+    /// from `CHA_GAMESTREAM_PORT_BASE`, G2) and a secret for its local API,
+    /// and the agent runs a GameStream host that clients pair with (a PIN
+    /// typed in the portal) and list apps from (G3). Needs a streamer image
+    /// built with the `gamestream` feature (the published ones are). Off by
+    /// default; older streamers never get the arguments.
     #[arg(long, env = "CHA_GAMESTREAM", default_value_t = false, action = clap::ArgAction::Set)]
     gamestream: bool,
     /// Where those ports start: video, control and audio for the first
     /// environment, then three more for each.
     #[arg(long, env = "CHA_GAMESTREAM_PORT_BASE", default_value_t = 7700)]
     gamestream_port_base: u16,
+    /// The GameStream host's HTTP port, which a Moonlight client adds the node
+    /// by. Sunshine uses the same ports: one of them per machine.
+    #[cfg(feature = "gamestream")]
+    #[arg(long, env = "CHA_GAMESTREAM_HTTP_PORT", default_value_t = 47989)]
+    gamestream_http_port: u16,
+    /// The GameStream host's HTTPS port.
+    #[cfg(feature = "gamestream")]
+    #[arg(long, env = "CHA_GAMESTREAM_HTTPS_PORT", default_value_t = 47984)]
+    gamestream_https_port: u16,
+    /// The GameStream host's RTSP port.
+    #[cfg(feature = "gamestream")]
+    #[arg(long, env = "CHA_GAMESTREAM_RTSP_PORT", default_value_t = 48010)]
+    gamestream_rtsp_port: u16,
     /// The host's uinput device: streamers make virtual gamepads with it.
     /// Empty goes without gamepads (e.g. no `uinput` module).
     #[arg(long, env = "CHA_UINPUT", default_value = "/dev/uinput")]
@@ -156,14 +175,27 @@ async fn main() -> Result<()> {
     init_tls();
     let docker = Docker::new(&args.docker_socket);
     let config = docker_config(&args)?;
+    #[cfg(feature = "gamestream")]
+    let gamestream_host = gamestream_config(&args);
     if args.doctor {
         let identity = Identity::load(&args.state_dir).ok().flatten();
+        #[allow(unused_mut)]
+        let mut more = Vec::new();
+        #[cfg(feature = "gamestream")]
+        if let Some(mut host) = gamestream_host.clone() {
+            host.name = args
+                .name
+                .clone()
+                .unwrap_or_else(|| inventory::collect().hostname);
+            more.extend(gamestream::doctor(&host));
+        }
         let ok = doctor::run(
             &docker,
             &config,
             identity.as_ref(),
             &args.state_dir,
             args.moonlight,
+            more,
         )
         .await;
         std::process::exit(if ok { 0 } else { 1 });
@@ -222,16 +254,38 @@ async fn main() -> Result<()> {
     if identity.portal_url.starts_with("http://") && args.allow_insecure_portal {
         warn!(portal = %identity.portal_url, "plain HTTP to the portal (CHA_ALLOW_INSECURE_PORTAL): for development only");
     }
+    #[cfg(feature = "gamestream")]
+    let node_name = identity.name.clone();
     let mut agent = Agent::new(identity)?;
+    #[cfg(feature = "gamestream")]
+    let mut browse = None;
     if args.moonlight {
         match Moonlight::spawn(moonlight::dir(&config.data_root)) {
-            Ok(moonlight) => agent = agent.with_moonlight(moonlight),
+            Ok(moonlight) => {
+                #[cfg(feature = "gamestream")]
+                {
+                    browse = Some(Arc::clone(&moonlight));
+                }
+                agent = agent.with_moonlight(moonlight)
+            }
             Err(err) => warn!("can't look for Moonlight hosts: {err:#}"),
         }
+    }
+    #[cfg(not(feature = "gamestream"))]
+    if args.gamestream {
+        warn!(
+            "built without the gamestream feature: environments get their Moonlight ports, \
+             but this node has no GameStream host"
+        );
     }
     match DockerRuntime::new(docker, config.clone()).await {
         Ok(runtime) => {
             info!(streamer = %config.streamer_image, render_node = %config.render_node, data_root = %config.data_root.display(), "running environments with Docker");
+            #[cfg(feature = "gamestream")]
+            if let Some(mut host) = gamestream_host {
+                host.name = node_name;
+                agent = attach_gamestream(agent, host, &runtime, browse.as_deref()).await;
+            }
             agent = agent.with_runtime(runtime);
         }
         Err(err) => warn!(
@@ -240,6 +294,48 @@ async fn main() -> Result<()> {
         ),
     }
     agent.run().await
+}
+
+/// The GameStream host's settings, when `CHA_GAMESTREAM` turns it on; the
+/// host is named after the node once that is known.
+#[cfg(feature = "gamestream")]
+fn gamestream_config(args: &Args) -> Option<gamestream::Config> {
+    args.gamestream.then(|| {
+        gamestream::Config::new(
+            String::new(),
+            args.data_root.clone(),
+            gamestream::Ports {
+                http: args.gamestream_http_port,
+                https: args.gamestream_https_port,
+                rtsp: args.gamestream_rtsp_port,
+            },
+        )
+    })
+}
+
+/// Starts the GameStream host beside the environments and gives it to the
+/// agent. Environments run without it if it can't start (a port taken, say).
+#[cfg(feature = "gamestream")]
+async fn attach_gamestream(
+    agent: Agent,
+    config: gamestream::Config,
+    runtime: &Arc<DockerRuntime>,
+    browse: Option<&Moonlight>,
+) -> Agent {
+    match gamestream::GameStream::start(config, runtime.clone()).await {
+        Ok(host) => {
+            // The host advertises itself like Sunshine does; this node's own
+            // Moonlight browse mustn't offer it to adopt.
+            if let Some(browse) = browse {
+                browse.ignore_host(host.unique_id());
+            }
+            agent.with_gamestream(host)
+        }
+        Err(err) => {
+            warn!("the GameStream host didn't start: {err:#}");
+            agent
+        }
+    }
 }
 
 /// How environments run here, from the arguments.

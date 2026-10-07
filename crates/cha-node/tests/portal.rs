@@ -278,6 +278,7 @@ fn test_inventory() -> Inventory {
         shared_dirs: Default::default(),
         // An older node's: the portal reads its GPU as the one device.
         devices: None,
+        gamestream: None,
     }
 }
 

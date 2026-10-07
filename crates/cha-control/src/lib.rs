@@ -15,6 +15,7 @@ pub mod db;
 pub mod discovery;
 pub mod environments;
 pub mod error;
+pub mod gamestream;
 pub mod ice;
 pub mod moonlight;
 pub mod nodes;
@@ -73,6 +74,8 @@ pub struct AppState {
     pub discovered: Arc<discovery::Discovered>,
     /// Moonlight hosts the nodes see, and pairings in progress (ADR 0008).
     pub moonlight: Arc<moonlight::State>,
+    /// Pairing requests from the nodes' GameStream hosts (ADR 0009).
+    pub gamestream: Arc<gamestream::State>,
 }
 
 impl AppState {
@@ -88,6 +91,7 @@ impl AppState {
             media_key,
             discovered: Arc::default(),
             moonlight: Arc::default(),
+            gamestream: Arc::default(),
         })
     }
 }

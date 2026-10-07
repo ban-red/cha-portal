@@ -1039,3 +1039,116 @@ pub async fn live_moonlight_environment(
     .fetch_optional(db)
     .await
 }
+
+// ---- GameStream devices (ADR 0009) ----
+
+/// A paired Moonlight client, with the names the API shows.
+#[derive(Clone, Debug, FromRow)]
+pub struct GameStreamDeviceRow {
+    pub id: String,
+    pub user_id: String,
+    pub node_id: String,
+    pub fingerprint: String,
+    pub unique_id: Option<String>,
+    pub name: String,
+    pub paired_at: i64,
+    pub node_name: String,
+    pub owner_name: String,
+}
+
+const GAMESTREAM_SELECT: &str = "SELECT d.id, d.user_id, d.node_id, d.fingerprint, d.unique_id, d.name, d.paired_at, \
+     n.name AS node_name, u.display_name AS owner_name \
+     FROM gamestream_devices d JOIN nodes n ON n.id = d.node_id JOIN users u ON u.id = d.user_id";
+
+/// Every device, or one user's, oldest first.
+pub async fn gamestream_devices(
+    db: &SqlitePool,
+    user_id: Option<&str>,
+) -> Result<Vec<GameStreamDeviceRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "{GAMESTREAM_SELECT} WHERE (?1 IS NULL OR d.user_id = ?1) ORDER BY d.paired_at, d.id"
+    ))
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn gamestream_devices_of_node(
+    db: &SqlitePool,
+    node_id: &str,
+) -> Result<Vec<GameStreamDeviceRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "{GAMESTREAM_SELECT} WHERE d.node_id = ? ORDER BY d.paired_at, d.id"
+    ))
+    .bind(node_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn gamestream_device(
+    db: &SqlitePool,
+    id: &str,
+) -> Result<Option<GameStreamDeviceRow>, sqlx::Error> {
+    sqlx::query_as(&format!("{GAMESTREAM_SELECT} WHERE d.id = ?"))
+        .bind(id)
+        .fetch_optional(db)
+        .await
+}
+
+/// Records a pairing. A client that pairs again with the same node keeps its
+/// row and takes the new owner and name.
+pub async fn upsert_gamestream_device(
+    db: &SqlitePool,
+    user_id: &str,
+    node_id: &str,
+    fingerprint: &str,
+    unique_id: Option<&str>,
+    name: &str,
+) -> Result<GameStreamDeviceRow, sqlx::Error> {
+    let id: String = sqlx::query_scalar(
+        "INSERT INTO gamestream_devices (id, user_id, node_id, fingerprint, unique_id, name, paired_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+         ON CONFLICT (node_id, fingerprint) DO UPDATE SET user_id = ?2, unique_id = ?5, name = ?6, paired_at = ?7 \
+         RETURNING id",
+    )
+    .bind(new_id())
+    .bind(user_id)
+    .bind(node_id)
+    .bind(fingerprint)
+    .bind(unique_id)
+    .bind(name)
+    .bind(now())
+    .fetch_one(db)
+    .await?;
+    gamestream_device(db, &id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)
+}
+
+pub async fn delete_gamestream_device(db: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM gamestream_devices WHERE id = ?")
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected()
+        > 0)
+}
+
+/// Forgets a device a client unpaired itself; the row it had, if any.
+pub async fn delete_gamestream_device_of(
+    db: &SqlitePool,
+    node_id: &str,
+    fingerprint: &str,
+) -> Result<Option<GameStreamDeviceRow>, sqlx::Error> {
+    let row: Option<GameStreamDeviceRow> = sqlx::query_as(&format!(
+        "{GAMESTREAM_SELECT} WHERE d.node_id = ? AND d.fingerprint = ?"
+    ))
+    .bind(node_id)
+    .bind(fingerprint)
+    .fetch_optional(db)
+    .await?;
+    if let Some(row) = &row {
+        delete_gamestream_device(db, &row.id).await?;
+    }
+    Ok(row)
+}

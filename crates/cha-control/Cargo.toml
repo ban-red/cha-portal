@@ -39,5 +39,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 tempfile = "3"
+# A hand-driven node connection (tests/gamestream.rs); 0.29 is what axum and cha-node use.
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }

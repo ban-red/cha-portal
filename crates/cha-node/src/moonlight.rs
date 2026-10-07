@@ -321,6 +321,9 @@ pub struct Moonlight {
     /// Pairings in progress: host id → its PIN.
     pairing: Mutex<HashMap<String, String>>,
     rescan: mpsc::UnboundedSender<()>,
+    /// Hosts to leave out of the list: this node's own GameStream host,
+    /// which the browse finds like any other.
+    ignored: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Moonlight {
@@ -382,6 +385,7 @@ impl Moonlight {
             paired,
             pairing: Mutex::default(),
             rescan,
+            ignored: Mutex::default(),
         });
         tokio::spawn(Arc::clone(&this).run(seen, rescan_rx));
         this
@@ -389,6 +393,16 @@ impl Moonlight {
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// Stops listing the host `unique_id` (this node's own GameStream host,
+    /// which is not one to adopt); it drops out at the next look.
+    pub fn ignore_host(&self, unique_id: &str) {
+        self.ignored
+            .lock()
+            .expect("ignored lock")
+            .insert(unique_id.to_ascii_uppercase());
+        let _ = self.rescan.send(());
     }
 
     fn found(&self, unique_id: &str) -> Result<MoonlightHost> {
@@ -569,7 +583,11 @@ impl Moonlight {
             }
         }
         entries.retain(|_, e| now.duration_since(e.answered) < GONE_AFTER);
-        let list = list_of(entries);
+        let mut list = list_of(entries);
+        {
+            let ignored = self.ignored.lock().expect("ignored lock");
+            list.retain(|h| !ignored.contains(&h.unique_id.to_ascii_uppercase()));
+        }
         self.hosts.send_if_modified(|current| {
             if *current == list {
                 false

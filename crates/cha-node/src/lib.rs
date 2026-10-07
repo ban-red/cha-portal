@@ -13,8 +13,10 @@ pub mod crashlog;
 pub mod devices;
 pub mod docker;
 pub mod doctor;
-pub mod envusage;
 pub mod environments;
+pub mod envusage;
+#[cfg(feature = "gamestream")]
+pub mod gamestream;
 pub mod hostfiles;
 pub mod inventory;
 pub mod moonlight;
@@ -31,8 +33,8 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use cha_wire::{
-    CONNECT_PATH, ENROLL_PATH, EnrollRequest, EnrollResponse, Inventory, NodeKey, NodeRequest,
-    NodeResponse, PROTOCOL_VERSION, ToNode, ToPortal, close,
+    CONNECT_PATH, ENROLL_PATH, EnrollRequest, EnrollResponse, GameStreamInfo, Inventory, NodeKey,
+    NodeRequest, NodeResponse, PROTOCOL_VERSION, ToNode, ToPortal, close,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -206,12 +208,21 @@ pub struct Closed {
     pub reason: String,
 }
 
+/// What the agent holds of the node's GameStream host (ADR 0009): the running
+/// host, or nothing, and a placeholder without the `gamestream` feature.
+#[cfg(feature = "gamestream")]
+type GameStreamHandle = Option<Arc<gamestream::GameStream>>;
+#[cfg(not(feature = "gamestream"))]
+#[derive(Clone, Default)]
+struct GameStreamHandle;
+
 pub struct Agent {
     identity: Identity,
     key: NodeKey,
     inventory: fn() -> Inventory,
     runtime: Option<Arc<dyn Runtime>>,
     moonlight: Option<Arc<dyn Control>>,
+    gamestream: GameStreamHandle,
 }
 
 impl Agent {
@@ -222,7 +233,16 @@ impl Agent {
             inventory: inventory::collect,
             runtime: None,
             moonlight: None,
+            gamestream: Default::default(),
         })
+    }
+
+    /// Serves Moonlight clients (ADR 0009): the host's pairing requests go to
+    /// the portal, and the portal's PINs and device lists come to it.
+    #[cfg(feature = "gamestream")]
+    pub fn with_gamestream(mut self, host: Arc<gamestream::GameStream>) -> Self {
+        self.gamestream = Some(host);
+        self
     }
 
     /// Finds and pairs Moonlight hosts (ADR 0008); without it the node never
@@ -321,23 +341,30 @@ impl Agent {
             protocol: PROTOCOL_VERSION,
         };
         sink.send(encode(&hello)?).await?;
-        let (heartbeat, portal_reads_warnings, portal_reads_usage, portal_reads_moonlight) =
-            match next_message(&mut stream).await? {
-                Next::Message(ToNode::Welcome {
-                    heartbeat_secs,
-                    environment_warnings,
-                    node_usage,
-                    moonlight,
-                    ..
-                }) => (
-                    Duration::from_secs(heartbeat_secs.max(1)),
-                    environment_warnings,
-                    node_usage,
-                    moonlight,
-                ),
-                Next::Closed(closed) => return Ok(closed),
-                Next::Message(other) => bail!("expected a welcome, got {other:?}"),
-            };
+        let (
+            heartbeat,
+            portal_reads_warnings,
+            portal_reads_usage,
+            portal_reads_moonlight,
+            portal_reads_gamestream,
+        ) = match next_message(&mut stream).await? {
+            Next::Message(ToNode::Welcome {
+                heartbeat_secs,
+                environment_warnings,
+                node_usage,
+                moonlight,
+                gamestream,
+                ..
+            }) => (
+                Duration::from_secs(heartbeat_secs.max(1)),
+                environment_warnings,
+                node_usage,
+                moonlight,
+                gamestream,
+            ),
+            Next::Closed(closed) => return Ok(closed),
+            Next::Message(other) => bail!("expected a welcome, got {other:?}"),
+        };
         *welcomed = true;
         info!(%node_id, portal = %self.identity.portal_url, "connected");
 
@@ -349,9 +376,13 @@ impl Agent {
             .as_ref()
             .map(|r| r.shared_dirs())
             .unwrap_or_default();
+        // Only a portal that reads it hears of the GameStream host: it would
+        // otherwise show Moonlight clients a host nobody can pair with.
+        let gamestream = gamestream_info(&self.gamestream).filter(|_| portal_reads_gamestream);
         let collect = move || Inventory {
             data_root: data_root.clone(),
             shared_dirs: shared_dirs.clone(),
+            gamestream: gamestream.clone(),
             ..probe()
         };
         let mut inventory = self.inventory_now(collect.clone()).await?;
@@ -390,6 +421,10 @@ impl Agent {
             sink.send(encode(&ToPortal::MoonlightHosts { hosts: list })?)
                 .await?;
         }
+
+        // What the GameStream host says (pairing requests and outcomes), for a
+        // portal that reads it; what it said before this connection is gone.
+        let mut host_says = gamestream_events(&self.gamestream).filter(|_| portal_reads_gamestream);
 
         // Requests run as tasks (starting an environment takes seconds) and
         // answer through this channel.
@@ -476,6 +511,11 @@ impl Agent {
                         sink.send(encode(&ToPortal::MoonlightHosts { hosts: list })?).await?;
                     }
                 }
+                said = next_event(&mut host_says) => {
+                    if let Some(msg) = said {
+                        sink.send(encode(&msg)?).await?;
+                    }
+                }
                 ended = next_event(&mut paired) => {
                     if let Some(Paired { unique_id, ok, message }) = ended {
                         sink.send(encode(&ToPortal::MoonlightPaired { unique_id, ok, message })?).await?;
@@ -510,9 +550,10 @@ impl Agent {
                             ToNode::Request { id, request } => {
                                 let runtime = self.runtime.clone();
                                 let moonlight = self.moonlight.clone();
+                                let gamestream = self.gamestream.clone();
                                 let out = out_tx.clone();
                                 tokio::spawn(async move {
-                                    let result = handle(runtime, moonlight, request).await;
+                                    let result = handle(runtime, moonlight, gamestream, request).await;
                                     let _ = out.send(ToPortal::Response { id, result });
                                 });
                             }
@@ -532,6 +573,7 @@ impl Agent {
 async fn handle(
     runtime: Option<Arc<dyn Runtime>>,
     moonlight: Option<Arc<dyn Control>>,
+    gamestream: GameStreamHandle,
     request: NodeRequest,
 ) -> Result<NodeResponse, String> {
     const NO_MOONLIGHT: &str = "this node doesn't look for Moonlight hosts (CHA_MOONLIGHT=false)";
@@ -598,6 +640,9 @@ async fn handle(
                 .map(|apps| NodeResponse::MoonlightApps { apps })
                 .map_err(|e| format!("{e:#}"))
         }
+        request @ (NodeRequest::GameStreamPin { .. } | NodeRequest::GameStreamDevices { .. }) => {
+            gamestream_request(&gamestream, request)
+        }
         NodeRequest::StopEnvironment { id } => {
             let runtime = runtime.ok_or(NO_RUNTIME)?;
             runtime
@@ -607,6 +652,44 @@ async fn handle(
                 .map_err(|e| format!("{e:#}"))
         }
     }
+}
+
+// The agent's few calls into the GameStream host, and what each does without
+// the feature: nothing to announce, nothing it says, and a refusal.
+
+#[cfg(feature = "gamestream")]
+fn gamestream_info(host: &GameStreamHandle) -> Option<GameStreamInfo> {
+    host.as_ref().map(|h| h.info())
+}
+
+#[cfg(not(feature = "gamestream"))]
+fn gamestream_info(_: &GameStreamHandle) -> Option<GameStreamInfo> {
+    None
+}
+
+#[cfg(feature = "gamestream")]
+fn gamestream_events(host: &GameStreamHandle) -> Option<broadcast::Receiver<ToPortal>> {
+    host.as_ref().map(|h| h.outgoing())
+}
+
+#[cfg(not(feature = "gamestream"))]
+fn gamestream_events(_: &GameStreamHandle) -> Option<broadcast::Receiver<ToPortal>> {
+    None
+}
+
+#[cfg(feature = "gamestream")]
+fn gamestream_request(
+    host: &GameStreamHandle,
+    request: NodeRequest,
+) -> Result<NodeResponse, String> {
+    host.as_ref()
+        .ok_or("this node's GameStream host is off (CHA_GAMESTREAM=false)")?
+        .handle(request)
+}
+
+#[cfg(not(feature = "gamestream"))]
+fn gamestream_request(_: &GameStreamHandle, _: NodeRequest) -> Result<NodeResponse, String> {
+    Err("this node was built without GameStream support".into())
 }
 
 /// The next event from the runtime (an exit, a progress note), or never

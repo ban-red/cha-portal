@@ -89,7 +89,7 @@ Runs on macOS and Linux. Unit tests (golden packets, pure functions, hostile byt
 
 Not covered: video encryption end to end (moonlight-common-rust cannot decrypt video, so the client tests run it off; the encrypted shards are checked in the packetizer test by decrypting them), real Moonlight clients, mDNS on a real network, and the Linux build (nothing here is Linux-only; quinn-udp uses GSO there).
 
-## Trying it with a real Moonlight client (before G3)
+## Trying it with a real Moonlight client (without the node's host)
 
 `examples/dev_host.rs` runs the front with an in-memory pairing store and one app, "Environment", and gives each launched session to a `cha-streamer` built with `--features gamestream`, through its local API. The PIN a client shows is read from stdin. Nothing is kept: every run is a new host (a new id and certificate), so pair again and remove the old entry from the client.
 
@@ -119,6 +119,10 @@ Options: `--name`, `--bind`, `--http`, `--https`, `--rtsp` (see the file's heade
 ## What G2 added
 
 The streamer's adapter lives in `crates/cha-streamer/src/gamestream/` (the `gamestream` feature, see that README): `MediaBackend` over the shared encoder, the Opus mixer (with 5 ms frames for Moonlight), the compositor's input and the virtual pads; the local API the host drives; and the agent's port block (`CHA_GAMESTREAM`, `deploy/README.md`). What needs a real client to verify is listed in the G2 report: pad kinds and rumble, trigger effects, the mouse and wheel feel, keys, 5 ms audio, size and fps changes, and resume.
+
+## What G3 added
+
+The node's host is `crates/cha-node/src/gamestream/` (the `gamestream` cargo feature of `cha-node`, on by default; `CHA_GAMESTREAM=true` at run time): `directory.rs` is the `Directory` (a client's apps are its owner's running environments, launches name the environment's port block, `start_media` posts the handoff to that environment's streamer), `pairing.rs` the `PairingStore` (the portal's list, cached) and the pending pairings, `identity.rs` the host's certificate and `uniqueid` under `<data root>/node/gamestream/`. Pairing is the portal's: the PIN a client shows is typed by a signed-in user in the portal (`ToPortal::GameStreamPairRequest`, `NodeRequest::GameStreamPin`), and the portal keeps the devices (`gamestream_devices`) and sends the node its list on every connect and change (`NodeRequest::GameStreamDevices`). `cargo test -p cha-node --test gamestream` pairs, lists, launches and unpairs with `moonlight-common-rust` against it, with a fake portal on the agent's channel. What needs a real client is in the G3 report: mDNS discovery on a real network, a launch that reaches PLAY with a real streamer, and a Moonlight client's own unpair button.
 
 ## Not done in G1
 

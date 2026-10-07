@@ -29,21 +29,21 @@ const SKEW_FAIL_SECS: f64 = 30.0;
 const SKEW_WARN_SECS: f64 = 5.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Level {
+pub enum Level {
     Ok,
     Info,
     Warn,
     Fail,
 }
 
-struct Check {
+pub struct Check {
     level: Level,
     name: String,
     detail: String,
     fix: Option<String>,
 }
 
-fn check(level: Level, name: impl Into<String>, detail: impl Into<String>) -> Check {
+pub fn check(level: Level, name: impl Into<String>, detail: impl Into<String>) -> Check {
     Check {
         level,
         name: name.into(),
@@ -53,19 +53,21 @@ fn check(level: Level, name: impl Into<String>, detail: impl Into<String>) -> Ch
 }
 
 impl Check {
-    fn fix(mut self, fix: impl Into<String>) -> Self {
+    pub fn fix(mut self, fix: impl Into<String>) -> Self {
         self.fix = Some(fix.into());
         self
     }
 }
 
-/// Runs every check, prints the report; true when nothing failed.
+/// Runs every check, prints the report; true when nothing failed. `more` are
+/// checks of optional parts that bring their own (the GameStream host).
 pub async fn run(
     docker: &Docker,
     config: &DockerConfig,
     identity: Option<&Identity>,
     state_dir: &Path,
     moonlight: bool,
+    more: Vec<Check>,
 ) -> bool {
     let mut checks = Vec::new();
     let engine = docker.version().await;
@@ -101,6 +103,7 @@ pub async fn run(
     });
     checks.push(ports(config));
     checks.extend(gamestream_ports(config));
+    checks.extend(more);
     checks.push(host_files(Path::new(hostfiles::HOST_ETC)));
 
     println!("cha-node doctor\n");

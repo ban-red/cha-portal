@@ -21,6 +21,9 @@ pub enum ApiError {
     /// A node the portal depends on failed or couldn't be reached.
     #[error("{1}")]
     BadGateway(&'static str, String),
+    /// A node the portal waited on didn't finish in time.
+    #[error("{1}")]
+    GatewayTimeout(&'static str, String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -58,6 +61,7 @@ impl ApiError {
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict(code, _) => (StatusCode::CONFLICT, code),
             Self::BadGateway(code, _) => (StatusCode::BAD_GATEWAY, code),
+            Self::GatewayTimeout(code, _) => (StatusCode::GATEWAY_TIMEOUT, code),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }

@@ -21,6 +21,8 @@ pub fn collect() -> Inventory {
         data_root: None,
         shared_dirs: Default::default(),
         devices: None,
+        // Likewise: the agent says whether it runs a GameStream host.
+        gamestream: None,
     };
     // NVIDIA and the CPU; the agent adds the VA-API devices it probes.
     let mut devices = inventory.devices_or_derived();

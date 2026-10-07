@@ -86,6 +86,10 @@ const LABEL_GAMESTREAM_SECRET: &str = "sh.cha.gamestream-secret";
 const LABEL_HOME: &str = "sh.cha.home";
 const LABEL_OWNER: &str = "sh.cha.owner";
 const LABEL_TEMPLATE: &str = "sh.cha.template";
+/// On a streamer: the environment streams a Moonlight host's app (a gateway),
+/// not an app beside it. Which is how a restarted agent keeps them out of
+/// the GameStream host's app list.
+const LABEL_GATEWAY: &str = "sh.cha.gateway";
 pub const APP_UID: u32 = 1000;
 /// Where a gateway container sees the node's Moonlight identity.
 const GATEWAY_IDENTITY_DIR: &str = "/identity";
@@ -342,6 +346,22 @@ impl GameStreamAccess {
     }
 }
 
+/// A running environment as the node's GameStream host sees it: whose it is,
+/// what it runs, and how to reach its media half.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningEnvironment {
+    pub id: String,
+    /// The user who launched it; empty for an environment an older portal or
+    /// agent started, which then belongs to nobody the host can name.
+    pub owner: String,
+    /// The catalog template's id.
+    pub template: String,
+    /// It streams a Moonlight host's app through a gateway.
+    pub gateway: bool,
+    /// `None` without GameStream, or for an environment started before it was on.
+    pub gamestream: Option<GameStreamAccess>,
+}
+
 /// 32 hex digits from the OS's random source.
 fn random_secret() -> Result<String> {
     let mut bytes = [0u8; 16];
@@ -568,6 +588,9 @@ struct State {
     /// Environment id → its GameStream media ports and API secret, for the
     /// environments that have them ([`DockerConfig::gamestream_port_base`]).
     gamestream: BTreeMap<String, GameStreamAccess>,
+    /// Environment id → (owner, template, gateway), as the GameStream host
+    /// lists them ([`DockerRuntime::running_environments`]).
+    meta: BTreeMap<String, (String, String, bool)>,
     /// Environments being stopped on purpose (their containers' deaths aren't news).
     stopping: HashSet<String>,
     /// Environments being started: id → what died meanwhile, if anything. The
@@ -699,10 +722,19 @@ impl DockerRuntime {
                         state.overlays.insert(id.clone(), Overlays::new(overlays));
                     }
                 }
-                if container.labels.get(LABEL_ROLE).map(String::as_str) == Some("streamer")
-                    && let Some(access) = GameStreamAccess::from_labels(port, &container.labels)
-                {
-                    state.gamestream.insert(id.clone(), access);
+                if container.labels.get(LABEL_ROLE).map(String::as_str) == Some("streamer") {
+                    if let Some(access) = GameStreamAccess::from_labels(port, &container.labels) {
+                        state.gamestream.insert(id.clone(), access);
+                    }
+                    let label = |name| container.labels.get(name).cloned().unwrap_or_default();
+                    state.meta.insert(
+                        id.clone(),
+                        (
+                            label(LABEL_OWNER),
+                            label(LABEL_TEMPLATE),
+                            container.labels.contains_key(LABEL_GATEWAY),
+                        ),
+                    );
                 }
                 state.ports.insert(id, port);
             }
@@ -715,6 +747,7 @@ impl DockerRuntime {
                 .expect("state lock")
                 .gamestream
                 .remove(&id);
+            self.state.lock().expect("state lock").meta.remove(&id);
             self.state.lock().expect("state lock").homes.remove(&id);
             self.state.lock().expect("state lock").overlays.remove(&id);
             // Nobody to tell yet (the portal finds it gone when we connect),
@@ -914,11 +947,18 @@ impl DockerRuntime {
                 .remove(&spec.id);
             return Err(err);
         }
-        self.state
-            .lock()
-            .expect("state lock")
-            .starting
-            .insert(spec.id.clone(), None);
+        {
+            let mut state = self.state.lock().expect("state lock");
+            state.meta.insert(
+                spec.id.clone(),
+                (
+                    spec.owner.clone(),
+                    spec.template.clone(),
+                    spec.gateway.is_some(),
+                ),
+            );
+            state.starting.insert(spec.id.clone(), None);
+        }
         let started = async {
             self.claim_home(&spec)?;
             self.prepare_storage(&mut spec).await?;
@@ -960,6 +1000,7 @@ impl DockerRuntime {
                     let mut state = self.state.lock().expect("state lock");
                     state.ports.remove(&spec.id);
                     state.gamestream.remove(&spec.id);
+                    state.meta.remove(&spec.id);
                     state.homes.remove(&spec.id);
                 }
                 // Everything this launch made, app and streamer both, whichever
@@ -1137,6 +1178,27 @@ impl DockerRuntime {
             .gamestream
             .get(id)
             .cloned()
+    }
+
+    /// The environments running now, for the node's GameStream host: not the
+    /// ones still starting or being stopped.
+    pub fn running_environments(&self) -> Vec<RunningEnvironment> {
+        let state = self.state.lock().expect("state lock");
+        state
+            .ports
+            .keys()
+            .filter(|id| !state.starting.contains_key(*id) && !state.stopping.contains(*id))
+            .filter_map(|id| {
+                let (owner, template, gateway) = state.meta.get(id)?.clone();
+                Some(RunningEnvironment {
+                    id: id.clone(),
+                    owner,
+                    template,
+                    gateway,
+                    gamestream: state.gamestream.get(id).cloned(),
+                })
+            })
+            .collect()
     }
 
     /// Takes the home directory `spec` names: refused while it is being
@@ -1657,6 +1719,9 @@ impl DockerRuntime {
             "RUST_LOG=info,smithay=warn,str0m=warn".to_string(),
         ];
         let mut labels = self.labels(&spec.id, "streamer", port);
+        // Whose it is, which the node's GameStream host reads back after a restart.
+        labels[LABEL_OWNER] = json!(spec.owner);
+        labels[LABEL_TEMPLATE] = json!(spec.template);
         if let Some(access) = &gamestream {
             cmd.extend(["--gamestream-ports".to_string(), access.ports.to_string()]);
             env.push(format!("CHA_GAMESTREAM_SECRET={}", access.secret));
@@ -1751,6 +1816,7 @@ impl DockerRuntime {
         let mut labels = self.labels(&spec.id, "streamer", port);
         labels[LABEL_OWNER] = json!(spec.owner);
         labels[LABEL_TEMPLATE] = json!(spec.template);
+        labels[LABEL_GATEWAY] = json!("1");
         json!({
             "Image": spec.image,
             "Cmd": cmd,
@@ -1895,6 +1961,7 @@ impl DockerRuntime {
         state.stopping.remove(id);
         state.ports.remove(id);
         state.gamestream.remove(id);
+        state.meta.remove(id);
         state.homes.remove(id);
         state.overlays.remove(id);
         result
