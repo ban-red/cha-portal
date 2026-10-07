@@ -1,0 +1,48 @@
+# Settings for `cargo hakari`, which keeps crates/cha-workspace-hack: one
+# dependency carrying the union of features every member asks of a shared
+# third-party crate. Without it, `cargo test -p cha-node`, a workspace clippy
+# and a `cargo run -p cha-control` each resolve tokio, rustls & co. with
+# different features and compile (and keep) their own copies in target/.
+#
+# After changing a dependency, run:
+#     cargo hakari generate && cargo hakari manage-deps
+# scripts/check.sh fails when the crate is out of date.
+# Options: https://docs.rs/cargo-hakari/latest/cargo_hakari/config
+
+hakari-package = "cha-workspace-hack"
+dep-format-version = "4"
+resolver = "3"
+
+# The Mac (portal, player, client crates) and the node (streamer, images).
+platforms = [
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+
+# Spikes are experiments built now and then; their dependencies (GStreamer,
+# old servers) shouldn't flow into every product crate's build.
+[traversal-excludes]
+workspace-members = [
+    "s1-server",
+    "s2-streamer",
+    "s3-gateway",
+]
+
+# Kept out of the crate, so members that don't use them don't compile them:
+# the native player's GPU and window stack (wgpu, SDL3 built from source).
+[final-excludes]
+third-party = [
+    { name = "wgpu" },
+    { name = "wgpu-core" },
+    { name = "wgpu-hal" },
+    { name = "wgpu-types" },
+    { name = "sdl3-sys" },
+    { name = "objc2-metal" },
+]
+# Dependency-free or tiny crates whose images would otherwise compile the
+# whole crate (sqlx, axum, rustls) for a few hundred lines of code.
+workspace-members = [
+    "cha-proto",
+    "cha-testpattern",
+    "cha-x11-clipboard",
+]

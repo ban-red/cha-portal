@@ -21,6 +21,7 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros", "net"] }
 tracing = "0.1"
 url = "2"
 wtransport = { version = "0.7", features = ["quinn"] }
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

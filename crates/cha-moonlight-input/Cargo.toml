@@ -10,3 +10,4 @@ publish = false
 [dependencies]
 cha-client = { path = "../cha-client" }
 cha-gamestream = { path = "../cha-gamestream" }
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }

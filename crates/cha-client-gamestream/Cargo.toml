@@ -18,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["net", "rt", "sync", "time", "macros"] }
 tracing = "0.1"
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 
 [dev-dependencies]
 # Our own GameStream host and its fakes (its tests' rig is shared by path).

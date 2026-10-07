@@ -17,3 +17,4 @@ serde_json = "1"
 sha2 = "0.10"
 spake2 = "0.4"
 thiserror = "2"
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }

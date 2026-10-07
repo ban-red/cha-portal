@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 libc = "0.2"
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }

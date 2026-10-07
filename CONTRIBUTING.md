@@ -6,7 +6,7 @@ Security problems don't go in issues: see [SECURITY.md](SECURITY.md).
 
 ## Getting set up
 
-You need Rust ≥ 1.93 and [Bun](https://bun.sh) ≥ 1.4. The JS tooling is Bun only: use `bun install` and `bun run`, never npm or pnpm.
+You need Rust ≥ 1.93, [`cargo-hakari`](https://docs.rs/cargo-hakari) (`cargo install cargo-hakari --locked`) and [Bun](https://bun.sh) ≥ 1.4. The JS tooling is Bun only: use `bun install` and `bun run`, never npm or pnpm.
 
 ```bash
 bun install
@@ -16,7 +16,7 @@ bun install
 ./scripts/check.sh
 ```
 
-`check.sh` is what CI would run, and a pull request should pass it: `cargo fmt --check`, clippy with `-D warnings`, the workspace tests, the Python tests for the Steam image's scripts and the node's host installer, the portal's colour guard and theme tests, its typecheck and its build.
+`check.sh` is what CI would run, and a pull request should pass it: `cargo fmt --check`, the workspace-hack check, clippy with `-D warnings`, the workspace tests, the Python tests for the Steam image's scripts and the node's host installer, the portal's colour guard and theme tests, its typecheck and its build. If you add, remove or change a dependency, run `cargo hakari generate && cargo hakari manage-deps` and commit the result ([README](README.md#development) explains why).
 
 `bun run dev` starts a portal with hot reload and a passwordless dev login; the [README](README.md#development) explains it. Faster loops while you work:
 

@@ -15,6 +15,7 @@ gamestream = ["dep:cha-gamestream"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 
 # The engine is Linux-only (Wayland, GBM, EGL, NVENC); elsewhere the binary
 # only explains that.

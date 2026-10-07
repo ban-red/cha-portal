@@ -1,13 +1,27 @@
 #!/usr/bin/env sh
-# Everything CI would run: Rust formatting, lints and tests across the
-# workspace, the Steam image's scripts' tests (the status watcher, the library
-# registration), the node's host installer's tests, and the portal's colour guard,
-# theme contrast tests, typecheck and production build.
+# Everything CI would run: Rust formatting, the workspace-hack's freshness,
+# lints and tests across the workspace, the Steam image's scripts' tests (the
+# status watcher, the library registration), the node's host installer's
+# tests, and the portal's colour guard, theme contrast tests, typecheck and
+# production build.
 set -eu
 cd "$(dirname "$0")/.."
 
 echo "==> cargo fmt"
 cargo fmt --all --check
+echo "==> cargo hakari (crates/cha-workspace-hack up to date)"
+if ! command -v cargo-hakari >/dev/null 2>&1; then
+  echo "cargo-hakari is missing: cargo install cargo-hakari --locked" >&2
+  exit 1
+fi
+cargo hakari generate --diff >/dev/null || {
+  echo "the workspace-hack is stale: cargo hakari generate && cargo hakari manage-deps" >&2
+  exit 1
+}
+cargo hakari manage-deps --dry-run >/dev/null || {
+  echo "a crate lacks the workspace-hack dependency: cargo hakari manage-deps" >&2
+  exit 1
+}
 echo "==> cargo clippy"
 cargo clippy --workspace --all-targets -- -D warnings
 echo "==> cargo test"

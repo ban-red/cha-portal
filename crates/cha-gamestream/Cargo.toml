@@ -33,6 +33,7 @@ tokio-enet = "0.1"      # BSD-2-Clause
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 tracing = "0.1"
 x509-parser = "0.18"
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 
 [dev-dependencies]
 # GPL-3.0-or-later, as in cha-gateway and cha-node: a real client for the loopback tests.

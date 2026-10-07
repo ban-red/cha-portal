@@ -12,3 +12,4 @@ bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 thiserror = "2"
 wgpu = "29"
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }

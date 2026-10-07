@@ -12,3 +12,4 @@ anyhow = "1"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }

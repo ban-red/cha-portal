@@ -715,6 +715,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "cha-workspace-hack",
  "serde",
  "tokio",
 ]
@@ -728,6 +729,7 @@ dependencies = [
  "cha-client",
  "cha-gamestream",
  "cha-moonlight-input",
+ "cha-workspace-hack",
  "futures-util",
  "mdns-sd",
  "serde",
@@ -745,6 +747,7 @@ dependencies = [
  "cha-client",
  "cha-client-stream",
  "cha-control",
+ "cha-workspace-hack",
  "reqwest",
  "rustls",
  "serde",
@@ -767,6 +770,7 @@ dependencies = [
  "bytes",
  "cha-client",
  "cha-proto",
+ "cha-workspace-hack",
  "rustls",
  "serde_json",
  "sha2 0.10.9",
@@ -787,6 +791,7 @@ dependencies = [
  "axum-extra",
  "base64 0.22.1",
  "cha-wire",
+ "cha-workspace-hack",
  "clap",
  "futures-util",
  "getrandom 0.3.4",
@@ -821,6 +826,7 @@ dependencies = [
  "aws-lc-rs",
  "bytes",
  "cbc",
+ "cha-workspace-hack",
  "fec-rs",
  "form_urlencoded",
  "futures-util",
@@ -857,6 +863,7 @@ dependencies = [
  "cha-gamestream",
  "cha-moonlight-input",
  "cha-wire",
+ "cha-workspace-hack",
  "clap",
  "libc",
  "serde",
@@ -875,6 +882,7 @@ version = "0.1.0"
 dependencies = [
  "cha-client",
  "cha-gamestream",
+ "cha-workspace-hack",
 ]
 
 [[package]]
@@ -889,6 +897,7 @@ dependencies = [
  "cha-gamestream",
  "cha-sysinfo",
  "cha-wire",
+ "cha-workspace-hack",
  "clap",
  "futures-util",
  "getrandom 0.3.4",
@@ -914,6 +923,7 @@ dependencies = [
 name = "cha-nvenc"
 version = "0.1.0"
 dependencies = [
+ "cha-workspace-hack",
  "libc",
 ]
 
@@ -928,6 +938,7 @@ dependencies = [
  "cha-client-gamestream",
  "cha-client-portal",
  "cha-pyrowave-wgpu",
+ "cha-workspace-hack",
  "clap",
  "cpal",
  "egui",
@@ -960,6 +971,7 @@ version = "0.0.1"
 name = "cha-pyrowave"
 version = "0.1.0"
 dependencies = [
+ "cha-workspace-hack",
  "libc",
 ]
 
@@ -968,6 +980,7 @@ name = "cha-pyrowave-wgpu"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "cha-workspace-hack",
  "pollster",
  "thiserror 2.0.21",
  "wgpu",
@@ -987,6 +1000,7 @@ dependencies = [
  "cha-pyrowave",
  "cha-sysinfo",
  "cha-wire",
+ "cha-workspace-hack",
  "clap",
  "libc",
  "pulseaudio",
@@ -1006,6 +1020,7 @@ dependencies = [
 name = "cha-sysinfo"
 version = "0.1.0"
 dependencies = [
+ "cha-workspace-hack",
  "libc",
  "tracing",
 ]
@@ -1025,6 +1040,7 @@ name = "cha-wire"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "cha-workspace-hack",
  "ed25519-dalek",
  "getrandom 0.3.4",
  "hmac",
@@ -1033,6 +1049,111 @@ dependencies = [
  "sha2 0.10.9",
  "spake2",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "cha-workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "arrayvec",
+ "aws-lc-rs",
+ "axum",
+ "axum-core",
+ "base64 0.22.1",
+ "base64 0.23.1",
+ "bitflags 2.13.2",
+ "block-padding",
+ "bytemuck",
+ "cbc",
+ "cc",
+ "cipher",
+ "clap",
+ "clap_builder",
+ "const-oid 0.9.6",
+ "core-foundation-sys",
+ "crossbeam-utils",
+ "crypto-common 0.1.7",
+ "der",
+ "digest 0.10.7",
+ "displaydoc",
+ "either",
+ "errno",
+ "fec-rs",
+ "form_urlencoded",
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "half",
+ "hashbrown 0.15.5",
+ "hashbrown 0.17.1",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "indexmap",
+ "inout",
+ "lazy_static",
+ "libc",
+ "linux-raw-sys 0.12.1",
+ "log",
+ "memchr",
+ "mio",
+ "num-traits",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "once_cell",
+ "percent-encoding",
+ "pkcs8",
+ "ppv-lite86",
+ "proc-macro2",
+ "profiling",
+ "quinn-udp",
+ "quote",
+ "rand_core 0.6.4",
+ "rcgen",
+ "rustix 1.1.5",
+ "rustls",
+ "rustls-webpki",
+ "security-framework-sys",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "sha2 0.10.9",
+ "signature",
+ "slab",
+ "smallvec",
+ "spki",
+ "sqlx-core",
+ "sqlx-sqlite",
+ "subtle",
+ "syn 2.0.119",
+ "syn 3.0.6",
+ "sync_wrapper",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-core",
+ "tungstenite",
+ "typenum",
+ "url",
+ "uuid",
+ "wayland-protocols",
+ "wayland-sys",
+ "x509-cert",
+ "zerocopy",
+ "zeroize",
 ]
 
 [[package]]
