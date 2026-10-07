@@ -120,6 +120,7 @@ Every Cha Portal service sits in the 76xx range.
 | TCP 7679 | An unclaimed node agent, waiting for a claim; UDP 5353 for its mDNS advertisement |
 | 7600–7647 | Environment streamers: three ports each from `CHA_PORT_BASE` (TCP signalling on localhost, UDP WebRTC, UDP WebTransport), 16 environments by default |
 | TCP 7660, UDP 7661–7662 | A standalone `cha-streamer` (signalling, WebRTC, WebTransport) |
+| UDP 7700–7747 | With `CHA_GAMESTREAM` on: Moonlight media, three ports each from `CHA_GAMESTREAM_PORT_BASE` (video, control, audio), in the same slot as the environment's streamer ports |
 
 The spikes under `spikes/` keep their own ports.
 
@@ -143,6 +144,8 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |
 | `CHA_PORT_BASE` | `7600` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
 | `CHA_MAX_ENVIRONMENTS` | `16` | |
+| `CHA_GAMESTREAM` | `false` | Give each environment's streamer ports for a Moonlight session ([ADR 0009](../docs/adr/0009-gamestream-host-module.md), G2): `--gamestream-ports` and a random secret for the streamer's local API (in its environment, kept by the agent). Needs a streamer image built with the `gamestream` feature (the Dockerfile does); an older image fails to start with the new argument, so leave this off for those. Nothing else changes while it is off. The node's own GameStream host (pairing, the app list) comes with G3 |
+| `CHA_GAMESTREAM_PORT_BASE` | `7700` | Where those ports start: UDP video, control and audio for the first environment, three more for each. The range (three ports times `CHA_MAX_ENVIRONMENTS`) must not overlap `CHA_PORT_BASE`'s; the agent refuses to start otherwise. Forward or open them for clients that aren't on the node's LAN; `cha-node --doctor` checks the first block is free |
 | `CHA_DATA_ROOT` | `/srv/cha-portal` | Where app data lives ([below](#app-data)): a host directory the compose file also mounts into the agent at the same path |
 | `CHA_NVIDIA_WINE_DIR` | `/usr/lib/x86_64-linux-gnu/nvidia/wine` | The driver's `nvngx.dll` and `_nvngx.dll`, which Proton copies into its prefixes for DLSS and the CDI spec leaves out. Bound read-only into apps at the same path when the host has it (the agent asks the engine; nothing to mount into the agent); empty goes without |
 | `CHA_SHARED_DIRS` | | Keeps an app's shared directory elsewhere, `app=/absolute/path`, comma-separated (`steam=/mnt/games/steam`, a NAS). Bind each into the agent read-only at that path |

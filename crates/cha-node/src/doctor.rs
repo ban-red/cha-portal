@@ -100,6 +100,7 @@ pub async fn run(
         None => unclaimed(crate::claim::read_code(state_dir).as_deref()),
     });
     checks.push(ports(config));
+    checks.extend(gamestream_ports(config));
     checks.push(host_files(Path::new(hostfiles::HOST_ETC)));
 
     println!("cha-node doctor\n");
@@ -1058,6 +1059,36 @@ fn ports(config: &DockerConfig) -> Check {
         )
         .fix("pick another range with CHA_PORT_BASE")
     }
+}
+
+/// With GameStream on, the first environment's Moonlight ports (UDP: video,
+/// control, audio), if nothing holds them; nothing to say when it is off.
+fn gamestream_ports(config: &DockerConfig) -> Option<Check> {
+    let base = config.gamestream_port_base?;
+    let last = base + 3 * config.max_environments - 1;
+    let taken: Vec<u16> = (base..base + 3)
+        .filter(|port| std::net::UdpSocket::bind(("0.0.0.0", *port)).is_err())
+        .collect();
+    Some(if taken.is_empty() {
+        check(
+            Level::Ok,
+            "GameStream ports",
+            format!(
+                "{base}-{last} for Moonlight sessions (UDP: video, control, audio, three per environment)"
+            ),
+        )
+    } else {
+        let taken: Vec<String> = taken.iter().map(u16::to_string).collect();
+        check(
+            Level::Warn,
+            "GameStream ports",
+            format!(
+                "{} (UDP) is taken: by a running environment, or something else",
+                taken.join(", ")
+            ),
+        )
+        .fix("pick another range with CHA_GAMESTREAM_PORT_BASE")
+    })
 }
 
 #[cfg(test)]

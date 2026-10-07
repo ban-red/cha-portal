@@ -74,6 +74,11 @@ use crate::storage::{DataRoot, Seed, plan_seed};
 const LABEL_ENV: &str = "sh.cha.env";
 const LABEL_ROLE: &str = "sh.cha.role";
 const LABEL_HTTP_PORT: &str = "sh.cha.http-port";
+/// On a streamer started with GameStream media ports (`CHA_GAMESTREAM`): its
+/// `video,control,audio` ports and the secret of its `/gamestream/*` API, which
+/// is how a restarted agent gets them back.
+const LABEL_GAMESTREAM_PORTS: &str = "sh.cha.gamestream-ports";
+const LABEL_GAMESTREAM_SECRET: &str = "sh.cha.gamestream-secret";
 /// On legacy home volumes (`docker volume ls --filter label=sh.cha.home`): `1`,
 /// and whose (`sh.cha.owner`) and for which template (`sh.cha.template`). On an
 /// app container whose home is a directory under the data root: the same two,
@@ -101,6 +106,9 @@ const EXTERNAL_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const OVERLAY_CHECK: Duration = Duration::from_secs(30);
 /// Each environment's streamer: HTTP (localhost), WebRTC and WebTransport.
 const PORTS_PER_ENVIRONMENT: u16 = 3;
+/// With GameStream on, each environment's second block: a Moonlight session's
+/// video, control and audio (all UDP).
+const GAMESTREAM_PORTS_PER_ENVIRONMENT: u16 = 3;
 /// How long a started streamer has to answer `/info` (it makes its virtual
 /// controllers first), and how often it is asked.
 const STREAMER_UP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -218,6 +226,11 @@ pub struct DockerConfig {
     pub public_address: Option<String>,
     /// Streamers listen on `port_base + 2n` (HTTP) and `+ 1` (WebRTC).
     pub port_base: u16,
+    /// With GameStream on (`CHA_GAMESTREAM`, [`check_gamestream_range`]): where
+    /// the environments' Moonlight media ports start, three each, in the
+    /// same slots as `port_base`'s. `None` (the default) gives streamers no
+    /// such ports and changes nothing else.
+    pub gamestream_port_base: Option<u16>,
     pub max_environments: u16,
     /// Where app data lives (`CHA_DATA_ROOT`): a directory on the host that
     /// this agent also sees at the same path, since Docker is given host paths.
@@ -250,6 +263,110 @@ impl DockerConfig {
             .and_then(|p| p.image_for(image))
             .unwrap_or_else(|| image.to_string())
     }
+}
+
+/// The UDP ports of one environment's Moonlight session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameStreamPorts {
+    pub video: u16,
+    pub control: u16,
+    pub audio: u16,
+}
+
+impl std::fmt::Display for GameStreamPorts {
+    /// As the streamer's `--gamestream-ports` takes them.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{},{},{}", self.video, self.control, self.audio)
+    }
+}
+
+impl std::str::FromStr for GameStreamPorts {
+    type Err = ();
+
+    fn from_str(text: &str) -> Result<Self, ()> {
+        let ports: Vec<u16> = text
+            .split(',')
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map_err(|_| ())?;
+        match ports[..] {
+            [video, control, audio] => Ok(Self {
+                video,
+                control,
+                audio,
+            }),
+            _ => Err(()),
+        }
+    }
+}
+
+/// How the node reaches an environment's GameStream media half: the streamer's
+/// local API, and the ports its sessions use (what the host tells Moonlight
+/// clients). The secret never leaves the node.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GameStreamAccess {
+    /// The streamer's HTTP port, on localhost.
+    pub http_port: u16,
+    pub ports: GameStreamPorts,
+    /// The bearer token of the streamer's `/gamestream/*` API.
+    pub secret: String,
+}
+
+impl std::fmt::Debug for GameStreamAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GameStreamAccess")
+            .field("http_port", &self.http_port)
+            .field("ports", &self.ports)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+impl GameStreamAccess {
+    /// From a streamer container's labels, for an environment the agent
+    /// finds running when it starts.
+    fn from_labels(
+        http_port: u16,
+        labels: &std::collections::HashMap<String, String>,
+    ) -> Option<Self> {
+        Some(Self {
+            http_port,
+            ports: labels.get(LABEL_GAMESTREAM_PORTS)?.parse().ok()?,
+            secret: labels.get(LABEL_GAMESTREAM_SECRET)?.clone(),
+        })
+    }
+}
+
+/// 32 hex digits from the OS's random source.
+fn random_secret() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| anyhow!("random source: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Checks that the GameStream ports ([`DockerConfig::gamestream_port_base`])
+/// fit and keep clear of the streamers' (`port_base`): three each for
+/// `max_environments`.
+pub fn check_gamestream_range(
+    port_base: u16,
+    gamestream_port_base: u16,
+    max_environments: u16,
+) -> Result<()> {
+    let span = u32::from(PORTS_PER_ENVIRONMENT.max(GAMESTREAM_PORTS_PER_ENVIRONMENT))
+        * u32::from(max_environments);
+    let streamers = u32::from(port_base)..u32::from(port_base) + span;
+    let gamestream = u32::from(gamestream_port_base)..u32::from(gamestream_port_base) + span;
+    anyhow::ensure!(
+        gamestream.end <= 65536,
+        "CHA_GAMESTREAM_PORT_BASE {gamestream_port_base} leaves no room for {max_environments} environments (three ports each)"
+    );
+    anyhow::ensure!(
+        gamestream.end <= streamers.start || streamers.end <= gamestream.start,
+        "CHA_GAMESTREAM_PORT_BASE {gamestream_port_base} (to {}) overlaps the streamers' ports from CHA_PORT_BASE {port_base} (to {})",
+        gamestream.end - 1,
+        streamers.end - 1
+    );
+    Ok(())
 }
 
 /// Where the catalog's apps are published: `ghcr.io/ban-red` and a release,
@@ -443,6 +560,9 @@ struct State {
     overlays: BTreeMap<String, Overlays>,
     /// Environment id → its streamer's HTTP port.
     ports: BTreeMap<String, u16>,
+    /// Environment id → its GameStream media ports and API secret, for the
+    /// environments that have them ([`DockerConfig::gamestream_port_base`]).
+    gamestream: BTreeMap<String, GameStreamAccess>,
     /// Environments being stopped on purpose (their containers' deaths aren't news).
     stopping: HashSet<String>,
     /// Environments being started: id → what died meanwhile, if anything. The
@@ -574,12 +694,22 @@ impl DockerRuntime {
                         state.overlays.insert(id.clone(), Overlays::new(overlays));
                     }
                 }
+                if container.labels.get(LABEL_ROLE).map(String::as_str) == Some("streamer")
+                    && let Some(access) = GameStreamAccess::from_labels(port, &container.labels)
+                {
+                    state.gamestream.insert(id.clone(), access);
+                }
                 state.ports.insert(id, port);
             }
         }
         for id in dead {
             info!(%id, "cleaning up an environment that died while the agent was away");
             self.state.lock().expect("state lock").ports.remove(&id);
+            self.state
+                .lock()
+                .expect("state lock")
+                .gamestream
+                .remove(&id);
             self.state.lock().expect("state lock").homes.remove(&id);
             self.state.lock().expect("state lock").overlays.remove(&id);
             // Nobody to tell yet (the portal finds it gone when we connect),
@@ -769,6 +899,16 @@ impl DockerRuntime {
             self.ensure_image(image).await?;
         }
         let port = self.allocate(&spec.id)?;
+        if spec.gateway.is_none()
+            && let Err(err) = self.allocate_gamestream(&spec.id, port)
+        {
+            self.state
+                .lock()
+                .expect("state lock")
+                .ports
+                .remove(&spec.id);
+            return Err(err);
+        }
         self.state
             .lock()
             .expect("state lock")
@@ -814,6 +954,7 @@ impl DockerRuntime {
                 {
                     let mut state = self.state.lock().expect("state lock");
                     state.ports.remove(&spec.id);
+                    state.gamestream.remove(&spec.id);
                     state.homes.remove(&spec.id);
                 }
                 // Everything this launch made, app and streamer both, whichever
@@ -953,6 +1094,44 @@ impl DockerRuntime {
             })?;
         state.ports.insert(id.to_string(), port);
         Ok(port)
+    }
+
+    /// With GameStream on, gives the environment on `port` its Moonlight
+    /// media block (the same slot in the GameStream range as `port` has in the
+    /// streamers') and a secret for its `/gamestream/*` API.
+    fn allocate_gamestream(&self, id: &str, port: u16) -> Result<()> {
+        let Some(base) = self.config.gamestream_port_base else {
+            return Ok(());
+        };
+        let slot = (port - self.config.port_base) / PORTS_PER_ENVIRONMENT;
+        let video = base + GAMESTREAM_PORTS_PER_ENVIRONMENT * slot;
+        let access = GameStreamAccess {
+            http_port: port,
+            ports: GameStreamPorts {
+                video,
+                control: video + 1,
+                audio: video + 2,
+            },
+            secret: random_secret()?,
+        };
+        self.state
+            .lock()
+            .expect("state lock")
+            .gamestream
+            .insert(id.to_string(), access);
+        Ok(())
+    }
+
+    /// What the node's GameStream host needs to start `id`'s media: where
+    /// its streamer listens, the media ports, the API secret. `None` without
+    /// GameStream, or for an environment that has no streamer of ours.
+    pub fn gamestream_access(&self, id: &str) -> Option<GameStreamAccess> {
+        self.state
+            .lock()
+            .expect("state lock")
+            .gamestream
+            .get(id)
+            .cloned()
     }
 
     /// Takes the home directory `spec` names: refused while it is being
@@ -1465,11 +1644,25 @@ impl DockerRuntime {
         if let Some(kind) = spec.gamepad.filter(|_| self.has_pads()) {
             cmd.extend(["--pad-kind", kind.as_str()].map(String::from));
         }
+        // The Moonlight media ports and the API secret; an older streamer
+        // image never gets them (this is off by default).
+        let gamestream = self.gamestream_access(&spec.id);
+        let mut env = vec![
+            format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"),
+            "RUST_LOG=info,smithay=warn,str0m=warn".to_string(),
+        ];
+        let mut labels = self.labels(&spec.id, "streamer", port);
+        if let Some(access) = &gamestream {
+            cmd.extend(["--gamestream-ports".to_string(), access.ports.to_string()]);
+            env.push(format!("CHA_GAMESTREAM_SECRET={}", access.secret));
+            labels[LABEL_GAMESTREAM_PORTS] = json!(access.ports.to_string());
+            labels[LABEL_GAMESTREAM_SECRET] = json!(access.secret);
+        }
         json!({
             "Image": self.config.streamer_image,
             "Cmd": cmd,
-            "Env": [format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"), "RUST_LOG=info,smithay=warn,str0m=warn"],
-            "Labels": self.labels(&spec.id, "streamer", port),
+            "Env": env,
+            "Labels": labels,
             "HostConfig": {
                 "NetworkMode": "host",
                 "Mounts": self.mounts(&spec.id, false),
@@ -1696,6 +1889,7 @@ impl DockerRuntime {
         let mut state = self.state.lock().expect("state lock");
         state.stopping.remove(id);
         state.ports.remove(id);
+        state.gamestream.remove(id);
         state.homes.remove(id);
         state.overlays.remove(id);
         result
@@ -2229,6 +2423,7 @@ mod tests {
                 uhid: Some("/dev/uhid".into()),
                 public_address: None,
                 port_base: 7600,
+                gamestream_port_base: None,
                 max_environments: 2,
                 data_root: root.clone(),
                 shared_dirs,
@@ -2353,6 +2548,137 @@ mod tests {
         assert!(rt.allocate("c").is_err());
         rt.state.lock().unwrap().ports.remove("a");
         assert_eq!(rt.allocate("c").unwrap(), 7600);
+    }
+
+    fn with_gamestream(base: u16) -> DockerRuntime {
+        let mut rt = runtime();
+        rt.config.gamestream_port_base = Some(base);
+        rt
+    }
+
+    #[test]
+    fn gamestream_ports_follow_the_streamers_slots() {
+        let rt = with_gamestream(7700);
+        let a = rt.allocate("a").unwrap();
+        let b = rt.allocate("b").unwrap();
+        assert_eq!((a, b), (7600, 7603));
+        rt.allocate_gamestream("a", a).unwrap();
+        rt.allocate_gamestream("b", b).unwrap();
+        let first = rt.gamestream_access("a").unwrap();
+        let second = rt.gamestream_access("b").unwrap();
+        assert_eq!(
+            (first.http_port, first.ports.to_string()),
+            (7600, "7700,7701,7702".into())
+        );
+        assert_eq!(
+            (second.http_port, second.ports.to_string()),
+            (7603, "7703,7704,7705".into())
+        );
+        assert_eq!(first.secret.len(), 32);
+        assert!(first.secret.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(first.secret, second.secret, "a secret each");
+        // The slot comes back with the environment.
+        rt.state.lock().unwrap().ports.remove("a");
+        rt.state.lock().unwrap().gamestream.remove("a");
+        let c = rt.allocate("c").unwrap();
+        rt.allocate_gamestream("c", c).unwrap();
+        assert_eq!(rt.gamestream_access("c").unwrap().ports.video, 7700);
+    }
+
+    #[test]
+    fn the_streamer_gets_the_ports_the_secret_and_labels_when_gamestream_is_on() {
+        let rt = with_gamestream(7700);
+        rt.allocate_gamestream("e1", 7603).unwrap();
+        let access = rt.gamestream_access("e1").unwrap();
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 7603);
+        let cmd = cmd_of(&s);
+        let at = cmd.iter().position(|a| *a == "--gamestream-ports").unwrap();
+        assert_eq!(cmd[at + 1], "7703,7704,7705");
+        assert!(
+            !cmd.iter().any(|a| a.contains(&access.secret)),
+            "the secret is never on the command line"
+        );
+        let env = s["Env"].as_array().unwrap();
+        assert!(env.contains(&json!(format!("CHA_GAMESTREAM_SECRET={}", access.secret))));
+        assert_eq!(s["Labels"][LABEL_GAMESTREAM_PORTS], "7703,7704,7705");
+        // Those labels bring the access back after an agent restart.
+        let labels: std::collections::HashMap<String, String> = s["Labels"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+            .collect();
+        assert_eq!(GameStreamAccess::from_labels(7603, &labels), Some(access));
+        // The app container knows nothing of it.
+        let app = rt.app_config(&spec(SecurityProfile::Standard), 7603, &[]);
+        assert!(!app.to_string().contains("gamestream") && !app.to_string().contains("GAMESTREAM"));
+    }
+
+    #[test]
+    fn with_gamestream_off_nothing_changes() {
+        let rt = runtime();
+        let port = rt.allocate("e1").unwrap();
+        rt.allocate_gamestream("e1", port).unwrap();
+        assert!(rt.gamestream_access("e1").is_none());
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), port);
+        assert!(!cmd_of(&s).iter().any(|a| a.contains("gamestream")));
+        assert_eq!(
+            s["Env"],
+            json!([
+                format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"),
+                "RUST_LOG=info,smithay=warn,str0m=warn"
+            ])
+        );
+        assert!(s["Labels"].get(LABEL_GAMESTREAM_PORTS).is_none());
+        assert!(s["Labels"].get(LABEL_GAMESTREAM_SECRET).is_none());
+        // And an environment without it, on a node with it on, is no different from before.
+        let rt = with_gamestream(7700);
+        let s = rt.streamer_config(&spec(SecurityProfile::Standard), 7600);
+        assert!(!cmd_of(&s).iter().any(|a| a.contains("gamestream")));
+    }
+
+    #[test]
+    fn the_gamestream_range_stays_clear_of_the_streamers() {
+        assert!(check_gamestream_range(7600, 7700, 16).is_ok());
+        assert!(
+            check_gamestream_range(7600, 7648, 16).is_ok(),
+            "right after"
+        );
+        assert!(check_gamestream_range(7600, 7647, 16).is_err(), "one short");
+        assert!(check_gamestream_range(7700, 7600, 16).is_ok(), "before");
+        assert!(check_gamestream_range(7700, 7660, 16).is_err());
+        assert!(check_gamestream_range(7600, 7600, 1).is_err(), "the same");
+        assert!(
+            check_gamestream_range(7600, 65530, 16).is_err(),
+            "off the end"
+        );
+    }
+
+    #[test]
+    fn ports_parse_back_from_what_the_streamer_takes() {
+        let ports: GameStreamPorts = "7700,7701,7702".parse().unwrap();
+        assert_eq!(
+            (ports.video, ports.control, ports.audio),
+            (7700, 7701, 7702)
+        );
+        assert_eq!(ports.to_string(), "7700,7701,7702");
+        for bad in ["", "1,2", "1,2,3,4", "a,b,c"] {
+            assert!(bad.parse::<GameStreamPorts>().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_access_keeps_its_secret_out_of_debug_output() {
+        let access = GameStreamAccess {
+            http_port: 1,
+            ports: GameStreamPorts {
+                video: 2,
+                control: 3,
+                audio: 4,
+            },
+            secret: "s3cr3t-value".into(),
+        };
+        assert!(!format!("{access:?}").contains("s3cr3t"));
     }
 
     #[test]

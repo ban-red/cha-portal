@@ -79,6 +79,17 @@ struct Args {
     port_base: u16,
     #[arg(long, env = "CHA_MAX_ENVIRONMENTS", default_value_t = 16)]
     max_environments: u16,
+    /// Give each environment's streamer ports for a Moonlight session (ADR
+    /// 0009, G2): three UDP ports each from `CHA_GAMESTREAM_PORT_BASE`, and a
+    /// secret for the streamer's local API. Needs a streamer image built with
+    /// the `gamestream` feature (the published ones are). Off by default;
+    /// older streamers never get the arguments.
+    #[arg(long, env = "CHA_GAMESTREAM", default_value_t = false, action = clap::ArgAction::Set)]
+    gamestream: bool,
+    /// Where those ports start: video, control and audio for the first
+    /// environment, then three more for each.
+    #[arg(long, env = "CHA_GAMESTREAM_PORT_BASE", default_value_t = 7700)]
+    gamestream_port_base: u16,
     /// The host's uinput device: streamers make virtual gamepads with it.
     /// Empty goes without gamepads (e.g. no `uinput` module).
     #[arg(long, env = "CHA_UINPUT", default_value = "/dev/uinput")]
@@ -236,6 +247,14 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
     // Refused up front: Docker would be handed paths built from these.
     DataRoot::new(&args.data_root, 1000, 1000)?;
     let shared_dirs = parse_shared_dirs(&args.shared_dirs, &args.data_root)?;
+    let gamestream_port_base = args.gamestream.then_some(args.gamestream_port_base);
+    if let Some(base) = gamestream_port_base {
+        cha_node::environments::check_gamestream_range(
+            args.port_base,
+            base,
+            args.max_environments,
+        )?;
+    }
     let render_node = args.render_node.clone().unwrap_or_else(|| {
         inventory::collect()
             .gpus
@@ -256,6 +275,7 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
             .map(|a| a.trim().to_string())
             .filter(|a| !a.is_empty()),
         port_base: args.port_base,
+        gamestream_port_base,
         max_environments: args.max_environments,
         data_root: args.data_root.clone(),
         shared_dirs,
