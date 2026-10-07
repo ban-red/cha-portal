@@ -53,7 +53,7 @@ function onChange(event: Event) {
 <template>
   <div class="max-w-3xl space-y-6">
     <p v-if="settings.isPending.value" class="text-sm text-ink-3">Loading…</p>
-    <NotAvailable v-else-if="notAvailable(settings.error.value)" />
+    <NotAvailable v-else-if="notAvailable(settings.error.value)" what="portal settings" />
     <FormError v-else-if="settings.isError.value" :message="settings.error.value?.message ?? 'Failed to load'" />
 
     <section v-else class="card px-4 py-4 sm:px-5" aria-labelledby="idle-heading">
