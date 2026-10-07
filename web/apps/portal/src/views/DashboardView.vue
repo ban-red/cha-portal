@@ -19,6 +19,8 @@ import { useAppFps } from "../appFps";
 import { useControllerApps } from "../controllerKinds";
 import { PLACEMENTS_KEY, usePlacements } from "../placements";
 import { STORAGE_KEY, patchApp } from "../storage";
+import { isMac } from "../player";
+import { openInPlayer } from "../playerLaunch";
 import { MAX_PINNED } from "../themes";
 import { useTheme } from "../themes/runtime";
 
@@ -200,6 +202,12 @@ const moonlightHosts = computed(() => {
 });
 
 const error = ref<string | null>(null);
+
+// "Open in Cha Player" is offered on a Mac only.
+const mac = isMac();
+async function openInPlayerApp(template: string) {
+  error.value = await openInPlayer(template);
+}
 const message = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
 
 const launch = useMutation({
@@ -403,8 +411,10 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
                 :placements="placements.missing.value ? undefined : placements.byTemplate.value[t.id]"
                 :busy="launch.isPending.value && launch.variables.value?.template.id === t.id"
                 :disabled="session.user?.role === 'guest'"
+                :player="mac"
                 @launch="(choice) => launch.mutate({ template: t, choice })"
                 @pin="togglePin(t.id)"
+                @open-in-player="openInPlayerApp(t.id)"
                 @set-persistent="(persistent) => setPersistent.mutate({ template: t.id, persistent })"
                 @choose-controller="controllerApps.choose(controllerApps.byTemplate.value.get(t.id)!, $event)"
                 @choose-fps="appFps.choose(appFps.byTemplate.value.get(t.id)!, $event)"

@@ -361,6 +361,22 @@ export interface GamestreamHost {
   httpPort: number;
 }
 
+/** A Cha Player install signed in as the user (Settings → Devices). */
+export interface PlayerDevice {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastUsedAt: number;
+  lastIp: string | null;
+}
+
+/** A player waiting for approval at `/link`. */
+export interface DeviceCodeInfo {
+  name: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -393,6 +409,33 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
+  /** A one-use link ticket for Cha Player (60 s); `launch` is a template id. */
+  deviceTicket: (launch?: string) =>
+    request<{ ticket: string; expires_in: number }>("POST", "/devices/tickets", launch ? { launch } : {}),
+  deviceCode: async (userCode: string): Promise<DeviceCodeInfo> => {
+    const r = await request<{ name: string; created_at: number; expires_at: number }>(
+      "GET",
+      `/devices/codes/${encodeURIComponent(userCode)}`,
+    );
+    return { name: r.name, createdAt: r.created_at, expiresAt: r.expires_at };
+  },
+  approveDeviceCode: (userCode: string) =>
+    request<{ ok: true }>("POST", `/devices/codes/${encodeURIComponent(userCode)}/approve`, {}),
+  denyDeviceCode: (userCode: string) =>
+    request<{ ok: true }>("POST", `/devices/codes/${encodeURIComponent(userCode)}/deny`, {}),
+  playerDevices: async (): Promise<PlayerDevice[]> => {
+    const rows = await request<
+      { id: string; name: string; created_at: number; last_used_at: number; last_ip: string | null }[]
+    >("GET", "/devices");
+    return rows.map((d) => ({
+      id: d.id,
+      name: d.name,
+      createdAt: d.created_at,
+      lastUsedAt: d.last_used_at,
+      lastIp: d.last_ip,
+    }));
+  },
+  revokePlayerDevice: (id: string) => request<null>("DELETE", `/devices/${encodeURIComponent(id)}`),
   setupStatus: () => request<{ needed: boolean; devLogin: boolean }>("GET", "/setup"),
   setup: (body: { username: string; displayName?: string; password: string }) =>
     request<User>("POST", "/setup", body),

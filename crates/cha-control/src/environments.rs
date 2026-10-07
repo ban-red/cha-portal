@@ -26,7 +26,7 @@ use tracing::{info, warn};
 
 use crate::AppState;
 use crate::apps;
-use crate::auth::{ClientInfo, CurrentUser};
+use crate::auth::{ClientInfo, PlayerUser};
 use crate::controllers;
 use crate::db::{self, EnvironmentRow, NodeRow, Role, User};
 use crate::error::{ApiError, ApiResult};
@@ -123,7 +123,7 @@ pub(crate) fn template(id: &str) -> Option<&'static Template> {
     catalog().iter().find(|t| t.id == id)
 }
 
-async fn list_catalog(_: CurrentUser) -> Json<&'static [Template]> {
+async fn list_catalog(_: PlayerUser) -> Json<&'static [Template]> {
     Json(catalog())
 }
 
@@ -141,7 +141,7 @@ const ICONS: &[(&str, &[u8])] = &[
 ];
 
 /// A template's logo. Served as an inert image: no scripts, nothing fetched.
-async fn catalog_icon(_: CurrentUser, Path(id): Path<String>) -> ApiResult<Response> {
+async fn catalog_icon(_: PlayerUser, Path(id): Path<String>) -> ApiResult<Response> {
     let Some((_, svg)) = ICONS.iter().find(|(t, _)| *t == id) else {
         return Err(ApiError::NotFound("no icon for that template".into()));
     };
@@ -350,7 +350,7 @@ async fn visible(state: &AppState, user: &User, id: &str) -> ApiResult<Environme
 
 async fn list(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    PlayerUser(user): PlayerUser,
 ) -> ApiResult<Json<Vec<EnvironmentView>>> {
     let rows = db::list_environments(&state.db, Some(&user.id), LIST_LIMIT).await?;
     let nodes = nodes_by_id(&state).await?;
@@ -367,7 +367,7 @@ async fn list(
 
 async fn show(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    PlayerUser(user): PlayerUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<EnvironmentView>> {
     let row = visible(&state, &user, &id).await?;
@@ -414,7 +414,7 @@ impl Caller<'_> {
 
 async fn launch(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    PlayerUser(user): PlayerUser,
     client: ClientInfo,
     Json(req): Json<LaunchRequest>,
 ) -> ApiResult<Json<EnvironmentView>> {
@@ -610,7 +610,7 @@ fn environment_spec(
 
 async fn stop(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    PlayerUser(user): PlayerUser,
     client: ClientInfo,
     Path(id): Path<String>,
 ) -> ApiResult<Json<EnvironmentView>> {
@@ -727,7 +727,7 @@ fn webtransport_urls(
 
 async fn connect(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    PlayerUser(user): PlayerUser,
     client: ClientInfo,
     Path(id): Path<String>,
     Json(req): Json<ConnectRequest>,

@@ -2025,3 +2025,671 @@ async fn admins_set_the_idle_shutoff_and_it_defaults_to_thirty_minutes() {
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 }
+
+// ---- Cha Player devices (C2.1) ----
+
+impl TestPortal {
+    /// Calls `path` with a device token as the bearer credential.
+    async fn call_bearer(
+        &self,
+        method: &str,
+        path: &str,
+        token: &str,
+        body: Option<Value>,
+    ) -> Reply {
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"));
+        let req = match body {
+            Some(body) => req
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string())),
+            None => req.body(Body::empty()),
+        }
+        .unwrap();
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        Reply {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            cookie: None,
+        }
+    }
+
+    /// A ticket for the cookie's user.
+    async fn ticket(&self, cookie: &str) -> String {
+        let reply = self
+            .call(
+                "POST",
+                "/api/devices/tickets",
+                Some(cookie),
+                Some(json!({})),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_eq!(reply.body["expires_in"], 60);
+        reply.body["ticket"].as_str().unwrap().to_string()
+    }
+
+    /// Signs a player in with a ticket; its reply.
+    async fn swap(&self, ticket: &str, install_id: &str, name: &str) -> Reply {
+        self.call(
+            "POST",
+            "/api/device/ticket",
+            None,
+            Some(json!({ "ticket": ticket, "install_id": install_id, "name": name })),
+        )
+        .await
+    }
+
+    /// A signed-in player's token for the cookie's user.
+    async fn device_token(&self, cookie: &str, install_id: &str) -> (String, String) {
+        let ticket = self.ticket(cookie).await;
+        let reply = self.swap(&ticket, install_id, "Test Mac").await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        (
+            reply.body["token"].as_str().unwrap().to_string(),
+            reply.body["device_id"].as_str().unwrap().to_string(),
+        )
+    }
+
+    async fn poll(&self, device_code: &str) -> Reply {
+        self.call(
+            "POST",
+            "/api/device/token",
+            None,
+            Some(json!({ "device_code": device_code })),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_ticket_signs_a_player_in_once() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+
+    // Tickets need a session.
+    let anon = p
+        .call("POST", "/api/devices/tickets", None, Some(json!({})))
+        .await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
+    let bad_launch = p
+        .call(
+            "POST",
+            "/api/devices/tickets",
+            Some(&admin),
+            Some(json!({ "launch": "no-such-app" })),
+        )
+        .await;
+    assert_eq!(bad_launch.status, StatusCode::BAD_REQUEST);
+    let with_launch = p
+        .call(
+            "POST",
+            "/api/devices/tickets",
+            Some(&admin),
+            Some(json!({ "launch": "chrome" })),
+        )
+        .await;
+    assert_eq!(with_launch.status, StatusCode::OK, "{}", with_launch.body);
+
+    let ticket = p.ticket(&admin).await;
+    let swapped = p.swap(&ticket, "install-1", "Alex's MacBook Pro").await;
+    assert_eq!(swapped.status, StatusCode::OK, "{}", swapped.body);
+    let token = swapped.body["token"].as_str().unwrap();
+    assert!(token.starts_with("chadev_"));
+    assert_eq!(token.len(), 7 + 43);
+    assert_eq!(swapped.body["user"]["username"], "admin");
+    assert_eq!(swapped.body["user"]["role"], "admin");
+    assert!(swapped.body["device_id"].is_string());
+
+    let me = p.call_bearer("GET", "/api/me", token, None).await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+    assert_eq!(me.body["username"], "admin");
+
+    // One use.
+    let again = p.swap(&ticket, "install-1", "Alex's MacBook Pro").await;
+    assert_eq!(again.status, StatusCode::BAD_REQUEST);
+    assert_eq!(again.body["error"], "invalid_ticket");
+
+    // Unknown tickets, and bad names and install ids.
+    let unknown = p.swap("nope", "install-1", "Mac").await;
+    assert_eq!(unknown.body["error"], "invalid_ticket");
+    let t = p.ticket(&admin).await;
+    let long = "x".repeat(101);
+    assert_eq!(
+        p.swap(&t, "install-1", &long).await.body["error"],
+        "invalid_name"
+    );
+    assert_eq!(
+        p.swap(&t, "", "Mac").await.body["error"],
+        "invalid_install_id"
+    );
+    // A refused request doesn't spend the ticket.
+    assert_eq!(p.swap(&t, "install-1", "Mac").await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn tickets_expire_after_a_minute() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let ticket = p.ticket(&admin).await;
+    sqlx::query("UPDATE device_tickets SET expires_at = ?")
+        .bind(db::now() - 1)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    let reply = p.swap(&ticket, "install-1", "Mac").await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    assert_eq!(reply.body["error"], "invalid_ticket");
+}
+
+#[tokio::test]
+async fn signing_in_again_from_one_install_replaces_its_token() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (first, first_id) = p.device_token(&admin, "install-1").await;
+    let (second, second_id) = p.device_token(&admin, "install-1").await;
+    assert_ne!(first, second);
+    assert_eq!(first_id, second_id, "one row per (user, install)");
+
+    let old = p.call_bearer("GET", "/api/me", &first, None).await;
+    assert_eq!(old.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(old.body["error"], "unauthorized");
+    let new = p.call_bearer("GET", "/api/me", &second, None).await;
+    assert_eq!(new.status, StatusCode::OK);
+
+    // Another install is another device.
+    let (third, third_id) = p.device_token(&admin, "install-2").await;
+    assert_ne!(third_id, first_id);
+    assert_eq!(
+        p.call_bearer("GET", "/api/me", &third, None).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        p.call_bearer("GET", "/api/me", &second, None).await.status,
+        StatusCode::OK
+    );
+    let list = p.call("GET", "/api/devices", Some(&admin), None).await;
+    assert_eq!(list.body.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_player_signs_in_with_a_device_code() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+
+    let started = p
+        .call(
+            "POST",
+            "/api/device/code",
+            None,
+            Some(json!({ "install_id": "install-1", "name": "Alex's MacBook Pro" })),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let device_code = started.body["device_code"].as_str().unwrap().to_string();
+    let user_code = started.body["user_code"].as_str().unwrap().to_string();
+    assert_eq!(started.body["verification_path"], "/link");
+    assert_eq!(started.body["expires_in"], 600);
+    assert_eq!(started.body["interval"], 5);
+    assert_eq!(user_code.len(), 9);
+    assert_eq!(user_code.as_bytes()[4], b'-');
+    assert!(
+        user_code
+            .chars()
+            .all(|c| c == '-' || "BCDFGHJKLMNPQRSTVWXZ".contains(c))
+    );
+
+    // Pending; asking again at once is too fast.
+    let pending = p.poll(&device_code).await;
+    assert_eq!(pending.status, StatusCode::BAD_REQUEST);
+    assert_eq!(pending.body["error"], "authorization_pending");
+    let fast = p.poll(&device_code).await;
+    assert_eq!(fast.status, StatusCode::BAD_REQUEST);
+    assert_eq!(fast.body["error"], "slow_down");
+
+    // The signed-in user sees the device's name, however they type the code.
+    let typed = user_code.to_lowercase().replace('-', " ");
+    let path = format!("/api/devices/codes/{}", typed.replace(' ', ""));
+    let seen = p.call("GET", &path, Some(&admin), None).await;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    assert_eq!(seen.body["name"], "Alex's MacBook Pro");
+    assert!(seen.body["expires_at"].as_i64().unwrap() > db::now());
+    let anon = p.call("GET", &path, None, None).await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
+    let unknown = p
+        .call("GET", "/api/devices/codes/BCDF-GHJK", Some(&admin), None)
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.body["error"], "unknown_code");
+
+    let approve = format!("/api/devices/codes/{user_code}/approve");
+    let approved = p
+        .call("POST", &approve, Some(&admin), Some(json!({})))
+        .await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(approved.body["ok"], true);
+
+    // Approved: the next poll gets the token at once, whatever the timing.
+    let done = p.poll(&device_code).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    let token = done.body["token"].as_str().unwrap();
+    assert!(token.starts_with("chadev_"));
+    assert_eq!(done.body["user"]["username"], "admin");
+    let me = p.call_bearer("GET", "/api/me", token, None).await;
+    assert_eq!(me.status, StatusCode::OK);
+
+    // Once.
+    let spent = p.poll(&device_code).await;
+    assert_eq!(spent.body["error"], "expired_token");
+    // And the code can't be approved again.
+    let late = p
+        .call("POST", &approve, Some(&admin), Some(json!({})))
+        .await;
+    assert_eq!(late.status, StatusCode::NOT_FOUND);
+
+    let devices = p.call("GET", "/api/devices", Some(&admin), None).await;
+    assert_eq!(devices.body[0]["name"], "Alex's MacBook Pro");
+}
+
+#[tokio::test]
+async fn a_denied_or_expired_code_ends_the_sign_in() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let start = |install: &'static str| {
+        let p = &p;
+        async move {
+            let r = p
+                .call(
+                    "POST",
+                    "/api/device/code",
+                    None,
+                    Some(json!({ "install_id": install, "name": "Mac" })),
+                )
+                .await;
+            (
+                r.body["device_code"].as_str().unwrap().to_string(),
+                r.body["user_code"].as_str().unwrap().to_string(),
+            )
+        }
+    };
+
+    let (device_code, user_code) = start("install-1").await;
+    let denied = p
+        .call(
+            "POST",
+            &format!("/api/devices/codes/{user_code}/deny"),
+            Some(&admin),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::OK, "{}", denied.body);
+    let reply = p.poll(&device_code).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    assert_eq!(reply.body["error"], "access_denied");
+    // A denied code can't then be approved.
+    let approve = p
+        .call(
+            "POST",
+            &format!("/api/devices/codes/{user_code}/approve"),
+            Some(&admin),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(approve.status, StatusCode::NOT_FOUND);
+
+    let (device_code, user_code) = start("install-2").await;
+    sqlx::query("UPDATE device_codes SET expires_at = ?")
+        .bind(db::now() - 1)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    let reply = p.poll(&device_code).await;
+    assert_eq!(reply.body["error"], "expired_token");
+    let seen = p
+        .call(
+            "GET",
+            &format!("/api/devices/codes/{user_code}"),
+            Some(&admin),
+            None,
+        )
+        .await;
+    assert_eq!(seen.body["error"], "unknown_code");
+    let approve = p
+        .call(
+            "POST",
+            &format!("/api/devices/codes/{user_code}/approve"),
+            Some(&admin),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(approve.status, StatusCode::NOT_FOUND);
+
+    let nobody = p.poll("never-issued").await;
+    assert_eq!(nobody.body["error"], "expired_token");
+}
+
+#[tokio::test]
+async fn a_device_token_opens_the_players_routes_and_nothing_else() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (token, _) = p.device_token(&admin, "install-1").await;
+
+    for path in [
+        "/api/me",
+        "/api/catalog",
+        "/api/catalog/chrome/icon",
+        "/api/environments",
+        "/api/ice",
+        "/api/controllers/apps",
+        "/api/storage",
+        "/api/apps/settings",
+    ] {
+        let reply = p.call_bearer("GET", path, &token, None).await;
+        assert_eq!(reply.status, StatusCode::OK, "GET {path}: {}", reply.body);
+    }
+    let missing = p
+        .call_bearer("GET", "/api/environments/nope", &token, None)
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "reaches the handler");
+    let stop = p
+        .call_bearer("DELETE", "/api/environments/nope", &token, None)
+        .await;
+    assert_eq!(stop.status, StatusCode::NOT_FOUND);
+
+    // Cookie-only, for an admin's token too.
+    for (method, path, body) in [
+        ("GET", "/api/users", None),
+        (
+            "POST",
+            "/api/users",
+            Some(json!({ "username": "eve", "password": "a long password", "role": "user" })),
+        ),
+        ("GET", "/api/audit", None),
+        ("GET", "/api/devices", None),
+        ("GET", "/api/devices?all=1", None),
+        ("POST", "/api/devices/tickets", Some(json!({}))),
+        (
+            "POST",
+            "/api/devices/codes/BCDF-GHJK/approve",
+            Some(json!({})),
+        ),
+        ("GET", "/api/me/prefs", None),
+        (
+            "PUT",
+            "/api/apps/settings/chrome",
+            Some(json!({ "fps": 60 })),
+        ),
+        (
+            "PUT",
+            "/api/controllers/apps/chrome",
+            Some(json!({ "kind": null })),
+        ),
+        (
+            "PUT",
+            "/api/storage/chrome",
+            Some(json!({ "persistent": true })),
+        ),
+        ("GET", "/api/admin/storage", None),
+        ("GET", "/api/nodes", None),
+    ] {
+        let reply = p.call_bearer(method, path, &token, body).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path}: {}",
+            reply.body
+        );
+        assert_eq!(reply.body["error"], "unauthorized");
+    }
+    let nobody = p.call("GET", "/api/users", None, None).await;
+    assert_eq!(nobody.status, StatusCode::UNAUTHORIZED);
+
+    // Not any bearer: unknown tokens, other schemes, session tokens.
+    for value in [
+        "Bearer chadev_nope",
+        "Bearer nope",
+        "Basic abc",
+        "chadev_nope",
+    ] {
+        let req = Request::builder()
+            .uri("/api/me")
+            .header(header::AUTHORIZATION, value)
+            .body(Body::empty())
+            .unwrap();
+        let res = p.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{value}");
+    }
+    let session_token = admin.split('=').nth(1).unwrap();
+    let as_bearer = p.call_bearer("GET", "/api/me", session_token, None).await;
+    assert_eq!(as_bearer.status, StatusCode::UNAUTHORIZED);
+
+    // The cookie still opens the same routes.
+    assert_eq!(
+        p.call("GET", "/api/me", Some(&admin), None).await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_disabled_account_s_token_stops_working() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (cookie, user_id) = p.account(&admin, "alice", "user").await;
+    let (token, _) = p.device_token(&cookie, "install-1").await;
+    assert_eq!(
+        p.call_bearer("GET", "/api/me", &token, None).await.status,
+        StatusCode::OK
+    );
+    sqlx::query("UPDATE users SET disabled = 1 WHERE id = ?")
+        .bind(&user_id)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        p.call_bearer("GET", "/api/me", &token, None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn revoking_a_device_ends_its_token() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, _) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+    let (alice_token, alice_device) = p.device_token(&alice, "install-a").await;
+    let (bob_token, bob_device) = p.device_token(&bob, "install-b").await;
+
+    // Everyone sees their own devices only.
+    let mine = p.call("GET", "/api/devices", Some(&alice), None).await;
+    assert_eq!(mine.status, StatusCode::OK);
+    let rows = mine.body.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], alice_device.as_str());
+    assert_eq!(rows[0]["name"], "Test Mac");
+    assert!(rows[0]["created_at"].is_i64());
+    assert!(rows[0]["last_used_at"].is_i64());
+    assert!(rows[0].get("user").is_none());
+    assert!(rows[0].get("token_hash").is_none());
+    // `all` is for admins.
+    let all = p
+        .call("GET", "/api/devices?all=1", Some(&alice), None)
+        .await;
+    assert_eq!(all.status, StatusCode::FORBIDDEN);
+    let all = p
+        .call("GET", "/api/devices?all=1", Some(&admin), None)
+        .await;
+    assert_eq!(all.status, StatusCode::OK);
+    let users: Vec<&str> = all
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["user"].as_str().unwrap())
+        .collect();
+    assert_eq!(users, ["alice", "bob"]);
+
+    // Not someone else's.
+    let theirs = p
+        .call(
+            "DELETE",
+            &format!("/api/devices/{bob_device}"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        p.call_bearer("GET", "/api/me", &bob_token, None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    // A device token can't revoke either.
+    let by_token = p
+        .call_bearer(
+            "DELETE",
+            &format!("/api/devices/{alice_device}"),
+            &alice_token,
+            None,
+        )
+        .await;
+    assert_eq!(by_token.status, StatusCode::UNAUTHORIZED);
+
+    // Your own.
+    let revoked = p
+        .call(
+            "DELETE",
+            &format!("/api/devices/{alice_device}"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    let after = p.call_bearer("GET", "/api/me", &alice_token, None).await;
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        p.call("GET", "/api/devices", Some(&alice), None)
+            .await
+            .body
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    let again = p
+        .call(
+            "DELETE",
+            &format!("/api/devices/{alice_device}"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+
+    // Admins revoke anyone's.
+    let by_admin = p
+        .call(
+            "DELETE",
+            &format!("/api/devices/{bob_device}"),
+            Some(&admin),
+            None,
+        )
+        .await;
+    assert_eq!(by_admin.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        p.call_bearer("GET", "/api/me", &bob_token, None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn device_sign_ins_are_audited() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (_, device) = p.device_token(&admin, "install-1").await;
+    let started = p
+        .call(
+            "POST",
+            "/api/device/code",
+            None,
+            Some(json!({ "install_id": "install-2", "name": "Mac" })),
+        )
+        .await;
+    let user_code = started.body["user_code"].as_str().unwrap();
+    p.call(
+        "POST",
+        &format!("/api/devices/codes/{user_code}/approve"),
+        Some(&admin),
+        Some(json!({})),
+    )
+    .await;
+    p.call(
+        "DELETE",
+        &format!("/api/devices/{device}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let actions: Vec<&str> = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "device.ticket_issued",
+        "device.token_issued",
+        "device.code_requested",
+        "device.code_approved",
+        "device.revoked",
+    ] {
+        assert!(actions.contains(&expected), "{expected} in {actions:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_device_token_updates_its_last_use_at_most_once_a_minute() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (token, device) = p.device_token(&admin, "install-1").await;
+    let old = db::now() - 3600;
+    sqlx::query("UPDATE devices SET last_used_at = ?, last_ip = NULL WHERE id = ?")
+        .bind(old)
+        .bind(&device)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    p.call_bearer("GET", "/api/me", &token, None).await;
+    let used: i64 = sqlx::query_scalar("SELECT last_used_at FROM devices WHERE id = ?")
+        .bind(&device)
+        .fetch_one(&p.db)
+        .await
+        .unwrap();
+    assert!(used > old, "an hour-old use is refreshed");
+
+    // Within a minute, left alone.
+    let recent = db::now() - 10;
+    sqlx::query("UPDATE devices SET last_used_at = ? WHERE id = ?")
+        .bind(recent)
+        .bind(&device)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    p.call_bearer("GET", "/api/me", &token, None).await;
+    let used: i64 = sqlx::query_scalar("SELECT last_used_at FROM devices WHERE id = ?")
+        .bind(&device)
+        .fetch_one(&p.db)
+        .await
+        .unwrap();
+    assert_eq!(used, recent);
+}

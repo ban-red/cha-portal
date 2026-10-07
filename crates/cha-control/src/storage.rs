@@ -31,7 +31,7 @@ use serde_json::json;
 use tracing::info;
 
 use crate::AppState;
-use crate::auth::{AdminUser, ClientInfo, CurrentUser};
+use crate::auth::{AdminUser, ClientInfo, CurrentUser, PlayerUser};
 use crate::db::{self, AppStorageRow, NodeRow, Role, User};
 use crate::environments::{Template, catalog, template};
 use crate::error::{ApiError, ApiResult};
@@ -293,7 +293,7 @@ fn user_app(
 /// launch (guests can't launch any).
 async fn list(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    PlayerUser(user): PlayerUser,
 ) -> ApiResult<Json<UserStorage>> {
     let nodes = node_storage(&state).await?;
     if user.role == Role::Guest {

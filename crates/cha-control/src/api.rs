@@ -11,7 +11,7 @@ use tracing::info;
 
 use crate::AppState;
 use crate::auth::{
-    self, AdminUser, ClientInfo, CurrentUser, SESSION_COOKIE, check_password_policy, hash_password,
+    self, AdminUser, ClientInfo, PlayerUser, SESSION_COOKIE, check_password_policy, hash_password,
 };
 use crate::db::{self, Role, User};
 use crate::error::{ApiError, ApiResult};
@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/me", get(me))
         .route("/users", get(list_users).post(create_user))
         .route("/audit", get(audit))
+        .merge(crate::devices::routes())
         .merge(crate::nodes::routes())
         .merge(crate::environments::routes())
         .merge(crate::moonlight::routes())
@@ -312,7 +313,7 @@ async fn logout(
     Ok(jar.remove(auth::removal_cookie()))
 }
 
-async fn me(CurrentUser(user): CurrentUser) -> Json<User> {
+async fn me(PlayerUser(user): PlayerUser) -> Json<User> {
     Json(user)
 }
 

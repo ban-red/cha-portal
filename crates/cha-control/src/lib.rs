@@ -12,6 +12,7 @@ pub mod auth;
 pub mod claim;
 pub mod controllers;
 pub mod db;
+pub mod devices;
 pub mod discovery;
 pub mod environments;
 pub mod error;

@@ -1169,3 +1169,285 @@ pub async fn delete_gamestream_device_of(
     }
     Ok(row)
 }
+
+// ---- Cha Player devices (C2.1, ADR 0013) ----
+
+pub const TICKET_TTL_SECS: i64 = 60;
+pub const DEVICE_CODE_TTL_SECS: i64 = 600;
+/// How often `last_used_at` and `last_ip` are refreshed, at most.
+pub const DEVICE_TOUCH_SECS: i64 = 60;
+
+/// A signed-in player install, with its owner's username.
+#[derive(Clone, Debug, FromRow)]
+pub struct DeviceRow {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub created_at: i64,
+    pub last_used_at: i64,
+    pub last_ip: Option<String>,
+    pub username: String,
+}
+
+const DEVICE_SELECT: &str = "SELECT d.id, d.user_id, d.name, d.created_at, d.last_used_at, d.last_ip, u.username \
+     FROM devices d JOIN users u ON u.id = d.user_id";
+
+/// Every device, or one user's, oldest first.
+pub async fn list_devices(
+    db: &SqlitePool,
+    user_id: Option<&str>,
+) -> Result<Vec<DeviceRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "{DEVICE_SELECT} WHERE (?1 IS NULL OR d.user_id = ?1) ORDER BY d.created_at, d.id"
+    ))
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn device(db: &SqlitePool, id: &str) -> Result<Option<DeviceRow>, sqlx::Error> {
+    sqlx::query_as(&format!("{DEVICE_SELECT} WHERE d.id = ?"))
+        .bind(id)
+        .fetch_optional(db)
+        .await
+}
+
+pub async fn delete_device(db: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM devices WHERE id = ?")
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected()
+        > 0)
+}
+
+/// The enabled user behind a device token, and the device's id. Refreshes
+/// `last_used_at` and `last_ip` when the last refresh is over a minute old.
+pub async fn device_user(
+    db: &SqlitePool,
+    token_hash: &str,
+    ip: Option<&str>,
+) -> Result<Option<User>, sqlx::Error> {
+    let found: Option<(String, i64, User)> = sqlx::query(
+        "SELECT d.id AS device_id, d.last_used_at AS last_used_at, \
+         u.id, u.username, u.display_name, u.role, u.disabled, u.created_at \
+         FROM devices d JOIN users u ON u.id = d.user_id \
+         WHERE d.token_hash = ? AND u.disabled = 0",
+    )
+    .bind(token_hash)
+    .try_map(|row: sqlx::sqlite::SqliteRow| {
+        use sqlx::Row;
+        Ok((
+            row.try_get("device_id")?,
+            row.try_get("last_used_at")?,
+            User::from_row(&row)?,
+        ))
+    })
+    .fetch_optional(db)
+    .await?;
+    let Some((device_id, last_used, user)) = found else {
+        return Ok(None);
+    };
+    let now = now();
+    if now - last_used >= DEVICE_TOUCH_SECS {
+        sqlx::query("UPDATE devices SET last_used_at = ?, last_ip = ? WHERE id = ?")
+            .bind(now)
+            .bind(ip)
+            .bind(device_id)
+            .execute(db)
+            .await?;
+    }
+    Ok(Some(user))
+}
+
+/// Signs `install_id` in as `user_id`: a new device row, or the existing one
+/// for this (user, install) with its token replaced. Returns the device's id.
+pub async fn upsert_device(
+    db: &SqlitePool,
+    user_id: &str,
+    install_id: &str,
+    name: &str,
+    token_hash: &str,
+    ip: Option<&str>,
+) -> Result<String, sqlx::Error> {
+    let now = now();
+    sqlx::query_scalar(
+        "INSERT INTO devices (id, user_id, install_id, name, token_hash, created_at, last_used_at, last_ip) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7) \
+         ON CONFLICT (user_id, install_id) DO UPDATE \
+         SET name = ?4, token_hash = ?5, last_used_at = ?6, last_ip = ?7 \
+         RETURNING id",
+    )
+    .bind(new_id())
+    .bind(user_id)
+    .bind(install_id)
+    .bind(name)
+    .bind(token_hash)
+    .bind(now)
+    .bind(ip)
+    .fetch_one(db)
+    .await
+}
+
+pub async fn insert_ticket(
+    db: &SqlitePool,
+    ticket_hash: &str,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    let now = now();
+    sqlx::query("DELETE FROM device_tickets WHERE expires_at <= ?")
+        .bind(now)
+        .execute(db)
+        .await?;
+    sqlx::query(
+        "INSERT INTO device_tickets (ticket_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(ticket_hash)
+    .bind(user_id)
+    .bind(now)
+    .bind(now + TICKET_TTL_SECS)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Spends a ticket: the user it was issued to, if it exists and hasn't
+/// expired. A ticket works once.
+pub async fn redeem_ticket(
+    db: &SqlitePool,
+    ticket_hash: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "DELETE FROM device_tickets WHERE ticket_hash = ? AND expires_at > ? RETURNING user_id",
+    )
+    .bind(ticket_hash)
+    .bind(now())
+    .fetch_optional(db)
+    .await
+}
+
+/// Codes waiting for a user, after dropping the expired ones.
+pub async fn count_pending_device_codes(db: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query("DELETE FROM device_codes WHERE expires_at <= ?")
+        .bind(now())
+        .execute(db)
+        .await?;
+    sqlx::query_scalar("SELECT COUNT(*) FROM device_codes")
+        .fetch_one(db)
+        .await
+}
+
+/// Stores a new pending code. `false` when `user_code` is already taken.
+pub async fn insert_device_code(
+    db: &SqlitePool,
+    code_hash: &str,
+    user_code: &str,
+    install_id: &str,
+    name: &str,
+) -> Result<bool, sqlx::Error> {
+    let now = now();
+    Ok(sqlx::query(
+        "INSERT INTO device_codes (code_hash, user_code, install_id, name, created_at, expires_at) \
+         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+    )
+    .bind(code_hash)
+    .bind(user_code)
+    .bind(install_id)
+    .bind(name)
+    .bind(now)
+    .bind(now + DEVICE_CODE_TTL_SECS)
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+#[derive(Clone, Debug, FromRow)]
+pub struct DeviceCodeRow {
+    pub code_hash: String,
+    pub user_code: String,
+    pub install_id: String,
+    pub name: String,
+    pub status: String,
+    pub user_id: Option<String>,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub last_poll_at: Option<i64>,
+}
+
+const DEVICE_CODE_SELECT: &str = "SELECT code_hash, user_code, install_id, name, status, user_id, created_at, expires_at, last_poll_at \
+     FROM device_codes";
+
+/// A code waiting for approval, by the user code (digits only, upper-case).
+pub async fn pending_device_code(
+    db: &SqlitePool,
+    user_code: &str,
+) -> Result<Option<DeviceCodeRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "{DEVICE_CODE_SELECT} WHERE user_code = ? AND status = 'pending' AND expires_at > ?"
+    ))
+    .bind(user_code)
+    .bind(now())
+    .fetch_optional(db)
+    .await
+}
+
+/// A code by its secret, expired or not.
+pub async fn device_code(
+    db: &SqlitePool,
+    code_hash: &str,
+) -> Result<Option<DeviceCodeRow>, sqlx::Error> {
+    sqlx::query_as(&format!("{DEVICE_CODE_SELECT} WHERE code_hash = ?"))
+        .bind(code_hash)
+        .fetch_optional(db)
+        .await
+}
+
+/// Approves (with `user_id`) or denies (`None`) a pending, unexpired code.
+/// `false` when there is no such code.
+pub async fn resolve_device_code(
+    db: &SqlitePool,
+    user_code: &str,
+    approve_for: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE device_codes SET status = ?, user_id = ? \
+         WHERE user_code = ? AND status = 'pending' AND expires_at > ?",
+    )
+    .bind(if approve_for.is_some() {
+        "approved"
+    } else {
+        "denied"
+    })
+    .bind(approve_for)
+    .bind(user_code)
+    .bind(now())
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+pub async fn touch_device_code_poll(db: &SqlitePool, code_hash: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE device_codes SET last_poll_at = ? WHERE code_hash = ?")
+        .bind(now())
+        .bind(code_hash)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Spends an approved code: its user, once.
+pub async fn redeem_device_code(
+    db: &SqlitePool,
+    code_hash: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "DELETE FROM device_codes WHERE code_hash = ? AND status = 'approved' AND expires_at > ? \
+         RETURNING user_id",
+    )
+    .bind(code_hash)
+    .bind(now())
+    .fetch_optional(db)
+    .await
+}

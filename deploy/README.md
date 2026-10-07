@@ -89,6 +89,15 @@ Stock Moonlight and Artemis apps (on a PC, Steam Deck, phone or TV) can play you
 - **Ports:** TCP 47989, 47984 and 48010 for the node's host, and UDP from `CHA_GAMESTREAM_PORT_BASE` (7700), three per environment, for the streams. Keep them to the LAN or tailnet.
 - **Limits for now:** stereo sound only (a client asking for surround is refused); NumpadEnter types Enter; touch, pen and pad motion are ignored; IPv4 only. Environments started before `CHA_GAMESTREAM` was turned on don't appear: start them again.
 
+## Signing in Cha Player
+
+The native Cha Player ([ADR 0013](../docs/adr/0013-native-player-on-cha-stream.md)) signs in to a portal as a *device*: it holds a token (`chadev_…`) that opens only the routes a player needs (your apps, environments, ICE servers and your own app settings), never user management, the audit log or other devices. Two ways to sign in; the contract is in [`docs/plans/c2-device-signin.md`](../docs/plans/c2-device-signin.md).
+
+- **From the browser (macOS).** On the dashboard, use the player icon on an app, or *Open in Cha Player* in the account menu. The portal makes a one-use ticket (valid 60 seconds) and the browser opens `cha://connect?...`; the player asks before signing in to this portal, and launches the app if you picked one.
+- **With a code.** In the player choose *Add portal*, enter the portal's address and it shows a code like `ABCD-EFGH`. Open `<portal>/link` (also *Link a device* in the account menu), type the code (case and the dash don't matter), check the device name and press Approve. The code lasts 10 minutes.
+- **Revoking.** **Settings → Devices** lists your installs with their last use and address; Revoke signs one out at once. Signing in again from the same install replaces its token. Admins can revoke any device (`DELETE /api/devices/{id}`). Every sign-in, approval, denial and revocation is in the audit log.
+- Players send the token only to the portal that issued it. A portal on plain `http://` is refused by the player unless it sets `CHA_ALLOW_INSECURE_PORTAL=true` (or the portal is `localhost`); put the portal behind HTTPS or Tailscale otherwise.
+
 ## Published images
 
 A release (a `v*` tag) publishes every image to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, the Moonlight gateway, `cha-gateway`, and the environments, `cha-env-test-pattern`, `-chrome`, `-firefox`, `-xfce`, `-kde` and `-steam` (with their base, `cha-env-base`). Each is tagged with the version (`0.1.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all of them, since they change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.1.0 --owner ban-red`). The Chrome and Steam images contain Google Chrome and Valve's Steam bootstrap, under their owners' terms.

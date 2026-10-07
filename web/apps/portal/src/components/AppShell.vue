@@ -6,10 +6,12 @@
 // - Under 768px: an off-canvas drawer opened from the header's menu button. While it is open
 //   focus is kept inside it, Esc and the scrim close it, and the page behind is `inert`.
 // A page can add controls to the header through the #page-actions element (Teleport).
-import { ChevronsLeft, Database, FileText, Folder, Gamepad2, LayoutGrid, LogOut, Menu, Monitor, MonitorSmartphone, Moon, Palette, Server, SlidersHorizontal, Sun, User } from "lucide-vue-next";
+import { ChevronsLeft, Database, Laptop, FileText, Folder, Gamepad2, LayoutGrid, LogOut, Menu, Monitor, MonitorPlay, MonitorSmartphone, Moon, Palette, Server, SlidersHorizontal, Sun, User } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import { isMac } from "../player";
+import { openInPlayer } from "../playerLaunch";
 import { useSession } from "../stores/session";
 import { useTheme } from "../themes/runtime";
 import BrandMark from "./BrandMark.vue";
@@ -33,6 +35,7 @@ const nav = computed<NavItem[]>(() => [
   { to: "/settings/appearance", label: "Appearance", icon: Palette, show: true },
   { to: "/settings/storage", label: "Storage", icon: Database, show: true },
   { to: "/settings/moonlight", label: "Moonlight", icon: MonitorSmartphone, show: session.user?.role !== "guest" },
+  { to: "/settings/devices", label: "Devices", icon: Laptop, show: true },
   { to: "/admin/nodes", label: "Nodes", icon: Server, show: session.isAdmin, section: "Admin" },
   { to: "/admin/users", label: "Users", icon: User, show: session.isAdmin },
   { to: "/admin/storage", label: "App data", icon: Folder, show: session.isAdmin },
@@ -159,6 +162,14 @@ function onAccountFocusOut(e: FocusEvent) {
 
 const initial = computed(() => (session.user?.displayName || session.user?.username || "?").trim().charAt(0).toUpperCase());
 
+// The account menu's Cha Player entries: signing a player in, from a Mac's browser.
+const mac = isMac();
+const playerError = ref<string | null>(null);
+async function openPlayer() {
+  playerError.value = await openInPlayer();
+  accountOpen.value = false;
+}
+
 async function signOut() {
   await session.logout();
   await router.push({ name: "login" });
@@ -241,6 +252,17 @@ const ICON_BUTTON =
               <p class="truncate text-xs text-ink-3">{{ session.user?.username }} · {{ session.user?.role }}</p>
             </div>
           </div>
+          <div class="mt-2 space-y-1">
+            <button v-if="mac" type="button" class="btn-ghost min-h-9 w-full pointer-coarse:min-h-11" @click="openPlayer">
+              <MonitorPlay class="size-4" aria-hidden="true" />
+              Open in Cha Player
+            </button>
+            <RouterLink to="/link" class="btn-ghost min-h-9 w-full pointer-coarse:min-h-11">
+              <Laptop class="size-4" aria-hidden="true" />
+              Link a device
+            </RouterLink>
+            <p v-if="playerError" role="alert" class="text-xs text-danger">{{ playerError }}</p>
+          </div>
           <button type="button" class="btn-ghost mt-2 min-h-9 w-full pointer-coarse:min-h-11" @click="signOut">
             <LogOut class="size-4" aria-hidden="true" />
             Sign out
@@ -269,6 +291,17 @@ const ICON_BUTTON =
           >
             <p class="truncate text-sm font-medium">{{ session.user?.displayName }}</p>
             <p class="truncate text-xs text-ink-3">{{ session.user?.username }} · {{ session.user?.role }}</p>
+            <div class="mt-3 space-y-1">
+              <button v-if="mac" type="button" class="btn-ghost min-h-9 w-full pointer-coarse:min-h-11" @click="openPlayer">
+                <MonitorPlay class="size-4" aria-hidden="true" />
+                Open in Cha Player
+              </button>
+              <RouterLink to="/link" class="btn-ghost min-h-9 w-full pointer-coarse:min-h-11">
+                <Laptop class="size-4" aria-hidden="true" />
+                Link a device
+              </RouterLink>
+              <p v-if="playerError" role="alert" class="text-xs text-danger">{{ playerError }}</p>
+            </div>
             <button type="button" class="btn-ghost mt-3 min-h-9 w-full pointer-coarse:min-h-11" @click="signOut">
               <LogOut class="size-4" aria-hidden="true" />
               Sign out

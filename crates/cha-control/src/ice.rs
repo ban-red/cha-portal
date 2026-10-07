@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use sha1::Sha1;
 
 use crate::AppState;
-use crate::auth::CurrentUser;
+use crate::auth::PlayerUser;
 
 /// How long minted TURN credentials work. coturn checks them on every
 /// allocation refresh, so this bounds a relayed session's length.
@@ -36,7 +36,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// `RTCIceServer`s for this user's next connection.
-async fn ice_servers(State(state): State<AppState>, CurrentUser(user): CurrentUser) -> Json<Value> {
+async fn ice_servers(State(state): State<AppState>, PlayerUser(user): PlayerUser) -> Json<Value> {
     let ice = &state.config.ice;
     let mut servers = Vec::new();
     if !ice.stun.is_empty() {

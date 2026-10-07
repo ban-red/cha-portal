@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::AppState;
-use crate::auth::{ClientInfo, CurrentUser};
+use crate::auth::{ClientInfo, CurrentUser, PlayerUser};
 use crate::db::{self, Role};
 use crate::environments::{Template, catalog, template};
 use crate::error::{ApiError, ApiResult};
@@ -73,7 +73,7 @@ fn user_app(template: &Template, choice: Option<&String>) -> UserApp {
 /// they can launch (guests can't launch any).
 async fn list(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    PlayerUser(user): PlayerUser,
 ) -> ApiResult<Json<UserApps>> {
     if user.role == Role::Guest {
         return Ok(Json(UserApps { apps: Vec::new() }));

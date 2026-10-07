@@ -16,6 +16,9 @@ pub enum ApiError {
     Forbidden(&'static str, String),
     #[error("{0}")]
     NotFound(String),
+    /// Not found, with a code the client can tell apart from a plain 404.
+    #[error("{1}")]
+    NotFoundCode(&'static str, String),
     #[error("{1}")]
     Conflict(&'static str, String),
     /// A node the portal depends on failed or couldn't be reached.
@@ -59,6 +62,7 @@ impl ApiError {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Forbidden(code, _) => (StatusCode::FORBIDDEN, code),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+            Self::NotFoundCode(code, _) => (StatusCode::NOT_FOUND, code),
             Self::Conflict(code, _) => (StatusCode::CONFLICT, code),
             Self::BadGateway(code, _) => (StatusCode::BAD_GATEWAY, code),
             Self::GatewayTimeout(code, _) => (StatusCode::GATEWAY_TIMEOUT, code),

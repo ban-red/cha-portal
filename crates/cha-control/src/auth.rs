@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use axum::extract::{ConnectInfo, FromRequestParts};
-use axum::http::header::USER_AGENT;
+use axum::http::header::{AUTHORIZATION, USER_AGENT};
 use axum::http::request::Parts;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::Engine;
@@ -152,6 +152,48 @@ impl FromRequestParts<AppState> for CurrentUser {
         db::session_user(&state.db, &token_hash(token.value()))
             .await?
             .map(CurrentUser)
+            .ok_or(ApiError::Unauthorized)
+    }
+}
+
+/// What a Cha Player device token starts with.
+pub const DEVICE_TOKEN_PREFIX: &str = "chadev_";
+
+/// A fresh device token: `chadev_` and 43 URL-safe characters.
+pub fn new_device_token() -> anyhow::Result<String> {
+    Ok(format!("{DEVICE_TOKEN_PREFIX}{}", random_token()?))
+}
+
+/// A signed-in user on the routes Cha Player uses: a session cookie, or a
+/// device token as `Authorization: Bearer chadev_...`. Every other route takes
+/// [`CurrentUser`] or [`AdminUser`], which are cookie-only.
+pub struct PlayerUser(pub User);
+
+impl FromRequestParts<AppState> for PlayerUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> ApiResult<Self> {
+        let jar = CookieJar::from_headers(&parts.headers);
+        if let Some(token) = jar.get(SESSION_COOKIE)
+            && let Some(user) = db::session_user(&state.db, &token_hash(token.value())).await?
+        {
+            return Ok(PlayerUser(user));
+        }
+        let token = parts
+            .headers
+            .get(AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|t| t.starts_with(DEVICE_TOKEN_PREFIX))
+            .ok_or(ApiError::Unauthorized)?;
+        let ip = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| addr.ip().to_string());
+        db::device_user(&state.db, &token_hash(token), ip.as_deref())
+            .await?
+            .map(PlayerUser)
             .ok_or(ApiError::Unauthorized)
     }
 }

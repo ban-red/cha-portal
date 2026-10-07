@@ -2,7 +2,7 @@
 // One app of the catalog, as a card or a list row. The card lays itself out by its own
 // width (a container query): icon beside the title when it is wide, stacked when narrow;
 // the Controller and Frame rate pickers are compact pills that wrap when there is no room.
-import { Activity, AppWindow, Gamepad2, Gauge, Globe, Monitor, Pin } from "lucide-vue-next";
+import { Activity, AppWindow, Gamepad2, Gauge, Globe, Monitor, MonitorPlay, Pin } from "lucide-vue-next";
 import { computed, ref } from "vue";
 
 import { catalogIconUrl, type AppSettings, type ControllerApp, type Environment, type PlacementChoice, type Placements, type StorageApp, type Template } from "../api";
@@ -33,10 +33,13 @@ const props = defineProps<{
   placements?: Placements;
   busy: boolean;
   disabled: boolean;
+  /** Offer "Open in Cha Player" (on a Mac). */
+  player?: boolean;
 }>();
 const emit = defineEmits<{
   launch: [choice: PlacementChoice | null];
   pin: [];
+  openInPlayer: [];
   setPersistent: [persistent: boolean];
   chooseController: [event: Event];
   chooseFps: [event: Event];
@@ -93,6 +96,16 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
             :disabled="disabled"
             @toggle="(v) => emit('setPersistent', v)"
           />
+          <button
+            v-if="player && !disabled"
+            type="button"
+            class="inline-flex size-9 items-center justify-center rounded-lg text-ink-3 transition hover:bg-panel-2 hover:text-ink pointer-coarse:size-11"
+            :aria-label="`Open ${t.name} in Cha Player`"
+            :title="`Open ${t.name} in Cha Player`"
+            @click="emit('openInPlayer')"
+          >
+            <MonitorPlay class="size-5" aria-hidden="true" />
+          </button>
           <button
             type="button"
             class="inline-flex size-9 items-center justify-center rounded-lg transition hover:bg-panel-2 pointer-coarse:size-11"
@@ -188,9 +201,20 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
         <span v-if="controllerText && fpsText" aria-hidden="true"> · </span>
         <template v-if="fpsText"><span class="sr-only">Frame rate: </span>{{ fpsText }}</template>
       </p>
+      <div class="flex items-center justify-self-end [grid-area:pin]">
+        <button
+          v-if="player && !disabled"
+          type="button"
+          class="inline-flex size-9 items-center justify-center rounded-lg text-ink-3 transition hover:bg-panel-2 hover:text-ink pointer-coarse:size-11"
+          :aria-label="`Open ${t.name} in Cha Player`"
+          :title="`Open ${t.name} in Cha Player`"
+          @click="emit('openInPlayer')"
+        >
+          <MonitorPlay class="size-5" aria-hidden="true" />
+        </button>
       <button
         type="button"
-        class="inline-flex size-9 items-center justify-center justify-self-end rounded-lg transition hover:bg-panel-2 pointer-coarse:size-11 [grid-area:pin]"
+        class="inline-flex size-9 items-center justify-center rounded-lg transition hover:bg-panel-2 pointer-coarse:size-11"
         :class="pinned ? 'text-accent' : 'text-ink-3 hover:text-ink'"
         :aria-pressed="pinned"
         :aria-label="`Pin ${t.name}`"
@@ -199,6 +223,7 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
       >
         <Pin class="size-5" :fill="pinned ? 'currentColor' : 'none'" aria-hidden="true" />
       </button>
+      </div>
       <div class="w-44 justify-self-end [grid-area:launch] @min-[44rem]:w-full">
         <LaunchButton
           :id="t.id"
