@@ -26,6 +26,7 @@ export const router = createRouter({
         { path: "controllers", name: "controllers", component: () => import("./views/ControllersView.vue"), meta: { title: "Controllers" } },
         { path: "settings/appearance", name: "appearance", component: () => import("./views/AppearanceView.vue"), meta: { title: "Appearance" } },
         { path: "settings/storage", name: "storage", component: () => import("./views/StorageView.vue"), meta: { title: "Storage" } },
+        { path: "settings/moonlight", name: "moonlight-devices", component: () => import("./views/MoonlightDevicesView.vue"), meta: { title: "Moonlight", subtitle: "Pair Moonlight apps to play your running environments." } },
         { path: "admin/nodes", name: "nodes", component: () => import("./views/NodesView.vue"), meta: { admin: true, title: "Nodes" } },
         { path: "admin/settings", name: "admin-settings", component: () => import("./views/SettingsView.vue"), meta: { admin: true, title: "Settings", subtitle: "Portal-wide settings." } },
         { path: "admin/users", name: "users", component: () => import("./views/UsersView.vue"), meta: { admin: true, title: "Users" } },

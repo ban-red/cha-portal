@@ -333,6 +333,34 @@ export interface PairingState {
 }
 
 /** An error the API returned: HTTP status, stable code, readable message. */
+/** A Moonlight device asking to pair: its PIN is typed in the portal. */
+export interface GamestreamPairingRequest {
+  id: string;
+  nodeId: string;
+  nodeName: string;
+  deviceName: string;
+  address: string;
+  /** Unix seconds. */
+  expiresAt: number;
+}
+
+export interface GamestreamDevice {
+  id: string;
+  name: string;
+  nodeId: string;
+  nodeName: string;
+  pairedAt: number;
+  owner: { id: string; name: string };
+}
+
+/** A node with GameStream on: what to add in Moonlight to reach it. */
+export interface GamestreamHost {
+  nodeId: string;
+  nodeName: string;
+  address: string;
+  httpPort: number;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -388,6 +416,12 @@ export const api = {
   renameNode: (id: string, name: string) =>
     request<{ id: string; name: string }>("PATCH", `/nodes/${encodeURIComponent(id)}`, { name }),
   removeNode: (id: string) => request<{ removed: string }>("DELETE", `/nodes/${encodeURIComponent(id)}`),
+  gamestreamPairing: () => request<{ requests: GamestreamPairingRequest[] }>("GET", "/gamestream/pairing"),
+  gamestreamPair: (id: string, pin: string) =>
+    request<{ device: GamestreamDevice }>("POST", `/gamestream/pairing/${encodeURIComponent(id)}`, { pin }),
+  gamestreamDevices: () => request<{ devices: GamestreamDevice[] }>("GET", "/gamestream/devices"),
+  removeGamestreamDevice: (id: string) => request<null>("DELETE", `/gamestream/devices/${encodeURIComponent(id)}`),
+  gamestreamHosts: () => request<{ hosts: GamestreamHost[] }>("GET", "/gamestream/hosts"),
   pingNode: (id: string) => request<{ rttMs: number; nodeUnixMs: number }>("POST", `/nodes/${encodeURIComponent(id)}/ping`, {}),
   foundMoonlightHosts: () => request<{ hosts: FoundMoonlightHost[] }>("GET", "/moonlight/found"),
   adoptMoonlightHost: (key: string) => request<AdoptResult>("POST", "/moonlight/adopt", { key }),
