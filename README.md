@@ -85,7 +85,7 @@ A local agent, for working on enrollment and the node channel without a GPU serv
 cargo run -p cha-node -- --portal-url http://127.0.0.1:7677 --join-token chajoin_… --state-dir data/node
 ```
 
-To point a real node at a dev portal on your LAN, start the portal with `CHA_LISTEN=0.0.0.0:7677 bun run dev` and the agent with `CHA_ALLOW_INSECURE_PORTAL=true` (development only: the node's traffic then crosses the network unencrypted).
+To point a real node at a dev portal on your LAN, start the portal with `bun run dev` (it listens on every interface; `CHA_LISTEN=127.0.0.1:7677` keeps it to this machine) and the agent with `CHA_ALLOW_INSECURE_PORTAL=true` (development only: the node's traffic then crosses the network unencrypted).
 
 ## Repository layout
 
