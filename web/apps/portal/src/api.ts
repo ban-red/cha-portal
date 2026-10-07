@@ -370,6 +370,8 @@ export const api = {
   refreshMoonlightHost: (id: string) =>
     request<AdoptedHost>("POST", `/moonlight/hosts/${encodeURIComponent(id)}/refresh`, {}),
   removeMoonlightHost: (id: string) => request<null>("DELETE", `/moonlight/hosts/${encodeURIComponent(id)}`),
+  renameNode: (id: string, name: string) =>
+    request<{ id: string; name: string }>("PATCH", `/nodes/${encodeURIComponent(id)}`, { name }),
   catalog: () => request<Template[]>("GET", "/catalog"),
   environments: () => request<Environment[]>("GET", "/environments"),
   /** Without a choice, the server picks the best place (what `placements` calls `auto`). */

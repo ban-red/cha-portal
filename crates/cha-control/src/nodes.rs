@@ -52,7 +52,7 @@ pub fn routes() -> axum::Router<AppState> {
         .route("/nodes/join-tokens", post(create_join_token))
         .route("/nodes/discovered", get(crate::claim::discovered))
         .route("/nodes/discovered/claim", post(crate::claim::claim))
-        .route("/nodes/{id}", delete(remove))
+        .route("/nodes/{id}", delete(remove).patch(rename))
         .route("/nodes/{id}/ping", post(ping))
 }
 
@@ -575,6 +575,40 @@ async fn remove(
     )
     .await?;
     Ok(Json(json!({ "removed": id })))
+}
+
+#[derive(Deserialize)]
+struct RenameRequest {
+    name: String,
+}
+
+async fn rename(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    client: ClientInfo,
+    Path(id): Path<String>,
+    Json(req): Json<RenameRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err(ApiError::bad_request(
+            "bad_name",
+            "node names are 1–64 characters",
+        ));
+    }
+    if !db::rename_node(&state.db, &id, name).await? {
+        return Err(ApiError::NotFound("no such node".into()));
+    }
+    db::audit(
+        &state.db,
+        Some(&admin.id),
+        "node.renamed",
+        Some(&id),
+        Some(json!({ "name": name })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok(Json(json!({ "id": id, "name": name })))
 }
 
 async fn ping(

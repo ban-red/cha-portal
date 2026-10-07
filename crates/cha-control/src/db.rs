@@ -368,6 +368,16 @@ pub async fn set_node_inventory(
     Ok(())
 }
 
+pub async fn rename_node(db: &SqlitePool, id: &str, name: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("UPDATE nodes SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected()
+        > 0)
+}
+
 pub async fn delete_node(db: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query("DELETE FROM nodes WHERE id = ?")
         .bind(id)

@@ -161,6 +161,20 @@ const remove = useMutation({
   },
 });
 
+const rename = useMutation({
+  mutationFn: ({ node, name }: { node: NodeInfo; name: string }) => api.renameNode(node.id, name),
+  onSuccess: () => queryClient.invalidateQueries({ queryKey: ["nodes"] }),
+  onError: (err) => {
+    actionError.value = err instanceof ApiError ? err.message : "Couldn't rename the node.";
+  },
+});
+
+function promptRename(node: NodeInfo) {
+  actionError.value = null;
+  const name = window.prompt("Rename this node (1–64 characters):", node.name)?.trim();
+  if (name && name !== node.name) rename.mutate({ node, name });
+}
+
 function confirmRemove(node: NodeInfo) {
   actionError.value = null;
   const ok = window.confirm(
@@ -359,6 +373,7 @@ function status(node: NodeInfo): { text: string; dot: string } {
           <span class="mr-auto min-w-0 text-xs text-ink-3" :title="dateTime(node.enrolledAt)">Enrolled {{ ago(node.enrolledAt) }}</span>
           <span v-if="pings[node.id]" class="text-xs text-ink-2">{{ pings[node.id] }}</span>
           <button type="button" class="btn-ghost px-3 py-1 text-xs" :disabled="!node.online" @click="ping(node)">Ping</button>
+          <button type="button" class="btn-ghost px-3 py-1 text-xs" :disabled="rename.isPending.value" @click="promptRename(node)">Rename</button>
           <button
             type="button"
             class="btn-ghost px-3 py-1 text-xs hover:border-danger/60 hover:text-danger"
