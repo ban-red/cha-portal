@@ -180,11 +180,20 @@ struct EnvironmentView {
     /// The codecs its device encodes (from its node's inventory), so the page
     /// asks only for those; `None` when the node doesn't say.
     codecs: Option<Vec<String>>,
+    /// The device it runs on, so the page can say whether it is hardware
+    /// accelerated; `None` when the node doesn't say.
+    device: Option<DeviceView>,
     created_at: i64,
     updated_at: i64,
     /// Where the streamer listens, while it runs (the portal brokers
     /// connections from P1.5; until then this is for diagnostics).
     streamer: Option<StreamerView>,
+}
+
+#[derive(Serialize)]
+struct DeviceView {
+    kind: DeviceKind,
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -221,14 +230,18 @@ fn view(
         .and_then(|n| n.inventory.as_deref())
         .and_then(|j| serde_json::from_str::<Inventory>(j).ok());
     // Its device; environments from before devices ran on the NVIDIA GPU.
-    let codecs = inventory.as_ref().and_then(|inv| {
+    let device = inventory.as_ref().and_then(|inv| {
         let devices = inv.devices_or_derived();
-        let device = match row.device.as_deref() {
+        match row.device.as_deref() {
             Some(id) => devices.into_iter().find(|d| d.id == id),
             None => devices.into_iter().find(|d| d.kind == DeviceKind::Nvidia),
-        };
-        device.map(device_codecs)
+        }
     });
+    let device_view = device.as_ref().map(|d| DeviceView {
+        kind: d.kind,
+        name: d.name.clone(),
+    });
+    let codecs = device.map(device_codecs);
     // A Moonlight environment's streamer is its host's.
     let codecs = moonlight.codecs(&row.template_id).or(codecs);
     let host = inventory.and_then(|inv| inv.addresses.into_iter().next());
@@ -259,6 +272,7 @@ fn view(
         warning: row.warning,
         log,
         codecs,
+        device: device_view,
         created_at: row.created_at,
         updated_at: row.updated_at,
         streamer,

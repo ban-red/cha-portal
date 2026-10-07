@@ -175,6 +175,8 @@ export interface Environment {
   streamer: { host: string | null; httpPort: number; webrtcPort: number } | null;
 }
 
+  /** The device it runs on; absent from older portals, null when the node doesn't say. */
+  device?: { kind: DeviceKind; name: string } | null;
 /** How the other users' copies of an app reach the app's shared data. */
 export type SharedAccess = "none" | "read" | "write";
 

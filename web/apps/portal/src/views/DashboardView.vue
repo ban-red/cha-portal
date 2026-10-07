@@ -7,6 +7,7 @@ import { ApiError, api, type Environment, type EnvironmentState, type PlacementC
 import AppCard from "../components/AppCard.vue";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import FormError from "../components/FormError.vue";
+import GpuBadge from "../components/GpuBadge.vue";
 import MoonlightHostSection from "../components/MoonlightHostSection.vue";
 import SegmentedControl from "../components/SegmentedControl.vue";
 import WarningNote from "../components/WarningNote.vue";
@@ -297,7 +298,10 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
         <li v-for="e in live" :key="e.id" class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
           <span class="size-2 shrink-0 rounded-full" :class="STATES[e.state].dot" aria-hidden="true" />
           <div class="min-w-0 flex-1">
-            <p class="truncate font-medium">{{ e.templateName }}</p>
+            <p class="flex items-center gap-2 font-medium">
+              <span class="truncate">{{ e.templateName }}</span>
+              <GpuBadge v-if="e.device" :kind="e.device.kind" :name="e.device.name" tense="is" />
+            </p>
             <p class="truncate text-xs text-ink-3" :title="dateTime(e.createdAt)">
               {{ STATES[e.state].text }} on {{ e.nodeName ?? "a removed node" }} · started {{ ago(e.createdAt) }}
             </p>

@@ -1,15 +1,16 @@
 <script setup lang="ts">
 // One app of the catalog, as a card or a list row. The card lays itself out by its own
 // width (a container query): icon beside the title when it is wide, stacked when narrow;
-// the Controller and Frame rate selects sit side by side only when there is room for their
-// full option text.
+// the Controller and Frame rate pickers are compact pills that wrap when there is no room.
 import { Activity, AppWindow, Gamepad2, Gauge, Globe, Monitor, Pin } from "lucide-vue-next";
 import { computed, ref } from "vue";
 
 import { catalogIconUrl, type AppSettings, type ControllerApp, type Environment, type PlacementChoice, type Placements, type StorageApp, type Template } from "../api";
 import { FPS_CHOICES } from "../appFps";
 import { KINDS, kindLabel } from "../controllerKinds";
+import { autoOption } from "../placements";
 import AppStorageMenu from "./AppStorageMenu.vue";
+import GpuBadge from "./GpuBadge.vue";
 import FormError from "./FormError.vue";
 import LaunchButton from "./LaunchButton.vue";
 
@@ -50,13 +51,20 @@ const TILE = "grid place-items-center rounded-lg";
 const tileTone = computed(() => (logo.value ? "border border-line bg-panel-2" : "bg-accent-soft text-accent"));
 
 const t = computed(() => props.template);
+// The device Launch would pick, if the portal says.
+const place = computed(() => autoOption(props.placements));
 const controllerText = computed(() =>
   props.controller ? kindLabel(props.controller.kind ?? props.controller.default) : null,
 );
 const fpsText = computed(() => (props.fps ? `${props.fps.fps ?? props.fps.defaultFps} fps` : null));
 
-const SELECT = "field min-h-9 pointer-coarse:min-h-11 truncate pl-9";
-const SELECT_ICON = "pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-3";
+// An icon pill showing the current value; the real <select> sits invisibly on top, so the
+// native picker (and its keyboard and screen-reader behaviour) stays.
+const PILL =
+  "relative inline-flex min-h-9 max-w-full items-center gap-1.5 rounded-lg border px-2.5 text-sm transition pointer-coarse:min-h-11 hover:border-accent/60 hover:text-ink focus-within:ring-2 focus-within:ring-accent/50";
+const pillTone = (changed: boolean) => (changed ? "border-accent/50 bg-accent-soft text-accent" : "border-line text-ink-2");
+const SELECT = "absolute inset-0 size-full cursor-pointer appearance-none opacity-0";
+const controllerShort = computed(() => (props.controller ? kindLabel(props.controller.kind ?? props.controller.default) : ""));
 </script>
 
 <template>
@@ -71,7 +79,10 @@ const SELECT_ICON = "pointer-events-none absolute top-1/2 left-3 size-4 -transla
           <component :is="icon" v-else class="size-6" aria-hidden="true" />
         </div>
         <div class="col-span-2 col-start-1 row-start-2 min-w-0 @min-[26rem]:col-span-1 @min-[26rem]:col-start-2 @min-[26rem]:row-start-1">
-          <h3 class="text-lg leading-6 font-semibold tracking-tight">{{ t.name }}</h3>
+          <h3 class="flex items-center gap-2 text-lg leading-6 font-semibold tracking-tight">
+            {{ t.name }}
+            <GpuBadge v-if="place" :kind="place.kind" :name="place.label" />
+          </h3>
           <p class="mt-0.5 line-clamp-2 text-sm text-ink-2" :title="t.description">{{ t.description }}</p>
         </div>
         <div class="col-start-2 row-start-1 flex items-center gap-2 @min-[26rem]:col-start-3">
@@ -97,10 +108,11 @@ const SELECT_ICON = "pointer-events-none absolute top-1/2 left-3 size-4 -transla
       </div>
 
       <div v-if="controller || fps" class="mt-3">
-        <div class="grid grid-cols-2 gap-2">
-          <div v-if="controller" class="relative min-w-0" :class="!fps && 'col-span-2'">
+        <div class="flex flex-wrap gap-2">
+          <div v-if="controller" :class="[PILL, pillTone(!!controller.kind)]">
             <label :for="`${t.id}-controller`" class="sr-only">Controller</label>
-            <Gamepad2 :class="SELECT_ICON" aria-hidden="true" />
+            <Gamepad2 class="size-4 shrink-0" aria-hidden="true" />
+            <span class="truncate" aria-hidden="true">{{ controllerShort }}</span>
             <select
               :id="`${t.id}-controller`"
               :value="controller.kind ?? ''"
@@ -112,9 +124,10 @@ const SELECT_ICON = "pointer-events-none absolute top-1/2 left-3 size-4 -transla
               <option v-for="k in KINDS" :key="k.kind" :value="k.kind">{{ k.label }}</option>
             </select>
           </div>
-          <div v-if="fps" class="relative min-w-0" :class="!controller && 'col-span-2'">
+          <div v-if="fps" :class="[PILL, pillTone(fps.fps != null)]">
             <label :for="`${t.id}-fps`" class="sr-only">Frame rate</label>
-            <Gauge :class="SELECT_ICON" aria-hidden="true" />
+            <Gauge class="size-4 shrink-0" aria-hidden="true" />
+            <span aria-hidden="true">{{ fps.fps ?? fps.defaultFps }} fps</span>
             <select
               :id="`${t.id}-fps`"
               :value="fps.fps ?? ''"
@@ -159,6 +172,7 @@ const SELECT_ICON = "pointer-events-none absolute top-1/2 left-3 size-4 -transla
       <div class="min-w-0 [grid-area:text]">
         <div class="flex items-center gap-2">
           <h3 class="truncate text-base leading-6 font-semibold">{{ t.name }}</h3>
+          <GpuBadge v-if="place" :kind="place.kind" :name="place.label" />
           <AppStorageMenu
             v-if="storage"
             :app="storage"

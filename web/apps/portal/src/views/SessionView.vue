@@ -31,6 +31,7 @@ import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
 import { backoffDelay, classifyConnectError } from "../reconnect";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
+import GpuBadge from "../components/GpuBadge.vue";
 import PowerOffDialog from "../components/PowerOffDialog.vue";
 import RecordingDialog from "../components/RecordingDialog.vue";
 import StatsOverlay from "../components/StatsOverlay.vue";
@@ -849,6 +850,7 @@ const STATUS: Record<PlayerState, string> = {
         </svg>
       </button>
       <span class="max-w-48 truncate px-2 text-sm font-medium">{{ env.data.value?.templateName ?? "…" }}</span>
+      <GpuBadge v-if="env.data.value?.device" :kind="env.data.value.device.kind" :name="env.data.value.device.name" tense="is" />
       <span v-if="viewers > 1" class="px-2 text-xs text-ink-2" :title="`${viewers} sessions are watching this environment`">
         {{ viewers }} watching
       </span>
