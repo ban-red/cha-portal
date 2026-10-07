@@ -13,6 +13,21 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join("Library/Application Support/Cha Player"))
 }
 
+/// What this Mac is called ("Alex's MacBook Pro"), for the portal's Devices
+/// page.
+#[cfg(feature = "portal")]
+pub fn device_name() -> String {
+    std::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Mac".into())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -22,6 +37,9 @@ pub struct Config {
     pub bitrate_kbps: u32,
     /// Most preferred first.
     pub codecs: Vec<Codec>,
+    /// Send Cmd as Ctrl, as the browser player does (Cmd+C copies in a Linux
+    /// app); off sends it as Super.
+    pub command_as_control: bool,
 }
 
 impl Default for Config {
@@ -32,6 +50,7 @@ impl Default for Config {
             fps: 60,
             bitrate_kbps: 80_000,
             codecs: vec![Codec::Hevc, Codec::H264],
+            command_as_control: true,
         }
     }
 }

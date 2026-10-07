@@ -20,6 +20,8 @@ mod render;
 mod session;
 #[cfg(target_os = "macos")]
 mod ui;
+#[cfg(all(target_os = "macos", feature = "portal"))]
+mod urlscheme;
 #[cfg(target_os = "macos")]
 mod video;
 
@@ -101,6 +103,8 @@ mod macos {
 
         // Transports spawn tasks when they open, so open them inside the runtime.
         let mut transports: Vec<Box<dyn Transport>> = Vec::new();
+        #[cfg(feature = "portal")]
+        let mut portal = None;
         {
             let _guard = runtime.enter();
             #[cfg(feature = "gamestream")]
@@ -108,12 +112,22 @@ mod macos {
                 Ok(t) => transports.push(Box::new(t)),
                 Err(e) => tracing::warn!("Moonlight hosts unavailable: {e:#}"),
             }
+            #[cfg(feature = "portal")]
+            match cha_client_portal::Portal::open(&data_dir, &config::device_name()) {
+                Ok(t) => {
+                    portal = Some((transports.len(), t.clone()));
+                    transports.push(Box::new(t));
+                }
+                Err(e) => tracing::warn!("Cha portals unavailable: {e:#}"),
+            }
             if args.demo {
                 transports.push(Box::new(demo::DemoTransport));
             }
         }
         if transports.is_empty() {
-            anyhow::bail!("no transports: build with the `gamestream` feature or run with --demo");
+            anyhow::bail!(
+                "no transports: build with the `gamestream` or `portal` feature or run with --demo"
+            );
         }
 
         app::run(
@@ -123,6 +137,8 @@ mod macos {
             app::Options {
                 frames: args.frames,
                 autostart: args.autostart,
+                #[cfg(feature = "portal")]
+                portal,
             },
         )
     }

@@ -88,6 +88,13 @@ pub fn show(ui: &mut egui::Ui, config: &mut Config) -> bool {
                     }
                 });
             ui.end_row();
+
+            ui.label("Command key");
+            ui.checkbox(
+                &mut config.command_as_control,
+                "Send as Ctrl (Cmd+C copies)",
+            );
+            ui.end_row();
         });
     ui.add_space(6.0);
     ui.weak("Applies to the next launch. A host may pick less than you ask for.");

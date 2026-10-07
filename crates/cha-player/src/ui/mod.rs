@@ -4,6 +4,9 @@
 //! [`Action`]s for the app to run on a transport, and takes [`Event`]s back
 //! with the results.
 
+// Signing in to portals is only wired up with the `portal` feature.
+#![cfg_attr(not(feature = "portal"), allow(dead_code))]
+
 mod overlay;
 mod settings;
 
@@ -47,7 +50,27 @@ pub enum Action {
         transport: usize,
         host: String,
     },
+    /// Swap a `cha://` link's ticket for a token (the user said yes).
+    SignIn {
+        transport: usize,
+        portal: String,
+        ticket: String,
+        launch: Option<String>,
+    },
+    /// Forget a portal's token here.
+    SignOut {
+        host: String,
+    },
     SaveConfig(Config),
+}
+
+/// A `cha://connect` link waiting for the user's yes.
+#[derive(Clone, Debug)]
+pub struct SignInPrompt {
+    pub transport: usize,
+    pub portal: String,
+    pub ticket: String,
+    pub launch: Option<String>,
 }
 
 /// What happened to an earlier [`Action`].
@@ -63,11 +86,19 @@ pub enum Event {
         transport: usize,
         host: String,
         pin: String,
+        instructions: String,
     },
     PairingDone {
         transport: usize,
         host: String,
         result: Result<(), String>,
+    },
+    /// A ticket was swapped (or not): the user name it signed in as.
+    SignedIn {
+        transport: usize,
+        portal: String,
+        launch: Option<String>,
+        result: Result<String, String>,
     },
     /// A launch or quit finished without a stream to show.
     Failed(String),
@@ -84,7 +115,8 @@ enum AppsState {
 struct PairingView {
     transport: usize,
     host: String,
-    pin: Option<String>,
+    /// The code or PIN to show, and what to do with it.
+    pin: Option<(String, String)>,
 }
 
 pub struct Launcher {
@@ -94,6 +126,13 @@ pub struct Launcher {
     address_transport: usize,
     apps: HashMap<(usize, String), AppsState>,
     pairing: Option<PairingView>,
+    /// The transport that signs in to portals, if the build has one.
+    portal_transport: Option<usize>,
+    /// A `cha://` link asking to sign in, waiting for a yes.
+    sign_in_prompt: Option<SignInPrompt>,
+    /// The app a link asked to launch (transport, portal, catalog id),
+    /// started once the portal's apps are listed.
+    pending_launch: Option<(usize, String, String)>,
     /// Set while a launch is in flight.
     busy: Option<String>,
     error: Option<String>,
@@ -112,6 +151,9 @@ impl Launcher {
             address_transport: 0,
             apps: HashMap::new(),
             pairing: None,
+            portal_transport: None,
+            sign_in_prompt: None,
+            pending_launch: None,
             busy: None,
             error: None,
             info: None,
@@ -122,6 +164,49 @@ impl Launcher {
 
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    pub fn set_portal_transport(&mut self, transport: Option<usize>) {
+        self.portal_transport = transport;
+    }
+
+    /// A link wants to sign in to a portal: ask first.
+    pub fn ask_sign_in(&mut self, prompt: SignInPrompt) {
+        self.sign_in_prompt = Some(prompt);
+    }
+
+    /// Show a portal's apps; `launch` is the app a link asked for.
+    pub fn show_portal(&mut self, transport: usize, portal: String, launch: Option<String>) {
+        self.selected = Some((transport, portal.clone()));
+        // Its apps may have changed since they were listed.
+        self.apps.remove(&(transport, portal.clone()));
+        if let Some(app) = launch {
+            self.busy = Some(format!("Starting {app}…"));
+            self.pending_launch = Some((transport, portal, app));
+        }
+    }
+
+    /// The app a link asked to launch, if it is on `portal` of `transport`.
+    pub fn pending_launch(&self, transport: usize, portal: &str) -> Option<String> {
+        self.pending_launch
+            .as_ref()
+            .filter(|(t, p, _)| *t == transport && p == portal)
+            .map(|(_, _, app)| app.clone())
+    }
+
+    /// The link's app has been dealt with (started, or not to be found).
+    pub fn clear_pending_launch(&mut self) {
+        if self.pending_launch.take().is_some() {
+            self.busy = None;
+        }
+    }
+
+    /// The listed name of an app, for "Starting Steam…".
+    pub fn app_name(&self, transport: usize, host: &str, app: u32) -> Option<String> {
+        match self.apps.get(&(transport, host.to_string()))? {
+            AppsState::Loaded(apps) => apps.iter().find(|a| a.id == app).map(|a| a.name.clone()),
+            _ => None,
+        }
     }
 
     pub fn set_busy(&mut self, what: Option<String>) {
@@ -149,17 +234,42 @@ impl Launcher {
                     Ok(apps) => AppsState::Loaded(apps),
                     Err(e) => AppsState::Failed(e),
                 };
+                if let AppsState::Failed(e) = &state {
+                    if self.portal_transport == Some(transport) {
+                        // A portal that signed us out reads as unpaired below: say why.
+                        self.error = Some(e.clone());
+                    }
+                    if self.pending_launch(transport, &host).is_some() {
+                        self.clear_pending_launch();
+                    }
+                }
                 self.apps.insert((transport, host), state);
+            }
+            Event::SignedIn {
+                transport,
+                portal,
+                launch,
+                result,
+            } => {
+                self.busy = None;
+                match result {
+                    Ok(user) => {
+                        self.info = Some(format!("Signed in to {portal} as {user}"));
+                        self.show_portal(transport, portal, launch);
+                    }
+                    Err(e) => self.error = Some(format!("Could not sign in to {portal}: {e}")),
+                }
             }
             Event::PairingStarted {
                 transport,
                 host,
                 pin,
+                instructions,
             } => {
                 self.pairing = Some(PairingView {
                     transport,
                     host,
-                    pin: Some(pin),
+                    pin: Some((pin, instructions)),
                 });
             }
             Event::PairingDone {
@@ -249,6 +359,8 @@ impl Launcher {
             }
         });
 
+        self.sign_in_dialog(ui.ctx(), &mut actions);
+
         if self.settings_open {
             let mut open = true;
             let mut changed = false;
@@ -268,6 +380,48 @@ impl Launcher {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(750));
         actions
+    }
+
+    /// "Sign in to <portal>?" for a `cha://` link.
+    fn sign_in_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some(prompt) = self.sign_in_prompt.clone() else {
+            return;
+        };
+        let mut answer = None;
+        egui::Window::new("Sign in?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(RichText::new(format!("Sign in to {}?", prompt.portal)).strong());
+                ui.add_space(4.0);
+                ui.label(
+                    "A link from a web page asked this player to sign in to that portal as you.",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Sign in").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        match answer {
+            Some(true) => {
+                self.sign_in_prompt = None;
+                self.busy = Some(format!("Signing in to {}", prompt.portal));
+                actions.push(Action::SignIn {
+                    transport: prompt.transport,
+                    portal: prompt.portal,
+                    ticket: prompt.ticket,
+                    launch: prompt.launch,
+                });
+            }
+            Some(false) => self.sign_in_prompt = None,
+            None => {}
+        }
     }
 
     fn messages(&mut self, ui: &mut egui::Ui) {
@@ -322,7 +476,11 @@ impl Launcher {
         ui.horizontal(|ui| {
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.address)
-                    .hint_text("Add host: 192.168.1.20")
+                    .hint_text(if self.portal_transport == Some(self.address_transport) {
+                        "Add portal: portal.example"
+                    } else {
+                        "Add host: 192.168.1.20"
+                    })
                     .desired_width(180.0),
             );
             let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -373,6 +531,11 @@ impl Launcher {
                 self.apps.insert(key.clone(), AppsState::Loading);
                 actions.push(Action::LoadApps {
                     transport: t,
+                    host: host.id.clone(),
+                });
+            }
+            if self.portal_transport == Some(t) && ui.small_button("Sign out").clicked() {
+                actions.push(Action::SignOut {
                     host: host.id.clone(),
                 });
             }
@@ -440,15 +603,21 @@ impl Launcher {
             .as_ref()
             .filter(|p| p.transport == t && p.host == host.id)
         {
-            Some(PairingView { pin: Some(pin), .. }) => {
-                ui.label("Type this PIN on the host to finish pairing:");
+            Some(PairingView {
+                pin: Some((pin, instructions)),
+                ..
+            }) => {
+                ui.label(instructions);
                 ui.add_space(6.0);
                 ui.label(RichText::new(pin).size(44.0).monospace().strong());
                 ui.add_space(6.0);
-                ui.weak("In Sunshine or Apollo: the web UI, PIN tab. In a Cha node: the portal's Moonlight settings.");
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Waiting for the host");
+                    ui.label(if self.portal_transport == Some(t) {
+                        "Waiting for you to approve it"
+                    } else {
+                        "Waiting for the host"
+                    });
                 });
             }
             Some(_) => {
@@ -458,8 +627,20 @@ impl Launcher {
                 });
             }
             None => {
-                ui.label("This host does not know this player yet.");
-                if ui.button("Pair").clicked() {
+                let portal = self.portal_transport == Some(t);
+                ui.label(if portal {
+                    "This player is not signed in to this portal."
+                } else {
+                    "This host does not know this player yet."
+                });
+                if ui
+                    .button(if portal {
+                        "Sign in with a code"
+                    } else {
+                        "Pair"
+                    })
+                    .clicked()
+                {
                     self.pairing = Some(PairingView {
                         transport: t,
                         host: host.id.clone(),

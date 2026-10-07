@@ -155,9 +155,89 @@ pub fn w3c_code(key: KeyCode) -> Option<&'static str> {
     })
 }
 
+/// What a key press becomes on the wire, as the browser player does it: with
+/// `command_as_control`, Cmd is sent as Ctrl (so Cmd+C copies in a Linux app),
+/// and keys pressed while Cmd is held are released when Cmd comes up, since
+/// macOS often never reports their own release.
+#[derive(Default)]
+pub struct KeyTranslator {
+    pub command_as_control: bool,
+    command_down: bool,
+    /// Keys pressed during a Cmd chord and not yet released.
+    chorded: Vec<&'static str>,
+}
+
+impl KeyTranslator {
+    pub fn new(command_as_control: bool) -> Self {
+        Self {
+            command_as_control,
+            ..Self::default()
+        }
+    }
+
+    /// The `(code, down)` events to send for one physical key change.
+    pub fn translate(&mut self, key: KeyCode, down: bool) -> Vec<(&'static str, bool)> {
+        let Some(code) = w3c_code(key) else {
+            return Vec::new();
+        };
+        let command = matches!(key, KeyCode::SuperLeft | KeyCode::SuperRight);
+        if command {
+            self.command_down = down;
+            let sent = match (self.command_as_control, key) {
+                (true, KeyCode::SuperLeft) => "ControlLeft",
+                (true, _) => "ControlRight",
+                (false, _) => code,
+            };
+            let mut out = Vec::new();
+            if !down {
+                out.extend(self.chorded.drain(..).map(|c| (c, false)));
+            }
+            out.push((sent, down));
+            return out;
+        }
+        if down && self.command_down && !self.chorded.contains(&code) {
+            self.chorded.push(code);
+        } else if !down {
+            self.chorded.retain(|c| *c != code);
+        }
+        vec![(code, down)]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_is_sent_as_control_and_releases_its_chord() {
+        let mut t = KeyTranslator::new(true);
+        assert_eq!(
+            t.translate(KeyCode::SuperLeft, true),
+            [("ControlLeft", true)]
+        );
+        assert_eq!(t.translate(KeyCode::KeyC, true), [("KeyC", true)]);
+        // macOS never reports C's release: Cmd's release lets go of it.
+        assert_eq!(
+            t.translate(KeyCode::SuperLeft, false),
+            [("KeyC", false), ("ControlLeft", false)]
+        );
+        // A key released in the chord isn't released twice.
+        t.translate(KeyCode::SuperRight, true);
+        t.translate(KeyCode::KeyV, true);
+        assert_eq!(t.translate(KeyCode::KeyV, false), [("KeyV", false)]);
+        assert_eq!(
+            t.translate(KeyCode::SuperRight, false),
+            [("ControlRight", false)]
+        );
+    }
+
+    #[test]
+    fn command_stays_meta_when_asked() {
+        let mut t = KeyTranslator::new(false);
+        assert_eq!(t.translate(KeyCode::SuperLeft, true), [("MetaLeft", true)]);
+        assert_eq!(t.translate(KeyCode::KeyA, true), [("KeyA", true)]);
+        assert!(t.translate(KeyCode::Fn, true).is_empty());
+    }
 
     #[test]
     fn letters_digits_and_arrows_keep_their_w3c_names() {

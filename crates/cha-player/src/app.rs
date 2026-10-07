@@ -41,6 +41,10 @@ pub struct Options {
     pub frames: Option<u64>,
     /// Launch the first app of the first paired host as soon as there is one.
     pub autostart: bool,
+    /// The portal transport and its index in the transports, to sign in
+    /// through (a `cha://` link, Sign out).
+    #[cfg(feature = "portal")]
+    pub portal: Option<(usize, cha_client_portal::Portal)>,
 }
 
 /// Results and wake-ups from other threads.
@@ -51,6 +55,9 @@ pub enum UserEvent {
     Ended(u64, Ended),
     Ui(ui::Event),
     Launched(Result<Session, String>),
+    /// A `cha://` link was opened (macOS delivers it as an Apple Event).
+    #[cfg(feature = "portal")]
+    OpenUrl(String),
 }
 
 pub fn run(
@@ -62,6 +69,14 @@ pub fn run(
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .context("creating the event loop")?;
+    // Before the loop runs, so a link that launched the app is not missed.
+    #[cfg(feature = "portal")]
+    {
+        let proxy = event_loop.create_proxy();
+        crate::urlscheme::install(move |url| {
+            let _ = proxy.send_event(UserEvent::OpenUrl(url));
+        });
+    }
     let mut app = App::new(
         runtime,
         event_loop.create_proxy(),
@@ -95,6 +110,7 @@ struct Stream {
     /// The click that locked the pointer: its release isn't sent either.
     swallow_release: bool,
     import_failed: bool,
+    keys: keymap::KeyTranslator,
 }
 
 struct App {
@@ -104,6 +120,8 @@ struct App {
     pads: Arc<PadService>,
     data_dir: PathBuf,
     options: Options,
+    #[cfg(feature = "portal")]
+    portal: Option<(usize, cha_client_portal::Portal)>,
     started: Instant,
 
     gfx: Option<Graphics>,
@@ -127,10 +145,18 @@ impl App {
         proxy: EventLoopProxy<UserEvent>,
         transports: Vec<Box<dyn Transport>>,
         data_dir: PathBuf,
-        options: Options,
+        #[cfg_attr(not(feature = "portal"), allow(unused_mut))] mut options: Options,
     ) -> Self {
         let config = Config::load(&data_dir);
+        #[cfg_attr(not(feature = "portal"), allow(unused_mut))]
+        let mut launcher = Launcher::new(config);
+        #[cfg(feature = "portal")]
+        let portal = options.portal.take();
+        #[cfg(feature = "portal")]
+        launcher.set_portal_transport(portal.as_ref().map(|(i, _)| *i));
         Self {
+            #[cfg(feature = "portal")]
+            portal,
             runtime,
             proxy,
             transports: Arc::new(transports),
@@ -140,7 +166,7 @@ impl App {
             autostarting: options.autostart || options.frames.is_some(),
             options,
             gfx: None,
-            launcher: Launcher::new(config),
+            launcher,
             stream: None,
             generation: 0,
             modifiers: ModifiersState::empty(),
@@ -195,6 +221,7 @@ impl App {
                                 transport,
                                 host: host.clone(),
                                 pin: pairing.pin,
+                                instructions: pairing.instructions,
                             }));
                             done(pairing.done.await.map_err(|e| format!("{e:#}")))
                         }
@@ -214,7 +241,11 @@ impl App {
                 host,
                 app,
             } => {
-                self.launcher.set_busy(Some("Starting the stream".into()));
+                let name = self.launcher.app_name(transport, &host, app);
+                self.launcher.set_busy(Some(match name {
+                    Some(name) => format!("Starting {name}…"),
+                    None => "Starting the stream".into(),
+                }));
                 let config = self.launcher.config().stream_config();
                 self.spawn(async move {
                     UserEvent::Launched(
@@ -249,12 +280,121 @@ impl App {
                     }
                 });
             }
+            #[cfg(feature = "portal")]
+            Action::SignIn {
+                transport,
+                portal,
+                ticket,
+                launch,
+            } => {
+                let Some((_, handle)) = self.portal.clone() else {
+                    return;
+                };
+                self.spawn(async move {
+                    let link = cha_client_portal::ConnectLink {
+                        portal: portal.clone(),
+                        ticket,
+                        launch: launch.clone(),
+                    };
+                    let result = handle
+                        .sign_in_with_ticket(&link)
+                        .await
+                        .map(|s| s.username)
+                        .map_err(|e| format!("{e:#}"));
+                    UserEvent::Ui(ui::Event::SignedIn {
+                        transport,
+                        portal,
+                        launch,
+                        result,
+                    })
+                });
+            }
+            #[cfg(feature = "portal")]
+            Action::SignOut { host } => {
+                if let Some((_, handle)) = &self.portal {
+                    match handle.sign_out(&host) {
+                        Ok(()) => self.launcher.handle(ui::Event::Info(format!(
+                            "Signed out of {host} here; revoke the device in the portal's Settings to be sure"
+                        ))),
+                        Err(e) => self
+                            .launcher
+                            .handle(ui::Event::Failed(format!("Could not sign out: {e:#}"))),
+                    }
+                }
+            }
+            #[cfg(not(feature = "portal"))]
+            Action::SignIn { .. } | Action::SignOut { .. } => {}
             Action::SaveConfig(config) => {
                 if let Err(e) = config.save(&self.data_dir) {
                     tracing::warn!("saving the settings: {e:#}");
                     self.launcher
                         .handle(ui::Event::Failed(format!("Could not save settings: {e:#}")));
                 }
+            }
+        }
+    }
+
+    /// A `cha://connect` link: ask before signing in to a portal, or just
+    /// show the portal when this install already has a token for it.
+    #[cfg(feature = "portal")]
+    fn open_url(&mut self, url: &str) {
+        let Some((transport, handle)) = &self.portal else {
+            return;
+        };
+        if let Some(w) = self.window() {
+            w.focus_window();
+        }
+        match cha_client_portal::parse_connect_link(url) {
+            Err(e) => self
+                .launcher
+                .show_error(format!("Could not open the link: {e:#}")),
+            Ok(link) if handle.is_signed_in(&link.portal) => {
+                self.launcher
+                    .show_portal(*transport, link.portal, link.launch);
+            }
+            Ok(link) => self.launcher.ask_sign_in(ui::SignInPrompt {
+                transport: *transport,
+                portal: link.portal,
+                ticket: link.ticket,
+                launch: link.launch,
+            }),
+        }
+        self.request_redraw();
+    }
+
+    /// A `cha://connect` link asked to launch an app: when that portal's apps
+    /// arrive, the launch for the one with that catalog id.
+    #[cfg(feature = "portal")]
+    fn launch_for_link(&mut self, event: &ui::Event) -> Option<Action> {
+        let ui::Event::Apps {
+            transport,
+            host,
+            result: Ok(apps),
+        } = event
+        else {
+            return None;
+        };
+        let (portal_transport, handle) = self.portal.as_ref()?;
+        if portal_transport != transport {
+            return None;
+        }
+        let template = self.launcher.pending_launch(*transport, host)?;
+        let found = apps
+            .iter()
+            .find(|a| handle.template_id(host, a.id).as_deref() == Some(template.as_str()));
+        // Either way the link is dealt with: it asks once.
+        self.launcher.clear_pending_launch();
+        match found {
+            Some(app) => Some(Action::Launch {
+                transport: *transport,
+                host: host.clone(),
+                app: app.id,
+            }),
+            None => {
+                self.launcher.show_error(format!(
+                    "The link asked to launch {template}, which this portal doesn't offer"
+                ));
+                None
             }
         }
     }
@@ -316,6 +456,7 @@ impl App {
                     cursor: None,
                     swallow_release: false,
                     import_failed: false,
+                    keys: keymap::KeyTranslator::new(self.launcher.config().command_as_control),
                 });
                 if let Some(w) = self.window() {
                     w.set_title(
@@ -429,11 +570,13 @@ impl App {
                 if *repeat {
                     return true;
                 }
-                if let (Some(code), Some(stream)) = (keymap::w3c_code(*code), &self.stream) {
-                    stream.running.control.input(cha_client::Input::Key {
-                        code: code.to_string(),
-                        down,
-                    });
+                if let Some(stream) = &mut self.stream {
+                    for (code, down) in stream.keys.translate(*code, down) {
+                        stream.running.control.input(cha_client::Input::Key {
+                            code: code.to_string(),
+                            down,
+                        });
+                    }
                 }
                 true
             }
@@ -828,9 +971,17 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Ui(event) => {
+                #[cfg(feature = "portal")]
+                let launch = self.launch_for_link(&event);
                 self.launcher.handle(event);
+                #[cfg(feature = "portal")]
+                if let Some(action) = launch {
+                    self.act(action);
+                }
                 self.request_redraw();
             }
+            #[cfg(feature = "portal")]
+            UserEvent::OpenUrl(url) => self.open_url(&url),
             UserEvent::Launched(Ok(session)) => {
                 if self.stream.is_some() {
                     // A second launch finished while one is running: drop it.

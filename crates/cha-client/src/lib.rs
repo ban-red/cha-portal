@@ -185,7 +185,10 @@ pub trait Transport: Send + Sync {
 
 /// A pairing in progress.
 pub struct Pairing {
-    /// Four digits to type on the host (or, for our nodes, in the portal).
+    /// What to show large: four digits to type on the host (or, for our
+    /// nodes, in the portal), or the code a portal asks to be approved.
     pub pin: String,
+    /// What to do with `pin`, in a sentence or two for the pairing view.
+    pub instructions: String,
     pub done: BoxFuture<'static, anyhow::Result<()>>,
 }

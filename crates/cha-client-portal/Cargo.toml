@@ -1,0 +1,32 @@
+[package]
+name = "cha-client-portal"
+version = "0.1.0"
+description = "The native client's portal transport: signs in to a Cha Portal with a device token and lists its apps (ADR 0013)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+cha-client = { path = "../cha-client" }
+cha-client-stream = { path = "../cha-client-stream" }
+# TLS is rustls with the ring provider, trusting the system's roots, as in cha-node.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+tracing = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+axum = "0.8"
+# The real portal, for the end-to-end sign-in tests.
+cha-control = { path = "../cha-control" }
+tempfile = "3"
+sha2 = "0.10"
+wtransport = { version = "0.7", features = ["quinn"] }
+tokio = { version = "1", features = ["full"] }

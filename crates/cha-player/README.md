@@ -1,6 +1,6 @@
 # cha-player
 
-The native game-streaming client, macOS first ([ADR 0010](../../docs/adr/0010-native-client-macos-first.md), milestone C1). It plays anything a `cha_client::Transport` can reach: today Sunshine and Apollo PCs and our own nodes, through `cha-client-gamestream`.
+The native game-streaming client, macOS first ([ADR 0010](../../docs/adr/0010-native-client-macos-first.md), milestone C1). It plays anything a `cha_client::Transport` can reach: Sunshine and Apollo PCs and our own nodes, through `cha-client-gamestream` (Moonlight), and your portal's apps over `cha-stream/1`, through `cha-client-portal` and `cha-client-stream`.
 
 `winit` window with pointer lock and raw keys, `wgpu` on Metal for everything drawn, VideoToolbox decode (H.264, HEVC) shown without a copy, Opus to CoreAudio through `cpal`, SDL3 for gamepads and rumble only, `egui` for the launcher, pairing, settings and the stats overlay. On other systems the crate builds as a stub that says "macOS only for now", so the workspace still builds on Linux CI.
 
@@ -26,7 +26,30 @@ crates/cha-player/macos/bundle.sh            # target/Cha Player.app, unsigned
 open "target/Cha Player.app"
 ```
 
-`macos/Info.plist` sets `LSApplicationCategoryType` to `public.app-category.games`, the bundle id `sh.cha.player`, `NSHighResolutionCapable`, and the local-network and Bonjour keys discovery needs. Signing and notarising come with C3.
+`macos/Info.plist` registers the `cha` URL scheme (`CFBundleURLTypes`), sets `LSApplicationCategoryType` to `public.app-category.games`, the bundle id `sh.cha.player`, `NSHighResolutionCapable`, and the local-network and Bonjour keys discovery needs. Signing and notarising come with C3.
+
+## Signing in to your portal
+
+The "Cha Portal" transport (`cha-client-portal`, default `portal` feature) signs this Mac in to a Cha Portal with a device token. Two ways, both from the portal side described in [`docs/plans/c2-device-signin.md`](../../docs/plans/c2-device-signin.md):
+
+- **From the dashboard:** use "Open in Cha Player" on an app (or in the user menu). It opens a `cha://connect?...` link; the player asks "Sign in to https://your.portal?", and Sign in swaps the link's one-use ticket (valid 60 seconds) for a token and shows that portal's apps. Needs the app bundle (`macos/bundle.sh`), which registers the `cha` scheme; the link works when the app is closed too.
+- **With a code:** under Cha Portal in the launcher, type the portal's address in the Add box (`portal.example`, or `host:7676`; https unless you write `http://`) and pick Add, then Sign in with a code. The player shows a code like `ABCD-EFGH`; open `<portal>/link` in a browser where you are signed in and approve it. The player waits up to 10 minutes.
+
+The token, the device id and the user name are kept per portal origin in `portals.json` in the data directory (`~/Library/Application Support/Cha Player`, file mode 0600), with the install id (a random UUID made once; signing in again from this install replaces its token on the portal instead of adding a device). A token is only ever sent to the origin it was issued by, and redirects are not followed. Sign out forgets the token here; revoke the device in the portal's Settings, Devices page to cut it off there. If the portal revokes it, the portal shows as not signed in the next time the player uses it.
+
+Plain `http://` portals are refused unless the host is `localhost`, `127.0.0.1` or `::1`, or `CHA_ALLOW_INSECURE_PORTAL=true` is set in the player's environment (for a dev portal on your LAN: `CHA_ALLOW_INSECURE_PORTAL=true cargo run -p cha-player --release`).
+
+## Playing your portal's apps
+
+Pick an app under your portal and Launch (or follow "Open in Cha Player" with an app: once you are signed in, a link's `launch=` starts that app at once). The player does what the browser does, with one difference, that the picture is decoded by VideoToolbox rather than WebCodecs:
+
+1. It reuses your running (or still starting) environment of that app, or asks the portal for a new one, and shows "Starting Steam…" while it starts. A cold Steam can take minutes; the wait ends after 11 minutes, or at once if the portal says the launch failed (with its reason).
+2. It picks the first of its codecs (HEVC, then H.264; Settings) that the environment's GPU encodes, asks the portal for a media token for that codec, and connects to the streamer's WebTransport address(es) over `cha-stream/1` (`cha-client-stream`, [`docs/plans/c2-transport.md`](../../docs/plans/c2-transport.md)). The streamer's certificate is trusted only if its SHA-256 is the one the portal gave.
+3. The player asks the streamer for its Settings resolution (2560x1440 by default; the streamer rounds down to a multiple of 8). The picture and audio are the browser's: 10 ms Opus, FEC-protected video, loss answered with reference invalidation (`rfi`) and then keyframes.
+
+Leaving the stream (Ctrl+Alt+Shift+Q) leaves the environment running, so launching the app again resumes where you were. Ctrl+Alt+Shift+X quits the app: it stops the environment on the portal. There is no reconnect yet: if the connection drops, the stream ends with the reason and you launch again. PyroWave (the LAN codec) and AV1 are not played yet.
+
+The media path is the portal-brokered one: nothing leaves your network except what you route yourself (Tailscale, a port-forward). The player must be able to reach the node's streamer address that the portal reports (UDP, the streamer's WebTransport port).
 
 ## Controls while streaming
 
@@ -62,7 +85,7 @@ The player never runs this itself. The detector (`src/awdl.rs`) looks only at vi
 
 | Path | What |
 |---|---|
-| `src/main.rs` | args, logging, the tokio runtime, building the transports (GameStream behind the default `gamestream` feature, `--demo`) |
+| `src/main.rs` | args, logging, the tokio runtime, building the transports (GameStream behind the default `gamestream` feature, the portal behind `portal`, `--demo`) |
 | `src/app.rs` | the `winit` handler: Launcher and Streaming states, pointer lock, hotkeys, drawing |
 | `src/ui/` | egui launcher, settings, stats overlay |
 | `src/render/` | `wgpu` device and surface, the YCbCr video pipeline (aspect-fit, WGSL), egui layer |
@@ -70,6 +93,7 @@ The player never runs this itself. The detector (`src/awdl.rs`) looks only at vi
 | `src/present/` | `FrameImporter` trait; Metal zero-copy import |
 | `src/audio/` | Opus decode, playout buffer (30 ms target), `cpal` output |
 | `src/input/` | W3C key codes, mouse and wheel, hotkeys, SDL3 gamepads |
+| `src/urlscheme.rs` | the `cha://` Apple Event handler, installed before the event loop runs |
 | `src/session.rs` | threads for a running session, shared stats |
 | `src/demo.rs` | the fake host |
 | `src/awdl.rs` | the AWDL detector |
@@ -87,4 +111,4 @@ The decoder returns an IOSurface-backed `CVPixelBuffer`. `CVMetalTextureCache` w
 
 ## Not tested without a real host
 
-Pairing and launching against Sunshine, Apollo or a node; HEVC (only the H.264 path ran, from the demo); gamepads, rumble and hot-plug (SDL3 runs on its own thread; `GamepadAdded` was never exercised); the pointer lock feel and Cmd+Ctrl+F in a real window; the AWDL detector on a real link; Game Mode (needs the bundle and full screen).
+Pairing and launching against Sunshine, Apollo or a node; launching a portal app and streaming it over `cha-stream/1` from a real node (the transport is tested against an in-process streamer on loopback); HEVC (only the H.264 path ran, from the demo); gamepads, rumble and hot-plug (SDL3 runs on its own thread; `GamepadAdded` was never exercised); the pointer lock feel and Cmd+Ctrl+F in a real window; the AWDL detector on a real link; Game Mode (needs the bundle and full screen).

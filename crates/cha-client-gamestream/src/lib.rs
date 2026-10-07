@@ -54,6 +54,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the PIN stays valid.
 const PAIR_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// What the pairing view says beside the PIN.
+const PAIR_INSTRUCTIONS: &str = "Type this PIN on the host to finish pairing. In Sunshine or Apollo: the web UI, PIN tab. In a Cha node: the portal's Moonlight settings.";
+
 /// A pairing's end as every waiter sees it.
 type PairOutcome = Option<Result<(), String>>;
 
@@ -367,6 +370,7 @@ impl Inner {
         });
         Ok(Pairing {
             pin: pin_text,
+            instructions: PAIR_INSTRUCTIONS.into(),
             done: wait_for(outcome),
         })
     }
@@ -376,6 +380,7 @@ impl Pending {
     fn pairing(&self) -> Pairing {
         Pairing {
             pin: self.pin.clone(),
+            instructions: PAIR_INSTRUCTIONS.into(),
             done: wait_for(self.outcome.clone()),
         }
     }

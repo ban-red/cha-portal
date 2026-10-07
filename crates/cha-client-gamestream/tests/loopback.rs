@@ -55,7 +55,7 @@ async fn paired(rig: &Rig, player: &GameStream) -> Host {
         .add_host(&format!("127.0.0.1:{}", rig.http_port()))
         .await
         .expect("the host answers");
-    let Pairing { pin, done } = player.pair(&host.id).await.expect("pairing starts");
+    let Pairing { pin, done, .. } = player.pair(&host.id).await.expect("pairing starts");
     assert_eq!(pin.len(), 4);
     assert!(pin.bytes().all(|b| b.is_ascii_digit()));
     // The user types the PIN while the pairing waits for it; the pairing's own

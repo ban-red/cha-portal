@@ -8,9 +8,11 @@ rust-version.workspace = true
 publish = false
 
 [features]
-default = ["gamestream"]
+default = ["gamestream", "portal"]
 # The Moonlight transport: Sunshine and Apollo hosts, and Cha nodes.
 gamestream = ["dep:cha-client-gamestream"]
+# Signing in to a Cha Portal (device tokens, cha:// links).
+portal = ["dep:cha-client-portal"]
 # A fake host with an in-process VideoToolbox encoder, for trying the player
 # without a network. Always built on macOS; the feature only gates the flag.
 demo = []
@@ -29,6 +31,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 cha-client-gamestream = { path = "../cha-client-gamestream", optional = true }
+cha-client-portal = { path = "../cha-client-portal", optional = true }
 cpal = "0.18"
 egui = "0.35"
 egui-wgpu = "0.35"
@@ -37,7 +40,8 @@ objc2 = "0.6"
 objc2-core-foundation = "0.3"
 objc2-core-media = "0.3"
 objc2-core-video = "0.3"
-objc2-foundation = "0.3"
+# objc2-core-services: the Apple Event calls behind the cha:// URL handler.
+objc2-foundation = { version = "0.3", features = ["objc2-core-services"] }
 objc2-metal = "0.3"
 objc2-video-toolbox = "0.3"
 opus = "0.4"
