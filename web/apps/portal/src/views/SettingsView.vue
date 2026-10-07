@@ -59,20 +59,21 @@ function onChange(event: Event) {
     <section v-else class="card px-4 py-4 sm:px-5" aria-labelledby="idle-heading">
       <h2 id="idle-heading" class="text-base font-semibold">Idle shutoff</h2>
       <p class="mt-1 text-sm text-ink-2">
-        Stop a running app when nobody has been connected to it for this long. It frees the GPU for others; the app's
-        data is kept if its owner keeps data for it. The wait starts when the last browser leaves, or when the app
-        starts if nobody connects.
+        Stop a running app when nobody has used it for this long. It frees the GPU for others; the app's data is kept
+        if its owner keeps data for it. The wait starts when the last person stops using it, or when the app starts if
+        nobody connects.
       </p>
       <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <label for="idle-shutdown" class="text-sm">Stop apps with no connections after</label>
+        <label for="idle-shutdown" class="text-sm">Stop apps nobody is using after</label>
         <select id="idle-shutdown" class="field w-auto" :value="minutes" :disabled="save.isPending.value" @change="onChange">
           <option v-for="m in options" :key="m" :value="m">{{ label(m) }}</option>
         </select>
         <span v-if="saved" class="text-sm text-ok" role="status">Saved</span>
       </div>
       <p class="mt-2 text-xs text-ink-3">
-        The default is 30 minutes. The portal checks once a minute, and a portal restart starts every wait over. Nodes
-        running an older streamer don't report connections, so their apps are never stopped this way.
+        The default is 30 minutes. A browser tab that is hidden counts as unused unless it is playing sound; native apps
+        and Moonlight count while connected. Apps on an older streamer can't tell hidden tabs apart, so any open tab
+        counts, and the wait starts over if the portal restarts.
       </p>
       <div aria-live="polite"><FormError v-if="error" polite class="mt-3" :message="error" /></div>
     </section>

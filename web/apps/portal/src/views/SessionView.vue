@@ -425,7 +425,15 @@ function onConnectError(err: unknown) {
       cancelRetry();
       waitingForRunning = true;
       problem.value = `${failure.reason}. Reconnecting when it is running again.`;
-      void env.refetch();
+      // One that was stopped (idle shutoff, power off) or failed never runs again: say so.
+      void env.refetch().then((r) => {
+        const st = r.data?.state;
+        if (st === "destroyed" || st === "failed") {
+          waitingForRunning = false;
+          halted = true;
+          problem.value = null;
+        }
+      });
       break;
     case "login":
       cancelRetry();
@@ -1175,9 +1183,19 @@ const STATUS: Record<PlayerState, string> = {
         <p v-if="env.data.value && env.data.value.state !== 'running'" class="mt-2 text-sm text-ink-2">
           The environment is {{ env.data.value.state }}<template v-if="env.data.value.detail">: {{ env.data.value.detail }}</template>.
         </p>
+        <p v-if="env.data.value?.state === 'destroyed' || env.data.value?.state === 'failed'" class="mt-2 text-sm text-ink-2">
+          It won't come back on its own. Start it again from the dashboard.
+        </p>
+        <RouterLink
+          v-if="env.data.value?.state === 'destroyed' || env.data.value?.state === 'failed'"
+          to="/"
+          class="btn-primary mt-4 inline-block"
+        >
+          Back to the dashboard
+        </RouterLink>
         <EnvironmentLog v-if="env.data.value?.log" :log="env.data.value.log" class="mt-3" />
         <button
-          v-if="state === 'failed' || problem || (state === 'disconnected' && !retryPending)"
+          v-if="env.data.value?.state !== 'destroyed' && (state === 'failed' || problem || (state === 'disconnected' && !retryPending))"
           class="btn-primary mt-4"
           @click="(retries = 0), connect()"
         >

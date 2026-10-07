@@ -483,6 +483,15 @@ pub async fn node_environments(
     .await
 }
 
+/// Every environment in state `running`, with no limit.
+pub async fn running_environments(db: &SqlitePool) -> Result<Vec<EnvironmentRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {ENVIRONMENT_COLUMNS} FROM environments WHERE state = 'running'"
+    ))
+    .fetch_all(db)
+    .await
+}
+
 pub async fn count_live_environments(db: &SqlitePool, owner_id: &str) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM environments WHERE owner_id = ? AND state IN ('starting', 'running', 'stopping')",
