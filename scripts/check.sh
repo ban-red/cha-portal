@@ -16,6 +16,8 @@ echo "==> steam image scripts tests"
 python3 -m unittest discover -s images/steam
 echo "==> node host installer tests"
 python3 -m unittest discover -s deploy/node/host
+echo "==> image inputs (every image's crates still exist)"
+python3 scripts/image-inputs.py >/dev/null
 echo "==> portal: raw-colour guard + theme contrast tests"
 sh scripts/check-portal-colors.sh
 bun run --cwd web/apps/portal test

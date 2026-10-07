@@ -89,6 +89,8 @@ Maintainers only. A release is a `v*` tag on `main`, and every image is built fr
 
 Versions are [semver](https://semver.org) without the `v` in image tags: tag `v0.2.0` publishes `:0.2.0`, and every image also gets `:sha-<commit>`. There is no `latest`, so nodes stay on the version they were given.
 
+A release rebuilds only the images whose inputs changed. [`scripts/image-inputs.py`](scripts/image-inputs.py) hashes what each image is built from (its Dockerfile, the crates it builds and their path dependencies, the files they compile in; not tests or docs), and every build is also tagged `:inputs-<hash>`; an image whose hash is already in the registry gets the new version's tags without a rebuild, keeping its digest and build provenance. `scripts/image-inputs.py --files <image>` lists an image's inputs. Upstream images and packages (Ubuntu, Chrome, Steam) aren't in the hash: to pick up their updates, bump `REBUILD_EPOCH` in the script before tagging, or run the workflow by hand with **rebuild** ticked.
+
 1. **Check `main` is green.** The `check` workflow passed on the commit you'll tag, and it ran on the node you test with.
 2. **Try the images first** (optional, worth it for a large change): **Actions → publish → Run workflow** on `main` builds and pushes `:sha-<commit>` without a release. A node runs those with `CHA_VERSION=sha-<commit>`.
 3. **Update the docs that name a version or the release state:** the examples in `SETUP.md` (`v0.1.0`, `--version 0.1.0`).
