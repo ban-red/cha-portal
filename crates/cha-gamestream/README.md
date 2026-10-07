@@ -89,6 +89,37 @@ Runs on macOS and Linux. Unit tests (golden packets, pure functions, hostile byt
 
 Not covered: video encryption end to end (moonlight-common-rust cannot decrypt video, so the client tests run it off; the encrypted shards are checked in the packetizer test by decrypting them), real Moonlight clients, mDNS on a real network, and the Linux build (nothing here is Linux-only; quinn-udp uses GSO there).
 
+## Trying it with a real Moonlight client (before G3)
+
+`examples/dev_host.rs` runs the front with an in-memory pairing store and one app, "Environment", and gives each launched session to a `cha-streamer` built with `--features gamestream`, through its local API. The PIN a client shows is read from stdin. Nothing is kept: every run is a new host (a new id and certificate), so pair again and remove the old entry from the client.
+
+On the node (`iolinux.lan`), in the streamer's dev container (`deploy/streamer/compose.dev.yaml`, after syncing the repository):
+
+```bash
+# 1. The streamer, with the module on. The secret is for you to invent (16+ characters).
+docker compose -f deploy/streamer/compose.dev.yaml exec dev cargo build --release -p cha-streamer --features gamestream
+docker compose -f deploy/streamer/compose.dev.yaml exec -e CHA_GAMESTREAM_SECRET=dev-secret-0123456789 dev \
+  /target/release/cha-streamer --listen 127.0.0.1 --gamestream-ports 7700,7701,7702 --run '<an app, as in crates/cha-streamer/README.md>'
+
+# 2. The host, on the same machine (it talks to the streamer on localhost). It needs a Rust toolchain: the dev container has one.
+docker compose -f deploy/streamer/compose.dev.yaml exec -e CHA_GAMESTREAM_SECRET=dev-secret-0123456789 dev \
+  cargo run --release -p cha-gamestream --example dev_host -- --streamer http://127.0.0.1:7660 --ports 7700,7701,7702
+```
+
+The dev container uses the host network, so the host's ports (TCP 47984, 47989, 48010, UDP 5353 for mDNS) and the media ports (UDP 7700 to 7702) are the node's. Then:
+
+1. In Moonlight (desktop, Steam Deck, Artemis), the host "Cha dev host" appears by itself, or add the node's address. Click it to pair: the client shows a PIN; type it in the terminal where `dev_host` runs and press Enter.
+2. Launch "Environment". `dev_host` prints the launch and when its media starts and ends. Ask for stereo audio and H.264, HEVC or AV1 (the streamer says which in `/streams`), at 60, 90 or 120 fps.
+3. The streamer logs the size applied and the codec; `curl -H 'Authorization: Bearer dev-secret-0123456789' http://127.0.0.1:7660/gamestream/status` says whether a session runs.
+
+A browser session of the same environment (through the portal) keeps watching, and loses the controls while Moonlight has them.
+
+Options: `--name`, `--bind`, `--http`, `--https`, `--rtsp` (see the file's header). Only one client can stream at a time.
+
+## What G2 added
+
+The streamer's adapter lives in `crates/cha-streamer/src/gamestream/` (the `gamestream` feature, see that README): `MediaBackend` over the shared encoder, the Opus mixer (with 5 ms frames for Moonlight), the compositor's input and the virtual pads; the local API the host drives; and the agent's port block (`CHA_GAMESTREAM`, `deploy/README.md`). What needs a real client to verify is listed in the G2 report: pad kinds and rumble, trigger effects, the mouse and wheel feel, keys, 5 ms audio, size and fps changes, and resume.
+
 ## Not done in G1
 
 - Key rotation under a live media session. A resume stops the old media and starts new media under the new key, so there is no rotating key to watch.

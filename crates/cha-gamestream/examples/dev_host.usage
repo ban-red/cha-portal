@@ -1,0 +1,2 @@
+usage: CHA_GAMESTREAM_SECRET=<secret> dev_host --streamer http://HOST:PORT --ports VIDEO,CONTROL,AUDIO
+                [--name NAME] [--bind ADDR] [--http PORT] [--https PORT] [--rtsp PORT]
