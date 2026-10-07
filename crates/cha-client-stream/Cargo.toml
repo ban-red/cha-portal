@@ -1,0 +1,26 @@
+[package]
+name = "cha-client-stream"
+version = "0.1.0"
+description = "The native client's cha-stream/1 receiver: WebTransport to a Cha streamer, as the browser player speaks it (ADR 0013)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+cha-client = { path = "../cha-client" }
+cha-proto.workspace = true
+# TLS is rustls with the ring provider, as in wtransport's own default.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1"
+sha2 = "0.10"
+socket2 = { version = "0.6", features = ["all"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "net"] }
+tracing = "0.1"
+url = "2"
+wtransport = { version = "0.7", features = ["quinn"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
