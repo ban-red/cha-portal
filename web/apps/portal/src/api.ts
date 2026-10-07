@@ -242,6 +242,29 @@ export interface AppSettings {
   defaultFps: Fps;
 }
 
+/** An unclaimed node agent advertising itself on the portal's LAN. */
+export interface DiscoveredNode {
+  id: string;
+  name: string;
+  gpu: string;
+  fingerprint: string;
+  addresses: string[];
+  port: number;
+  /** Unix ms. */
+  lastSeen: number;
+}
+
+export interface DiscoveredNodes {
+  /** False when the portal's discovery is turned off (`CHA_DISCOVER_NODES=false`). */
+  enabled: boolean;
+  nodes: DiscoveredNode[];
+}
+
+export interface ClaimNodeResult {
+  nodeId: string;
+  name: string;
+}
+
 /** An error the API returned: HTTP status, stable code, readable message. */
 export class ApiError extends Error {
   constructor(
@@ -289,6 +312,9 @@ export const api = {
     request<User>("POST", "/users", body),
   audit: () => request<AuditEntry[]>("GET", "/audit"),
   nodes: () => request<NodeInfo[]>("GET", "/nodes"),
+  discoveredNodes: () => request<DiscoveredNodes>("GET", "/nodes/discovered"),
+  claimNode: (body: { id: string; code: string }) =>
+    request<ClaimNodeResult>("POST", "/nodes/discovered/claim", body),
   createJoinToken: (body: { label?: string }) =>
     request<{ token: string; expiresAt: number }>("POST", "/nodes/join-tokens", body),
   removeNode: (id: string) => request<{ removed: string }>("DELETE", `/nodes/${encodeURIComponent(id)}`),

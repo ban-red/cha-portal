@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { Check, Copy, Plus, TriangleAlert, X } from "lucide-vue-next";
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 
 import { ApiError, api, type NodeInfo } from "../api";
 import FormError from "../components/FormError.vue";
 import NodeUsage from "../components/NodeUsage.vue";
+import { normalizePairingCode } from "../pairingCode";
 import { ago, clockTime, dateTime, megabytes } from "../format";
 
 const queryClient = useQueryClient();
@@ -61,6 +62,79 @@ async function copyCommand() {
     // No clipboard outside a secure context: select the text instead.
     if (commandEl.value) window.getSelection()?.selectAllChildren(commandEl.value);
   }
+}
+
+// ---- Found on your network ----
+
+// Unclaimed agents advertise themselves; an admin claims one with the code in
+// its log. An older server without the endpoint answers 404: hide the section.
+const discovered = useQuery({
+  queryKey: ["nodes", "discovered"],
+  queryFn: api.discoveredNodes,
+  refetchInterval: 3000,
+  refetchIntervalInBackground: false,
+  retry: (count, err) => !(err instanceof ApiError && err.status === 404) && count < 2,
+});
+const foundNodes = computed(() => discovered.data.value?.nodes ?? []);
+// Two found nodes with one name: one may be posing as the other, and would
+// learn the code if given it. The fingerprint in the node's log tells them apart.
+const sharedNames = computed(() => {
+  const seen = new Map<string, number>();
+  for (const n of foundNodes.value) seen.set(n.name, (seen.get(n.name) ?? 0) + 1);
+  return new Set([...seen].filter(([, count]) => count > 1).map(([name]) => name));
+});
+const showFound = computed(
+  () => !(discovered.error.value instanceof ApiError && discovered.error.value.status === 404) && !discovered.isPending.value,
+);
+
+const claiming = ref<string | null>(null);
+const codeInput = ref("");
+const claimError = ref<string | null>(null);
+const claimNote = ref<string | null>(null);
+const codeEl = ref<HTMLInputElement[] | HTMLInputElement | null>(null);
+
+async function openClaim(id: string) {
+  claiming.value = id;
+  codeInput.value = "";
+  claimError.value = null;
+  claimNote.value = null;
+  await nextTick();
+  const el = Array.isArray(codeEl.value) ? codeEl.value[0] : codeEl.value;
+  el?.focus();
+}
+
+function closeClaim() {
+  claiming.value = null;
+  claimError.value = null;
+}
+
+const claim = useMutation({
+  mutationFn: (v: { id: string; code: string }) => api.claimNode(v),
+  onSuccess: (data) => {
+    claimNote.value = `Claimed ${data.name}. It is connecting now.`;
+    closeClaim();
+    queryClient.invalidateQueries({ queryKey: ["nodes"] });
+  },
+  onError: (err) => {
+    if (err instanceof ApiError && err.code === "wrong_code") {
+      claimError.value = "That code doesn't match. Check the node's log; after five wrong codes it makes a new one.";
+    } else if (err instanceof ApiError && err.code === "not_found") {
+      claimError.value = "That node stopped advertising. Check that its agent is running.";
+    } else {
+      claimError.value = err instanceof ApiError ? err.message : "Couldn't claim the node.";
+    }
+  },
+});
+
+function submitClaim() {
+  if (!claiming.value) return;
+  claimError.value = null;
+  const code = normalizePairingCode(codeInput.value);
+  if (!code) {
+    claimError.value = "Enter the 8-digit code from the node's log, like 4821-9375.";
+    return;
+  }
+  claim.mutate({ id: claiming.value, code });
 }
 
 // ---- Node actions ----
@@ -153,6 +227,74 @@ function status(node: NodeInfo): { text: string; dot: string } {
           <code class="font-mono">/var/lib/cha-node</code>. It shows up below once it connects.
         </p>
       </template>
+    </section>
+
+    <section v-if="showFound" class="card max-w-3xl space-y-3 p-5" aria-labelledby="found-h">
+      <h2 id="found-h" class="text-sm font-semibold">Found on your network</h2>
+      <p v-if="claimNote" class="flex items-center gap-2 text-sm text-ok" role="status">
+        <Check class="size-4 shrink-0" aria-hidden="true" />{{ claimNote }}
+      </p>
+      <p v-if="discovered.data.value && !discovered.data.value.enabled" class="text-sm text-ink-3">
+        Node discovery is turned off on this portal.
+      </p>
+      <p v-else-if="discovered.isError.value" class="text-sm text-ink-3">Couldn't check for nodes on the network.</p>
+      <p v-else-if="!foundNodes.length" class="text-sm text-ink-3">
+        No unclaimed nodes on this network. Start a node's agent without a join token and it appears here, or add one
+        with a token.
+      </p>
+      <ul v-else class="divide-y divide-line">
+        <li v-for="n in foundNodes" :key="n.id" class="py-3 first:pt-0 last:pb-0">
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-medium">{{ n.name }}</p>
+              <p class="truncate text-xs text-ink-2">
+                <span v-if="n.gpu">{{ n.gpu }} · </span>{{ n.addresses[0] ?? "no address" }}
+              </p>
+              <p class="mt-0.5 truncate font-mono text-2xs text-ink-3" :title="n.fingerprint">{{ n.fingerprint }}</p>
+            </div>
+            <button
+              v-if="claiming !== n.id"
+              type="button"
+              class="btn-primary shrink-0 px-3 py-1 text-xs"
+              :aria-label="`Claim ${n.name}`"
+              @click="openClaim(n.id)"
+            >
+              Claim
+            </button>
+          </div>
+          <form v-if="claiming === n.id" class="mt-3 space-y-3" @submit.prevent="submitClaim" @keydown.esc.prevent="closeClaim">
+            <div>
+              <label class="label" :for="`claim-code-${n.id}`">Pairing code for {{ n.name }}</label>
+              <div class="flex flex-col gap-2 sm:flex-row">
+                <input
+                  :id="`claim-code-${n.id}`"
+                  ref="codeEl"
+                  v-model="codeInput"
+                  class="field flex-1 font-mono sm:max-w-48"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  placeholder="0000-0000"
+                  maxlength="12"
+                  :aria-describedby="`claim-help-${n.id}`"
+                />
+                <button type="submit" class="btn-primary max-sm:w-full" :disabled="claim.isPending.value">
+                  {{ claim.isPending.value ? "Claiming…" : "Claim" }}
+                </button>
+                <button type="button" class="btn-ghost max-sm:w-full" @click="closeClaim">Cancel</button>
+              </div>
+              <p :id="`claim-help-${n.id}`" class="mt-1.5 text-xs text-ink-3">
+                The code is in the node's log (<code class="font-mono">docker compose logs agent</code>), next to the
+                fingerprint: check it matches <span class="font-mono">{{ n.fingerprint }}</span> before you claim.
+              </p>
+              <p v-if="sharedNames.has(n.name)" class="mt-1.5 flex items-center gap-1.5 text-xs text-warn" role="note">
+                <TriangleAlert class="size-3.5 shrink-0" aria-hidden="true" />More than one node here is called
+                {{ n.name }}: claim only the one whose fingerprint matches its log.
+              </p>
+            </div>
+            <FormError :message="claimError" />
+          </form>
+        </li>
+      </ul>
     </section>
 
     <FormError :message="actionError" />
