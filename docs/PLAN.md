@@ -38,7 +38,7 @@ Cha Portal (portal.cha.sh) is a self-hosted dashboard for "portaling" into remot
     - str0m (WebRTC) and quinn (QUIC);
     - libopus;
     - libpyrowave (the encoder, pinned);
-    - moonlight-common-rust (external Moonlight hosts only);
+    - ~~moonlight-common-rust (external Moonlight hosts only)~~ replaced by our own GameStream client in `cha-gamestream` (2026-10-07, [ADR 0011](adr/0011-own-gamestream-client.md)); it stays a test-only dependency for cross-checks;
     - Docker Engine.
   - **Design patterns** from Punktfunk (WebTransport certs, a shared core) and Nestri (QUIC media-transport rules).
 - **No Wolf.** Phase 0 already built a working minimal engine (S2), so Phase 1 ships on `cha-streamer` directly. `cha-gateway` only bridges external Moonlight hosts (Sunshine, Apollo, Vibepollo, Polaris), in Phase 3.
@@ -55,7 +55,7 @@ Cha Portal (portal.cha.sh) is a self-hosted dashboard for "portaling" into remot
 | Topic | Decision | Source |
 |---|---|---|
 | Target scale | Homelab / small group first. Design so team scale is possible later. | User |
-| License | **AGPL-3.0-or-later**. GPL-3 code (moonlight-common-rust, Sunshine bits) may be embedded. | User (approved 2026-10-03) |
+| License | **AGPL-3.0-or-later**. GPL-3 code (moonlight-common-rust, Sunshine bits) may be embedded. *Since ADR 0011 (2026-10-07) shipped crates carry none: GPL projects are reference-only, so app-store builds stay possible ([ADR 0012](adr/0012-cla-for-app-store-builds.md), [PROVENANCE.md](PROVENANCE.md)).* | User (approved 2026-10-03) |
 | Network | LAN and WAN equally first-class → adaptive codec ladder | User |
 | Exposure | **Strictly self-hosted.** No `cha.sh`-hosted relays, DNS or cert brokers. For remote access we recommend a tunnel/overlay such as **Tailscale** (also Headscale/NetBird/WireGuard). TURN stays an optional self-hosted add-on. | User (2026-10-03) |
 | Baseline client | **MacBook Pro M4 + Google Chrome (macOS), wired 1 GbE, targeting 1440p60.** Every gate and benchmark is measured on this first. 90 and 120 fps are options (per app, and switchable live on desktop apps); the baseline stays 60. | User (2026-10-03) |
@@ -115,7 +115,7 @@ flowchart LR
 | **`cha-control`** | Users, passkeys/OIDC, RBAC, node registry and enrollment, catalog/templates, environment lifecycle, placement, session brokering (WebRTC SDP relay to the node, WebTransport candidates + cert hashes, media tokens, short-lived TURN credentials), share links, audit log, serving the SPA | axum, sqlx (SQLite → Postgres later), webauthn-rs, openidconnect, utoipa (OpenAPI → TS client). coturn as a sidecar. |
 | **`cha-node`** | Enrollment, one outbound WSS channel (yamux + RPC), GPU/encoder/Vulkan inventory, desired-state reconciliation, image pulls, volumes (`dir`/`zfs`/`btrfs`), streamer process lifecycle (the agent supervises; it is never in the media path), WebTransport cert rotation, `cha doctor` preflight | **Own** thin Docker Engine API client over the socket; yamux; ash (Vulkan probe) |
 | **`cha-streamer`** | One per running environment. **Our own** headless Wayland compositor (on Smithay), running at 2–4× the encode rate → zero-copy into the encoders (PyroWave / **our own** NVENC binding) → **WebRTC endpoint (ICE-lite) + WebTransport/QUIC endpoint**. Keyboard and mouse go straight into the compositor's seat. Gamepads are **our own** uinput/uhid devices, hotplugged into the env container. Audio comes from **our own** minimal PulseAudio-protocol server → Opus. Multi-viewer producer/consumer. | Smithay (MIT), NVENC + CUDA driver API (loaded at runtime), libpyrowave, **str0m** (WebRTC, sans-IO, TWCC/BWE, playout-delay), quinn, libopus |
-| **`cha-gateway`** (Phase 3) | Bridges **external** GameStream hosts (Sunshine/Apollo/Vibepollo/Polaris) to the same WebRTC/WebTransport endpoints. Passes H.264/HEVC/AV1 **and PyroWave** through, no transcoding. Rewrites H.264/HEVC VUI to `max_num_reorder_frames=0` when the host doesn't, so hardware decoders don't buffer. Translates input. Handles pairing. Proven in S3. | moonlight-common-rust (GPL-3), the moonlight-web-stream v3 design (WebRTC passthrough) |
+| **`cha-gateway`** (Phase 3) | Bridges **external** GameStream hosts (Sunshine/Apollo/Vibepollo/Polaris) to the same WebRTC/WebTransport endpoints. Passes H.264/HEVC/AV1 **and PyroWave** through, no transcoding. Rewrites H.264/HEVC VUI to `max_num_reorder_frames=0` when the host doesn't, so hardware decoders don't buffer. Translates input. Handles pairing. Proven in S3. | `cha-gamestream`'s client (ADR 0011; was moonlight-common-rust), the moonlight-web-stream v3 design (WebRTC passthrough) |
 | **`cha-proto`** | Sans-IO protocol core: message schema, datagram framing, fragmentation, FEC, reassembly, jitter/deadline logic, congestion-control feedback, input encoding. Compiled to wasm for the browser. | Leopard-RS-class FEC crate, prost/serde |
 | **Portal SPA** | Dashboard, catalog, launch/connect, node admin, session overlay UI | Vue 3, Vue Router, Pinia, TanStack Query, a Tailwind-based component kit |
 | **`@cha/player`** | Framework-agnostic TS player: transports, decoders, renderer, audio, input, stats overlay. Runs the hot path in Workers. | `cha-proto` wasm, `@cha/pyrowave-webgpu` |
@@ -507,7 +507,7 @@ These are targets to validate in Phase 0, not measured facts.
 
 **Why Rust everywhere on the backend.**
 - One language for every component that speaks `cha-stream/1`, with a shared protocol crate (also compiled to wasm for the browser).
-- The foundations we borrow are Rust already: QUIC (quinn), a sans-IO WebRTC stack (str0m), the Wayland compositor toolkit (Smithay), and moonlight-common-rust.
+- The foundations we borrow are Rust already: QUIC (quinn), a sans-IO WebRTC stack (str0m), and the Wayland compositor toolkit (Smithay). (moonlight-common-rust was one until ADR 0011 replaced it with our own GameStream client.)
 - The kernel and driver APIs we own (uinput, uhid, netlink, NVENC, CUDA) are plain C ABIs, easy to call from Rust without a framework.
 
 Go would be the credible alternative for the control plane only (tsnet/Headscale embedding, pion, Coder reuse). Its cost is a split protocol implementation.
@@ -705,7 +705,7 @@ Delivers **features 5 and 8**.
 - WAN hardening: netem suite across the fallback chain (direct → TURN-UDP → TURN-TLS 443 → WebSocket), RTT-based placement, Chrome LNA UX, an optional ACME mode for WebTransport. The deployment side (an always-on portal over HTTPS, nodes on TLS channels, tailnet access, sign-in hardening, TURN-TLS, backups and upgrades) is planned in [docs/plans/production-deployment.md](plans/production-deployment.md).
 - Sharing: share links (viewer / controller / player-N), control hand-off, multi-viewer encoders.
 - **External GameStream hosts:**
-  - pair Sunshine, Apollo, Vibepollo or Polaris from the portal (OTP/PIN), with the gateway on a node in the same LAN. *Built 2026-10-07* ([ADR 0008](adr/0008-moonlight-hosts-adopted-by-a-node.md)): nodes find hosts over mDNS, the admin adopts one with Moonlight's PIN, each host is a dashboard section of its apps, and `cha-gateway` passes H.264/HEVC and stereo Opus to WebRTC with keyboard, mouse and gamepad input. Open: a run against a real Sunshine/Apollo host, AV1 and video encryption (upstream `moonlight-common-rust`), Apollo's OTP pairing, hosts added by address;
+  - pair Sunshine, Apollo, Vibepollo or Polaris from the portal (OTP/PIN), with the gateway on a node in the same LAN. *Built 2026-10-07* ([ADR 0008](adr/0008-moonlight-hosts-adopted-by-a-node.md)): nodes find hosts over mDNS, the admin adopts one with Moonlight's PIN, each host is a dashboard section of its apps, and `cha-gateway` passes H.264/HEVC and stereo Opus to WebRTC with keyboard, mouse and gamepad input. Open: a run against a real Sunshine/Apollo host, turning on AV1 and video encryption now that our own client (ADR 0011) supports them, Apollo's OTP pairing, hosts added by address;
   - **Vibepollo PyroWave contract → browser WebGPU decode**;
   - expose Vibepollo's session controls where its API allows.
 - AMD and Intel nodes: our own encode path (VA-API or Vulkan Video; a spike picks one) and the compositor on their render nodes.
@@ -764,7 +764,7 @@ If S1 fails, Phase 4 starts in parallel with Phase 2.
 | Chrome Local Network Access prompts (WebSocket/WebTransport to private IPs; WebRTC exempt) | Confusing first connect on the fast path | WebRTC baseline isn't affected. Split-horizon DNS docs; in-UI detection and explanation. |
 | 14-day cert ceiling | Expired-cert outages | 13-day rotation a day early, NTP check in `cha doctor`, hash re-signalled on reconnect |
 | Scope creep across eight features | Never ships | Phase gates, and seven small Phase 1 milestones that each ship and verify on their own. |
-| Dependence on young single-maintainer projects (Vibepollo, moonlight-common-rust, WebGPU port) | Bit-rot | Vendor and pin; contribute upstream; keep adapters thin |
+| Dependence on young single-maintainer projects (Vibepollo, WebGPU port; moonlight-common-rust until ADR 0011 replaced it) | Bit-rot | Vendor and pin; contribute upstream; keep adapters thin |
 
 ---
 
