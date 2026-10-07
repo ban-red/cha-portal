@@ -25,7 +25,7 @@ The fastest way to a stream: the portal and a node together on one Linux machine
 - a free [Tailscale](https://tailscale.com) account, for HTTPS and for reaching the portal from your other devices. In its admin console, under **DNS**, enable **MagicDNS** and **HTTPS Certificates**;
 - the device you'll play from, with Tailscale and Google Chrome or Safari.
 
-The first release isn't tagged yet, so there are no published images to pull: until then, use [One machine, from source](#one-machine-from-source).
+The commands below use `0.1.0`; use the latest [release](https://github.com/ban-red/cha-portal/releases) instead, in both the clone and the setup step.
 
 1. **Get the release:**
 

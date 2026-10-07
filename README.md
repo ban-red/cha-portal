@@ -5,7 +5,7 @@ A self-hosted dashboard for streaming remote environments to your browser with M
 The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC, VA-API or PyroWave encoding, and WebRTC or WebTransport straight from the GPU server to the browser. There is no Wolf, GStreamer, FFmpeg, PulseAudio or PipeWire in the media path ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)).
 
 > [!WARNING]
-> **Pre-release.** There are no tagged releases yet, so you build everything from source; releases will publish every image, so a node needs nothing built ([Published images](deploy/README.md#published-images)). Expect breaking changes to the database, the node protocol and the deploy files. It is developed and tested on one setup (a MacBook Pro M4 with Google Chrome on wired 1 GbE, and an NVIDIA RTX 4090 node).
+> **Early releases (0.x).** Each release publishes every image, so a machine needs nothing built: see the [Quick start](SETUP.md#quick-start) and the [releases](https://github.com/ban-red/cha-portal/releases). Expect breaking changes to the database, the node protocol and the deploy files. It is developed and tested on one setup (a MacBook Pro M4 with Google Chrome on wired 1 GbE, and an NVIDIA RTX 4090 node).
 
 ## What works
 

@@ -86,7 +86,7 @@ Versions are [semver](https://semver.org) without the `v` in image tags: tag `v0
 
 1. **Check `main` is green.** The `check` workflow passed on the commit you'll tag, and it ran on the node you test with.
 2. **Try the images first** (optional, worth it for a large change): **Actions → publish → Run workflow** on `main` builds and pushes `:sha-<commit>` without a release. A node runs those with `CHA_VERSION=sha-<commit>`.
-3. **Update the docs that name a version or the release state:** the examples in `SETUP.md` (`v0.1.0`, `--version 0.1.0`) and, before the first release, the README's pre-release note and SETUP's "the first release isn't tagged yet" line.
+3. **Update the docs that name a version or the release state:** the examples in `SETUP.md` (`v0.1.0`, `--version 0.1.0`).
 4. **Tag and push:**
 
    ```bash
