@@ -1,0 +1,14 @@
+[package]
+name = "cha-pyrowave-wgpu"
+version = "0.1.0"
+description = "PyroWave decoding on wgpu: packets to packed 8-bit YCbCr planes in a GPU buffer, plus a pass that draws them (port of @cha/pyrowave-webgpu)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+thiserror = "2"
+wgpu = "29"

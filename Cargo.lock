@@ -927,6 +927,7 @@ dependencies = [
  "cha-client",
  "cha-client-gamestream",
  "cha-client-portal",
+ "cha-pyrowave-wgpu",
  "clap",
  "cpal",
  "egui",
@@ -960,6 +961,16 @@ name = "cha-pyrowave"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "cha-pyrowave-wgpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "pollster",
+ "thiserror 2.0.21",
+ "wgpu",
 ]
 
 [[package]]
