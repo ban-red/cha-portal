@@ -245,45 +245,47 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
 <template>
   <!-- The search lives in the shell's header. -->
   <Teleport to="#page-actions" defer>
-    <div
-      class="flex items-center"
-      :class="searchOpen && 'max-sm:absolute max-sm:inset-0 max-sm:z-10 max-sm:gap-2 max-sm:bg-canvas max-sm:px-4'"
-    >
+    <div class="relative flex items-center">
+      <!-- Narrow header: just an icon; the field slides in over it, anchored right. -->
       <button
-        v-show="!searchOpen"
         ref="searchButton"
         type="button"
-        class="inline-flex size-9 items-center justify-center rounded-lg border border-line-strong text-ink-2 transition hover:border-ink-3 hover:text-ink pointer-coarse:size-11 sm:hidden"
+        class="inline-flex size-9 items-center justify-center rounded-lg border border-line-strong text-ink-2 transition hover:border-ink-3 hover:text-ink pointer-coarse:size-11 @min-[52rem]:hidden"
         aria-label="Search environments"
+        :aria-expanded="searchOpen"
         @click="openSearch"
       >
         <Search class="size-5" aria-hidden="true" />
       </button>
-      <div class="relative" :class="searchOpen ? 'max-sm:flex-1' : 'max-sm:hidden'">
-        <label for="env-search" class="sr-only">Search environments</label>
-        <Search class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-3" aria-hidden="true" />
-        <input
-          id="env-search"
-          ref="searchInput"
-          v-model="query"
-          type="search"
-          autocomplete="off"
-          placeholder="Search environments…"
-          class="field min-h-9 pl-9 pointer-coarse:min-h-11 sm:w-56 lg:w-72"
-          @keydown.esc.prevent="onSearchEscape"
-          @blur="onSearchBlur"
-        />
-      </div>
-      <button
-        v-if="searchOpen"
-        type="button"
-        class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-2 hover:bg-panel-2 hover:text-ink pointer-coarse:size-11 sm:hidden"
-        aria-label="Close search"
-        @mousedown.prevent
-        @click="closeSearch"
+      <div
+        class="flex items-center gap-2 transition-[opacity,translate,visibility] duration-200 ease-out motion-reduce:transition-none @max-[52rem]:absolute @max-[52rem]:top-1/2 @max-[52rem]:right-0 @max-[52rem]:z-10 @max-[52rem]:w-[min(20rem,calc(100vw-2rem))] @max-[52rem]:-translate-y-1/2 @max-[52rem]:bg-canvas"
+        :class="!searchOpen && '@max-[52rem]:pointer-events-none @max-[52rem]:invisible @max-[52rem]:translate-x-2 @max-[52rem]:opacity-0'"
       >
-        <X class="size-5" aria-hidden="true" />
-      </button>
+        <div class="relative min-w-0 flex-1 @min-[52rem]:flex-none">
+          <label for="env-search" class="sr-only">Search environments</label>
+          <Search class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-3" aria-hidden="true" />
+          <input
+            id="env-search"
+            ref="searchInput"
+            v-model="query"
+            type="search"
+            autocomplete="off"
+            placeholder="Search environments…"
+            class="field min-h-9 w-full pl-9 pointer-coarse:min-h-11 @min-[52rem]:w-44 @min-[64rem]:w-56 @min-[80rem]:w-72"
+            @keydown.esc.prevent="onSearchEscape"
+            @blur="onSearchBlur"
+          />
+        </div>
+        <button
+          type="button"
+          class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-2 hover:bg-panel-2 hover:text-ink pointer-coarse:size-11 @min-[52rem]:hidden"
+          aria-label="Close search"
+          @mousedown.prevent
+          @click="closeSearch"
+        >
+          <X class="size-5" aria-hidden="true" />
+        </button>
+      </div>
     </div>
   </Teleport>
 

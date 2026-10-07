@@ -13,6 +13,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useSession } from "../stores/session";
 import { useTheme } from "../themes/runtime";
 import BrandMark from "./BrandMark.vue";
+import HealthBar from "./HealthBar.vue";
 
 const session = useSession();
 const router = useRouter();
@@ -284,7 +285,7 @@ const ICON_BUTTON =
 
     <div class="flex min-w-0 flex-1 flex-col" :inert="drawerOpen || undefined">
       <header
-        class="sticky top-0 z-10 flex min-h-16 items-center gap-3 border-b border-line bg-canvas/80 pt-[env(safe-area-inset-top)] pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] backdrop-blur transparency-reduced:bg-canvas transparency-reduced:backdrop-blur-none md:px-8"
+        class="@container sticky top-0 z-10 flex min-h-16 items-center gap-3 border-b border-line bg-canvas/80 pt-[env(safe-area-inset-top)] pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] backdrop-blur transparency-reduced:bg-canvas transparency-reduced:backdrop-blur-none md:px-8"
       >
         <button
           ref="menuButton"
@@ -301,11 +302,12 @@ const ICON_BUTTON =
           <h1 ref="pageTitle" tabindex="-1" class="truncate text-[1.375rem] leading-7 font-semibold tracking-tight focus:outline-none sm:text-[1.75rem] sm:leading-9">
             {{ route.meta.title }}
           </h1>
-          <p v-if="route.meta.subtitle" class="truncate text-sm text-ink-2">{{ route.meta.subtitle }}</p>
+          <p v-if="route.meta.subtitle" class="hidden truncate text-sm text-ink-2 @min-[64rem]:block">{{ route.meta.subtitle }}</p>
         </div>
         <!-- Pages put their own controls here (search, say) with <Teleport to="#page-actions" defer>. -->
         <div id="page-actions" class="flex items-center gap-2" />
         <button
+        <HealthBar v-if="session.isAdmin" />
           type="button"
           :class="ICON_BUTTON"
           :aria-label="appearanceLabel"
