@@ -29,7 +29,7 @@ use tokio::time::{MissedTickBehavior, interval_at};
 use tracing::{debug, info, warn};
 use wtransport::endpoint::IncomingSession;
 use wtransport::endpoint::endpoint_side::Server;
-use wtransport::quinn::TransportConfig;
+use wtransport::quinn::{AckFrequencyConfig, TransportConfig};
 use wtransport::{Connection, Endpoint, Identity, ServerConfig, VarInt};
 
 use crate::audio::{Audio, AudioPacket};
@@ -56,6 +56,10 @@ const CONTROL_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 /// QUIC's datagram send buffer. Our own backlog rules (below) keep it nearly
 /// empty; the size only has to take a PyroWave frame or two.
 const SEND_BUFFER: usize = 8 << 20;
+/// The player acknowledges every this many packets (Chrome does about 10)…
+const ACK_EVERY: u32 = 10;
+/// …or after this long, whichever comes first.
+const ACK_DELAY: Duration = Duration::from_millis(5);
 /// How often the send queue is checked (hold or not) and the rate updated.
 const PACE_INTERVAL: Duration = Duration::from_millis(50);
 /// Hold the encoder while more than this long's worth of frames waits to go
@@ -107,7 +111,17 @@ pub fn bind(port: u16, names: &[IpAddr]) -> Result<(Endpoint<Server>, String)> {
         .max_idle_timeout(Some(Duration::from_secs(10).try_into()?))
         .keep_alive_interval(Some(Duration::from_secs(2)))
         // Our rate control sets the pace, not QUIC's window (plan §3.1 rule 9).
-        .congestion_controller_factory(Arc::new(MediaWindowFactory));
+        .congestion_controller_factory(Arc::new(MediaWindowFactory))
+        // Ask the player to acknowledge every ACK_EVERY packets, not every
+        // other one: at PyroWave 4:4:4 (~76,000 datagrams/s) acknowledging
+        // every second packet was half the native player's system calls.
+        // Peers without the extension (it is negotiated) ack as before.
+        .ack_frequency_config(Some({
+            let mut ack = AckFrequencyConfig::default();
+            ack.ack_eliciting_threshold(wtransport::quinn::VarInt::from_u32(ACK_EVERY - 1))
+                .max_ack_delay(Some(ACK_DELAY));
+            ack
+        }));
     let config = ServerConfig::builder()
         .with_bind_default(port)
         .with_custom_transport(identity, transport)
@@ -264,7 +278,7 @@ async fn run(
         fragmenter,
         sessions.media.fps(),
     );
-    let mut pacing = Pacing::new(video.pace.target());
+    let mut pacing = Pacing::new(ceiling_bps(&sessions.media, video.codec));
     let mut pace_tick = interval_at(tokio::time::Instant::now() + PACE_INTERVAL, PACE_INTERVAL);
     pace_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut audio = sessions.audio.as_ref().map(|a| a.subscribe());
@@ -826,10 +840,10 @@ impl Pacing {
         let fps = media.fps();
         if fps != video.fps {
             video.fps = fps;
-            self.rate.rescale(media.bitrate_bps());
+            self.rate.rescale(ceiling_bps(media, video.codec));
             info!(
                 fps,
-                ceiling_mbps = media.bitrate_bps() / 1_000_000,
+                ceiling_mbps = ceiling_bps(media, video.codec) / 1_000_000,
                 "frame rate"
             );
         }
@@ -1040,6 +1054,17 @@ async fn next_packet(audio: &mut Option<mpsc::Receiver<AudioPacket>>) -> Option<
     match audio {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+/// The rate a session's control starts at and tops out at: the codec's full
+/// rate, plus the share audio takes, so the encoder gets all of its own.
+fn ceiling_bps(media: &Media, codec: VideoCodec) -> u32 {
+    match codec {
+        VideoCodec::PyroWave(_) => {
+            (f64::from(media.bitrate_bps_for(codec)) / VIDEO_SHARE).min(f64::from(u32::MAX)) as u32
+        }
+        VideoCodec::Hw(_) => media.bitrate_bps(),
     }
 }
 

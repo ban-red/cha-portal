@@ -380,6 +380,18 @@ impl Media {
         framerate::nvenc_bps(self.settings.bitrate_bps, self.fps())
     }
 
+    /// `codec`'s full rate now: NVENC's configured bitrate, or PyroWave's
+    /// byte budget at the output's size and frame rate.
+    pub fn bitrate_bps_for(&self, codec: VideoCodec) -> u32 {
+        match (codec, &self.pyrowave) {
+            (VideoCodec::PyroWave(chroma), Some(pyro)) => {
+                let (w, h) = self.size();
+                pyro.rate_bps(chroma, w, h)
+            }
+            _ => self.bitrate_bps(),
+        }
+    }
+
     /// Changes the frame rate (one of `framerate::CHOICES`) for everyone
     /// watching: the compositor composites at it, the encoders are
     /// reconfigured in place on their next frame (no gap, no keyframe), and
@@ -409,7 +421,7 @@ impl Media {
             codec.name()
         );
         let (tx, rx) = mpsc::channel(8);
-        let pace = Pace::new(self.bitrate_bps());
+        let pace = Pace::new(self.bitrate_bps_for(codec));
         let mut encoders = self.encoders.lock().expect("encoders lock");
         // An encoder that gave up (it logged why) gets another go.
         if let Some(dead) = encoders.remove(&codec) {

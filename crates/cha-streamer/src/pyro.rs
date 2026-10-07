@@ -24,6 +24,9 @@ use crate::media::{EncodedFrame, Frame, Mailbox, Subscribers, Wake, deliver, pac
 /// header within QUIC's smallest datagram. A multiple of 4 (the bitstream's
 /// word size).
 pub const PACKET_BYTES: usize = 1100;
+/// The smallest frame rate control may ask for (about 30 Mbit/s at 60 fps):
+/// below it PyroWave's picture breaks up.
+const MIN_FRAME_BYTES: usize = 64 * 1024;
 /// Still this long after the last new frame: send it again.
 const HEAL_AFTER: Duration = Duration::from_millis(250);
 
@@ -89,6 +92,26 @@ impl PyroSettings {
         if let Err(err) = spawned {
             warn!("pyrowave: couldn't start warming up: {err}");
         }
+    }
+
+    /// The full rate in bits per second at this size and the current frame
+    /// rate: where a session's rate control starts and tops out.
+    pub fn rate_bps(&self, chroma: Chroma, width: u32, height: u32) -> u32 {
+        let area = f64::from(width * height) / f64::from(2560 * 1440);
+        let fps = self.fps.load(Ordering::Relaxed);
+        let (bytes, _) = framerate::pyrowave_frame_bytes(self.mbps_420, chroma, area, fps);
+        (bytes as f64 * 8.0 * f64::from(fps.max(1))).min(f64::from(u32::MAX)) as u32
+    }
+
+    /// A frame's bytes: the full budget, or less when the slowest session's
+    /// rate control (`target_bps`) says its link or player can't keep up.
+    /// The picture softens instead of the stream stuttering.
+    fn paced_budget(&self, chroma: Chroma, width: u32, height: u32, target_bps: u32) -> usize {
+        let fps = self.fps.load(Ordering::Relaxed).max(1);
+        let paced = (f64::from(target_bps) / 8.0 / f64::from(fps)) as usize;
+        self.frame_budget(chroma, width, height)
+            .min(paced)
+            .max(MIN_FRAME_BYTES)
     }
 
     fn frame_budget(&self, chroma: Chroma, width: u32, height: u32) -> usize {
@@ -172,18 +195,18 @@ impl PyroWorker {
             };
             // A backed-up subscriber's queue: skip this frame (every frame
             // stands alone, so nothing waits on it).
-            match pace_of(&self.subscribers) {
+            let target_bps = match pace_of(&self.subscribers) {
                 None | Some((true, _)) => continue,
-                Some((false, _)) => {}
-            }
+                Some((false, target)) => target,
+            };
             let started = Instant::now();
             let result = self.encode(
                 &device,
                 &mut encoder,
                 &mut images,
                 &frame,
-                &mut bytes,
-                &mut packets,
+                target_bps,
+                (&mut bytes, &mut packets),
             );
             let encoded = Instant::now();
             if stats.frames == 0 && stats.since.is_none() {
@@ -236,8 +259,8 @@ impl PyroWorker {
         encoder: &mut Option<Encoder>,
         images: &mut Vec<Imported>,
         frame: &Frame,
-        bytes: &mut Vec<u8>,
-        packets: &mut Vec<Packet>,
+        target_bps: u32,
+        (bytes, packets): (&mut Vec<u8>, &mut Vec<Packet>),
     ) -> Result<()> {
         if encoder
             .as_ref()
@@ -297,7 +320,7 @@ impl PyroWorker {
         };
         let budget = self
             .settings
-            .frame_budget(self.chroma, frame.width, frame.height);
+            .paced_budget(self.chroma, frame.width, frame.height, target_bps);
         encoder
             .encode(&images[index].image, budget, PACKET_BYTES, bytes, packets)
             .map_err(|e| anyhow::anyhow!("{e}"))
