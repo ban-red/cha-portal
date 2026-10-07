@@ -59,8 +59,8 @@ const summary = computed<Record<SectionId, { text: string; cls: string }>>(() =>
     latency: { text: `${num(s?.latencyMs ?? null)} ms · decode ${num(s?.decodeMs ?? null)} ms`, cls: bad("latency", "decode") },
     network: { text: `${num(s?.rttMs ?? null)} ms · ${s?.packetsLost ?? 0} lost · ${s?.framesDropped ?? 0} dropped`, cls: bad("rtt", "loss", "recovered", "dropped") },
     node: {
-      text: n ? [`CPU ${num(n.cpu, 0)}%`, n.gpu !== undefined ? `GPU ${num(n.gpu, 0)}%` : "", n.temp !== undefined ? `${n.temp} °C` : ""].filter(Boolean).join(" · ") : "",
-      cls: n && (hot(n.cpu) || (n.gpu !== undefined && hot(n.gpu)) || (n.temp !== undefined && hot(n.temp, 85))) ? "text-warn" : "",
+      text: n ? [`CPU ${num(n.cpu, 0)}%`, n.gpu !== undefined ? `GPU ${num(n.gpu, 0)}%` : "", n.vramUsed !== undefined && n.vramTotal ? `VRAM ${gb(n.vramUsed)}/${gb(n.vramTotal)} GB` : "", n.temp !== undefined ? `${n.temp} °C` : ""].filter(Boolean).join(" · ") : "",
+      cls: n && (hot(n.cpu) || (n.gpu !== undefined && hot(n.gpu)) || (n.vramUsed !== undefined && n.vramTotal !== undefined && hot(pct(n.vramUsed, n.vramTotal))) || (n.temp !== undefined && hot(n.temp, 85))) ? "text-warn" : "",
     },
   };
 });
