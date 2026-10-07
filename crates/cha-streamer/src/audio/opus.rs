@@ -47,8 +47,10 @@ pub struct Encoder {
 unsafe impl Send for Encoder {}
 
 impl Encoder {
-    /// A 48 kHz encoder for interleaved float frames.
-    pub fn new(channels: usize, bitrate_bps: i32) -> Result<Self> {
+    /// A 48 kHz encoder for interleaved float frames. `vbr`: silence costs a
+    /// few bytes a frame instead of the full rate; without it every frame is
+    /// the same size.
+    pub fn new(channels: usize, bitrate_bps: i32, vbr: bool) -> Result<Self> {
         let mut error = 0;
         // SAFETY: valid arguments; the result is checked.
         let st = unsafe {
@@ -64,8 +66,7 @@ impl Encoder {
         }
         let encoder = Self { st, channels };
         encoder.ctl(SET_BITRATE, bitrate_bps)?;
-        // VBR: silence costs a few bytes a frame instead of the full rate.
-        encoder.ctl(SET_VBR, 1)?;
+        encoder.ctl(SET_VBR, c_int::from(vbr))?;
         encoder.ctl(SET_COMPLEXITY, 10)?;
         encoder.ctl(SET_SIGNAL, SIGNAL_MUSIC)?;
         Ok(encoder)

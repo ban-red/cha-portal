@@ -3,10 +3,13 @@
 //! payloads, AES-CBC encrypted when the client asked, out in order.
 //!
 //! The parity matrix is the host's own constant (an interop constant, per
-//! moonlight-common-c's audio FEC). A block's packets must be all one size (a
-//! constant bitrate, padded to the cipher's block when encrypted), because
-//! the code runs over equal-length payloads; a packet of another size is dropped. An unrecoverable loss is
-//! skipped, not concealed: the gap shows in the timestamps.
+//! moonlight-common-c's audio FEC). Packets arriving whole are delivered as
+//! they are, whatever their size, so a variable-bitrate host plays cleanly.
+//! The code runs over the block's payloads zero-padded to the parity's
+//! length, so a rebuilt packet is exact only when its block is one size (a
+//! constant bitrate, as GameStream hosts send); a variable-bitrate one comes
+//! back with trailing zeros. An unrecoverable loss is skipped, not concealed:
+//! the gap shows in the timestamps.
 
 use std::time::{Duration, Instant};
 
@@ -61,8 +64,8 @@ pub struct AudioStats {
 struct Block {
     /// The sequence number of the first data packet, a multiple of four.
     base: u16,
-    /// Payload bytes of each shard.
-    size: usize,
+    /// Payload bytes of the parity shards, once one is in.
+    parity_size: Option<usize>,
     /// From a parity packet's FEC header.
     base_timestamp: Option<u32>,
     shards: [Option<Vec<u8>>; TOTAL_SHARDS],
@@ -73,10 +76,10 @@ struct Block {
 }
 
 impl Block {
-    fn new(base: u16, size: usize, now: Instant) -> Self {
+    fn new(base: u16, now: Instant) -> Self {
         Self {
             base,
-            size,
+            parity_size: None,
             base_timestamp: None,
             shards: Default::default(),
             timestamps: [None; DATA_SHARDS],
@@ -225,20 +228,24 @@ impl AudioReceiver {
                 self.stats.late += 1;
                 return;
             }
-            self.blocks.push(Block::new(base, payload.len(), now));
+            self.blocks.push(Block::new(base, now));
         }
         let block = self
             .blocks
             .iter_mut()
             .find(|b| b.base == base)
             .expect("just found or pushed");
-        if block.size != payload.len() {
-            self.stats.malformed += 1;
-            return;
-        }
         if block.shards[slot].is_some() {
             self.stats.duplicates += 1;
             return;
+        }
+        if slot >= DATA_SHARDS {
+            // Both parity shards are the length of the block's longest payload.
+            if block.parity_size.is_some_and(|n| n != payload.len()) {
+                self.stats.malformed += 1;
+                return;
+            }
+            block.parity_size = Some(payload.len());
         }
         block.shards[slot] = Some(payload.to_vec());
         if let Some(t) = timestamp {
@@ -247,10 +254,29 @@ impl AudioReceiver {
         if base_timestamp.is_some() {
             block.base_timestamp = base_timestamp;
         }
-        if !block.recovered && block.held_data() < DATA_SHARDS && block.held() >= DATA_SHARDS {
+        if !block.recovered
+            && block.held_data() < DATA_SHARDS
+            && block.held() >= DATA_SHARDS
+            && let Some(size) = block.parity_size
+        {
             let missing = DATA_SHARDS - block.held_data();
-            let mut shards: Vec<Option<Vec<u8>>> = block.shards.to_vec();
-            if self.codec.reconstruct_data(&mut shards).is_ok() {
+            // The code runs over the payloads zero-padded to the parity's length;
+            // one longer than that can't be part of it.
+            let fits = block.shards[..DATA_SHARDS]
+                .iter()
+                .flatten()
+                .all(|s| s.len() <= size);
+            let mut shards: Vec<Option<Vec<u8>>> = block
+                .shards
+                .iter()
+                .map(|s| {
+                    s.clone().map(|mut s| {
+                        s.resize(size, 0);
+                        s
+                    })
+                })
+                .collect();
+            if fits && self.codec.reconstruct_data(&mut shards).is_ok() {
                 for (i, s) in shards.into_iter().take(DATA_SHARDS).enumerate() {
                     if block.shards[i].is_none() {
                         block.shards[i] = s;
@@ -434,6 +460,42 @@ mod tests {
                     }
                     assert_eq!(rx.stats.lost, 0);
                 }
+            }
+        }
+    }
+
+    /// A variable-bitrate host: packets of every size play, and a lost one is
+    /// rebuilt as itself followed by the block's padding.
+    #[test]
+    fn packets_of_varying_sizes_play_and_recover() {
+        let vbr = |n: usize| -> Vec<u8> {
+            let mut p = opus(n);
+            p.truncate(8 + (n * 7) % 33);
+            p
+        };
+        for key in [None, Some((KEY, 11))] {
+            let mut p = AudioPacketizer::new(key);
+            let all: Vec<Vec<u8>> = (0..24).flat_map(|n| p.push(&vbr(n), 240)).collect();
+
+            let mut rx = AudioReceiver::new(cfg(key));
+            let got = run(&mut rx, &all, |_| false, Instant::now());
+            assert_eq!(got.len(), 24, "{key:?}: {:?}", rx.stats);
+            for (n, p) in got.iter().enumerate() {
+                assert_eq!(p.data.to_vec(), vbr(n), "{key:?}, packet {n}");
+            }
+            assert_eq!(rx.stats.malformed, 0);
+
+            if key.is_none() {
+                // The second data packet of every block lost.
+                let mut rx = AudioReceiver::new(cfg(key));
+                let got = run(&mut rx, &all, |i| i % 6 == 1, Instant::now());
+                assert_eq!(got.len(), 24, "{:?}", rx.stats);
+                for (n, p) in got.iter().enumerate() {
+                    let want = vbr(n);
+                    assert_eq!(p.data[..want.len()], want[..], "packet {n}");
+                    assert!(p.data[want.len()..].iter().all(|b| *b == 0));
+                }
+                assert_eq!(rx.stats.recovered, 6);
             }
         }
     }

@@ -63,7 +63,7 @@ impl Audio {
             sink,
             subscribers: Mutex::default(),
         });
-        let encoder = opus::Encoder::new(2, BITRATE_BPS)?;
+        let encoder = opus::Encoder::new(2, BITRATE_BPS, true)?;
         let mixer = Arc::clone(&audio);
         std::thread::Builder::new()
             .name("audio-mixer".into())
@@ -79,8 +79,8 @@ impl Audio {
     }
 
     /// Like [`subscribe`](Self::subscribe), with frames of `ms` milliseconds:
-    /// 10 (the mixer's) or 5, two per tick from a second encoder (what
-    /// Moonlight asks for). What other subscribers get doesn't change.
+    /// 10 (the mixer's) or 5, two per tick from a second, constant-bitrate
+    /// encoder (what Moonlight asks for). What other subscribers get doesn't change.
     #[cfg_attr(not(feature = "gamestream"), allow(dead_code))]
     pub fn subscribe_frames(&self, ms: u32) -> Result<mpsc::Receiver<AudioPacket>> {
         match ms {
@@ -148,7 +148,9 @@ impl Audio {
             let at = Instant::now();
             if subscribers.iter().any(|s| s.half_frames) {
                 if half_encoder.is_none() {
-                    half_encoder = opus::Encoder::new(2, BITRATE_BPS)
+                    // Constant bitrate, as GameStream hosts send: Moonlight's audio
+                    // FEC runs over a block of four equal-sized packets.
+                    half_encoder = opus::Encoder::new(2, BITRATE_BPS, false)
                         .map_err(|err| warn!("audio: no 5 ms encoder: {err:#}"))
                         .ok();
                 }
