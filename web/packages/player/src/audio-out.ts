@@ -138,6 +138,11 @@ export class AudioOut {
     this.rebuild(null);
   }
 
+  /** The sound reaches the speakers: the context runs, the worklet is there, and it isn't muted or at zero. */
+  audible(): boolean {
+    return this.ctx?.state === "running" && this.node !== null && !this.blocked && !this.muted && this.volume > 0;
+  }
+
   stats(): AudioOutStats {
     const now = performance.now();
     const running = this.ctx?.state === "running" && !this.blocked;

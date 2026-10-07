@@ -11,6 +11,7 @@
 //! Share links and their roles (viewer, controller, player-N) are Phase 3.
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::watch;
 use tracing::info;
 
@@ -51,12 +52,28 @@ struct Entry {
     viewer: Viewer,
     /// Set once the session runs.
     running: Option<Running>,
+    /// Someone is using this session: native clients always are; a browser says
+    /// so with `{"t":"presence","active"}` (a hidden, silent tab isn't).
+    active: bool,
 }
 
-#[derive(Default)]
 struct Inner {
     next_id: u64,
     entries: Vec<Entry>,
+    /// Since when no seat has been active: `None` while any is, and from the
+    /// start while nobody has come.
+    idle_since: Option<Instant>,
+}
+
+impl Inner {
+    /// Starts or stops the idle clock after the seats changed.
+    fn settle(&mut self) {
+        if self.entries.iter().any(|e| e.active) {
+            self.idle_since = None;
+        } else if self.idle_since.is_none() {
+            self.idle_since = Some(Instant::now());
+        }
+    }
 }
 
 /// Called when the floor moves (the streamer puts the cursor back in the
@@ -73,7 +90,11 @@ pub struct Viewers {
 impl Viewers {
     pub fn new(on_floor_move: OnFloorMove) -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::default(),
+            inner: Mutex::new(Inner {
+                next_id: 0,
+                entries: Vec::new(),
+                idle_since: Some(Instant::now()),
+            }),
             floor: watch::Sender::new(None),
             on_floor_move,
         })
@@ -96,7 +117,9 @@ impl Viewers {
             id,
             viewer,
             running: None,
+            active: true,
         });
+        inner.settle();
         // The newest owner takes the floor; anyone who may control takes an
         // empty one, or one held by a lower role.
         let holder = self
@@ -128,6 +151,26 @@ impl Viewers {
         self.lock().entries.len()
     }
 
+    /// How many sessions are in use (see `Seat::set_active`).
+    pub fn active_count(&self) -> usize {
+        self.lock().entries.iter().filter(|e| e.active).count()
+    }
+
+    /// Seconds since no session has been in use; 0 while any is.
+    pub fn idle_secs(&self) -> u64 {
+        self.lock()
+            .idle_since
+            .map_or(0, |since| since.elapsed().as_secs())
+    }
+
+    fn set_active(&self, id: u64, active: bool) {
+        let mut inner = self.lock();
+        if let Some(entry) = inner.entries.iter_mut().find(|e| e.id == id) {
+            entry.active = active;
+        }
+        inner.settle();
+    }
+
     fn controller(&self) -> Option<u64> {
         *self.floor.borrow()
     }
@@ -135,6 +178,7 @@ impl Viewers {
     fn leave(&self, id: u64) {
         let mut inner = self.lock();
         inner.entries.retain(|e| e.id != id);
+        inner.settle();
         if self.controller() == Some(id) {
             // The newest of the highest role that may control.
             let next = inner
@@ -194,6 +238,12 @@ impl Seat {
     /// How many sessions watch, this one included.
     pub fn viewers(&self) -> usize {
         self.viewers.count()
+    }
+
+    /// A browser's `presence`: whether anyone is using this session. Sessions
+    /// start active; this moves neither the floor nor the count.
+    pub fn set_active(&self, active: bool) {
+        self.viewers.set_active(self.id, active);
     }
 
     /// Resolves when the floor moves or someone joins or leaves.
@@ -265,6 +315,54 @@ mod tests {
         drop(admin2);
         assert!(!guest.has_control(), "never a viewer");
         assert_eq!(guest.viewers(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_idle_clock_follows_who_is_active() {
+        let viewers = Viewers::new(Box::new(|| ()));
+        assert!(viewers.lock().idle_since.is_some(), "idle from the start");
+        assert_eq!((viewers.active_count(), viewers.count()), (0, 0));
+
+        let a = viewers.join(viewer("a", Role::Owner), false).await.unwrap();
+        assert!(viewers.lock().idle_since.is_none(), "a seat starts active");
+        assert_eq!(viewers.idle_secs(), 0);
+        assert_eq!(viewers.active_count(), 1);
+
+        a.set_active(false);
+        assert!(
+            viewers.lock().idle_since.is_some(),
+            "the only seat went quiet"
+        );
+        assert_eq!((viewers.active_count(), viewers.count()), (0, 1));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let t = viewers.lock().idle_since.unwrap();
+        assert!(t.elapsed() >= Duration::from_millis(5));
+
+        // Setting the same value again doesn't restart the clock.
+        a.set_active(false);
+        assert_eq!(viewers.lock().idle_since, Some(t));
+
+        a.set_active(true);
+        assert!(viewers.lock().idle_since.is_none(), "presence flipped back");
+        assert_eq!(viewers.idle_secs(), 0);
+
+        // A quiet seat and an active one: not idle.
+        let b = viewers
+            .join(viewer("b", Role::Viewer), false)
+            .await
+            .unwrap();
+        a.set_active(false);
+        assert_eq!(viewers.active_count(), 1);
+        assert!(viewers.lock().idle_since.is_none());
+
+        // The last active seat leaves: only the quiet one remains.
+        drop(b);
+        assert_eq!((viewers.active_count(), viewers.count()), (0, 1));
+        assert!(viewers.lock().idle_since.is_some());
+
+        drop(a);
+        assert!(viewers.lock().idle_since.is_some(), "empty is idle");
+        assert_eq!(viewers.count(), 0);
     }
 
     #[tokio::test]

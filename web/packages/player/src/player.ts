@@ -10,6 +10,7 @@
 
 import { AudioJitter } from "./audio-jitter";
 import { AudioOut } from "./audio-out";
+import { presenceActive } from "./presence";
 import { ControllerManager, type ManagedController } from "./controllers";
 import type { CaptureView } from "./captureMode";
 import { InputCapture } from "./input";
@@ -255,6 +256,8 @@ export class Player {
   private probe: ClickProbe | null = null;
   private readonly stats = new StatsReader();
   private readonly cleanup: (() => void)[] = [];
+  /** The last `presence` sent on this control channel; null until one is. */
+  private presence: boolean | null = null;
   /** Local clock − server clock (ms), from the lowest-RTT ping so far. */
   private offset: { rtt: number; ms: number } | null = null;
   /** RTP timestamp → when the server sent that frame (server µs). */
@@ -590,12 +593,14 @@ export class Player {
     this.audio.muted = muted;
     this.wt?.out?.setMuted(muted);
     if (!muted) void this.playAudio();
+    this.sendPresence();
   }
 
   /** Sound's level, 0..1, on this page only (the environment's own volume stays). */
   setVolume(volume: number): void {
     this.audio.volume = clampVolume(volume);
     this.wt?.out?.setVolume(this.audio.volume);
+    this.sendPresence();
   }
 
   private async playAudio(): Promise<void> {
@@ -776,6 +781,25 @@ export class Player {
     else if (this.control?.readyState === "open") this.control.send(JSON.stringify(msg) + "\n");
   }
 
+  /** The page's sound is playing to someone, on either transport. */
+  private audible(): boolean {
+    const out = this.wt?.out;
+    if (out) return out.audible();
+    return !this.muted && this.audio.volume > 0 && this.audio.srcObject !== null && !this.audio.paused;
+  }
+
+  /**
+   * Tells the node whether anyone is using this page (in front, or heard), when that changes: a
+   * hidden, silent tab keeps its link but not its claim on the environment (idle shutoff).
+   */
+  private sendPresence(): void {
+    if (!this.control && !this.wt) return;
+    const active = presenceActive(document.visibilityState === "visible", this.audible());
+    if (active === this.presence) return;
+    this.presence = active;
+    this.send({ t: "presence", active });
+  }
+
   private sendInput(msg: Record<string, unknown>): void {
     if (this.hasControl) this.send({ t: "input", ...msg });
   }
@@ -842,6 +866,17 @@ export class Player {
     const pinger = setInterval(ping, 1000);
     this.cleanup.push(() => clearInterval(pinger));
     this.watchLiveness();
+    this.presence = null;
+    this.sendPresence();
+    // Visibility and mute changes say so at once; the sound starting or stopping by itself
+    // (autoplay unblocked, the output rebuilt) is caught by the timer.
+    const presence = () => this.sendPresence();
+    document.addEventListener("visibilitychange", presence);
+    const presenceTimer = setInterval(presence, 2000);
+    this.cleanup.push(() => {
+      document.removeEventListener("visibilitychange", presence);
+      clearInterval(presenceTimer);
+    });
     if (!this.wt) this.reportRates();
 
     // The picture follows the element's size (in device pixels, capped).

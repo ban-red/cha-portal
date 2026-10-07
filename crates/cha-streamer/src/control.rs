@@ -234,6 +234,12 @@ impl Control {
             Some("take_control") => {
                 self.seat.take_control();
             }
+            Some("presence") => {
+                // A page in front or heard is active; one hidden and silent isn't.
+                if let Some(active) = msg.get("active").and_then(|a| a.as_bool()) {
+                    self.seat.set_active(active);
+                }
+            }
             Some("ping") => {
                 if let Some(c) = msg.get("c").and_then(|c| c.as_f64()) {
                     reply(ServerMsg::Pong {

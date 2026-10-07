@@ -325,6 +325,7 @@ All objects have a `"t"` string tag.
 - **codec**: `{"t":"codec","codec":"h264"|"hevc"|"av1"|"pyrowave420"|"pyrowave444"}`. See §8.
 - **fps**: `{"t":"fps","fps":60|90|120}`. **overlay**: `{"t":"overlay","level":0..4}`. Both are controller-only and answered by a message of the same type (timeouts 3 s).
 - **take_control**: `{"t":"take_control"}`. Succeeds for owner and admin roles only (viewers.rs:92-101).
+- **presence**: `{"t":"presence","active":true|false}`. Whether anyone is using this session: the browser sends it when the control channel opens and on each change (active = page visible, or its sound audible: playing and not muted). Sessions start active, so native clients, GameStream sessions and older pages that never send it count as active. Any role. `GET /info` reports `active_viewers` and `idle_secs`.
 - **report**: see §7.
 - **input**: see §6.
 - Unknown or garbled lines are ignored.
