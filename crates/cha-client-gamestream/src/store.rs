@@ -5,14 +5,10 @@
 //! Directories are 0700, files 0600.
 
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, anyhow, bail};
-use moonlight_common::crypto::rustcrypto::RustCryptoBackend;
-use moonlight_common::http::pair::PairingCryptoBackend;
-use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
-use pem::Pem;
+use cha_gamestream::client::front::ClientIdentity;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -26,7 +22,7 @@ const HOSTS: &str = "hosts.json";
 pub struct SavedHost {
     pub id: String,
     pub name: String,
-    /// As the library takes it: a name, an IPv4 address or a bracketed IPv6 one.
+    /// A name, an IPv4 address or a bracketed IPv6 one.
     pub address: String,
     pub port: u16,
     pub added: bool,
@@ -84,37 +80,32 @@ impl Store {
         std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
     }
 
-    fn read_pem(path: &Path) -> Result<Pem> {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Pem::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    fn read_text(path: &Path) -> Result<String> {
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
     }
 
     /// This install's client identity, generated the first time it's needed
     /// (RSA key generation: take it off the async threads).
-    pub fn client_identity(&self) -> Result<(ClientIdentifier, ClientSecret)> {
+    pub fn client_identity(&self) -> Result<ClientIdentity> {
         let _once = self.identity.lock().expect("identity lock");
         let cert = self.dir.join(CLIENT_CERT);
         let key = self.dir.join(CLIENT_KEY);
         if cert.exists() && key.exists() {
-            return Ok((
-                ClientIdentifier::from_pem(Self::read_pem(&cert)?),
-                ClientSecret::from_pem(Self::read_pem(&key)?),
-            ));
+            return ClientIdentity::from_pem(&Self::read_text(&cert)?, &Self::read_text(&key)?)
+                .with_context(|| format!("reading {} and {}", cert.display(), key.display()));
         }
         Self::make_dir(&self.dir)?;
-        let (client, secret) = RustCryptoBackend
-            .generate_client_identity()
-            .map_err(|e| anyhow!("generating the client identity: {e:?}"))?;
+        let identity = ClientIdentity::generate()
+            .map_err(|e| anyhow!("generating the client identity: {e}"))?;
         // The key first: a certificate without its key is never read back.
-        Self::write_private(&key, secret.to_pem().to_string().as_bytes())?;
-        Self::write_private(&cert, client.to_pem().to_string().as_bytes())?;
+        Self::write_private(&key, identity.key_pem().as_bytes())?;
+        Self::write_private(&cert, identity.cert_pem().as_bytes())?;
         info!(dir = %self.dir.display(), "made this install's Moonlight client identity");
-        Ok((client, secret))
+        Ok(identity)
     }
 
-    /// The certificate a paired host showed, if this install is paired with it.
-    pub fn server_identity(&self, unique_id: &str) -> Result<Option<ServerIdentifier>> {
+    /// The certificate (PEM) a paired host showed, if this install is paired with it.
+    pub fn server_cert(&self, unique_id: &str) -> Result<Option<String>> {
         if !valid_unique_id(unique_id) {
             bail!("{unique_id:?} isn't a Moonlight host id");
         }
@@ -122,19 +113,16 @@ impl Store {
         if !path.exists() {
             return Ok(None);
         }
-        Ok(Some(ServerIdentifier::from_pem(Self::read_pem(&path)?)))
+        Self::read_text(&path).map(Some)
     }
 
-    pub fn save_server(&self, unique_id: &str, server: &ServerIdentifier) -> Result<()> {
+    pub fn save_server(&self, unique_id: &str, pem: &str) -> Result<()> {
         if !valid_unique_id(unique_id) {
             bail!("{unique_id:?} isn't a Moonlight host id");
         }
         let dir = self.host_dir(unique_id);
         Self::make_dir(&dir)?;
-        Self::write_private(
-            &dir.join(SERVER_CERT),
-            server.to_pem().to_string().as_bytes(),
-        )
+        Self::write_private(&dir.join(SERVER_CERT), pem.as_bytes())
     }
 
     /// The hosts saved last time; none if the file is missing or unreadable
@@ -176,10 +164,10 @@ mod tests {
     fn the_identity_is_made_once_and_read_back() {
         let dir = temp_dir("identity");
         let store = Store::new(dir.clone());
-        let (cert, _) = store.client_identity().unwrap();
+        let identity = store.client_identity().unwrap();
         // A second store over the same directory (a restart) gets the same one.
-        let (again, _) = Store::new(dir.clone()).client_identity().unwrap();
-        assert_eq!(cert.to_pem().to_string(), again.to_pem().to_string());
+        let again = Store::new(dir.clone()).client_identity().unwrap();
+        assert_eq!(identity.fingerprint(), again.fingerprint());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -195,17 +183,16 @@ mod tests {
     fn a_hosts_certificate_is_kept_by_its_id() {
         let dir = temp_dir("server");
         let store = Store::new(dir.clone());
-        assert!(store.server_identity("ABCD").unwrap().is_none());
-        let (cert, _) = RustCryptoBackend.generate_client_identity().unwrap();
-        let server = ServerIdentifier::from_pem(cert.to_pem());
+        assert!(store.server_cert("ABCD").unwrap().is_none());
+        let server = ClientIdentity::generate().unwrap().cert_pem().to_owned();
         store.save_server("ABCD", &server).unwrap();
         let back = Store::new(dir.clone())
-            .server_identity("ABCD")
+            .server_cert("ABCD")
             .unwrap()
             .expect("saved");
-        assert_eq!(back.to_pem().to_string(), server.to_pem().to_string());
+        assert_eq!(back, server);
         // An id that could climb out of the directory is refused.
-        assert!(store.server_identity("../x").is_err());
+        assert!(store.server_cert("../x").is_err());
         assert!(store.save_server("../x", &server).is_err());
         #[cfg(unix)]
         {
@@ -216,6 +203,35 @@ mod tests {
                 0o600
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Installs paired before our own client wrote these files with another
+    /// library: PKCS#8 "PRIVATE KEY" and "CERTIFICATE" blocks, CRLF line ends.
+    #[test]
+    fn an_identity_written_by_the_old_library_still_loads() {
+        let dir = temp_dir("legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let made = ClientIdentity::generate().unwrap();
+        let crlf = |pem: &str| pem.replace('\n', "\r\n");
+        std::fs::write(dir.join(CLIENT_CERT), crlf(made.cert_pem())).unwrap();
+        std::fs::write(dir.join(CLIENT_KEY), crlf(made.key_pem())).unwrap();
+        let loaded = Store::new(dir.clone()).client_identity().unwrap();
+        assert_eq!(loaded.fingerprint(), made.fingerprint());
+        // The host's certificate comes back as written, and pins.
+        let server = crlf(ClientIdentity::generate().unwrap().cert_pem());
+        Store::new(dir.clone())
+            .save_server("AB12", &server)
+            .unwrap();
+        let back = Store::new(dir.clone())
+            .server_cert("AB12")
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, server);
+        cha_gamestream::client::front::HostClient::new("127.0.0.1", loaded)
+            .unwrap()
+            .with_server_cert(&back)
+            .expect("the CRLF certificate pins");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

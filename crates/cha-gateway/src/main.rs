@@ -108,7 +108,7 @@ fn main() -> ExitCode {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,str0m=warn,moonlight_common=warn".into()),
+                .unwrap_or_else(|_| "info,str0m=warn".into()),
         )
         .init();
     let args = Args::parse();
@@ -130,10 +130,6 @@ fn main() -> ExitCode {
 
 async fn run(args: Args) -> Result<ExitCode> {
     str0m::crypto::from_feature_flags().install_process_default();
-    // moonlight-common's HTTPS client builds rustls without a crypto provider.
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .map_err(|_| anyhow!("a rustls crypto provider was already installed"))?;
     cha_wire::parse_public_key(&args.portal_key).map_err(|e| anyhow!("--portal-key: {e}"))?;
     anyhow::ensure!(
         args.width > 0 && args.height > 0 && args.fps > 0,

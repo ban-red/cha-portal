@@ -67,6 +67,11 @@ const SERVICE_TICK: Duration = Duration::from_millis(5);
 const MOUSE_BATCHING_INTERVAL: Duration = Duration::from_millis(1);
 /// How long a stopping client waits for the host to acknowledge its goodbye.
 const LINGER: Duration = Duration::from_secs(1);
+/// The least time a control connection lives before its goodbye. ENet throws
+/// away a connect and a disconnect that arrive together, before the host has
+/// dispatched the connect, so the host would never see the client leave and
+/// its media would run on until the ping timeout.
+const SETTLE: Duration = Duration::from_millis(100);
 /// ENet peer timeouts as Moonlight sets them: limit 2, 10 s.
 const PEER_TIMEOUT_MS: u32 = 10_000;
 /// Receive buffer asked of the kernel for video: a whole keyframe's burst.
@@ -706,6 +711,7 @@ async fn control_task(task: ControlTask) {
         peer,
         sealer: Sealer::new(key),
     };
+    let connected = tokio::time::Instant::now();
     let mut stop = shared.stop.subscribe();
     let mut ping = tokio::time::interval(CONTROL_PING_INTERVAL);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -807,6 +813,13 @@ async fn control_task(task: ControlTask) {
         None | Some(Ended::Stopped)
     );
     if graceful {
+        // The host's next service rounds must see the connection first.
+        let settled = connected + SETTLE;
+        while tokio::time::Instant::now() < settled {
+            if link.enet.service(Duration::from_millis(10)).await.is_err() {
+                break;
+            }
+        }
         if let Some(p) = link.enet.peer_mut(link.peer) {
             p.disconnect(0);
         }

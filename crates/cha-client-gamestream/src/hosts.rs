@@ -16,7 +16,7 @@ pub const GONE_AFTER: Duration = Duration::from_secs(120);
 /// Where to reach a host's HTTP API.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Endpoint {
-    /// As the library takes it: a name, an IPv4 address or a bracketed IPv6 one.
+    /// A name, an IPv4 address or a bracketed IPv6 one.
     pub address: String,
     pub port: u16,
 }

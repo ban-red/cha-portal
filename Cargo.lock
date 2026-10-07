@@ -723,7 +723,6 @@ dependencies = [
 name = "cha-client-gamestream"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "bytes",
  "cha-client",
@@ -731,13 +730,9 @@ dependencies = [
  "cha-moonlight-input",
  "futures-util",
  "mdns-sd",
- "moonlight-common",
- "pem 3.0.6",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
- "tokio-enet",
  "tracing",
 ]
 
@@ -818,13 +813,11 @@ dependencies = [
  "axum",
  "bytes",
  "cha-client",
+ "cha-gamestream",
  "cha-moonlight-input",
  "cha-wire",
  "clap",
  "libc",
- "moonlight-common",
- "pem 3.0.6",
- "rustls",
  "serde",
  "serde_json",
  "str0m",
@@ -840,7 +833,7 @@ name = "cha-moonlight-input"
 version = "0.1.0"
 dependencies = [
  "cha-client",
- "moonlight-common",
+ "cha-gamestream",
 ]
 
 [[package]]
@@ -864,8 +857,6 @@ dependencies = [
  "hyper-util",
  "if-addrs",
  "mdns-sd",
- "moonlight-common",
- "pem 3.0.6",
  "reqwest",
  "rustix 1.1.5",
  "rustls",

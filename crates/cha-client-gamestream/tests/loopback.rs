@@ -3,7 +3,7 @@
 //! loopback: add by address, pair, apps, launch, video, audio, input, rumble,
 //! keyframes and the ways a session ends.
 
-#[path = "../../cha-gamestream/tests/common/mod.rs"]
+#[path = "../../cha-gamestream/tests/common/rig.rs"]
 mod common;
 
 use std::path::PathBuf;
@@ -13,9 +13,9 @@ use cha_client::{
     Codec, Ended, Feedback, Host, Input, PadState, Pairing, Session, StreamConfig, Transport,
 };
 use cha_client_gamestream::GameStream;
+use cha_gamestream::input::buttons;
 use cha_gamestream::{EncodedVideo, InputEvent, OpusPacket, VideoCodec};
 use common::{BackendStream, Rig, access_unit};
-use moonlight_common::stream::control::ControllerButtons;
 
 /// A directory under the system's temp dir, removed on drop.
 struct TempDir(PathBuf);
@@ -308,7 +308,7 @@ async fn a_session_streams_video_and_audio_and_takes_input_rumble_and_keyframe_r
                     matches!(
                         e,
                         InputEvent::GamepadState { pad: 0, buttons, right_trigger: 255, left_stick: (0, y), .. }
-                            if buttons & ControllerButtons::A.bits() != 0 && *y > 0
+                            if buttons & buttons::A != 0 && *y > 0
                     )
                 })
         })
@@ -440,7 +440,9 @@ async fn stopping_without_quitting_leaves_the_app_to_be_resumed_and_another_is_r
 
     // Dropping the session stops the stream and, again, leaves the app.
     drop(session);
-    second.wait_for("the media stopping", |l| l.stopped).await;
+    second
+        .wait_for("the resumed media stopping", |l| l.stopped)
+        .await;
     assert!(rig.directory.cancels().is_empty());
     rig.host.shutdown().await;
 }
@@ -461,7 +463,10 @@ async fn a_launch_asks_only_for_what_it_can_play() {
         .await
         .err()
         .expect("no codec");
-    assert!(err.to_string().contains("AV1"), "{err:#}");
+    assert!(
+        err.to_string().contains("can't encode any of the codecs"),
+        "{err:#}"
+    );
     let surround = StreamConfig {
         audio_channels: 6,
         ..config()

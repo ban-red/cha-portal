@@ -78,7 +78,7 @@ impl BrowserInput {
 
 #[cfg(test)]
 mod tests {
-    use cha_moonlight_input::{ClientInputEvent, InputState};
+    use cha_moonlight_input::{InputEvent, InputState};
 
     use super::*;
 
@@ -147,6 +147,6 @@ mod tests {
     fn a_page_click_reaches_the_host_as_a_moonlight_event() {
         let mut state = InputState::default();
         let events = state.apply(&input(r#"{"k":"button","b":0,"down":true}"#), 2560, 1440);
-        assert!(matches!(events[..], [ClientInputEvent::MouseButton { .. }]));
+        assert!(matches!(events[..], [InputEvent::MouseButton { .. }]));
     }
 }

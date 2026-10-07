@@ -1,6 +1,6 @@
 //! The native client's GameStream transport (ADR 0010): plays Sunshine and
 //! Apollo hosts, and our own nodes (ADR 0009), as a [`cha_client::Transport`]
-//! on `moonlight-common-rust`.
+//! on `cha-gamestream`'s client half ([ADR 0011](../../docs/adr/0011-own-gamestream-client.md)).
 //!
 //! - **Discovery:** an mDNS browse for `_nvstream._tcp.local.` and hosts added
 //!   by address. Each is read with `/serverinfo` (with this install's identity,
@@ -15,8 +15,8 @@
 //!   Sunshine's or Apollo's PIN page, or in the portal for our nodes), fails
 //!   or five minutes pass.
 //! - **Launch:** the codec is the first of `StreamConfig::codecs` the host can
-//!   encode (HEVC, H.264; AV1 isn't in the library, so it is skipped); stereo
-//!   audio only; no video encryption (the library can't decrypt it). A host
+//!   encode (AV1, HEVC or H.264, in the player's order); stereo audio only;
+//!   video and audio are encrypted only when the host insists. A host
 //!   already running the requested app is resumed; one running another app
 //!   is refused, rather than quitting a game the user may be in.
 //!
@@ -34,12 +34,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use cha_client::{App, BoxFuture, Host, Pairing, Session, StreamConfig, Transport};
+use cha_gamestream::client::front::{ClientIdentity, HostClient, random_pin};
 use futures_util::future::join_all;
-use moonlight_common::crypto::rustcrypto::RustCryptoBackend;
-use moonlight_common::high::tokio::MoonlightHost;
-use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
-use moonlight_common::http::pair::PairPin;
-use moonlight_common::http::{ClientIdentifier, ClientSecret};
 use tokio::sync::{Notify, mpsc, watch};
 use tracing::{debug, info, warn};
 
@@ -47,12 +43,9 @@ use crate::discovery::Seen;
 use crate::hosts::{Endpoint, HostList, Probed};
 use crate::store::{SavedHost, Store};
 
-type Client = MoonlightHost<TokioHyperClient>;
-
 /// What hosts call this client in their requests (they know it by certificate).
 const CLIENT_UNIQUE_ID: &str = "cha-player";
-/// The name a host lists this player under once paired. No space: the
-/// library puts it in the query string as is.
+/// The name a host lists this player under once paired.
 const DEVICE_NAME: &str = "ChaPlayer";
 /// How often each host is read again.
 const REFRESH: Duration = Duration::from_secs(30);
@@ -110,8 +103,6 @@ impl GameStream {
     }
 
     fn start(dir: PathBuf, discover: bool) -> Result<Self> {
-        // moonlight-common's HTTPS client builds rustls without a provider.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let store = Store::new(dir);
         let list = HostList::from_saved(store.load_hosts(), Instant::now());
         let saved = list.saved();
@@ -178,32 +169,28 @@ impl Transport for GameStream {
 
 impl Inner {
     /// This install's identity (RSA key generation the first time).
-    async fn identity(self: &Arc<Self>) -> Result<(ClientIdentifier, ClientSecret)> {
+    async fn identity(self: &Arc<Self>) -> Result<ClientIdentity> {
         let this = Arc::clone(self);
         tokio::task::spawn_blocking(move || this.store.client_identity()).await?
     }
 
-    /// A client for the host at `endpoint`; with `server_id`, one that carries
-    /// this install's identity and that host's certificate.
+    /// A client for the host at `endpoint`; with `server_id`, one that holds
+    /// that host's certificate (so it can use HTTPS, as this install).
     async fn client(
         self: &Arc<Self>,
         endpoint: &Endpoint,
         server_id: Option<&str>,
-    ) -> Result<Client> {
-        let client = Client::new(
-            endpoint.address.clone(),
-            endpoint.port,
-            Some(CLIENT_UNIQUE_ID.to_string()),
-        )
-        .map_err(|e| anyhow!("creating the Moonlight client: {e:?}"))?;
+    ) -> Result<HostClient> {
+        let identity = self.identity().await?;
+        let mut client = HostClient::new(&endpoint.display(), identity)
+            .map_err(|e| anyhow!("creating the Moonlight client: {e}"))?
+            .with_unique_id(CLIENT_UNIQUE_ID);
         if let Some(id) = server_id
-            && let Some(server) = self.store.server_identity(id)?
+            && let Some(pem) = self.store.server_cert(id)?
         {
-            let (cert, key) = self.identity().await?;
-            client
-                .set_identity(cert, key, server)
-                .await
-                .map_err(|e| anyhow!("the host didn't accept this player's identity: {e:?}"))?;
+            client = client
+                .with_server_cert(&pem)
+                .map_err(|e| anyhow!("this host's saved certificate isn't usable: {e}"))?;
         }
         Ok(client)
     }
@@ -218,9 +205,9 @@ impl Inner {
     }
 
     /// The host `id` as a paired client, ready to list apps and stream.
-    async fn paired_client(self: &Arc<Self>, id: &str) -> Result<(Client, Host)> {
+    async fn paired_client(self: &Arc<Self>, id: &str) -> Result<(HostClient, Host)> {
         let (host, endpoint) = self.lookup(id)?;
-        if self.store.server_identity(id)?.is_none() {
+        if self.store.server_cert(id)?.is_none() {
             bail!("this player isn't paired with {}; pair it first", host.name);
         }
         let client = self
@@ -236,27 +223,26 @@ impl Inner {
         let mut info = plain
             .server_info()
             .await
-            .map_err(|e| anyhow!("reading /serverinfo from {}: {e:?}", endpoint.display()))?;
-        // The host's `uniqueid` as we keep it: 32 uppercase hex digits.
-        let id = info.unique_id.simple().to_string().to_uppercase();
+            .map_err(|e| anyhow!("reading /serverinfo from {}: {e}", endpoint.display()))?;
+        let id = host_id(&info.unique_id)?;
         // Whether this install is paired is only visible over HTTPS with its
         // certificate, so a host we hold a certificate for is asked that way.
         let mut paired = false;
-        if self.store.server_identity(&id)?.is_some() {
+        if self.store.server_cert(&id)?.is_some() {
             match self.client(endpoint, Some(&id)).await {
                 Ok(secure) => match secure.server_info().await {
                     Ok(secure_info) => {
                         paired = secure_info.paired;
                         info = secure_info;
                     }
-                    Err(err) => debug!(%id, "not paired (or the host dropped us): {err:?}"),
+                    Err(err) => debug!(%id, "not paired (or the host dropped us): {err}"),
                 },
                 Err(err) => debug!(%id, "not paired (or the host dropped us): {err:#}"),
             }
         }
         Ok(Probed {
             id,
-            name: info.host_name,
+            name: info.name,
             paired,
             running_app: (info.current_game != 0).then_some(info.current_game),
         })
@@ -313,16 +299,21 @@ impl Inner {
 
     async fn apps(self: &Arc<Self>, id: &str) -> Result<Vec<App>> {
         let (client, host) = self.paired_client(id).await?;
+        // Learns the host's HTTPS port, which hosts needn't keep at 47984.
+        client
+            .server_info()
+            .await
+            .map_err(|e| anyhow!("reading {}'s state: {e}", host.name))?;
         let apps = client
             .app_list()
             .await
-            .map_err(|e| anyhow!("listing {}'s apps: {e:?}", host.name))?;
+            .map_err(|e| anyhow!("listing {}'s apps: {e}", host.name))?;
         Ok(apps
             .into_iter()
             .map(|a| App {
-                id: a.id.0,
+                id: a.id,
                 name: a.title,
-                hdr: a.is_hdr_supported,
+                hdr: a.hdr,
             })
             .collect())
     }
@@ -332,9 +323,7 @@ impl Inner {
         if let Some(pending) = self.pairing.lock().expect("pairing lock").get(id) {
             return Ok(pending.pairing());
         }
-        let (cert, key) = self.identity().await?;
-        let pin = PairPin::new_random(&RustCryptoBackend).map_err(|e| anyhow!("{e:?}"))?;
-        let pin_text = pin.to_string();
+        let pin_text = random_pin();
         let client = self.client(&endpoint, None).await?;
         let (outcome_tx, outcome) = watch::channel(None);
         {
@@ -354,21 +343,16 @@ impl Inner {
         info!(host = %host.name, "pairing: waiting for the PIN on the host");
         let this = Arc::clone(self);
         let id = id.to_string();
+        let pin_for_host = pin_text.clone();
         tokio::spawn(async move {
-            let pairing = tokio::time::timeout(
-                PAIR_TIMEOUT,
-                client.pair(&cert, &key, DEVICE_NAME.into(), pin, RustCryptoBackend),
-            )
-            .await;
+            let pairing =
+                tokio::time::timeout(PAIR_TIMEOUT, client.pair(&pin_for_host, DEVICE_NAME)).await;
             let result: Result<()> = match pairing {
                 Err(_) => Err(anyhow!(
                     "the PIN wasn't entered on the host within 5 minutes"
                 )),
-                Ok(Err(err)) => Err(anyhow!("pairing failed: {err:?}")),
-                Ok(Ok(())) => match client.identity().await {
-                    Some((_, _, server)) => this.store.save_server(&id, &server),
-                    None => Err(anyhow!("paired, but the host's certificate is missing")),
-                },
+                Ok(Err(err)) => Err(anyhow!("pairing failed: {err}")),
+                Ok(Ok(server_pem)) => this.store.save_server(&id, &server_pem),
             };
             match &result {
                 Ok(()) => {
@@ -395,6 +379,20 @@ impl Pending {
             done: wait_for(self.outcome.clone()),
         }
     }
+}
+
+/// A host's `uniqueid` as we keep it: upper-case hex without the dashes of a
+/// UUID. It names a directory, so anything else is refused.
+fn host_id(unique_id: &str) -> Result<String> {
+    let id: String = unique_id
+        .chars()
+        .filter(|c| *c != '-')
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if !store::valid_unique_id(&id) {
+        bail!("the host's id {unique_id:?} isn't one we can keep");
+    }
+    Ok(id)
 }
 
 /// Resolves with the pairing's result once it is in.
@@ -458,4 +456,22 @@ async fn refresh(inner: &Arc<Inner>, services: &HashMap<String, Endpoint>) {
         .expect("state lock")
         .list
         .age(Instant::now());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hosts_id_is_upper_case_hex_without_dashes() {
+        assert_eq!(
+            host_id("abcdef01-2345-6789-abcd-ef0123456789").unwrap(),
+            "ABCDEF0123456789ABCDEF0123456789"
+        );
+        assert_eq!(host_id("0123456789ABCDEF").unwrap(), "0123456789ABCDEF");
+        // It names a directory: nothing that could climb out of it.
+        for bad in ["", "../x", "a b", "nothex"] {
+            assert!(host_id(bad).is_err(), "{bad:?}");
+        }
+    }
 }

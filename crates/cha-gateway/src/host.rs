@@ -4,33 +4,15 @@
 //! send input and keyframe requests back.
 
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
-use moonlight_common::AppId;
-use moonlight_common::crypto::rustcrypto::RustCryptoBackend;
-use moonlight_common::high::tokio::MoonlightHost;
-use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
-use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
-use moonlight_common::stream::audio::AudioConfig;
-use moonlight_common::stream::control::ActiveGamepads;
-use moonlight_common::stream::proto::MoonlightStreamSetup;
-use moonlight_common::stream::proto::audio::AudioStreamEvent;
-use moonlight_common::stream::proto::control::ControlStreamEvent;
-use moonlight_common::stream::proto::control::input_batcher::ClientInputEvent;
-use moonlight_common::stream::proto::control::packet::ControlPacket;
-use moonlight_common::stream::proto::video::VideoStreamEvent;
-use moonlight_common::stream::tokio::{MoonlightStream, MoonlightStreamEvent};
-use moonlight_common::stream::video::{
-    ColorRange, ColorSpace, ServerCodecModeSupport, VideoCapabilities, VideoFormat, VideoFormats,
-};
-use moonlight_common::stream::{
-    AesIv, AesKey, EncryptionFlags, MoonlightStreamSettings, StreamingConfig,
-};
-use pem::Pem;
+use cha_gamestream::client::front::{ClientIdentity, Encrypt, HostClient, StreamRequest};
+use cha_gamestream::client::media::{Ended, Media, MediaClient, MediaOptions};
+use cha_gamestream::client::{AudioPacket, VideoFrame};
+use cha_gamestream::{Feedback, InputEvent, VideoCodec};
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{info, warn};
 
@@ -61,17 +43,10 @@ impl Codec {
         }
     }
 
-    fn matches(self, format: VideoFormat) -> bool {
-        format.contained_in(match self {
-            Codec::H264 => VideoFormats::MASK_H264,
-            Codec::Hevc => VideoFormats::MASK_H265,
-        })
-    }
-
-    fn formats(self) -> VideoFormats {
+    fn wire(self) -> VideoCodec {
         match self {
-            Codec::H264 => VideoFormats::H264,
-            Codec::Hevc => VideoFormats::H265,
+            Codec::H264 => VideoCodec::H264,
+            Codec::Hevc => VideoCodec::Hevc,
         }
     }
 }
@@ -87,9 +62,9 @@ pub enum CodecChoice {
 
 impl CodecChoice {
     /// The codec to launch with, given what the host says it can encode.
-    pub fn pick(self, host: ServerCodecModeSupport) -> Result<Codec> {
-        let hevc = host.intersects(ServerCodecModeSupport::HEVC);
-        let h264 = host.intersects(ServerCodecModeSupport::H264);
+    pub fn pick(self, host: &[VideoCodec]) -> Result<Codec> {
+        let hevc = host.contains(&VideoCodec::Hevc);
+        let h264 = host.contains(&VideoCodec::H264);
         match self {
             CodecChoice::Auto if hevc => Ok(Codec::Hevc),
             CodecChoice::Auto | CodecChoice::H264 if h264 => Ok(Codec::H264),
@@ -115,7 +90,7 @@ pub struct HostFrame {
 /// One Opus packet from the host (stereo, one stream, passed through).
 pub struct HostAudio {
     pub data: Bytes,
-    /// The host's clock, in milliseconds since its first packet.
+    /// The host's clock, since its first packet.
     pub timestamp: Duration,
 }
 
@@ -142,7 +117,7 @@ pub struct StreamInfo {
 /// What a viewer asks of the host stream.
 #[derive(Debug)]
 pub enum Command {
-    Input(ClientInputEvent),
+    Input(InputEvent),
     /// Send a new IDR frame.
     Idr,
 }
@@ -208,7 +183,7 @@ impl Link {
         let _ = self.commands.send(command);
     }
 
-    pub fn input(&self, events: impl IntoIterator<Item = ClientInputEvent>) {
+    pub fn input(&self, events: impl IntoIterator<Item = InputEvent>) {
         for event in events {
             self.send(Command::Input(event));
         }
@@ -252,9 +227,9 @@ pub struct HostConfig {
 /// The node's Moonlight identity and the host's certificate, from the
 /// identity directory.
 pub struct Identity {
-    pub client: ClientIdentifier,
-    pub secret: ClientSecret,
-    pub server: ServerIdentifier,
+    pub client: ClientIdentity,
+    /// The host's certificate, PEM.
+    pub server: String,
 }
 
 /// Reads `client-cert.pem`, `client-key.pem` and
@@ -277,15 +252,13 @@ pub fn load_identity(dir: &Path, unique_id: &str) -> Result<Identity> {
             missing.join(", ")
         );
     }
-    let [client, secret, server] = files.map(|p| {
-        std::fs::read_to_string(&p)
-            .with_context(|| format!("reading {}", p.display()))
-            .and_then(|s| Pem::from_str(&s).with_context(|| format!("parsing {}", p.display())))
-    });
+    let [cert, key, server] = files
+        .map(|p| std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display())));
+    let (cert, key) = (cert?, key?);
     Ok(Identity {
-        client: ClientIdentifier::from_pem(client?),
-        secret: ClientSecret::from_pem(secret?),
-        server: ServerIdentifier::from_pem(server?),
+        client: ClientIdentity::from_pem(&cert, &key)
+            .map_err(|e| anyhow!("the node's client certificate or key isn't usable: {e}"))?,
+        server: server?,
     })
 }
 
@@ -294,6 +267,15 @@ pub fn load_identity(dir: &Path, unique_id: &str) -> Result<Identity> {
 pub fn auto_bitrate_kbps(width: u32, height: u32, fps: u32) -> u32 {
     let bits_per_second = f64::from(width) * f64::from(height) * f64::from(fps) * 0.18;
     ((bits_per_second / 1000.0) as u32).clamp(8_000, 100_000)
+}
+
+/// `host:port` as the client takes it (an IPv6 address needs its brackets).
+fn host_port(address: &str, port: u16) -> String {
+    if address.contains(':') && !address.starts_with('[') {
+        format!("[{address}]:{port}")
+    } else {
+        format!("{address}:{port}")
+    }
 }
 
 /// Connects, launches the app and relays the stream until `stop` fires or the
@@ -305,22 +287,24 @@ pub async fn run(
     mut stop: watch::Receiver<bool>,
 ) -> Result<()> {
     let identity = load_identity(&config.identity_dir, &config.unique_id)?;
-    let crypto = RustCryptoBackend;
-    let host = MoonlightHost::<TokioHyperClient>::new(
-        config.address.clone(),
-        config.http_port,
-        Some(CLIENT_NAME.to_string()),
+    let host = HostClient::new(
+        &host_port(&config.address, config.http_port),
+        identity.client,
     )
-    .map_err(|err| anyhow!("creating the Moonlight client: {err:?}"))?;
+    .map_err(|err| anyhow!("creating the Moonlight client: {err}"))?
+    .with_unique_id(CLIENT_NAME)
+    .with_server_cert(&identity.server)
+    .map_err(|err| anyhow!("loading the host's certificate: {err}"))?;
 
-    // The host may be starting or waking.
+    // The host may be starting or waking. Asked over HTTPS (we hold its
+    // certificate), it also says whether it knows this node.
     let waiting_since = Instant::now();
     let info = loop {
         match host.server_info().await {
             Ok(info) => break info,
             Err(err) if waiting_since.elapsed() > HOST_WAIT => {
                 bail!(
-                    "host {}:{} not answering after {HOST_WAIT:?}: {err:?}",
+                    "host {}:{} not answering after {HOST_WAIT:?}: {err}",
                     config.address,
                     config.http_port
                 );
@@ -339,121 +323,86 @@ pub async fn run(
             "the host's HTTPS port isn't the one given; using the host's"
         );
     }
-    info!(name = %info.host_name, version = ?info.app_version, "host found");
-
-    host.set_identity(identity.client, identity.secret, identity.server)
-        .await
-        .map_err(|err| anyhow!("loading the node's identity: {err:?}"))?;
-    if !host
-        .is_paired()
-        .await
-        .map_err(|err| anyhow!("asking the host whether it is paired: {err:?}"))?
-    {
+    info!(name = %info.name, version = %info.app_version, "host found");
+    if !info.paired {
         bail!("the host doesn't know this node as paired; pair it again from the portal");
     }
 
-    let outcome = stream(&config, &host, &crypto, &mut plumbing, &mut stop).await;
+    let outcome = stream(&config, &host, &mut plumbing, &mut stop).await;
     // Whatever happened, quit the app: the next launch starts fresh.
     plumbing.info.send_replace(None);
     match host.cancel().await {
-        Ok(_) => info!("app closed on the host"),
-        Err(err) => warn!("closing the app on the host: {err:?}"),
+        Ok(()) => info!("app closed on the host"),
+        Err(err) => warn!("closing the app on the host: {err}"),
     }
     outcome
 }
 
 async fn stream(
     config: &HostConfig,
-    host: &MoonlightHost<TokioHyperClient>,
-    crypto: &RustCryptoBackend,
+    host: &HostClient,
     plumbing: &mut Plumbing,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<()> {
-    let version = host.version().await.map_err(|e| anyhow!("{e:?}"))?;
-    let gfe = host.gfe_version().await.map_err(|e| anyhow!("{e:?}"))?;
-    let modes = host
-        .server_codec_mode_support()
+    // Fresh from the host: what it can encode, and what it runs now.
+    let info = host
+        .server_info()
         .await
-        .map_err(|e| anyhow!("{e:?}"))?;
-    let codec = config.codec.pick(modes)?;
-    let mut settings = MoonlightStreamSettings {
-        width: config.width,
-        height: config.height,
-        fps: config.fps,
-        fps_x100: config.fps * 100,
-        bitrate: config.bitrate_kbps,
-        packet_size: 1392,
-        // moonlight-common-rust can't decrypt video; node and host share a LAN
-        // and the browser leg is WebRTC's DTLS.
-        encryption_flags: EncryptionFlags::empty(),
-        streaming_remotely: StreamingConfig::Local,
-        sops: false,
-        hdr: false,
-        supported_video_formats: codec.formats(),
-        color_space: ColorSpace::Rec709,
-        color_range: ColorRange::Limited,
-        local_audio_play_mode: false,
-        audio_config: AudioConfig::STEREO,
-        gamepads_attached: ActiveGamepads::empty(),
-        gamepads_persist_after_disconnect: false,
-        enable_mic: false,
-    };
-    settings
-        .adjust_for_server(version, &gfe, modes)
-        .map_err(|e| anyhow!("host can't stream {codec:?}: {e:?}"))?;
+        .map_err(|e| anyhow!("reading the host's state: {e}"))?;
+    let codec = config.codec.pick(&info.codecs())?;
 
     // The host runs one app at a time. Resume ours if it is the one running
     // (a node restart, say); anything else running goes first.
-    host.update().await.map_err(|e| anyhow!("{e:?}"))?;
-    let running = host.current_game().await.map_err(|e| anyhow!("{e:?}"))?;
+    let running = info.current_game;
     if running != 0 && running != config.app_id {
         info!(running, "another app runs on the host: closing it first");
-        host.cancel().await.map_err(|e| anyhow!("{e:?}"))?;
+        host.cancel()
+            .await
+            .map_err(|e| anyhow!("closing app {running}: {e}"))?;
     }
 
+    let mut request = StreamRequest::new(config.app_id, config.width, config.height, config.fps);
+    request.bitrate_kbps = config.bitrate_kbps;
+    request.codecs = vec![codec.wire()];
+    request.audio_channels = 2;
+    // Node and host share a LAN and the browser leg is WebRTC's DTLS:
+    // encrypted only where the host insists.
+    request.video_encryption = Encrypt::Off;
+    request.audio_encryption = Encrypt::Off;
+
     let started = Instant::now();
-    let stream_config = host
-        .start_stream(
-            AppId(config.app_id),
-            &settings,
-            AesKey::new_random(crypto).map_err(|e| anyhow!("{e:?}"))?,
-            AesIv::new_random(crypto).map_err(|e| anyhow!("{e:?}"))?,
-            MoonlightStreamSetup::launch_query_parameters(),
-        )
+    let setup = if running == config.app_id {
+        host.resume(&request).await
+    } else {
+        host.launch(&request).await
+    }
+    .map_err(|e| anyhow!("launching app {}: {e}", config.app_id))?;
+    let mut media = MediaClient::start_with(&setup, MediaOptions::default())
         .await
-        .map_err(|e| anyhow!("launching app {}: {e:?}", config.app_id))?;
-    let mut stream = MoonlightStream::connect(
-        stream_config,
-        settings,
-        Arc::new(crypto.clone()),
-        VideoCapabilities::default(),
-    )
-    .await
-    .map_err(|e| anyhow!("connecting the stream: {e:?}"))?;
-    let setup = stream.video_setup();
-    let audio_setup = stream.audio_setup();
+        .map_err(|e| anyhow!("connecting the stream: {e}"))?;
     info!(
-        ?setup,
-        ?audio_setup,
+        codec = ?setup.codec,
+        width = setup.width,
+        height = setup.height,
+        encrypted = ?setup.encryption,
         launch_ms = started.elapsed().as_millis(),
         "moonlight stream up"
     );
-    if !codec.matches(setup.format) {
-        close(&mut stream).await;
+    if setup.codec != codec.wire() {
+        close(&mut media).await;
         bail!(
             "asked for {codec:?}, but the stream came up as {:?}",
-            setup.format
+            setup.codec
         );
     }
     // The browser plays one Opus stream of two channels. A surround mix
     // (multistream) would be garbage to it: no audio, then.
-    let audio = audio_setup.channel_count == 2
-        && audio_setup.streams == 1
-        && audio_setup.coupled_streams == 1;
+    let audio =
+        setup.audio.channels == 2 && setup.audio.streams == 1 && setup.audio.coupled_streams == 1;
     if !audio {
         warn!(
-            channels = audio_setup.channel_count,
-            streams = audio_setup.streams,
+            channels = setup.audio.channels,
+            streams = setup.audio.streams,
             "the host's audio isn't stereo single-stream Opus: sending no audio"
         );
     }
@@ -467,121 +416,94 @@ async fn stream(
 
     let mut first_frame = true;
     let mut frames_sent = 0u64;
+    let mut audio_clock = AudioClock::default();
     let result: Result<()> = loop {
         tokio::select! {
             _ = stop.changed() => break Ok(()),
             command = plumbing.commands.recv() => match command {
-                Some(Command::Input(event)) => {
-                    if let Err(err) = stream.send_input(event) {
-                        warn!("sending input to the host: {err:?}");
-                    }
-                }
-                Some(Command::Idr) => {
-                    if let Err(err) = stream.send_raw(ControlPacket::RequestIdr) {
-                        warn!("requesting an IDR: {err:?}");
-                    }
-                }
+                Some(Command::Input(event)) => media.control.input(event),
+                Some(Command::Idr) => media.control.request_idr(),
                 // Every Link is gone: the gateway is going down.
                 None => break Ok(()),
             },
-            event = stream.drive() => match event {
-                // One frame lost in reassembly (its FEC block couldn't be
-                // recovered): a keyframe repairs it; don't end the stream.
-                Err(err) if lost_frame(&err) => {
-                    warn!("a video frame couldn't be reassembled; asking for a keyframe: {err:?}");
-                    let _ = stream.send_raw(ControlPacket::RequestIdr);
+            // What the network lost never gets here: the client drops the
+            // frame, asks the host for a keyframe and resumes at it.
+            Some(frame) = media.video.recv() => {
+                if first_frame {
+                    first_frame = false;
+                    info!(after_ms = started.elapsed().as_millis(), "first frame from the host");
                 }
-                Err(err) => break Err(anyhow!("the host's stream failed: {err:?}")),
-                Ok(MoonlightStreamEvent::Video(VideoStreamEvent::OnFrame(frame))) => {
-                    let received = Instant::now();
-                    let md = frame.metadata();
-                    // The type is in the packet header; `frame.as_ref()` would
-                    // scan the whole access unit for NAL units. It isn't
-                    // exported, hence Debug.
-                    let key = format!("{:?}", md.frame_type) == "Idr";
-                    if first_frame {
-                        first_frame = false;
-                        info!(after_ms = started.elapsed().as_millis(), "first frame from the host");
-                    }
-                    frames_sent += 1;
-                    let frame = Arc::new(HostFrame {
-                        data: Bytes::copy_from_slice(frame.raw()),
-                        key,
-                        index: md.frame_index.0,
-                        received,
-                    });
-                    // Nobody watching is fine; the host stream runs on.
-                    if plumbing.frames.send(frame).is_ok() {
-                        // Let the viewers' tasks run now: tokio parks a task
-                        // woken from this worker in its LIFO slot until we
-                        // yield, and we'd otherwise drain this frame's FEC
-                        // packets first.
-                        tokio::task::yield_now().await;
-                    }
+                frames_sent += 1;
+                // Nobody watching is fine; the host stream runs on.
+                let _ = plumbing.frames.send(Arc::new(host_frame(frame)));
+            }
+            Some(packet) = media.audio.recv() => {
+                if audio {
+                    let _ = plumbing.audio.send(Arc::new(audio_clock.packet(packet)));
                 }
-                Ok(MoonlightStreamEvent::Video(VideoStreamEvent::SignalIdr)) => {
-                    let _ = stream.send_raw(ControlPacket::RequestIdr);
+            }
+            Some(Feedback::Rumble { pad, low, high }) = media.feedback.recv() => {
+                let (lo, hi) = cha_moonlight_input::rumble_levels(low, high);
+                let _ = plumbing.rumble.send(HostRumble {
+                    pad: usize::from(pad),
+                    lo,
+                    hi,
+                });
+            }
+            ended = &mut media.ended => break Err(match ended {
+                Ok(Ended::Terminated { graceful: true, .. }) => anyhow!("the host closed the stream"),
+                Ok(Ended::Terminated { code, .. }) => {
+                    anyhow!("the host ended the stream (status {code:#010x})")
                 }
-                Ok(MoonlightStreamEvent::Audio(AudioStreamEvent::OnFrame(frame))) => {
-                    if audio {
-                        let _ = plumbing.audio.send(Arc::new(HostAudio {
-                            data: frame.buffer,
-                            timestamp: frame.timestamp,
-                        }));
-                    }
-                }
-                Ok(MoonlightStreamEvent::Control(ControlStreamEvent::Packet(
-                    ControlPacket::ControllerRumbleData {
-                        controller_number,
-                        low_frequency,
-                        high_frequency,
-                        ..
-                    },
-                ))) => {
-                    let (lo, hi) = cha_moonlight_input::rumble_levels(low_frequency, high_frequency);
-                    let _ = plumbing.rumble.send(HostRumble {
-                        pad: usize::from(controller_number),
-                        lo,
-                        hi,
-                    });
-                }
-                Ok(MoonlightStreamEvent::Control(ControlStreamEvent::Disconnect)) => {
-                    break Err(anyhow!("the host closed the stream"));
-                }
-                Ok(_) => {}
-            },
+                Ok(Ended::Failed(why)) => anyhow!("the host's stream failed: {why}"),
+                Ok(Ended::Stopped) | Err(_) => anyhow!("the host stream stopped"),
+            }),
         }
     };
     info!(frames_sent, "leaving the host stream");
-    close(&mut stream).await;
+    close(&mut media).await;
     result
 }
 
-/// Disconnects and keeps driving the stream until the ENet disconnect is
-/// actually sent: `disconnect()` only queues it, and a peer left to time out
-/// (about 5 s) can pause the same client's next session.
-async fn close(stream: &mut MoonlightStream) {
-    if let Err(err) = stream.disconnect() {
-        warn!("disconnecting: {err:?}");
-        return;
-    }
-    let flushed = tokio::time::timeout(Duration::from_millis(500), async {
-        while stream.is_alive() {
-            if stream.drive().await.is_err() {
-                break;
-            }
-        }
-    })
-    .await;
-    if flushed.is_err() {
-        warn!("the host didn't acknowledge the disconnect within 500 ms");
+fn host_frame(frame: VideoFrame) -> HostFrame {
+    HostFrame {
+        data: frame.data,
+        key: frame.key,
+        index: frame.number,
+        received: frame.received,
     }
 }
 
-/// Whether a stream error is only one video frame lost in reassembly.
-fn lost_frame(err: &moonlight_common::error::Error) -> bool {
-    use moonlight_common::stream::proto::video::depayloader::VideoDepayloaderError;
-    matches!(err, moonlight_common::error::Error::Other(inner) if inner.downcast_ref::<VideoDepayloaderError>().is_some())
+/// Turns the host's wrapping 32-bit millisecond RTP clock into time since the
+/// first packet.
+#[derive(Default)]
+struct AudioClock {
+    first: Option<u32>,
+}
+
+impl AudioClock {
+    fn packet(&mut self, packet: AudioPacket) -> HostAudio {
+        let first = *self.first.get_or_insert(packet.timestamp);
+        HostAudio {
+            data: packet.data,
+            timestamp: Duration::from_millis(u64::from(packet.timestamp.wrapping_sub(first))),
+        }
+    }
+}
+
+/// Stops the stream and waits for the client's goodbye to reach the host: a
+/// peer left to time out (about 5 s) can pause the same client's next
+/// session, and the app is quit only after. The feedback channel closes when
+/// the control task is done.
+async fn close(media: &mut Media) {
+    media.control.stop();
+    let said = tokio::time::timeout(Duration::from_secs(2), async {
+        while media.feedback.recv().await.is_some() {}
+    })
+    .await;
+    if said.is_err() {
+        warn!("the host didn't acknowledge the disconnect within 2 s");
+    }
 }
 
 #[cfg(test)]
@@ -590,15 +512,16 @@ mod tests {
 
     #[test]
     fn codec_choice_prefers_hevc_when_the_host_can() {
-        let both = ServerCodecModeSupport::H264 | ServerCodecModeSupport::HEVC;
-        assert_eq!(CodecChoice::Auto.pick(both).unwrap(), Codec::Hevc);
-        assert_eq!(CodecChoice::H264.pick(both).unwrap(), Codec::H264);
-        assert_eq!(CodecChoice::Hevc.pick(both).unwrap(), Codec::Hevc);
-        let old = ServerCodecModeSupport::H264;
-        assert_eq!(CodecChoice::Auto.pick(old).unwrap(), Codec::H264);
-        assert!(CodecChoice::Hevc.pick(old).is_err());
-        let none = ServerCodecModeSupport::empty();
-        assert!(CodecChoice::Auto.pick(none).is_err());
+        let both = [VideoCodec::Av1, VideoCodec::Hevc, VideoCodec::H264];
+        assert_eq!(CodecChoice::Auto.pick(&both).unwrap(), Codec::Hevc);
+        assert_eq!(CodecChoice::H264.pick(&both).unwrap(), Codec::H264);
+        assert_eq!(CodecChoice::Hevc.pick(&both).unwrap(), Codec::Hevc);
+        let old = [VideoCodec::H264];
+        assert_eq!(CodecChoice::Auto.pick(&old).unwrap(), Codec::H264);
+        assert!(CodecChoice::Hevc.pick(&old).is_err());
+        // The browser can't play AV1 from here.
+        assert!(CodecChoice::Auto.pick(&[VideoCodec::Av1]).is_err());
+        assert!(CodecChoice::Auto.pick(&[]).is_err());
     }
 
     #[test]
@@ -616,6 +539,52 @@ mod tests {
         assert!(text.contains("isn't paired"), "{text}");
         assert!(text.contains("client-cert.pem"), "{text}");
         assert!(text.contains("server-cert.pem"), "{text}");
+    }
+
+    #[test]
+    fn the_nodes_identity_files_load_as_the_node_writes_them() {
+        let dir = std::env::temp_dir().join(format!("cha-gateway-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("hosts/ABC")).unwrap();
+        let client = ClientIdentity::generate().unwrap();
+        let host = ClientIdentity::generate().unwrap();
+        // The node's earlier library wrote CRLF line ends.
+        let crlf = |pem: &str| pem.replace('\n', "\r\n");
+        std::fs::write(dir.join("client-cert.pem"), crlf(client.cert_pem())).unwrap();
+        std::fs::write(dir.join("client-key.pem"), crlf(client.key_pem())).unwrap();
+        std::fs::write(dir.join("hosts/ABC/server-cert.pem"), crlf(host.cert_pem())).unwrap();
+        let loaded = load_identity(&dir, "ABC").unwrap();
+        assert_eq!(loaded.client.fingerprint(), client.fingerprint());
+        HostClient::new("127.0.0.1", loaded.client)
+            .unwrap()
+            .with_server_cert(&loaded.server)
+            .expect("the host's certificate pins");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn host_addresses_get_their_brackets() {
+        assert_eq!(host_port("192.168.1.5", 47989), "192.168.1.5:47989");
+        assert_eq!(host_port("pc.lan", 47989), "pc.lan:47989");
+        assert_eq!(host_port("fe80::1", 47989), "[fe80::1]:47989");
+        assert_eq!(host_port("[fe80::1]", 47989), "[fe80::1]:47989");
+    }
+
+    #[test]
+    fn the_hosts_audio_clock_starts_at_its_first_packet_and_wraps() {
+        let packet = |timestamp| AudioPacket {
+            data: Bytes::from_static(b"x"),
+            timestamp,
+        };
+        let mut clock = AudioClock::default();
+        assert_eq!(clock.packet(packet(1000)).timestamp, Duration::ZERO);
+        assert_eq!(
+            clock.packet(packet(1005)).timestamp,
+            Duration::from_millis(5)
+        );
+        let mut late = AudioClock::default();
+        late.packet(packet(u32::MAX - 2));
+        assert_eq!(late.packet(packet(2)).timestamp, Duration::from_millis(5));
     }
 
     #[tokio::test]

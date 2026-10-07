@@ -35,6 +35,7 @@ pub use http::Timeouts;
 pub use identity::ClientIdentity;
 pub use info::HostInfo;
 pub use launch::{ColorSpace, Encrypt, StreamRequest};
+pub use pair::random_pin;
 
 const DEFAULT_HTTP_PORT: u16 = 47989;
 const DEFAULT_HTTPS_PORT: u16 = 47984;

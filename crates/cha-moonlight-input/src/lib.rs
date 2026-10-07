@@ -2,11 +2,11 @@
 //!
 //! Input arrives as [`cha_client::Input`] (keys by W3C `KeyboardEvent.code`,
 //! pointer in the DOM's units, gamepads in the Gamepad API's standard
-//! mapping); the events go to a Moonlight host's control stream. One
-//! [`InputState`] per viewing session: it knows what that session holds down
-//! (keys, mouse buttons, pads), so it can let go of it all when the session
-//! loses the controls or leaves. Otherwise a key held when the tab closes would
-//! stay held on the host.
+//! mapping); the events are [`cha_gamestream::InputEvent`]s for a Moonlight
+//! host's control stream. One [`InputState`] per viewing session: it knows what
+//! that session holds down (keys, mouse buttons, pads), so it can let go of it
+//! all when the session loses the controls or leaves. Otherwise a key held
+//! when the tab closes would stay held on the host.
 //!
 //! `cha-gateway` (the browser's input, over its own JSON) and
 //! `cha-client-gamestream` (the native player's) both map through here.
@@ -16,12 +16,9 @@ mod keys;
 use std::collections::{BTreeSet, HashSet};
 
 use cha_client::{Input, PadState};
-use moonlight_common::stream::control::{
-    ControllerButtons, ControllerCapabilities, ControllerType, KeyAction, KeyCode, KeyFlags,
-    KeyModifiers, MouseButton, MouseButtonAction,
-};
-pub use moonlight_common::stream::proto::control::input_batcher::ClientInputEvent;
+use cha_gamestream::input::{GamepadKind, MouseButton, buttons, capabilities, modifiers};
 
+pub use cha_gamestream::InputEvent;
 pub use keys::{Key, Modifier, lookup as key_lookup, modifier as key_modifier};
 
 /// Moonlight's wheel unit: 120 per notch (`WHEEL_DELTA`).
@@ -41,74 +38,74 @@ pub fn mouse_button(button: u8) -> Option<MouseButton> {
         0 => MouseButton::Left,
         1 => MouseButton::Middle,
         2 => MouseButton::Right,
-        3 => MouseButton::X1, // back
-        4 => MouseButton::X2, // forward
+        3 => MouseButton::Side,  // back
+        4 => MouseButton::Extra, // forward
         _ => return None,
     })
 }
 
-/// The standard mapping's buttons as Moonlight's bitmask. The triggers
-/// (6 and 7) are analog and travel separately.
-pub fn pad_buttons(b: &[f32]) -> ControllerButtons {
-    const MAP: [(usize, ControllerButtons); 15] = [
-        (0, ControllerButtons::A),
-        (1, ControllerButtons::B),
-        (2, ControllerButtons::X),
-        (3, ControllerButtons::Y),
-        (4, ControllerButtons::LB),
-        (5, ControllerButtons::RB),
-        (8, ControllerButtons::BACK),
-        (9, ControllerButtons::PLAY),
-        (10, ControllerButtons::LS_CLK),
-        (11, ControllerButtons::RS_CLK),
-        (12, ControllerButtons::UP),
-        (13, ControllerButtons::DOWN),
-        (14, ControllerButtons::LEFT),
-        (15, ControllerButtons::RIGHT),
-        (16, ControllerButtons::SPECIAL), // the guide button
+/// The standard mapping's buttons as Moonlight's bitmask ([`buttons`]). The
+/// triggers (6 and 7) are analog and travel separately.
+pub fn pad_buttons(b: &[f32]) -> u32 {
+    const MAP: [(usize, u32); 15] = [
+        (0, buttons::A),
+        (1, buttons::B),
+        (2, buttons::X),
+        (3, buttons::Y),
+        (4, buttons::LEFT_SHOULDER),
+        (5, buttons::RIGHT_SHOULDER),
+        (8, buttons::BACK),
+        (9, buttons::PLAY),
+        (10, buttons::LEFT_STICK),
+        (11, buttons::RIGHT_STICK),
+        (12, buttons::UP),
+        (13, buttons::DOWN),
+        (14, buttons::LEFT),
+        (15, buttons::RIGHT),
+        (16, buttons::SPECIAL), // the guide button
     ];
-    let mut buttons = ControllerButtons::empty();
+    let mut pressed = 0;
     for (index, flag) in MAP {
         if b.get(index).is_some_and(|v| *v > 0.5) {
-            buttons |= flag;
+            pressed |= flag;
         }
     }
-    buttons
+    pressed
 }
 
 /// What an Xbox pad can press, for the host to size its virtual pad.
-fn supported_buttons() -> ControllerButtons {
-    ControllerButtons::A
-        | ControllerButtons::B
-        | ControllerButtons::X
-        | ControllerButtons::Y
-        | ControllerButtons::UP
-        | ControllerButtons::DOWN
-        | ControllerButtons::LEFT
-        | ControllerButtons::RIGHT
-        | ControllerButtons::LB
-        | ControllerButtons::RB
-        | ControllerButtons::PLAY
-        | ControllerButtons::BACK
-        | ControllerButtons::LS_CLK
-        | ControllerButtons::RS_CLK
-        | ControllerButtons::SPECIAL
+const SUPPORTED_BUTTONS: u32 = buttons::A
+    | buttons::B
+    | buttons::X
+    | buttons::Y
+    | buttons::UP
+    | buttons::DOWN
+    | buttons::LEFT
+    | buttons::RIGHT
+    | buttons::LEFT_SHOULDER
+    | buttons::RIGHT_SHOULDER
+    | buttons::PLAY
+    | buttons::BACK
+    | buttons::LEFT_STICK
+    | buttons::RIGHT_STICK
+    | buttons::SPECIAL;
+
+/// A trigger's pull, 0..1, as the wire's byte.
+fn trigger(b: &[f32], index: usize) -> u8 {
+    let pull = b.get(index).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+    (pull * 255.0).round() as u8
 }
 
-/// A trigger's pull, 0..1.
-fn trigger(b: &[f32], index: usize) -> f32 {
-    b.get(index).copied().unwrap_or(0.0).clamp(0.0, 1.0)
-}
-
-/// A stick axis, -1..1.
-fn axis(a: &[f32], index: usize) -> f32 {
-    a.get(index).copied().unwrap_or(0.0).clamp(-1.0, 1.0)
+/// A stick axis, -1..1, as the wire's 16-bit value.
+fn axis(a: &[f32], index: usize) -> i16 {
+    let v = a.get(index).copied().unwrap_or(0.0).clamp(-1.0, 1.0);
+    (v * f32::from(i16::MAX)).round() as i16
 }
 
 /// One session's input to the host, and what it holds down.
 #[derive(Default)]
 pub struct InputState {
-    keys: BTreeSet<u16>,
+    keys: BTreeSet<u8>,
     buttons: HashSet<u8>,
     pads: BTreeSet<u8>,
     /// Pixels not yet sent as whole units (a trackpad's small deltas add up).
@@ -119,7 +116,7 @@ pub struct InputState {
 impl InputState {
     /// The host's events for one input from the player; `width` and `height`
     /// are the stream's size, which absolute positions refer to.
-    pub fn apply(&mut self, input: &Input, width: u32, height: u32) -> Vec<ClientInputEvent> {
+    pub fn apply(&mut self, input: &Input, width: u32, height: u32) -> Vec<InputEvent> {
         match input {
             Input::MouseMove { x, y } => {
                 let w = width.clamp(1, i16::MAX as u32);
@@ -127,23 +124,23 @@ impl InputState {
                 let at = |v: f32, size: u32| {
                     (f64::from(v).clamp(0.0, 1.0) * f64::from(size - 1)).round() as i16
                 };
-                vec![ClientInputEvent::MouseMoveAbsolute {
+                vec![InputEvent::MouseMoveAbsolute {
                     x: at(*x, w),
                     y: at(*y, h),
-                    reference_width: w as i16,
-                    reference_height: h as i16,
+                    width: w as i16,
+                    height: h as i16,
                 }]
             }
             Input::MouseMotion { dx, dy } => {
                 self.rel.0 += f64::from(*dx);
                 self.rel.1 += f64::from(*dy);
-                let (delta_x, rest_x) = whole(self.rel.0);
-                let (delta_y, rest_y) = whole(self.rel.1);
+                let (dx, rest_x) = whole(self.rel.0);
+                let (dy, rest_y) = whole(self.rel.1);
                 self.rel = (rest_x, rest_y);
-                if delta_x == 0 && delta_y == 0 {
+                if dx == 0 && dy == 0 {
                     return Vec::new();
                 }
-                vec![ClientInputEvent::MouseMoveRelative { delta_x, delta_y }]
+                vec![InputEvent::MouseMoveRelative { dx, dy }]
             }
             Input::MouseButton { button: b, down } => {
                 let Some(button) = mouse_button(*b) else {
@@ -159,13 +156,9 @@ impl InputState {
                 if was_down == *down {
                     return Vec::new();
                 }
-                vec![ClientInputEvent::MouseButton {
-                    action: if *down {
-                        MouseButtonAction::Press
-                    } else {
-                        MouseButtonAction::Release
-                    },
+                vec![InputEvent::MouseButton {
                     button,
+                    down: *down,
                 }]
             }
             Input::Wheel { dx, dy } => {
@@ -173,15 +166,15 @@ impl InputState {
                 // positive. Horizontal is right for positive in both.
                 self.wheel.0 += f64::from(*dx) * WHEEL_NOTCH / PAGE_PIXELS_PER_NOTCH;
                 self.wheel.1 += -f64::from(*dy) * WHEEL_NOTCH / PAGE_PIXELS_PER_NOTCH;
-                let (scroll_x, rest_x) = whole(self.wheel.0);
-                let (scroll_y, rest_y) = whole(self.wheel.1);
+                let (amount_x, rest_x) = whole(self.wheel.0);
+                let (amount_y, rest_y) = whole(self.wheel.1);
                 self.wheel = (rest_x, rest_y);
                 let mut events = Vec::new();
-                if scroll_y != 0 {
-                    events.push(ClientInputEvent::MouseScrollVertical { scroll_y });
+                if amount_y != 0 {
+                    events.push(InputEvent::ScrollVertical { amount: amount_y });
                 }
-                if scroll_x != 0 {
-                    events.push(ClientInputEvent::MouseScrollHorizontal { scroll_x });
+                if amount_x != 0 {
+                    events.push(InputEvent::ScrollHorizontal { amount: amount_x });
                 }
                 events
             }
@@ -189,108 +182,129 @@ impl InputState {
                 let Some(key) = keys::lookup(code) else {
                     return Vec::new();
                 };
+                // Every code in the table is a one-byte virtual key.
+                let Ok(vk) = u8::try_from(key.vk) else {
+                    return Vec::new();
+                };
                 if *down {
-                    self.keys.insert(key.vk);
+                    self.keys.insert(vk);
                 } else {
-                    self.keys.remove(&key.vk);
+                    self.keys.remove(&vk);
                 }
-                vec![self.key_event(key.vk, key.extended, *down)]
+                vec![self.key_event(vk, key.extended, *down)]
             }
             Input::Pad { index, pad } => self.pad(*index, pad),
             Input::PadGone { index } => self.pad_gone(*index),
         }
     }
 
-    /// The Moonlight keyboard event. The key code carries the 0x8000 marker
-    /// every Moonlight client sets on its (normalized) virtual-key codes.
-    fn key_event(&self, vk: u16, extended: bool, down: bool) -> ClientInputEvent {
-        let mut modifiers = KeyModifiers::empty();
+    /// The Moonlight keyboard event, carrying the modifiers held now.
+    fn key_event(&self, vk: u8, extended: bool, down: bool) -> InputEvent {
+        let mut held_modifiers = 0;
         for held in &self.keys {
-            match keys::modifier(*held) {
-                Some(Modifier::Shift) => modifiers |= KeyModifiers::SHIFT,
-                Some(Modifier::Ctrl) => modifiers |= KeyModifiers::CTRL,
-                Some(Modifier::Alt) => modifiers |= KeyModifiers::ALT,
-                Some(Modifier::Meta) => modifiers |= KeyModifiers::META,
+            match keys::modifier(u16::from(*held)) {
+                Some(Modifier::Shift) => held_modifiers |= modifiers::SHIFT,
+                Some(Modifier::Ctrl) => held_modifiers |= modifiers::CTRL,
+                Some(Modifier::Alt) => held_modifiers |= modifiers::ALT,
+                Some(Modifier::Meta) => held_modifiers |= modifiers::META,
                 None => {}
             }
         }
         if extended {
-            modifiers |= KeyModifiers::EXTENDED;
+            held_modifiers |= modifiers::EXTENDED;
         }
-        ClientInputEvent::Keyboard {
-            action: if down { KeyAction::Down } else { KeyAction::Up },
-            flags: KeyFlags::empty(),
-            key_code: KeyCode((0x8000 | vk) as i16),
-            modifiers,
-        }
-    }
-
-    fn pad_gone(&mut self, index: u8) -> Vec<ClientInputEvent> {
-        if self.pads.remove(&index) {
-            vec![ClientInputEvent::ControllerDisconnect {
-                controller_number: index,
-            }]
-        } else {
-            Vec::new()
+        InputEvent::Key {
+            down,
+            vk,
+            modifiers: held_modifiers,
         }
     }
 
-    fn pad(&mut self, index: u8, pad: &PadState) -> Vec<ClientInputEvent> {
+    /// The pads connected, a bit each: what every pad state tells the host.
+    fn pad_mask(&self) -> u16 {
+        self.pads.iter().fold(0, |mask, pad| mask | 1 << pad)
+    }
+
+    /// A pad letting go of everything and leaving the mask: how a client
+    /// tells the host a pad is gone.
+    fn pad_leaves(&mut self, index: u8) -> Option<InputEvent> {
+        if !self.pads.remove(&index) {
+            return None;
+        }
+        Some(InputEvent::GamepadState {
+            pad: u16::from(index),
+            active_mask: self.pad_mask(),
+            buttons: 0,
+            left_trigger: 0,
+            right_trigger: 0,
+            left_stick: (0, 0),
+            right_stick: (0, 0),
+        })
+    }
+
+    fn pad_gone(&mut self, index: u8) -> Vec<InputEvent> {
+        self.pad_leaves(index).into_iter().collect()
+    }
+
+    fn pad(&mut self, index: u8, pad: &PadState) -> Vec<InputEvent> {
         if index >= MAX_PADS {
             return Vec::new();
         }
-        let controller_number = index;
         let mut events = Vec::new();
         if self.pads.insert(index) {
-            events.push(ClientInputEvent::ControllerConnect {
-                controller_number,
-                ty: ControllerType::Xbox,
-                capabilities: ControllerCapabilities::ANALOG_TRIGGERS
-                    | ControllerCapabilities::RUMBLE,
-                supported_buttons: supported_buttons(),
+            events.push(InputEvent::GamepadArrival {
+                pad: index,
+                kind: GamepadKind::Xbox,
+                capabilities: capabilities::ANALOG_TRIGGERS | capabilities::RUMBLE,
+                supported_buttons: SUPPORTED_BUTTONS,
             });
         }
-        events.push(ClientInputEvent::ControllerState {
-            controller_number,
-            pressed_buttons: pad_buttons(&pad.buttons),
+        events.push(InputEvent::GamepadState {
+            pad: u16::from(index),
+            active_mask: self.pad_mask(),
+            buttons: pad_buttons(&pad.buttons),
             left_trigger: trigger(&pad.buttons, 6),
             right_trigger: trigger(&pad.buttons, 7),
-            left_stick_x: axis(&pad.axes, 0),
             // The Gamepad API's Y is down for positive; Moonlight's is up.
-            left_stick_y: -axis(&pad.axes, 1),
-            right_stick_x: axis(&pad.axes, 2),
-            right_stick_y: -axis(&pad.axes, 3),
+            left_stick: (axis(&pad.axes, 0), axis(&pad.axes, 1).saturating_neg()),
+            right_stick: (axis(&pad.axes, 2), axis(&pad.axes, 3).saturating_neg()),
         });
         events
     }
 
     /// Lets go of everything held: keys up, buttons up, pads disconnected.
-    pub fn release_all(&mut self) -> Vec<ClientInputEvent> {
+    pub fn release_all(&mut self) -> Vec<InputEvent> {
         let mut events = Vec::new();
-        let held: Vec<u16> = self.keys.iter().copied().collect();
+        let held: Vec<u8> = self.keys.iter().copied().collect();
         // Modifiers last, so the others go up with them still described.
-        for vk in held.iter().filter(|vk| keys::modifier(**vk).is_none()) {
+        for vk in held
+            .iter()
+            .filter(|vk| keys::modifier(u16::from(**vk)).is_none())
+        {
             self.keys.remove(vk);
             events.push(self.key_event(*vk, false, false));
         }
-        for vk in held.iter().filter(|vk| keys::modifier(**vk).is_some()) {
+        for vk in held
+            .iter()
+            .filter(|vk| keys::modifier(u16::from(**vk)).is_some())
+        {
             self.keys.remove(vk);
             events.push(self.key_event(*vk, false, false));
         }
-        let mut buttons: Vec<u8> = self.buttons.drain().collect();
-        buttons.sort_unstable();
-        for b in buttons {
+        let mut pressed: Vec<u8> = self.buttons.drain().collect();
+        pressed.sort_unstable();
+        for b in pressed {
             if let Some(button) = mouse_button(b) {
-                events.push(ClientInputEvent::MouseButton {
-                    action: MouseButtonAction::Release,
+                events.push(InputEvent::MouseButton {
                     button,
+                    down: false,
                 });
             }
         }
-        for i in std::mem::take(&mut self.pads) {
-            events.push(ClientInputEvent::ControllerDisconnect {
-                controller_number: i,
-            });
+        // One at a time, so each state's mask drops its own pad.
+        let pads: Vec<u8> = self.pads.iter().copied().collect();
+        for i in pads {
+            events.extend(self.pad_leaves(i));
         }
         events
     }
@@ -339,7 +353,7 @@ mod tests {
         }
     }
 
-    fn apply(state: &mut InputState, input: Input) -> Vec<ClientInputEvent> {
+    fn apply(state: &mut InputState, input: Input) -> Vec<InputEvent> {
         state.apply(&input, W, H)
     }
 
@@ -348,8 +362,8 @@ mod tests {
         assert_eq!(mouse_button(0), Some(MouseButton::Left));
         assert_eq!(mouse_button(1), Some(MouseButton::Middle));
         assert_eq!(mouse_button(2), Some(MouseButton::Right));
-        assert_eq!(mouse_button(3), Some(MouseButton::X1));
-        assert_eq!(mouse_button(4), Some(MouseButton::X2));
+        assert_eq!(mouse_button(3), Some(MouseButton::Side));
+        assert_eq!(mouse_button(4), Some(MouseButton::Extra));
         assert_eq!(mouse_button(5), None);
     }
 
@@ -359,8 +373,8 @@ mod tests {
         let down = apply(&mut s, button(2, true));
         assert!(matches!(
             down[..],
-            [ClientInputEvent::MouseButton {
-                action: MouseButtonAction::Press,
+            [InputEvent::MouseButton {
+                down: true,
                 button: MouseButton::Right
             }]
         ));
@@ -369,8 +383,8 @@ mod tests {
         let up = apply(&mut s, button(2, false));
         assert!(matches!(
             up[..],
-            [ClientInputEvent::MouseButton {
-                action: MouseButtonAction::Release,
+            [InputEvent::MouseButton {
+                down: false,
                 button: MouseButton::Right
             }]
         ));
@@ -385,18 +399,18 @@ mod tests {
         let events = apply(&mut s, Input::MouseMove { x: 0.5, y: 1.0 });
         assert!(matches!(
             events[..],
-            [ClientInputEvent::MouseMoveAbsolute {
+            [InputEvent::MouseMoveAbsolute {
                 x: 1280,
                 y: 1439,
-                reference_width: 2560,
-                reference_height: 1440
+                width: 2560,
+                height: 1440
             }]
         ));
         // Out of range clamps to the picture.
         let events = apply(&mut s, Input::MouseMove { x: -3.0, y: 9.0 });
         assert!(matches!(
             events[..],
-            [ClientInputEvent::MouseMoveAbsolute { x: 0, y: 1439, .. }]
+            [InputEvent::MouseMoveAbsolute { x: 0, y: 1439, .. }]
         ));
     }
 
@@ -407,10 +421,7 @@ mod tests {
         let events = apply(&mut s, Input::MouseMotion { dx: 0.7, dy: -3.2 });
         assert!(matches!(
             events[..],
-            [ClientInputEvent::MouseMoveRelative {
-                delta_x: 1,
-                delta_y: -2
-            }]
+            [InputEvent::MouseMoveRelative { dx: 1, dy: -2 }]
         ));
     }
 
@@ -422,17 +433,17 @@ mod tests {
         let down = apply(&mut s, wheel(0.0, 100.0));
         assert!(matches!(
             down[..],
-            [ClientInputEvent::MouseScrollVertical { scroll_y: -120 }]
+            [InputEvent::ScrollVertical { amount: -120 }]
         ));
         let up = apply(&mut s, wheel(0.0, -100.0));
         assert!(matches!(
             up[..],
-            [ClientInputEvent::MouseScrollVertical { scroll_y: 120 }]
+            [InputEvent::ScrollVertical { amount: 120 }]
         ));
         let right = apply(&mut s, wheel(50.0, 0.0));
         assert!(matches!(
             right[..],
-            [ClientInputEvent::MouseScrollHorizontal { scroll_x: 60 }]
+            [InputEvent::ScrollHorizontal { amount: 60 }]
         ));
         // Trackpad crumbs add up instead of vanishing.
         for _ in 0..2 {
@@ -441,7 +452,7 @@ mod tests {
         let crumbs = apply(&mut s, wheel(0.0, -0.3));
         assert!(matches!(
             crumbs[..],
-            [ClientInputEvent::MouseScrollVertical { scroll_y: 1 }]
+            [InputEvent::ScrollVertical { amount: 1 }]
         ));
     }
 
@@ -451,38 +462,36 @@ mod tests {
         let shift = apply(&mut s, key("ShiftLeft", true));
         assert!(matches!(
             shift[..],
-            [ClientInputEvent::Keyboard {
-                action: KeyAction::Down,
-                key_code: KeyCode(k),
-                modifiers,
-                ..
-            }] if k == 0x80A0_u16 as i16 && modifiers == KeyModifiers::SHIFT
+            [InputEvent::Key {
+                down: true,
+                vk: 0xA0,
+                modifiers: modifiers::SHIFT
+            }]
         ));
         let a = apply(&mut s, key("KeyA", true));
         assert!(matches!(
             a[..],
-            [ClientInputEvent::Keyboard {
-                action: KeyAction::Down,
-                key_code: KeyCode(k),
-                modifiers,
-                ..
-            }] if k == 0x8041_u16 as i16 && modifiers == KeyModifiers::SHIFT
+            [InputEvent::Key {
+                down: true,
+                vk: 0x41,
+                modifiers: modifiers::SHIFT
+            }]
         ));
         apply(&mut s, key("ControlRight", true));
         let up = apply(&mut s, key("KeyA", false));
         assert!(matches!(
             up[..],
-            [ClientInputEvent::Keyboard {
-                action: KeyAction::Up,
+            [InputEvent::Key {
+                down: false,
                 modifiers,
                 ..
-            }] if modifiers == KeyModifiers::SHIFT | KeyModifiers::CTRL
+            }] if modifiers == modifiers::SHIFT | modifiers::CTRL
         ));
         // Releasing the modifier clears its flag on its own event.
         let up = apply(&mut s, key("ShiftLeft", false));
         assert!(matches!(
             up[..],
-            [ClientInputEvent::Keyboard { modifiers, .. }] if modifiers == KeyModifiers::CTRL
+            [InputEvent::Key { modifiers, .. }] if modifiers == modifiers::CTRL
         ));
         // A key with no Windows code is dropped.
         assert!(apply(&mut s, key("Unidentified", true)).is_empty());
@@ -494,30 +503,39 @@ mod tests {
         let events = apply(&mut s, key("NumpadEnter", true));
         assert!(matches!(
             events[..],
-            [ClientInputEvent::Keyboard { modifiers, .. }] if modifiers == KeyModifiers::EXTENDED
+            [InputEvent::Key { vk: 0x0D, modifiers, .. }] if modifiers == modifiers::EXTENDED
+        ));
+        let events = apply(&mut s, key("Enter", true));
+        assert!(matches!(
+            events[..],
+            [InputEvent::Key {
+                vk: 0x0D,
+                modifiers: 0,
+                ..
+            }]
         ));
     }
 
     #[test]
     fn pad_buttons_follow_the_standard_mapping() {
         let mut b = vec![0.0; 17];
-        assert_eq!(pad_buttons(&b), ControllerButtons::empty());
+        assert_eq!(pad_buttons(&b), 0);
         for (index, flag) in [
-            (0, ControllerButtons::A),
-            (1, ControllerButtons::B),
-            (2, ControllerButtons::X),
-            (3, ControllerButtons::Y),
-            (4, ControllerButtons::LB),
-            (5, ControllerButtons::RB),
-            (8, ControllerButtons::BACK),
-            (9, ControllerButtons::PLAY),
-            (10, ControllerButtons::LS_CLK),
-            (11, ControllerButtons::RS_CLK),
-            (12, ControllerButtons::UP),
-            (13, ControllerButtons::DOWN),
-            (14, ControllerButtons::LEFT),
-            (15, ControllerButtons::RIGHT),
-            (16, ControllerButtons::SPECIAL),
+            (0, buttons::A),
+            (1, buttons::B),
+            (2, buttons::X),
+            (3, buttons::Y),
+            (4, buttons::LEFT_SHOULDER),
+            (5, buttons::RIGHT_SHOULDER),
+            (8, buttons::BACK),
+            (9, buttons::PLAY),
+            (10, buttons::LEFT_STICK),
+            (11, buttons::RIGHT_STICK),
+            (12, buttons::UP),
+            (13, buttons::DOWN),
+            (14, buttons::LEFT),
+            (15, buttons::RIGHT),
+            (16, buttons::SPECIAL),
         ] {
             b.fill(0.0);
             b[index] = 1.0;
@@ -527,14 +545,14 @@ mod tests {
         // The triggers are not buttons.
         b[6] = 1.0;
         b[7] = 1.0;
-        assert_eq!(pad_buttons(&b), ControllerButtons::empty());
+        assert_eq!(pad_buttons(&b), 0);
         // Several at once, and a short array.
         b[0] = 1.0;
         b[3] = 1.0;
-        assert_eq!(pad_buttons(&b), ControllerButtons::A | ControllerButtons::Y);
-        assert_eq!(pad_buttons(&[1.0]), ControllerButtons::A);
+        assert_eq!(pad_buttons(&b), buttons::A | buttons::Y);
+        assert_eq!(pad_buttons(&[1.0]), buttons::A);
         // Half-pressed counts as pressed only past the middle.
-        assert_eq!(pad_buttons(&[0.4]), ControllerButtons::empty());
+        assert_eq!(pad_buttons(&[0.4]), 0);
     }
 
     #[test]
@@ -551,70 +569,78 @@ mod tests {
         assert_eq!(first.len(), 2);
         assert!(matches!(
             first[0],
-            ClientInputEvent::ControllerConnect {
-                controller_number: 1,
-                ty: ControllerType::Xbox,
+            InputEvent::GamepadArrival {
+                pad: 1,
+                kind: GamepadKind::Xbox,
                 ..
             }
         ));
-        let ClientInputEvent::ControllerState {
-            controller_number,
-            pressed_buttons,
+        let InputEvent::GamepadState {
+            pad: number,
+            active_mask,
+            buttons: pressed,
             left_trigger,
             right_trigger,
-            left_stick_x,
-            left_stick_y,
-            right_stick_x,
-            right_stick_y,
+            left_stick,
+            right_stick,
         } = first[1].clone()
         else {
-            panic!("a state event follows the connect");
+            panic!("a state event follows the arrival");
         };
-        assert_eq!(controller_number, 1);
-        assert_eq!(pressed_buttons, ControllerButtons::A);
-        assert_eq!(left_trigger, 0.5);
-        assert_eq!(right_trigger, 1.0);
-        assert_eq!(left_stick_x, 0.25);
+        assert_eq!(number, 1);
+        assert_eq!(active_mask, 0b10);
+        assert_eq!(pressed, buttons::A);
+        assert_eq!(left_trigger, 128);
+        assert_eq!(right_trigger, 255);
+        assert_eq!(left_stick.0, 8192);
         // Up on the page is negative; Moonlight's up is positive.
-        assert_eq!(left_stick_y, 1.0);
-        assert_eq!(right_stick_x, -0.5);
-        assert_eq!(right_stick_y, -1.0);
+        assert_eq!(left_stick.1, i16::MAX);
+        assert_eq!(right_stick, (-16384, -i16::MAX));
 
         // The second report is a state alone.
         let second = apply(&mut s, pad(1, &[], &[]));
-        assert!(matches!(
-            second[..],
-            [ClientInputEvent::ControllerState { .. }]
-        ));
+        assert!(matches!(second[..], [InputEvent::GamepadState { .. }]));
         // Out-of-range axes clamp.
         let wild = apply(&mut s, pad(1, &[], &[7.0, -7.0]));
         assert!(matches!(
             wild[..],
-            [ClientInputEvent::ControllerState {
-                left_stick_x: 1.0,
-                left_stick_y: 1.0,
+            [InputEvent::GamepadState {
+                left_stick: (32767, 32767),
                 ..
             }]
         ));
     }
 
     #[test]
-    fn gone_pads_disconnect_and_can_come_back() {
+    fn gone_pads_leave_the_mask_and_can_come_back() {
         let mut s = InputState::default();
         assert!(apply(&mut s, Input::PadGone { index: 0 }).is_empty());
         apply(&mut s, pad(0, &[], &[]));
+        let second = apply(&mut s, pad(2, &[], &[]));
+        assert!(matches!(
+            second[1],
+            InputEvent::GamepadState {
+                pad: 2,
+                active_mask: 0b101,
+                ..
+            }
+        ));
+        // Pad 0 goes: a state of nothing held, with its bit cleared.
         let gone = apply(&mut s, Input::PadGone { index: 0 });
         assert!(matches!(
             gone[..],
-            [ClientInputEvent::ControllerDisconnect {
-                controller_number: 0
+            [InputEvent::GamepadState {
+                pad: 0,
+                active_mask: 0b100,
+                buttons: 0,
+                left_trigger: 0,
+                right_trigger: 0,
+                left_stick: (0, 0),
+                right_stick: (0, 0),
             }]
         ));
         let back = apply(&mut s, pad(0, &[], &[]));
-        assert!(matches!(
-            back[0],
-            ClientInputEvent::ControllerConnect { .. }
-        ));
+        assert!(matches!(back[0], InputEvent::GamepadArrival { pad: 0, .. }));
         // A slot past the limit is ignored.
         assert!(apply(&mut s, pad(40, &[], &[])).is_empty());
     }
@@ -626,35 +652,48 @@ mod tests {
         apply(&mut s, key("KeyW", true));
         apply(&mut s, button(0, true));
         apply(&mut s, pad(2, &[], &[]));
+        apply(&mut s, pad(3, &[], &[]));
         let events = s.release_all();
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 5);
         // The ordinary key goes up before the modifier it was pressed under.
         assert!(matches!(
             events[0],
-            ClientInputEvent::Keyboard {
-                action: KeyAction::Up,
-                key_code: KeyCode(k),
+            InputEvent::Key {
+                down: false,
+                vk: 0x57,
                 ..
-            } if k == 0x8057_u16 as i16
+            }
         ));
         assert!(matches!(
             events[1],
-            ClientInputEvent::Keyboard {
-                action: KeyAction::Up,
+            InputEvent::Key {
+                down: false,
+                vk: 0xA0,
                 ..
             }
         ));
         assert!(matches!(
             events[2],
-            ClientInputEvent::MouseButton {
-                action: MouseButtonAction::Release,
-                button: MouseButton::Left
+            InputEvent::MouseButton {
+                button: MouseButton::Left,
+                down: false
+            }
+        ));
+        // Each pad leaves in turn, the mask shrinking as they go.
+        assert!(matches!(
+            events[3],
+            InputEvent::GamepadState {
+                pad: 2,
+                active_mask: 0b1000,
+                ..
             }
         ));
         assert!(matches!(
-            events[3],
-            ClientInputEvent::ControllerDisconnect {
-                controller_number: 2
+            events[4],
+            InputEvent::GamepadState {
+                pad: 3,
+                active_mask: 0,
+                ..
             }
         ));
         assert!(s.release_all().is_empty());

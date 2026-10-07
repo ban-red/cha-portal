@@ -2,6 +2,7 @@
 //! five-phase pairing that Moonlight clients and Sunshine implement, for
 //! hosts of generation 7 and up (SHA-256). The host's half is `front::pairing`; the maths is shared.
 
+use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use rustls::pki_types::PrivateKeyDer;
 use rustls::pki_types::pem::PemObject;
 use sha2::{Digest, Sha256};
@@ -9,6 +10,24 @@ use sha2::{Digest, Sha256};
 use super::http::Pinned;
 use super::{ClientError, HostClient, PairingError};
 use crate::front::pairing::crypto::{self, PairError, RsaSigner};
+
+/// Four random digits, for [`HostClient::pair`]: what the user types into the
+/// host, as Moonlight clients show.
+pub fn random_pin() -> String {
+    // Whole multiples of 10000 only, so every PIN is as likely as another.
+    const LIMIT: u32 = u32::MAX / 10_000 * 10_000;
+    let rng = SystemRandom::new();
+    loop {
+        let mut bytes = [0u8; 4];
+        if rng.fill(&mut bytes).is_err() {
+            continue;
+        }
+        let n = u32::from_le_bytes(bytes);
+        if n < LIMIT {
+            return format!("{:04}", n % 10_000);
+        }
+    }
+}
 
 fn crypto_err(stage: u8, e: PairError) -> ClientError {
     ClientError::Malformed(format!("pairing step {stage}: {e}"))
@@ -223,5 +242,22 @@ impl HostClient {
         };
         self.set_pinned(None);
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pin_is_four_digits() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let pin = random_pin();
+            assert_eq!(pin.len(), 4, "{pin}");
+            assert!(pin.bytes().all(|b| b.is_ascii_digit()), "{pin}");
+            seen.insert(pin);
+        }
+        assert!(seen.len() > 100, "the PINs vary");
     }
 }

@@ -9,6 +9,4 @@ publish = false
 
 [dependencies]
 cha-client = { path = "../cha-client" }
-# GPL-3.0-or-later, combinable with our AGPL-3.0-or-later (both licenses' §13).
-# Pinned as in cha-gateway: the crate is young and its API moves.
-moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-rust", rev = "104ddf11f5dabe414c11e87e607fec7976e8bbb1", default-features = false, features = ["tokio-hyper", "rustcrypto"] }
+cha-gamestream = { path = "../cha-gamestream" }

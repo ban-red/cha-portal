@@ -11,21 +11,15 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use cha_gamestream::VideoCodec;
+use cha_gamestream::client::front::{ClientIdentity, HostClient, random_pin};
 use cha_wire::{MoonlightApp, MoonlightHost};
 use futures_util::future::{BoxFuture, join_all};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
-use moonlight_common::crypto::rustcrypto::RustCryptoBackend;
-use moonlight_common::high::tokio::MoonlightHost as Client;
-use moonlight_common::http::client::tokio_hyper::TokioHyperClient;
-use moonlight_common::http::pair::{PairPin, PairingCryptoBackend};
-use moonlight_common::http::{ClientIdentifier, ClientSecret, ServerIdentifier};
-use moonlight_common::stream::video::ServerCodecModeSupport;
-use pem::Pem;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{debug, info, warn};
 
@@ -80,11 +74,16 @@ pub trait Probe: Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub struct Store {
     dir: PathBuf,
+    /// Two first uses at once must not make two identities.
+    identity: Arc<Mutex<()>>,
 }
 
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            identity: Arc::default(),
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -106,8 +105,8 @@ impl Store {
             .with_context(|| format!("creating {}", path.display()))
     }
 
-    /// Writes `pem` to `path` owner-only (0600), replacing what is there.
-    fn write_private(path: &Path, pem: &Pem) -> Result<()> {
+    /// Writes `text` to `path` owner-only (0600), replacing what is there.
+    fn write_private(path: &Path, text: &str) -> Result<()> {
         use std::io::Write;
         let tmp = path.with_extension("tmp");
         let mut options = std::fs::OpenOptions::new();
@@ -117,39 +116,43 @@ impl Store {
         let mut file = options
             .open(&tmp)
             .with_context(|| format!("writing {}", tmp.display()))?;
-        file.write_all(pem.to_string().as_bytes())?;
+        file.write_all(text.as_bytes())?;
         file.sync_all()?;
         std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
     }
 
-    fn read_pem(path: &Path) -> Result<Pem> {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Pem::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    fn read_text(path: &Path) -> Result<String> {
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
     }
 
-    /// This node's client identity, generated the first time it's needed.
-    pub fn client_identity(&self) -> Result<(ClientIdentifier, ClientSecret)> {
+    /// This node's client identity, generated the first time it's needed
+    /// (RSA key generation: not for an async thread, see [`Self::identity`]).
+    pub fn client_identity(&self) -> Result<ClientIdentity> {
+        let _once = self.identity.lock().expect("identity lock");
         let cert = self.dir.join(CLIENT_CERT);
         let key = self.dir.join(CLIENT_KEY);
         if cert.exists() && key.exists() {
-            return Ok((
-                ClientIdentifier::from_pem(Self::read_pem(&cert)?),
-                ClientSecret::from_pem(Self::read_pem(&key)?),
-            ));
+            return ClientIdentity::from_pem(&Self::read_text(&cert)?, &Self::read_text(&key)?)
+                .with_context(|| format!("reading {} and {}", cert.display(), key.display()));
         }
         Self::make_dir(&self.dir)?;
-        let (client, secret) = RustCryptoBackend
-            .generate_client_identity()
-            .map_err(|e| anyhow!("generating the Moonlight client identity: {e:?}"))?;
-        Self::write_private(&key, &secret.to_pem())?;
-        Self::write_private(&cert, &client.to_pem())?;
+        let identity = ClientIdentity::generate()
+            .map_err(|e| anyhow!("generating the Moonlight client identity: {e}"))?;
+        // The key first: a certificate without its key is never read back.
+        Self::write_private(&key, identity.key_pem())?;
+        Self::write_private(&cert, identity.cert_pem())?;
         info!(dir = %self.dir.display(), "made this node's Moonlight client identity");
-        Ok((client, secret))
+        Ok(identity)
     }
 
-    /// The certificate a paired host showed, if this node is paired with it.
-    pub fn server_identity(&self, unique_id: &str) -> Result<Option<ServerIdentifier>> {
+    /// [`Self::client_identity`] on a thread that may block.
+    async fn identity(&self) -> Result<ClientIdentity> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.client_identity()).await?
+    }
+
+    /// The certificate (PEM) a paired host showed, if this node is paired with it.
+    pub fn server_cert(&self, unique_id: &str) -> Result<Option<String>> {
         if !valid_unique_id(unique_id) {
             bail!("{unique_id:?} isn't a Moonlight host id");
         }
@@ -157,16 +160,16 @@ impl Store {
         if !path.exists() {
             return Ok(None);
         }
-        Ok(Some(ServerIdentifier::from_pem(Self::read_pem(&path)?)))
+        Self::read_text(&path).map(Some)
     }
 
-    pub fn save_server(&self, unique_id: &str, server: &ServerIdentifier) -> Result<()> {
+    pub fn save_server(&self, unique_id: &str, pem: &str) -> Result<()> {
         if !valid_unique_id(unique_id) {
             bail!("{unique_id:?} isn't a Moonlight host id");
         }
         let dir = self.host_dir(unique_id);
         Self::make_dir(&dir)?;
-        Self::write_private(&dir.join(SERVER_CERT), &server.to_pem())
+        Self::write_private(&dir.join(SERVER_CERT), pem)
     }
 
     /// How many hosts this node has a certificate for.
@@ -187,24 +190,38 @@ impl Store {
         address: IpAddr,
         port: u16,
         unique_id: Option<&str>,
-    ) -> Result<Client<TokioHyperClient>> {
-        let client = Client::<TokioHyperClient>::new(
-            address.to_string(),
-            port,
-            Some(CLIENT_NAME.to_string()),
-        )
-        .map_err(|e| anyhow!("creating the Moonlight client: {e:?}"))?;
+    ) -> Result<HostClient> {
+        let identity = self.identity().await?;
+        let address = match address {
+            IpAddr::V4(v4) => format!("{v4}:{port}"),
+            IpAddr::V6(v6) => format!("[{v6}]:{port}"),
+        };
+        let mut client = HostClient::new(&address, identity)
+            .map_err(|e| anyhow!("creating the Moonlight client: {e}"))?
+            .with_unique_id(CLIENT_NAME);
         if let Some(id) = unique_id
-            && let Some(server) = self.server_identity(id)?
+            && let Some(pem) = self.server_cert(id)?
         {
-            let (cert, key) = self.client_identity()?;
-            client
-                .set_identity(cert, key, server)
-                .await
-                .map_err(|e| anyhow!("{e:?}"))?;
+            client = client
+                .with_server_cert(&pem)
+                .map_err(|e| anyhow!("the host's saved certificate isn't usable: {e}"))?;
         }
         Ok(client)
     }
+}
+
+/// A host's `uniqueid` as we keep it: upper-case hex without the dashes of a
+/// UUID.
+fn host_id(unique_id: &str) -> Result<String> {
+    let id: String = unique_id
+        .chars()
+        .filter(|c| *c != '-')
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if !valid_unique_id(&id) {
+        bail!("the host's id {unique_id:?} isn't one we can keep");
+    }
+    Ok(id)
 }
 
 /// Reads hosts over HTTP, and over HTTPS where this node is paired.
@@ -225,41 +242,41 @@ impl Probe for HttpProbe {
             let info = plain
                 .server_info()
                 .await
-                .map_err(|e| anyhow!("reading /serverinfo: {e:?}"))?;
-            // The host's `uniqueid` as we keep it: 32 uppercase hex digits.
-            let unique_id = info.unique_id.simple().to_string().to_uppercase();
+                .map_err(|e| anyhow!("reading /serverinfo: {e}"))?;
+            let unique_id = host_id(&info.unique_id)?;
             // Whether this node is paired is only visible over HTTPS with its
             // certificate, so a host we hold a certificate for is asked that way.
-            let (info, paired) = match self.store.client(address, port, Some(&unique_id)).await {
-                Ok(secure) => match secure.server_info().await {
-                    Ok(secure_info) if self.store.server_identity(&unique_id)?.is_some() => {
-                        let paired = secure_info.paired;
-                        (secure_info, paired)
+            let (info, paired) = if self.store.server_cert(&unique_id)?.is_some() {
+                match self.store.client(address, port, Some(&unique_id)).await {
+                    Ok(secure) => match secure.server_info().await {
+                        Ok(secure_info) => {
+                            let paired = secure_info.paired;
+                            (secure_info, paired)
+                        }
+                        Err(_) => (info, false),
+                    },
+                    Err(err) => {
+                        debug!(%unique_id, "not paired (or the host dropped us): {err:#}");
+                        (info, false)
                     }
-                    _ => (info, false),
-                },
-                Err(err) => {
-                    debug!(%unique_id, "not paired (or the host dropped us): {err:#}");
-                    (info, false)
                 }
+            } else {
+                (info, false)
             };
-            let mut codecs = Vec::new();
-            let modes = info.server_codec_mode_support;
-            if modes.contains(ServerCodecModeSupport::H264) {
-                codecs.push("h264".to_string());
-            }
-            if modes.contains(ServerCodecModeSupport::HEVC) {
-                codecs.push("hevc".to_string());
-            }
+            let codecs = [(VideoCodec::H264, "h264"), (VideoCodec::Hevc, "hevc")]
+                .into_iter()
+                .filter(|(codec, _)| info.codecs().contains(codec))
+                .map(|(_, name)| name.to_string())
+                .collect();
             Ok(MoonlightHost {
                 unique_id,
-                name: info.host_name,
+                name: info.name,
                 address: address.to_string(),
                 http_port: port,
                 https_port: info.https_port,
                 paired,
                 codecs,
-                app_version: Some(info.app_version.to_string()),
+                app_version: Some(info.app_version),
             })
         })
     }
@@ -430,37 +447,25 @@ impl Moonlight {
         }
         let address = Self::address_of(&host)?;
         let store = Arc::clone(&self.store);
-        let (cert, key) = tokio::task::spawn_blocking({
-            let store = Arc::clone(&store);
-            move || store.client_identity()
-        })
-        .await??;
-        let crypto = RustCryptoBackend;
-        let pin = PairPin::new_random(&crypto).map_err(|e| anyhow!("{e:?}"))?;
-        let pin_text = pin.to_string();
+        let pin = random_pin();
         let client = store.client(address, host.http_port, None).await?;
         self.pairing
             .lock()
             .expect("pairing lock")
-            .insert(unique_id.to_string(), pin_text.clone());
+            .insert(unique_id.to_string(), pin.clone());
         let this = Arc::clone(self);
         let id = unique_id.to_string();
+        let shown_pin = pin.clone();
         info!(host = %host.name, "pairing: waiting for the PIN on the host");
         tokio::spawn(async move {
-            let outcome = tokio::time::timeout(
-                PAIR_TIMEOUT,
-                client.pair(&cert, &key, CLIENT_NAME.into(), pin, crypto),
-            )
-            .await;
+            let outcome =
+                tokio::time::timeout(PAIR_TIMEOUT, client.pair(&shown_pin, CLIENT_NAME)).await;
             let outcome = match outcome {
                 Err(_) => Err(anyhow!(
                     "the PIN wasn't entered on the host within 5 minutes"
                 )),
-                Ok(Err(err)) => Err(anyhow!("{err:?}")),
-                Ok(Ok(())) => match client.identity().await {
-                    Some((_, _, server)) => store.save_server(&id, &server),
-                    None => Err(anyhow!("paired, but the host's certificate is missing")),
-                },
+                Ok(Err(err)) => Err(anyhow!("{err}")),
+                Ok(Ok(server_pem)) => store.save_server(&id, &server_pem),
             };
             this.pairing.lock().expect("pairing lock").remove(&id);
             let paired = match outcome {
@@ -484,29 +489,34 @@ impl Moonlight {
             let _ = this.paired.send(paired);
             let _ = this.rescan.send(());
         });
-        Ok(pin_text)
+        Ok(pin)
     }
 
     /// The apps a paired host offers.
     pub async fn apps(&self, unique_id: &str) -> Result<Vec<MoonlightApp>> {
         let host = self.found(unique_id)?;
-        if self.store.server_identity(unique_id)?.is_none() {
+        if self.store.server_cert(unique_id)?.is_none() {
             bail!("this node isn't paired with {}", host.name);
         }
         let client = self
             .store
             .client(Self::address_of(&host)?, host.http_port, Some(unique_id))
             .await?;
+        // Learns the host's HTTPS port, which hosts needn't keep at 47984.
+        client
+            .server_info()
+            .await
+            .map_err(|e| anyhow!("reading {}'s state: {e}", host.name))?;
         let apps = client
             .app_list()
             .await
-            .map_err(|e| anyhow!("listing {}'s apps: {e:?}", host.name))?;
+            .map_err(|e| anyhow!("listing {}'s apps: {e}", host.name))?;
         Ok(apps
             .into_iter()
             .map(|a| MoonlightApp {
-                id: a.id.0,
+                id: a.id,
                 name: a.title,
-                hdr: a.is_hdr_supported,
+                hdr: a.hdr,
             })
             .collect())
     }
@@ -745,7 +755,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let store = Store::new(dir(root.path()));
-        let (cert, _) = store.client_identity().unwrap();
+        let identity = store.client_identity().unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&root.path().join("node")), 0o700);
         assert_eq!(mode(store.dir()), 0o700);
@@ -753,33 +763,52 @@ mod tests {
         assert_eq!(mode(&store.dir().join(CLIENT_CERT)), 0o600);
 
         // The second call reads the same identity back.
-        let (again, _) = store.client_identity().unwrap();
-        assert_eq!(cert.to_pem().to_string(), again.to_pem().to_string());
+        let again = store.client_identity().unwrap();
+        assert_eq!(identity.fingerprint(), again.fingerprint());
 
         // A host's certificate lands in its own private directory.
-        assert!(store.server_identity("AB12").unwrap().is_none());
+        assert!(store.server_cert("AB12").unwrap().is_none());
         assert_eq!(store.paired_count(), 0);
-        store
-            .save_server(
-                "AB12",
-                &ServerIdentifier::from_pem(Pem::new("CERTIFICATE", vec![1, 2, 3])),
-            )
-            .unwrap();
-        assert!(store.server_identity("AB12").unwrap().is_some());
+        let host = ClientIdentity::generate().unwrap();
+        store.save_server("AB12", host.cert_pem()).unwrap();
+        assert_eq!(
+            store.server_cert("AB12").unwrap().as_deref(),
+            Some(host.cert_pem())
+        );
         assert_eq!(store.paired_count(), 1);
         assert_eq!(mode(&store.dir().join("hosts/AB12")), 0o700);
         assert_eq!(
             mode(&store.dir().join("hosts/AB12").join(SERVER_CERT)),
             0o600
         );
-        assert!(
-            store
-                .save_server(
-                    "../x",
-                    &ServerIdentifier::from_pem(Pem::new("CERTIFICATE", vec![1]))
-                )
-                .is_err()
+        assert!(store.save_server("../x", host.cert_pem()).is_err());
+    }
+
+    /// The identity the node's earlier library wrote (CRLF line ends) still loads.
+    #[test]
+    fn an_identity_from_the_earlier_library_still_loads() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(dir(root.path()));
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let made = ClientIdentity::generate().unwrap();
+        let crlf = |pem: &str| pem.replace('\n', "\r\n");
+        std::fs::write(store.dir().join(CLIENT_CERT), crlf(made.cert_pem())).unwrap();
+        std::fs::write(store.dir().join(CLIENT_KEY), crlf(made.key_pem())).unwrap();
+        assert_eq!(
+            store.client_identity().unwrap().fingerprint(),
+            made.fingerprint()
         );
+    }
+
+    #[test]
+    fn a_hosts_id_is_upper_case_hex_without_dashes() {
+        assert_eq!(
+            host_id("abcdef01-2345-6789-abcd-ef0123456789").unwrap(),
+            "ABCDEF0123456789ABCDEF0123456789"
+        );
+        for bad in ["", "../x", "nothex"] {
+            assert!(host_id(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

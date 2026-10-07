@@ -16,6 +16,32 @@ pub mod modifiers {
     pub const CTRL: u8 = 0x02;
     pub const ALT: u8 = 0x04;
     pub const META: u8 = 0x08;
+    /// An extended key (the 0xE0 scancode prefix): tells Numpad Enter from
+    /// Enter, which share a virtual-key code.
+    pub const EXTENDED: u8 = 0x10;
+}
+
+/// Moonlight's gamepad button flags, for [`InputEvent::GamepadState::buttons`]
+/// and the `supported_buttons` of an arrival.
+pub mod buttons {
+    pub const UP: u32 = 0x0001;
+    pub const DOWN: u32 = 0x0002;
+    pub const LEFT: u32 = 0x0004;
+    pub const RIGHT: u32 = 0x0008;
+    /// Start.
+    pub const PLAY: u32 = 0x0010;
+    /// Back, Select.
+    pub const BACK: u32 = 0x0020;
+    pub const LEFT_STICK: u32 = 0x0040;
+    pub const RIGHT_STICK: u32 = 0x0080;
+    pub const LEFT_SHOULDER: u32 = 0x0100;
+    pub const RIGHT_SHOULDER: u32 = 0x0200;
+    /// The guide button.
+    pub const SPECIAL: u32 = 0x0400;
+    pub const A: u32 = 0x1000;
+    pub const B: u32 = 0x2000;
+    pub const X: u32 = 0x4000;
+    pub const Y: u32 = 0x8000;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
