@@ -1,0 +1,33 @@
+[package]
+name = "cha-client-gamestream"
+version = "0.1.0"
+description = "The native client's GameStream transport: finds, pairs with and plays Sunshine, Apollo and Cha nodes (ADR 0010)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+cha-client = { path = "../cha-client" }
+cha-moonlight-input = { path = "../cha-moonlight-input" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+mdns-sd = "0.21"
+# GPL-3.0-or-later, combinable with our AGPL-3.0-or-later (both licenses' §13).
+# Pinned as in cha-gateway: the crate is young and its API moves.
+moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-rust", rev = "104ddf11f5dabe414c11e87e607fec7976e8bbb1", default-features = false, features = ["tokio-hyper", "rustcrypto"] }
+pem = "3"
+# moonlight-common's HTTPS client builds rustls without a crypto provider; pick one.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["net", "rt", "sync", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+# Our own GameStream host and its fakes (its tests' rig is shared by path).
+aes-gcm = "0.10"
+cha-gamestream = { path = "../cha-gamestream" }
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-enet = "0.1"
