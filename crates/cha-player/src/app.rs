@@ -10,6 +10,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// How long to wait before asking for a drawable again when there wasn't one.
+const SURFACE_RETRY: Duration = Duration::from_millis(50);
+
 use anyhow::{Context, Result};
 use cha_client::{Ended, Session, Transport};
 use winit::application::ApplicationHandler;
@@ -111,6 +114,9 @@ struct App {
     show_stats: bool,
     /// When the launcher wants to draw again without any event.
     launcher_due: Option<Instant>,
+    /// While the surface has no drawable (the window is occluded, or macOS
+    /// hasn't shown it yet): don't try again before this, so we don't spin.
+    surface_retry: Option<Instant>,
     autostarting: bool,
     exit_code: i32,
 }
@@ -140,6 +146,7 @@ impl App {
             modifiers: ModifiersState::empty(),
             show_stats: false,
             launcher_due: None,
+            surface_retry: None,
             exit_code: 0,
         }
     }
@@ -505,6 +512,13 @@ impl App {
     // ---- drawing ----------------------------------------------------------
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(retry) = self.surface_retry {
+            if Instant::now() < retry {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(retry));
+                return;
+            }
+            self.surface_retry = None;
+        }
         if self.stream.is_some() {
             self.draw_stream(event_loop);
         } else {
@@ -518,16 +532,24 @@ impl App {
             return;
         };
         let window = gfx.gpu.window.clone();
+        // The drawable first: without one there's nothing to show, and
+        // running the UI anyway would only ask for another frame at once.
+        let surface = match gfx.gpu.acquire() {
+            Ok(s) => s,
+            Err(Skip::Retry) => return window.request_redraw(),
+            Err(Skip::Later) => {
+                // No drawable now: try again shortly, or as soon as macOS
+                // says the window is visible (`WindowEvent::Occluded(false)`).
+                let retry = Instant::now() + SURFACE_RETRY;
+                self.surface_retry = Some(retry);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(retry));
+                return;
+            }
+        };
         let mut actions = Vec::new();
         let frame = gfx.egui.run(&window, |ui| {
             actions = self.launcher.show(ui, &transports);
         });
-
-        let surface = match gfx.gpu.acquire() {
-            Ok(s) => s,
-            Err(Skip::Retry) => return window.request_redraw(),
-            Err(Skip::Later) => return,
-        };
         let view = surface.texture.create_view(&Default::default());
         let mut encoder = gfx
             .gpu
@@ -624,7 +646,14 @@ impl App {
                 });
                 (None, texture.create_view(&Default::default()))
             }
-            Err(Skip::Later) => return,
+            Err(Skip::Later) => {
+                // No drawable now: try again shortly, or as soon as macOS
+                // says the window is visible (`WindowEvent::Occluded(false)`).
+                let retry = Instant::now() + SURFACE_RETRY;
+                self.surface_retry = Some(retry);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(retry));
+                return;
+            }
         };
         let mut encoder = gfx
             .gpu
@@ -766,6 +795,9 @@ impl ApplicationHandler<UserEvent> for App {
             if self.stream.is_none() && self.launcher_due.is_some_and(|d| Instant::now() >= d) {
                 self.request_redraw();
             }
+            if self.surface_retry.is_some_and(|d| Instant::now() >= d) {
+                self.request_redraw();
+            }
         }
     }
 
@@ -847,6 +879,13 @@ impl ApplicationHandler<UserEvent> for App {
                 window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => window.request_redraw(),
+            WindowEvent::Occluded(occluded) => {
+                tracing::debug!(occluded, "window occlusion");
+                if !occluded {
+                    self.surface_retry = None;
+                    window.request_redraw();
+                }
+            }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::KeyboardInput {
                 event:

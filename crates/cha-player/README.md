@@ -40,6 +40,10 @@ open "target/Cha Player.app"
 
 Losing focus releases the pointer and every held key and button. Relative motion is sent 1:1 in the units macOS reports (not scaled to the picture). Cmd+Q still quits the player.
 
+## Gamepads
+
+Gamepads go through SDL3 on their own thread, with SDL's Apple GameController (MFi) backend turned off (`SDL_JOYSTICK_MFI=0`): started off the main thread it kept macOS from ever showing the window as visible, so nothing was drawn. Controllers come through IOKit and SDL's HIDAPI drivers instead (DualSense, Xbox, Steam Controller, with rumble and LEDs). `CHA_PLAYER_NO_PADS=1` starts without gamepads, to rule them out when something looks wrong.
+
 ## Wi-Fi: AWDL latency spikes
 
 On Wi-Fi, macOS periodically leaves your channel for AWDL (AirDrop, Handoff, Continuity, Sidecar), roughly once a second, for 80 to 200 ms. In a stream that is a small freeze that repeats about every second while everything between is smooth. When the stats overlay sees video arrive with that rhythm for a few seconds it shows "Wi-Fi latency spikes: likely AWDL (AirDrop/Continuity)".

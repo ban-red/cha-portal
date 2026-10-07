@@ -35,6 +35,11 @@ impl PadService {
     /// handle does nothing.
     pub fn spawn() -> Self {
         let (commands, rx) = mpsc::channel();
+        // A switch for diagnosing the window without SDL in the process.
+        if std::env::var_os("CHA_PLAYER_NO_PADS").is_some() {
+            tracing::info!("gamepads off (CHA_PLAYER_NO_PADS)");
+            return Self { commands };
+        }
         let spawned = std::thread::Builder::new()
             .name("pads".into())
             .spawn(move || {
@@ -70,6 +75,12 @@ struct Slot {
 
 fn run(commands: Receiver<Command>) -> Result<()> {
     sdl3::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
+    // SDL's Apple GameController (MFi) backend expects the main thread, which
+    // winit owns; started from this thread it left macOS never showing our
+    // window as visible, so wgpu never got a drawable (a blank window).
+    // Without it, pads come through IOKit and SDL's HIDAPI drivers (DualSense,
+    // Xbox, Steam Controller, with rumble and LEDs).
+    sdl3::hint::set("SDL_JOYSTICK_MFI", "0");
     let sdl = sdl3::init().context("SDL init")?;
     let subsystem = sdl.gamepad().context("SDL gamepad subsystem")?;
     let mut events = sdl.event_pump().context("SDL event pump")?;
