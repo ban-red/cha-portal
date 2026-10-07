@@ -735,7 +735,7 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
                 av1.set_outputAnnexBFormat(0);
                 av1.colorPrimaries = NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
                 av1.transferCharacteristics =
-                    NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+                    NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB;
                 av1.matrixCoefficients = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
                 av1.colorRange = 0;
             }
@@ -743,7 +743,10 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
     }
 }
 
-/// BT.709, limited range, and the bitstream restriction that carries
+/// BT.709 primaries and matrix with the sRGB transfer (the desktop's pixels
+/// are sRGB-encoded and NVENC converts them without changing the curve; tagged
+/// BT.709, Chrome on a Mac showed the midtones about 11 levels too light),
+/// limited range, and the bitstream restriction that carries
 /// `max_num_reorder_frames = 0` (so hardware decoders don't hold frames).
 fn vui(vui: &mut NV_ENC_CONFIG_H264_VUI_PARAMETERS) {
     vui.videoSignalTypePresentFlag = 1;
@@ -752,7 +755,7 @@ fn vui(vui: &mut NV_ENC_CONFIG_H264_VUI_PARAMETERS) {
     vui.colourDescriptionPresentFlag = 1;
     vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
     vui.transferCharacteristics =
-        NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+        NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB;
     vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
     vui.bitstreamRestrictionFlag = 1;
 }
