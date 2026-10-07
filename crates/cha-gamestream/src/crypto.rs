@@ -6,7 +6,7 @@
 //! video when on) and AES-128-CBC for audio.
 
 use aes::Aes128;
-use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes128Gcm, Key, Nonce, Tag};
 
@@ -47,6 +47,13 @@ pub(crate) fn cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Vec<u8>
     cbc::Encryptor::<Aes128>::new(key.into(), iv.into()).encrypt_padded_vec_mut::<Pkcs7>(data)
 }
 
+/// The inverse of [`cbc_encrypt`]; `None` for a length that isn't whole blocks or bad padding.
+pub(crate) fn cbc_decrypt(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Option<Vec<u8>> {
+    cbc::Decryptor::<Aes128>::new(key.into(), iv.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(data)
+        .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,5 +86,16 @@ mod tests {
         let out = cbc_encrypt(&[1; 16], &[2; 16], &[0u8; 16]);
         assert_eq!(out.len(), 32);
         assert_eq!(cbc_encrypt(&[1; 16], &[2; 16], &[0u8; 5]).len(), 16);
+    }
+
+    #[test]
+    fn cbc_round_trips_and_refuses_junk() {
+        let sealed = cbc_encrypt(&[1; 16], &[2; 16], b"opus packet");
+        assert_eq!(
+            cbc_decrypt(&[1; 16], &[2; 16], &sealed).as_deref(),
+            Some(&b"opus packet"[..])
+        );
+        assert_eq!(cbc_decrypt(&[1; 16], &[2; 16], &sealed[..15]), None);
+        assert_eq!(cbc_decrypt(&[1; 16], &[2; 16], &[]), None);
     }
 }

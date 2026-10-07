@@ -13,6 +13,7 @@
 //! fixes made on the way.
 
 pub mod backend;
+pub mod client;
 pub mod config;
 pub mod directory;
 pub mod front;

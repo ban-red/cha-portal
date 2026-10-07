@@ -69,9 +69,29 @@ Three more differences, beyond the brief, that follow from the same reasoning:
 | `hdr.rs` | `stream/video/pipeline/hdr_sei.rs` | neutral metadata type |
 | not ported | compositor, pipeline encode loop, PulseAudio server, inputtino, application launching, healthcheck, app scanners | ADR 0004 |
 
+## The client's media (`client::media`)
+
+One stream's media as a Moonlight client receives it ([ADR 0011](../../docs/adr/0011-own-gamestream-client.md)): `MediaClient::start(&StreamSetup)` (or `start_with(.., MediaOptions)`) returns a `Media` with `video: Receiver<VideoFrame>` (whole access units in frame order, keyframe flag), `audio: Receiver<AudioPacket>`, `feedback: Receiver<Feedback>`, `ended: oneshot::Receiver<Ended>` (`Stopped`, `Terminated { code, graceful }`, `Failed`) and a cloneable `MediaHandle` (`input`, `request_idr`, `invalidate`, `stop`, `stats`). The stream stops when the last handle is dropped.
+
+| Path | What |
+|---|---|
+| `client/media/mod.rs` | the API and the three tasks: video and audio sockets (`PING` every 500 ms, Sunshine's with the session payload or the legacy four bytes), the ENet control peer (start A and B, a ping every 100 ms, requests, input, feedback, termination) |
+| `client/media/video.rs` | `VideoReceiver`, sans-IO: AES-GCM per shard, FEC blocks, whole-packet Reed-Solomon recovery, frame assembly, loss handling |
+| `client/media/audio.rs` | `AudioReceiver`: RS(4,2) with the host's parity matrix, AES-CBC, in order |
+| `client/media/control.rs` | the client's control messages, the host's decoded into `Feedback` and terminations |
+| `client/media/input.rs` | `InputEvent` to packets (the inverse of `input::parse`), channels as Moonlight uses them, and the batching queue |
+
+**Video recovery is over whole packets.** FEC covers each shard from the RTP header on, and a lost shard is a full-size buffer, as the host's packetizer does it. A recovered packet has its headers rebuilt from what the client knows and its start and end flags checked against its position, so a nonsense recovery is refused. (`moonlight-common-rust` ran the maths over payloads with empty buffers for the missing shards and failed with `IncorrectShardSize`.)
+
+**A lost frame never ends the stream.** The receiver keeps up to 32 frames in flight, so reordering across frames is harmless. A frame that can't complete (past the FEC, or idle for 10 ms with a newer frame arriving, or 100 ms alone) is dropped; the receiver asks the host for a keyframe once for a burst (again after 1 s if none comes), drops frames until one that can start a picture arrives, and resumes there. With `invalidate_refs` it asks for a reference-frame invalidation of the lost range instead and resumes at a keyframe, an intra refresh or a frame predicted past the loss. A consumer too slow to take a frame counts as a loss too.
+
+**Input** is queued and batched: relative mouse motion adds up and goes out at most once a millisecond (a click or wheel event is a barrier), an absolute position, a pad's axes (until its buttons change) and a motion sensor keep the latest.
+
+Tests: unit tests in each file (golden frames from the host's packetizer, every loss position of single- and multi-block frames up to the parity, reordering, duplicates, the keyframe wait, hostile bytes), and `tests/client_media.rs`, the client against `MediaSession` with a fake backend through a lossy UDP proxy (drops chosen shards by frame position, holds back and repeats packets; video encrypted and not; frames of 200 B to 1 MB; audio with loss; every kind of input; feedback; both ways of stopping). Not covered without a real Sunshine or Apollo host: their reference-frame invalidation and LTR acknowledgements, frame-type values other than ours (Sunshine's 104 header), AV1 and HDR on the wire, Sunshine's own FEC percentage rules at the edges, and real network loss.
+
 ## Dependencies
 
-New to the workspace: `tokio-enet` (BSD-2-Clause, Moonshine's author) and `pem` 4 (MIT, via `rcgen`'s `pem` feature). Already in the lock and used here: `fec-rs` (BSD-2-Clause), `aws-lc-rs`, `rcgen`, `rustls`, `tokio-rustls`, `hyper`, `x509-parser`, `aes`, `aes-gcm`, `cbc`, `sha2`, `mdns-sd`, `quinn-udp`, `form_urlencoded`. `rtsp-types` and `sdp-types` (MIT) were not needed. `moonlight-common` (GPL-3.0-or-later, as in `cha-gateway` and `cha-node`) is a **dev-dependency**, the client the tests drive.
+`socket2` (MIT or Apache-2.0, already in the lock) sets the video socket's receive buffer. New to the workspace: `tokio-enet` (BSD-2-Clause, Moonshine's author) and `pem` 4 (MIT, via `rcgen`'s `pem` feature). Already in the lock and used here: `fec-rs` (BSD-2-Clause), `aws-lc-rs`, `rcgen`, `rustls`, `tokio-rustls`, `hyper`, `x509-parser`, `aes`, `aes-gcm`, `cbc`, `sha2`, `mdns-sd`, `quinn-udp`, `form_urlencoded`. `rtsp-types` and `sdp-types` (MIT) were not needed. `moonlight-common` (GPL-3.0-or-later, as in `cha-gateway` and `cha-node`) is a **dev-dependency**, the client the tests drive.
 
 ## Tests
 
@@ -130,3 +150,9 @@ The node's host is `crates/cha-node/src/gamestream/` (the `gamestream` cargo fea
 - Plain (unencrypted) control for clients that cannot do control v2; none of the clients we know of (Moonlight, Artemis, moonlight-common-rust) is one.
 - DSCP/QoS marking of the UDP sockets (`x-nv-vqos[0].qosTrafficType`).
 - Surround, 4:4:4, HDR and AV1 are protocol-complete (negotiated, passed to the backend, HDR mode and metadata sent) but only HDR and HEVC are tested; the backends of G2 decide what is real.
+
+## The client's front (`src/client/front/`)
+
+`HostClient` is a Moonlight client's control plane, the other side of `front` ([ADR 0011](../../docs/adr/0011-own-gamestream-client.md)). `ClientIdentity` (RSA-2048 self-signed, load/save PEM) is what a host pins; `HostClient::new(address, identity)` then does `server_info()` (HTTPS with the pinned host certificate once paired, else HTTP), `pair(pin, device_name)` (the five phases; returns the host certificate to keep and give to `with_server_cert` next time; `PairingError::{WrongPin, AlreadyInProgress, Declined, Mitm, ...}`), `unpair()`, `app_list()`, `app_asset(id)`, `launch(&StreamRequest)`, `resume(..)` and `cancel()`. A launch ends in a `StreamSetup`: `/launch` with a fresh `rikey`, then RTSP (OPTIONS, DESCRIBE, SETUP audio/video/control, ANNOUNCE, PLAY). The codec is the first of the request's preference the host offers in the asked dynamic range and chroma; video and audio encryption are `Encrypt::{Off, IfSupported, Required}`. Hosts older than app version 7.1.431 (GFE 3.22) and `rtspenc://` session URLs are refused. Every request is bounded in time (`Timeouts`) and size; parsers run on random bytes in tests. The host's pairing crypto (`front::pairing::crypto`) and TLS signature check (`nvhttp::tls`) are shared with it. Discovery isn't here: the node browses mDNS itself.
+
+Tests: `tests/client_front.rs` (our client against our host: pairing, wrong PIN, launch/resume/cancel/unpair, codecs, HDR/4:4:4/surround, encryption, hostile hosts, and the same session as moonlight-common-rust's) and unit tests per module.

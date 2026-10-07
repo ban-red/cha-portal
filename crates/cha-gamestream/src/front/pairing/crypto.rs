@@ -2,7 +2,8 @@
 // Changed: the pairing maths is pure functions over bytes (the state machine in mod.rs calls them), the
 // client's secret is checked against its certificate with errors that say which check failed.
 
-//! The cryptography of the five-phase pairing, for hashing with SHA-256 (the
+//! The cryptography of the five-phase pairing, shared by the host (`front`)
+//! and the client (`client::front`), for hashing with SHA-256 (the
 //! protocol Moonlight uses with hosts of app version 7 and above).
 //!
 //! The PIN and the client's salt make an AES-128 key. The client proves it
@@ -169,8 +170,18 @@ pub(crate) fn verify_client_secret(
     if h.finalize().as_slice() != client_hash {
         return Err(PairError::HashMismatch);
     }
-    let (_, cert) = X509Certificate::from_der(client_cert_der)
-        .map_err(|e| PairError::Certificate(e.to_string()))?;
+    verify_signature(client_cert_der, payload, signature)
+}
+
+/// Checks `signature` (PKCS#1 v1.5, SHA-256) over `message` against the
+/// public key of the DER certificate.
+pub(crate) fn verify_signature(
+    cert_der: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), PairError> {
+    let (_, cert) =
+        X509Certificate::from_der(cert_der).map_err(|e| PairError::Certificate(e.to_string()))?;
     UnparsedPublicKey::new(
         &RSA_PKCS1_2048_8192_SHA256,
         cert.tbs_certificate
@@ -179,7 +190,7 @@ pub(crate) fn verify_client_secret(
             .data
             .as_ref(),
     )
-    .verify(payload, signature)
+    .verify(message, signature)
     .map_err(|_| PairError::BadSignature)
 }
 

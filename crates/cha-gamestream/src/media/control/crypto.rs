@@ -45,11 +45,23 @@ pub(crate) fn open(
     Ok(plain)
 }
 
-/// Wraps a message as a client would, for tests of the host.
-#[cfg(test)]
+/// Opens a host-to-client message, as a client does.
+pub(crate) fn open_from_host(
+    key: &[u8; 16],
+    sequence: u32,
+    tag: &[u8; 16],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, GcmError> {
+    let mut plain = ciphertext.to_vec();
+    gcm_decrypt(key, &iv(sequence, b'H'), &mut plain, tag)?;
+    Ok(plain)
+}
+
+/// Wraps a message as a client does (the client half uses it, and the host's tests).
 pub(crate) fn seal_as_client(key: &[u8; 16], sequence: u32, inner: &[u8]) -> Vec<u8> {
     let mut ciphertext = inner.to_vec();
-    let tag = gcm_encrypt(key, &iv(sequence, b'C'), &mut ciphertext).unwrap();
+    // GCM refuses only a message beyond 64 GiB; control messages are under 64 KiB.
+    let tag = gcm_encrypt(key, &iv(sequence, b'C'), &mut ciphertext).expect("a short message");
     let mut body = Vec::new();
     body.extend_from_slice(&sequence.to_le_bytes());
     body.extend_from_slice(&tag);

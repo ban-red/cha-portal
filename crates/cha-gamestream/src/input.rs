@@ -221,23 +221,23 @@ pub enum InputError {
     Invalid(&'static str),
 }
 
-const KEY_DOWN: u32 = 0x03;
-const KEY_UP: u32 = 0x04;
-const MOUSE_ABS: u32 = 0x05;
-const MOUSE_REL: u32 = 0x07;
-const MOUSE_BUTTON_DOWN: u32 = 0x08;
-const MOUSE_BUTTON_UP: u32 = 0x09;
-const SCROLL_V: u32 = 0x0A;
-const GAMEPAD_STATE: u32 = 0x0C;
-const GAMEPAD_HAPTICS: u32 = 0x0D;
-const TEXT: u32 = 0x17;
-const SCROLL_H: u32 = 0x5500_0001;
-const TOUCH: u32 = 0x5500_0002;
-const PEN: u32 = 0x5500_0003;
-const GAMEPAD_ARRIVAL: u32 = 0x5500_0004;
-const GAMEPAD_TOUCH: u32 = 0x5500_0005;
-const GAMEPAD_MOTION: u32 = 0x5500_0006;
-const GAMEPAD_BATTERY: u32 = 0x5500_0007;
+pub(crate) const KEY_DOWN: u32 = 0x03;
+pub(crate) const KEY_UP: u32 = 0x04;
+pub(crate) const MOUSE_ABS: u32 = 0x05;
+pub(crate) const MOUSE_REL: u32 = 0x07;
+pub(crate) const MOUSE_BUTTON_DOWN: u32 = 0x08;
+pub(crate) const MOUSE_BUTTON_UP: u32 = 0x09;
+pub(crate) const SCROLL_V: u32 = 0x0A;
+pub(crate) const GAMEPAD_STATE: u32 = 0x0C;
+pub(crate) const GAMEPAD_HAPTICS: u32 = 0x0D;
+pub(crate) const TEXT: u32 = 0x17;
+pub(crate) const SCROLL_H: u32 = 0x5500_0001;
+pub(crate) const TOUCH: u32 = 0x5500_0002;
+pub(crate) const PEN: u32 = 0x5500_0003;
+pub(crate) const GAMEPAD_ARRIVAL: u32 = 0x5500_0004;
+pub(crate) const GAMEPAD_TOUCH: u32 = 0x5500_0005;
+pub(crate) const GAMEPAD_MOTION: u32 = 0x5500_0006;
+pub(crate) const GAMEPAD_BATTERY: u32 = 0x5500_0007;
 
 fn need(event: u32, body: &[u8], n: usize) -> Result<(), InputError> {
     if body.len() < n {
@@ -342,8 +342,8 @@ pub fn parse(packet: &[u8]) -> Result<Option<InputEvent>, InputError> {
                 y,
                 pressure: f32le(b, 16),
                 rotation: le16(b, 2),
-                contact_minor: f32le(b, 20),
-                contact_major: f32le(b, 24),
+                contact_major: f32le(b, 20),
+                contact_minor: f32le(b, 24),
             })
         }
         PEN => {
@@ -368,8 +368,8 @@ pub fn parse(packet: &[u8]) -> Result<Option<InputEvent>, InputError> {
                 pressure_or_distance: p,
                 rotation: le16(b, 16),
                 tilt: b[18],
-                contact_minor: f32le(b, 20),
-                contact_major: f32le(b, 24),
+                contact_major: f32le(b, 20),
+                contact_minor: f32le(b, 24),
             })
         }
         GAMEPAD_ARRIVAL => {

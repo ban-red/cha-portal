@@ -22,18 +22,18 @@ use crate::crypto::{GCM_TAG_LEN, gcm_encrypt};
 
 use super::fec::{self, Codecs};
 
-const NV_VIDEO_PACKET_SIZE: usize = 16;
-const RTP_HEADER_SIZE: usize = 12;
-const RESERVED_SIZE: usize = 4;
-const NV_PACKET_OFFSET: usize = RTP_HEADER_SIZE + RESERVED_SIZE;
-const PAYLOAD_OFFSET: usize = NV_PACKET_OFFSET + NV_VIDEO_PACKET_SIZE;
+pub(crate) const NV_VIDEO_PACKET_SIZE: usize = 16;
+pub(crate) const RTP_HEADER_SIZE: usize = 12;
+pub(crate) const RESERVED_SIZE: usize = 4;
+pub(crate) const NV_PACKET_OFFSET: usize = RTP_HEADER_SIZE + RESERVED_SIZE;
+pub(crate) const PAYLOAD_OFFSET: usize = NV_PACKET_OFFSET + NV_VIDEO_PACKET_SIZE;
 /// iv(12) + frame number(4) + tag(16).
 pub(crate) const ENC_PREFIX_SIZE: usize = 12 + 4 + GCM_TAG_LEN;
-const FRAME_HEADER_SIZE: usize = 8;
+pub(crate) const FRAME_HEADER_SIZE: usize = 8;
 
-const FLAG_CONTAINS_PIC_DATA: u8 = 0x1;
-const FLAG_END_OF_FRAME: u8 = 0x2;
-const FLAG_START_OF_FRAME: u8 = 0x4;
+pub(crate) const FLAG_CONTAINS_PIC_DATA: u8 = 0x1;
+pub(crate) const FLAG_END_OF_FRAME: u8 = 0x2;
+pub(crate) const FLAG_START_OF_FRAME: u8 = 0x4;
 
 /// Equal-sized shards in one contiguous buffer, ready to send.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

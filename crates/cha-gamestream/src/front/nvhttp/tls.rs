@@ -60,35 +60,36 @@ fn verify(
         .map_err(|_| Error::InvalidCertificate(CertificateError::BadSignature))
 }
 
-impl LenientClientCerts {
-    fn verify_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
-        let key = public_key(cert.as_ref())?;
-        let alg: &'static dyn VerificationAlgorithm = match dss.scheme {
-            SignatureScheme::RSA_PKCS1_SHA256 => &RSA_PKCS1_2048_8192_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384 => &RSA_PKCS1_2048_8192_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512 => &RSA_PKCS1_2048_8192_SHA512,
-            SignatureScheme::RSA_PSS_SHA256 => &RSA_PSS_2048_8192_SHA256,
-            SignatureScheme::RSA_PSS_SHA384 => &RSA_PSS_2048_8192_SHA384,
-            SignatureScheme::RSA_PSS_SHA512 => &RSA_PSS_2048_8192_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256 => &ECDSA_P256_SHA256_ASN1,
-            SignatureScheme::ECDSA_NISTP384_SHA384 => &ECDSA_P384_SHA384_ASN1,
-            SignatureScheme::ED25519 => &ED25519,
-            _ => {
-                return Err(Error::InvalidCertificate(
-                    CertificateError::UnsupportedSignatureAlgorithmContext {
-                        signature_algorithm_id: vec![],
-                        supported_algorithms: vec![],
-                    },
-                ));
-            }
-        };
-        verify(alg, &key, message, dss)
-    }
+/// Verifies a handshake signature against the key of `cert`, whatever else
+/// is wrong with the certificate (self-signed, expired, any version). Both
+/// sides use it: the host for client certificates, the client for the
+/// certificate it pinned.
+pub(crate) fn verify_handshake_signature(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &DigitallySignedStruct,
+) -> Result<HandshakeSignatureValid, Error> {
+    let key = public_key(cert.as_ref())?;
+    let alg: &'static dyn VerificationAlgorithm = match dss.scheme {
+        SignatureScheme::RSA_PKCS1_SHA256 => &RSA_PKCS1_2048_8192_SHA256,
+        SignatureScheme::RSA_PKCS1_SHA384 => &RSA_PKCS1_2048_8192_SHA384,
+        SignatureScheme::RSA_PKCS1_SHA512 => &RSA_PKCS1_2048_8192_SHA512,
+        SignatureScheme::RSA_PSS_SHA256 => &RSA_PSS_2048_8192_SHA256,
+        SignatureScheme::RSA_PSS_SHA384 => &RSA_PSS_2048_8192_SHA384,
+        SignatureScheme::RSA_PSS_SHA512 => &RSA_PSS_2048_8192_SHA512,
+        SignatureScheme::ECDSA_NISTP256_SHA256 => &ECDSA_P256_SHA256_ASN1,
+        SignatureScheme::ECDSA_NISTP384_SHA384 => &ECDSA_P384_SHA384_ASN1,
+        SignatureScheme::ED25519 => &ED25519,
+        _ => {
+            return Err(Error::InvalidCertificate(
+                CertificateError::UnsupportedSignatureAlgorithmContext {
+                    signature_algorithm_id: vec![],
+                    supported_algorithms: vec![],
+                },
+            ));
+        }
+    };
+    verify(alg, &key, message, dss)
 }
 
 impl ClientCertVerifier for LenientClientCerts {
@@ -122,7 +123,7 @@ impl ClientCertVerifier for LenientClientCerts {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        self.verify_signature(message, cert, dss)
+        verify_handshake_signature(message, cert, dss)
     }
 
     fn verify_tls13_signature(
@@ -131,7 +132,7 @@ impl ClientCertVerifier for LenientClientCerts {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        self.verify_signature(message, cert, dss)
+        verify_handshake_signature(message, cert, dss)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {

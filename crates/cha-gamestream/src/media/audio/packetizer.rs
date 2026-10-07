@@ -14,15 +14,15 @@ use fec_rs::ReedSolomon;
 
 use crate::crypto::cbc_encrypt;
 
-const DATA_SHARDS: usize = 4;
-const PARITY_SHARDS: usize = 2;
+pub(crate) const DATA_SHARDS: usize = 4;
+pub(crate) const PARITY_SHARDS: usize = 2;
 /// moonlight-common-c's RtpAudioQueue.c, the rows for the two parity shards.
-const PARITY_MATRIX: [u8; 8] = [0x77, 0x40, 0x38, 0x0e, 0xc7, 0xa7, 0x0d, 0x6c];
+pub(crate) const PARITY_MATRIX: [u8; 8] = [0x77, 0x40, 0x38, 0x0e, 0xc7, 0xa7, 0x0d, 0x6c];
 
 pub(crate) const RTP_HEADER_SIZE: usize = 12;
 pub(crate) const FEC_HEADER_SIZE: usize = 12;
-const PT_AUDIO: u8 = 97;
-const PT_AUDIO_FEC: u8 = 127;
+pub(crate) const PT_AUDIO: u8 = 97;
+pub(crate) const PT_AUDIO_FEC: u8 = 127;
 
 pub(crate) struct AudioPacketizer {
     codec: ReedSolomon,

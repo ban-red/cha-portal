@@ -89,22 +89,30 @@ impl Identity {
         })
     }
 
+    /// Reads `cert.pem` and `key.pem` from `dir`.
+    pub fn load(dir: &Path) -> Result<Self, IdentityError> {
+        let (cert_path, key_path) = (dir.join("cert.pem"), dir.join("key.pem"));
+        let cert = std::fs::read_to_string(&cert_path).map_err(io(&cert_path))?;
+        let key = std::fs::read_to_string(&key_path).map_err(io(&key_path))?;
+        Self::from_pem(&cert, &key)
+    }
+
+    /// Writes `cert.pem` and `key.pem` into `dir` (made if needed), the key
+    /// readable by its owner only.
+    pub fn save(&self, dir: &Path) -> Result<(), IdentityError> {
+        let (cert_path, key_path) = (dir.join("cert.pem"), dir.join("key.pem"));
+        std::fs::create_dir_all(dir).map_err(io(dir))?;
+        std::fs::write(&cert_path, &self.cert_pem).map_err(io(&cert_path))?;
+        write_private(&key_path, &self.key_pem).map_err(io(&key_path))
+    }
+
     /// Reads `cert.pem` and `key.pem` from `dir`, or makes and writes them.
     pub fn load_or_create(dir: &Path) -> Result<Self, IdentityError> {
-        let (cert_path, key_path) = (dir.join("cert.pem"), dir.join("key.pem"));
-        let io = |path: &Path| {
-            let path = path.display().to_string();
-            move |source| IdentityError::Io { path, source }
-        };
-        if cert_path.exists() && key_path.exists() {
-            let cert = std::fs::read_to_string(&cert_path).map_err(io(&cert_path))?;
-            let key = std::fs::read_to_string(&key_path).map_err(io(&key_path))?;
-            return Self::from_pem(&cert, &key);
+        if dir.join("cert.pem").exists() && dir.join("key.pem").exists() {
+            return Self::load(dir);
         }
         let identity = Self::generate()?;
-        std::fs::create_dir_all(dir).map_err(io(dir))?;
-        std::fs::write(&cert_path, &identity.cert_pem).map_err(io(&cert_path))?;
-        write_private(&key_path, &identity.key_pem).map_err(io(&key_path))?;
+        identity.save(dir)?;
         Ok(identity)
     }
 
@@ -121,6 +129,11 @@ impl Identity {
     pub fn fingerprint(&self) -> String {
         fingerprint(&self.cert_der)
     }
+}
+
+fn io(path: &Path) -> impl FnOnce(std::io::Error) -> IdentityError {
+    let path = path.display().to_string();
+    move |source| IdentityError::Io { path, source }
 }
 
 /// SHA-256 of a DER certificate, lower-case hex: how the host names a client.
