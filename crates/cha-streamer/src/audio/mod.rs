@@ -37,9 +37,19 @@ pub struct AudioPacket {
     pub at: Instant,
 }
 
+/// Half a tick: the 5 ms frames some subscribers ask for.
+const HALF: usize = FRAME / 2;
+
+struct Subscriber {
+    tx: mpsc::Sender<AudioPacket>,
+    /// Wants 5 ms frames (two per tick, from a second encoder) instead of the
+    /// tick's one 10 ms frame.
+    half_frames: bool,
+}
+
 pub struct Audio {
     sink: Arc<pulse::Sink>,
-    subscribers: Mutex<Vec<mpsc::Sender<AudioPacket>>>,
+    subscribers: Mutex<Vec<Subscriber>>,
 }
 
 impl Audio {
@@ -65,8 +75,27 @@ impl Audio {
 
     /// Opus frames from now on, until the receiver is dropped.
     pub fn subscribe(&self) -> mpsc::Receiver<AudioPacket> {
+        self.subscribe_with(false)
+    }
+
+    /// Like [`subscribe`](Self::subscribe), with frames of `ms` milliseconds:
+    /// 10 (the mixer's) or 5, two per tick from a second encoder (what
+    /// Moonlight asks for). What other subscribers get doesn't change.
+    #[cfg_attr(not(feature = "gamestream"), allow(dead_code))]
+    pub fn subscribe_frames(&self, ms: u32) -> Result<mpsc::Receiver<AudioPacket>> {
+        match ms {
+            10 => Ok(self.subscribe_with(false)),
+            5 => Ok(self.subscribe_with(true)),
+            _ => anyhow::bail!("Opus frames of {ms} ms: only 5 and 10 are made"),
+        }
+    }
+
+    fn subscribe_with(&self, half_frames: bool) -> mpsc::Receiver<AudioPacket> {
         let (tx, rx) = mpsc::channel(32);
-        self.subscribers.lock().expect("subscribers lock").push(tx);
+        self.subscribers
+            .lock()
+            .expect("subscribers lock")
+            .push(Subscriber { tx, half_frames });
         rx
     }
 
@@ -76,6 +105,9 @@ impl Audio {
         let mut samples: u64 = 0;
         let mut next = Instant::now();
         let mut listening = false;
+        // Made when the first 5 ms subscriber comes.
+        let mut half_encoder: Option<opus::Encoder> = None;
+        let mut half_listening = false;
         let mut level = Level::default();
         loop {
             next += TICK;
@@ -106,8 +138,43 @@ impl Audio {
             samples += FRAME as u64;
 
             let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-            subscribers.retain(|tx| !tx.is_closed());
+            subscribers.retain(|s| !s.tx.is_closed());
             if subscribers.is_empty() {
+                listening = false;
+                half_listening = false;
+                continue;
+            }
+            let first_sample = samples - FRAME as u64;
+            let at = Instant::now();
+            if subscribers.iter().any(|s| s.half_frames) {
+                if half_encoder.is_none() {
+                    half_encoder = opus::Encoder::new(2, BITRATE_BPS)
+                        .map_err(|err| warn!("audio: no 5 ms encoder: {err:#}"))
+                        .ok();
+                }
+                if let Some(half) = &mut half_encoder {
+                    if !half_listening {
+                        half.reset();
+                        half_listening = true;
+                    }
+                    for (i, pcm) in mix.chunks(HALF * 2).enumerate() {
+                        let Ok(n) = half.encode(pcm, &mut packet) else {
+                            continue;
+                        };
+                        let data = Bytes::copy_from_slice(&packet[..n]);
+                        for s in subscribers.iter().filter(|s| s.half_frames) {
+                            let _ = s.tx.try_send(AudioPacket {
+                                data: data.clone(),
+                                samples: first_sample + (i * HALF) as u64,
+                                at,
+                            });
+                        }
+                    }
+                }
+            } else {
+                half_listening = false;
+            }
+            if subscribers.iter().all(|s| s.half_frames) {
                 listening = false;
                 continue;
             }
@@ -135,12 +202,11 @@ impl Audio {
                 level = Level::default();
             }
             let data = Bytes::copy_from_slice(&packet[..n]);
-            let at = Instant::now();
-            for tx in subscribers.iter() {
+            for s in subscribers.iter().filter(|s| !s.half_frames) {
                 // A full queue means a stalled session: it loses audio, not us.
-                let _ = tx.try_send(AudioPacket {
+                let _ = s.tx.try_send(AudioPacket {
                     data: data.clone(),
-                    samples: samples - FRAME as u64,
+                    samples: first_sample,
                     at,
                 });
             }

@@ -103,6 +103,15 @@ struct Args {
     /// none.
     #[arg(long, default_value_t = 7662)]
     wt_port: u16,
+    /// GameStream (Moonlight) media ports, `video,control,audio` (UDP): serve
+    /// a Moonlight session of this environment on them, started through the
+    /// local `/gamestream/*` API with the secret in `CHA_GAMESTREAM_SECRET`.
+    #[cfg(feature = "gamestream")]
+    #[arg(long, value_name = "VIDEO,CONTROL,AUDIO", value_parser = crate::gamestream::parse_ports)]
+    gamestream_ports: Option<cha_gamestream::MediaPorts>,
+    #[cfg(feature = "gamestream")]
+    #[arg(skip = crate::gamestream::take_secret())]
+    gamestream_secret: Option<crate::gamestream::Secret>,
     /// Addresses browsers may reach WebRTC on (host candidates). Default:
     /// every IPv4 address of this machine except loopback and container
     /// bridges, so LAN and mesh (Tailscale, WireGuard) clients connect directly.
@@ -461,12 +470,33 @@ pub fn main() -> Result<()> {
         });
         runtime.spawn(wt::serve(endpoint, sessions));
     }
+    #[cfg(feature = "gamestream")]
+    let gamestream = args
+        .gamestream_ports
+        .map(|ports| {
+            crate::gamestream::start(
+                ports,
+                args.gamestream_secret,
+                crate::gamestream::Engine {
+                    media: Arc::clone(&state.media),
+                    audio: state.audio.clone(),
+                    gamepads: state.gamepads.clone(),
+                    viewers: Arc::clone(&state.viewers),
+                },
+            )
+        })
+        .transpose()?;
     let app = Router::new()
         .route("/info", get(info_handler))
         .route("/streams", get(streams_handler))
         .route("/webrtc/media", post(media_offer_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
+    #[cfg(feature = "gamestream")]
+    let app = match gamestream {
+        Some(routes) => app.merge(routes),
+        None => app,
+    };
 
     runtime.block_on(async move {
         let listener =

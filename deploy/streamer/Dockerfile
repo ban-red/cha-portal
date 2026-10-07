@@ -69,7 +69,7 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/target \
-    cargo build --release --locked -p cha-streamer \
+    cargo build --release --locked -p cha-streamer --features gamestream \
  && cp /target/release/cha-streamer /usr/local/bin/cha-streamer
 
 FROM base AS runtime
