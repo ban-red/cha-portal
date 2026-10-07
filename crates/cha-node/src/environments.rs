@@ -82,6 +82,8 @@ const LABEL_HOME: &str = "sh.cha.home";
 const LABEL_OWNER: &str = "sh.cha.owner";
 const LABEL_TEMPLATE: &str = "sh.cha.template";
 pub const APP_UID: u32 = 1000;
+/// Where a gateway container sees the node's Moonlight identity.
+const GATEWAY_IDENTITY_DIR: &str = "/identity";
 const RUNTIME_DIR: &str = "/run/cha";
 /// Where the streamer puts gamepad nodes (`dev/`) and udev entries (`udev/`).
 const INPUT_DIR: &str = "/run/cha-input";
@@ -235,6 +237,9 @@ pub struct DockerConfig {
     /// (`CHA_IMAGE_REGISTRY`, `CHA_IMAGE_TAG`); `None` runs the local builds
     /// the catalog names (`cha/env-chrome:dev`).
     pub app_images: Option<PublishedImages>,
+    /// The image that streams a Moonlight host's app (`CHA_GATEWAY_IMAGE`),
+    /// mapped through [`Self::app_images`] like an app's.
+    pub gateway_image: String,
 }
 
 impl DockerConfig {
@@ -736,7 +741,13 @@ impl DockerRuntime {
     }
 
     async fn start_environment(&self, mut spec: EnvironmentSpec) -> Result<StreamerEndpoint> {
-        spec.image = self.config.app_image(&spec.image);
+        if spec.gateway.is_some() {
+            // The gateway stands in for the app and the streamer both.
+            spec.image = self.config.app_image(&self.config.gateway_image);
+            self.check_gateway(&spec)?;
+        } else {
+            spec.image = self.config.app_image(&spec.image);
+        }
         check_storage(&spec)?;
         check_device(&spec)?;
         if let Some(port) = self
@@ -749,7 +760,12 @@ impl DockerRuntime {
         {
             return Ok(endpoint(port));
         }
-        for image in [&self.config.streamer_image, &spec.image] {
+        let images = if spec.gateway.is_some() {
+            vec![&spec.image]
+        } else {
+            vec![&self.config.streamer_image, &spec.image]
+        };
+        for image in images {
             self.ensure_image(image).await?;
         }
         let port = self.allocate(&spec.id)?;
@@ -1138,6 +1154,19 @@ impl DockerRuntime {
     }
 
     async fn create_containers(&self, spec: &EnvironmentSpec, port: u16) -> Result<()> {
+        if spec.gateway.is_some() {
+            // One container, labelled as the streamer so everything that finds
+            // an environment by it works; there is no app beside it.
+            let gateway = self
+                .docker
+                .create(
+                    &container_name(&spec.id, "streamer"),
+                    &self.gateway_config(spec, port),
+                )
+                .await?;
+            self.docker.start(&gateway).await?;
+            return self.streamer_still_up(&spec.id).await;
+        }
         let streamer = self
             .docker
             .create(
@@ -1446,6 +1475,101 @@ impl DockerRuntime {
                 "Mounts": self.mounts(&spec.id, false),
                 "DeviceRequests": self.gpu(spec),
                 "Devices": devices,
+                "RestartPolicy": { "Name": "no" },
+                "Init": true,
+            },
+        })
+    }
+
+    /// Refuses a gateway launch for a host this node isn't paired with, or
+    /// one whose id isn't a host id (it names a directory).
+    fn check_gateway(&self, spec: &EnvironmentSpec) -> Result<()> {
+        let Some(gateway) = &spec.gateway else {
+            return Ok(());
+        };
+        if !crate::moonlight::valid_unique_id(&gateway.unique_id) {
+            bail!("{:?} isn't a Moonlight host id", gateway.unique_id);
+        }
+        let cert = crate::moonlight::dir(&self.config.data_root)
+            .join("hosts")
+            .join(&gateway.unique_id)
+            .join("server-cert.pem");
+        if !cert.exists() {
+            bail!(
+                "this node isn't paired with that Moonlight host: adopt it in the portal (Admin → Moonlight) to pair"
+            );
+        }
+        Ok(())
+    }
+
+    /// The gateway's container for a Moonlight app (ADR 0008): the streamer's
+    /// arguments plus the host to stream from, on the host network, with no
+    /// GPU and no pads, and the node's Moonlight identity read-only.
+    fn gateway_config(&self, spec: &EnvironmentSpec, port: u16) -> Value {
+        let gateway = spec
+            .gateway
+            .as_ref()
+            .expect("a gateway launch carries its host");
+        let mut cmd: Vec<String> = [
+            "--listen",
+            "127.0.0.1",
+            "--http-port",
+            &port.to_string(),
+            "--webrtc-port",
+            &(port + 1).to_string(),
+            "--portal-key",
+            &spec.portal_key,
+            "--environment-id",
+            &spec.id,
+            "--width",
+            &spec.width.to_string(),
+            "--height",
+            &spec.height.to_string(),
+            "--fps",
+            &spec.fps.to_string(),
+        ]
+        .map(String::from)
+        .to_vec();
+        if let Some(public) = &self.config.public_address {
+            cmd.extend(["--public-address".to_string(), public.clone()]);
+        }
+        cmd.extend(
+            [
+                "--host",
+                &gateway.address,
+                "--host-http-port",
+                &gateway.http_port.to_string(),
+                "--host-https-port",
+                &gateway.https_port.to_string(),
+                "--host-unique-id",
+                &gateway.unique_id,
+                "--app-id",
+                &gateway.app_id.to_string(),
+                "--identity-dir",
+                GATEWAY_IDENTITY_DIR,
+            ]
+            .map(String::from),
+        );
+        let mut labels = self.labels(&spec.id, "streamer", port);
+        labels[LABEL_OWNER] = json!(spec.owner);
+        labels[LABEL_TEMPLATE] = json!(spec.template);
+        json!({
+            "Image": spec.image,
+            "Cmd": cmd,
+            "Env": ["RUST_LOG=info"],
+            "Labels": labels,
+            "HostConfig": {
+                "NetworkMode": "host",
+                "Mounts": [{
+                    "Type": "bind",
+                    "Source": crate::moonlight::dir(&self.config.data_root),
+                    "Target": GATEWAY_IDENTITY_DIR,
+                    "ReadOnly": true,
+                    // Made by the agent when it paired: a missing source is a bug.
+                    "BindOptions": { "CreateMountpoint": false },
+                }],
+                "CapDrop": ["ALL"],
+                "SecurityOpt": ["no-new-privileges"],
                 "RestartPolicy": { "Name": "no" },
                 "Init": true,
             },
@@ -2111,6 +2235,7 @@ mod tests {
                 nvidia_wine_dir: None,
                 log_dir: None,
                 app_images: None,
+                gateway_image: "cha/gateway:dev".into(),
             },
             render_gid: Some(992),
             probes: DeviceProbes::default(),
@@ -2138,6 +2263,7 @@ mod tests {
             storage: None,
             gamepad: None,
             device: None,
+            gateway: None,
         }
     }
 
@@ -2276,6 +2402,104 @@ mod tests {
             "nvidia.com/gpu=all"
         );
         assert_eq!(s["Labels"]["sh.cha.http-port"], "7602");
+    }
+
+    fn gateway_spec() -> EnvironmentSpec {
+        EnvironmentSpec {
+            image: "cha/gateway:dev".into(),
+            template: "moonlight:h1:881448767".into(),
+            gateway: Some(Box::new(cha_wire::GatewaySpec {
+                unique_id: "AB12".into(),
+                address: "192.168.1.9".into(),
+                http_port: 47989,
+                https_port: 47984,
+                app_id: 881448767,
+            })),
+            ..steam_spec()
+        }
+    }
+
+    #[test]
+    fn a_gateway_is_one_labelled_container_with_the_identity_and_no_gpu() {
+        let rt = runtime();
+        let g = rt.gateway_config(&gateway_spec(), 7602);
+        assert_eq!(g["Image"], "cha/gateway:dev");
+        assert_eq!(
+            cmd_of(&g),
+            [
+                "--listen",
+                "127.0.0.1",
+                "--http-port",
+                "7602",
+                "--webrtc-port",
+                "7603",
+                "--portal-key",
+                "cG9ydGFs",
+                "--environment-id",
+                "e1",
+                "--width",
+                "2560",
+                "--height",
+                "1440",
+                "--fps",
+                "60",
+                "--host",
+                "192.168.1.9",
+                "--host-http-port",
+                "47989",
+                "--host-https-port",
+                "47984",
+                "--host-unique-id",
+                "AB12",
+                "--app-id",
+                "881448767",
+                "--identity-dir",
+                "/identity",
+            ]
+        );
+        assert_eq!(g["Labels"]["sh.cha.role"], "streamer");
+        assert_eq!(g["Labels"]["sh.cha.http-port"], "7602");
+        assert_eq!(g["Labels"]["sh.cha.env"], "e1");
+        assert_eq!(g["Labels"]["sh.cha.owner"], "u1");
+        assert_eq!(g["Labels"]["sh.cha.template"], "moonlight:h1:881448767");
+        let host = &g["HostConfig"];
+        assert_eq!(host["NetworkMode"], "host");
+        assert!(host.get("DeviceRequests").is_none() && host.get("Devices").is_none());
+        let mounts = host["Mounts"].as_array().unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0]["Source"], "/srv/cha-portal/node/moonlight");
+        assert_eq!(mounts[0]["Target"], "/identity");
+        assert_eq!(mounts[0]["ReadOnly"], true);
+
+        let mut rt = runtime();
+        rt.config.public_address = Some("203.0.113.5".into());
+        let cmd = cmd_of(&rt.gateway_config(&gateway_spec(), 7602)).join(" ");
+        assert!(cmd.contains("--public-address 203.0.113.5 --host 192.168.1.9"));
+    }
+
+    #[tokio::test]
+    async fn a_gateway_launch_makes_no_app_and_is_refused_unpaired() {
+        let (engine, _dir, docker) = fake_engine();
+        let root = tempfile::tempdir().unwrap();
+        let rt = runtime_with(
+            docker,
+            root.path().to_path_buf(),
+            (1000, 1000),
+            BTreeMap::new(),
+        );
+        let err = rt.start_environment(gateway_spec()).await.unwrap_err();
+        assert!(format!("{err:#}").contains("isn't paired"), "{err:#}");
+        assert!(engine.requests.lock().unwrap().is_empty());
+
+        let host = crate::moonlight::dir(root.path()).join("hosts/AB12");
+        std::fs::create_dir_all(&host).unwrap();
+        std::fs::write(host.join("server-cert.pem"), "x").unwrap();
+        rt.start_environment(gateway_spec()).await.unwrap();
+        let created = engine.created();
+        assert!(!created.contains_key("cha-env-e1-app"));
+        let g = &created["cha-env-e1-streamer"];
+        assert_eq!(g["Labels"]["sh.cha.role"], "streamer");
+        assert_eq!(created.len(), 1);
     }
 
     fn device_spec(kind: DeviceKind, render_node: Option<&str>) -> EnvironmentSpec {

@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use cha_node::claim::{self, ClaimConfig};
 use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime, PublishedImages};
+use cha_node::moonlight::{self, Moonlight};
 use cha_node::storage::{DataRoot, parse_shared_dirs};
 use cha_node::{
     Agent, Identity, check_portal_transport, doctor, enroll, hostfiles, init_tls, inventory,
@@ -57,6 +58,15 @@ struct Args {
     /// The streamer image each environment runs beside its app.
     #[arg(long, env = "CHA_STREAMER_IMAGE", default_value = "cha/streamer:dev")]
     streamer_image: String,
+    /// The image that streams a Moonlight host's app (Sunshine, Apollo); like
+    /// app images, `cha/gateway:dev` runs as `<registry>/cha-gateway:<tag>`
+    /// when `CHA_IMAGE_REGISTRY` is set.
+    #[arg(long, env = "CHA_GATEWAY_IMAGE", default_value = "cha/gateway:dev")]
+    gateway_image: String,
+    /// Look for Moonlight hosts (Sunshine, Apollo) on the LAN so the portal can
+    /// adopt them (`_nvstream._tcp`). false turns it off.
+    #[arg(long, env = "CHA_MOONLIGHT", default_value_t = true, action = clap::ArgAction::Set)]
+    moonlight: bool,
     /// The CDI device that gives containers the GPU.
     #[arg(long, env = "CHA_GPU_DEVICE", default_value = "nvidia.com/gpu=all")]
     gpu_device: String,
@@ -137,7 +147,14 @@ async fn main() -> Result<()> {
     let config = docker_config(&args)?;
     if args.doctor {
         let identity = Identity::load(&args.state_dir).ok().flatten();
-        let ok = doctor::run(&docker, &config, identity.as_ref(), &args.state_dir).await;
+        let ok = doctor::run(
+            &docker,
+            &config,
+            identity.as_ref(),
+            &args.state_dir,
+            args.moonlight,
+        )
+        .await;
         std::process::exit(if ok { 0 } else { 1 });
     }
 
@@ -195,6 +212,12 @@ async fn main() -> Result<()> {
         warn!(portal = %identity.portal_url, "plain HTTP to the portal (CHA_ALLOW_INSECURE_PORTAL): for development only");
     }
     let mut agent = Agent::new(identity)?;
+    if args.moonlight {
+        match Moonlight::spawn(moonlight::dir(&config.data_root)) {
+            Ok(moonlight) => agent = agent.with_moonlight(moonlight),
+            Err(err) => warn!("can't look for Moonlight hosts: {err:#}"),
+        }
+    }
     match DockerRuntime::new(docker, config.clone()).await {
         Ok(runtime) => {
             info!(streamer = %config.streamer_image, render_node = %config.render_node, data_root = %config.data_root.display(), "running environments with Docker");
@@ -242,6 +265,7 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
             args.image_registry.as_deref(),
             args.image_tag.as_deref(),
         )?,
+        gateway_image: args.gateway_image.trim().to_string(),
     })
 }
 

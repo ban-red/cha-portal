@@ -10,13 +10,15 @@ use std::time::Duration;
 use anyhow::Result;
 use cha_control::{AppState, Config, app, db};
 use cha_node::environments::{Connect, Exit, Progress, Runtime};
+use cha_node::moonlight::{Control, Paired};
 use cha_node::{Agent, Identity, enroll, init_tls};
 use cha_wire::{
-    Device, DeviceKind, EnvironmentSpec, Gpu, Inventory, SecurityProfile, StreamerEndpoint, close,
+    Device, DeviceKind, EnvironmentSpec, Gpu, Inventory, MoonlightApp, MoonlightHost,
+    SecurityProfile, StreamerEndpoint, close,
 };
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::{Semaphore, broadcast, watch};
 
 struct Portal {
     url: String,
@@ -1157,4 +1159,477 @@ async fn placements_offer_every_device_and_launches_take_the_choice() {
         )
         .await;
     assert_eq!(spec.unwrap().device.unwrap().id, "nvidia:0");
+}
+
+// ---- Moonlight hosts (ADR 0008) ----
+
+/// A node's Moonlight side: the hosts it "sees", a PIN, and some apps.
+struct FakeMoonlight {
+    hosts: watch::Sender<Vec<MoonlightHost>>,
+    paired: broadcast::Sender<Paired>,
+    pairs: Mutex<Vec<String>>,
+}
+
+impl FakeMoonlight {
+    fn new(hosts: Vec<MoonlightHost>) -> Arc<Self> {
+        Arc::new(Self {
+            hosts: watch::channel(hosts).0,
+            paired: broadcast::channel(8).0,
+            pairs: Mutex::default(),
+        })
+    }
+}
+
+impl Control for FakeMoonlight {
+    fn hosts(&self) -> watch::Receiver<Vec<MoonlightHost>> {
+        self.hosts.subscribe()
+    }
+
+    fn paired(&self) -> broadcast::Receiver<Paired> {
+        self.paired.subscribe()
+    }
+
+    fn pair(self: Arc<Self>, unique_id: String) -> BoxFuture<'static, Result<String>> {
+        Box::pin(async move {
+            self.pairs.lock().unwrap().push(unique_id);
+            Ok("1234".to_string())
+        })
+    }
+
+    fn apps(self: Arc<Self>, unique_id: String) -> BoxFuture<'static, Result<Vec<MoonlightApp>>> {
+        Box::pin(async move {
+            let paired = self
+                .hosts
+                .borrow()
+                .iter()
+                .any(|h| h.unique_id == unique_id && h.paired);
+            anyhow::ensure!(paired, "not paired with that host");
+            Ok(vec![
+                MoonlightApp {
+                    id: 1,
+                    name: "Desktop".into(),
+                    hdr: false,
+                },
+                MoonlightApp {
+                    id: 881448767,
+                    name: "Steam Big Picture".into(),
+                    hdr: true,
+                },
+            ])
+        })
+    }
+}
+
+fn gaming_pc(paired: bool) -> MoonlightHost {
+    MoonlightHost {
+        unique_id: "AB12".into(),
+        name: "gaming-pc".into(),
+        address: "192.168.1.9".into(),
+        http_port: 47989,
+        https_port: 47984,
+        paired,
+        codecs: vec!["h264".into(), "hevc".into()],
+        app_version: None,
+    }
+}
+
+/// A portal with a node that sees `hosts`.
+async fn portal_with_moonlight(
+    runtime: &Arc<FakeRuntime>,
+    hosts: Vec<MoonlightHost>,
+) -> (Portal, String, Arc<FakeMoonlight>) {
+    let moonlight = FakeMoonlight::new(hosts);
+    let p = portal().await;
+    let identity = enroll(&p.url, &p.join_token().await, "gpu-box")
+        .await
+        .unwrap();
+    let agent = Agent::new(identity.clone())
+        .unwrap()
+        .with_inventory(test_inventory)
+        .with_runtime(runtime.clone())
+        .with_moonlight(moonlight.clone());
+    tokio::spawn(async move { agent.run().await });
+    p.wait_for_node(&identity.node_id, |n| {
+        n["online"] == true && !n["inventory"].is_null()
+    })
+    .await;
+    (p, identity.node_id, moonlight)
+}
+
+impl Portal {
+    /// Polls `path` as the admin until `check` passes.
+    async fn wait_for(&self, path: &str, check: impl Fn(&Value) -> bool) -> Value {
+        for _ in 0..100 {
+            let (_, body) = self.admin("GET", path, None).await;
+            if check(&body) {
+                return body;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("{path} never reached the expected state");
+    }
+
+    /// A signed-in plain user's cookie.
+    async fn user_cookie(&self, username: &str, role: &str) -> String {
+        let (status, body) = self
+            .admin(
+                "POST",
+                "/api/users",
+                Some(json!({ "username": username, "password": "correct horse battery", "role": role })),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        let res = self
+            .http
+            .post(format!("{}/api/auth/login", self.url))
+            .json(&json!({ "username": username, "password": "correct horse battery" }))
+            .send()
+            .await
+            .unwrap();
+        res.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn as_user(
+        &self,
+        cookie: &str,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (u16, Value) {
+        let mut req = self
+            .http
+            .request(method.parse().unwrap(), format!("{}{path}", self.url))
+            .header("cookie", cookie);
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+        let res = req.send().await.unwrap();
+        let status = res.status().as_u16();
+        (status, res.json().await.unwrap_or(Value::Null))
+    }
+}
+
+#[tokio::test]
+async fn a_paired_host_is_adopted_launched_through_its_node_and_removed() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, node, _moonlight) = portal_with_moonlight(&runtime, vec![gaming_pc(true)]).await;
+    let key = format!("{node}:AB12");
+
+    // Only admins find and adopt.
+    let alice = p.user_cookie("alice", "user").await;
+    for (method, path, body) in [
+        ("GET", "/api/moonlight/found", None),
+        ("POST", "/api/moonlight/adopt", Some(json!({ "key": key }))),
+        ("GET", "/api/moonlight/pairing/x", None),
+    ] {
+        let (status, _) = p.as_user(&alice, method, path, body).await;
+        assert_eq!(status, 403, "{path}");
+    }
+
+    let found = p
+        .wait_for("/api/moonlight/found", |b| {
+            !b["hosts"].as_array().unwrap().is_empty()
+        })
+        .await;
+    assert_eq!(
+        found["hosts"][0],
+        json!({
+            "key": key, "nodeId": node, "nodeName": "gpu-box", "name": "gaming-pc",
+            "address": "192.168.1.9", "uniqueId": "AB12", "paired": true,
+        })
+    );
+
+    let (status, body) = p
+        .admin(
+            "POST",
+            "/api/moonlight/adopt",
+            Some(json!({ "key": "nope:AB12" })),
+        )
+        .await;
+    assert_eq!((status, &body["error"]), (404, &json!("not_found")));
+
+    let (status, body) = p
+        .admin("POST", "/api/moonlight/adopt", Some(json!({ "key": key })))
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "adopted");
+    let host = &body["host"];
+    let host_id = host["id"].as_str().unwrap().to_string();
+    assert_eq!(host["name"], "gaming-pc");
+    assert_eq!(host["nodeName"], "gpu-box");
+    assert_eq!(host["online"], true);
+    assert_eq!(host["codecs"], json!(["h264", "hevc"]));
+    assert_eq!(host["busy"], Value::Null);
+    assert!(host["appsAt"].as_i64().unwrap() > 1_000_000_000);
+    assert!(
+        host["appsAt"].as_i64().unwrap() < 100_000_000_000,
+        "seconds, not ms"
+    );
+    let template = format!("moonlight:{host_id}:881448767");
+    assert_eq!(
+        host["apps"][1],
+        json!({ "templateId": template, "appId": 881448767, "name": "Steam Big Picture", "hdr": true })
+    );
+
+    // Adopted hosts leave the found list, and can't be adopted twice.
+    let (_, found) = p.admin("GET", "/api/moonlight/found", None).await;
+    assert_eq!(found["hosts"], json!([]));
+    let (status, body) = p
+        .admin("POST", "/api/moonlight/adopt", Some(json!({ "key": key })))
+        .await;
+    assert_eq!((status, &body["error"]), (409, &json!("already_adopted")));
+
+    // Everyone signed in lists them.
+    let (status, listed) = p.as_user(&alice, "GET", "/api/moonlight/hosts", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(listed["hosts"][0]["id"], host_id);
+    let guest = p.user_cookie("gus", "guest").await;
+    let (status, _) = p.as_user(&guest, "GET", "/api/moonlight/hosts", None).await;
+    assert_eq!(status, 403);
+
+    // Launching an app: the gateway spec, on the host's node.
+    let (status, env, spec) = p.launch(&runtime, &template).await;
+    assert_eq!(status, 200, "{env}");
+    assert_eq!(env["templateName"], "Steam Big Picture");
+    assert_eq!(env["nodeName"], "gpu-box");
+    assert_eq!(env["codecs"], json!(["h264", "hevc"]));
+    let spec = spec.unwrap();
+    assert_eq!(spec.image, "cha/gateway:dev");
+    assert_eq!(spec.template, template);
+    assert!(spec.storage.is_none());
+    let gateway = spec.gateway.expect("a gateway launch");
+    assert_eq!(
+        (
+            gateway.unique_id.as_str(),
+            gateway.address.as_str(),
+            gateway.http_port,
+            gateway.https_port,
+            gateway.app_id
+        ),
+        ("AB12", "192.168.1.9", 47989, 47984, 881448767)
+    );
+    let env_id = env["id"].as_str().unwrap().to_string();
+
+    // The host has one at a time, naming who.
+    let (status, body) = p
+        .admin(
+            "POST",
+            "/api/environments",
+            Some(json!({ "templateId": format!("moonlight:{host_id}:1") })),
+        )
+        .await;
+    assert_eq!(
+        (status, &body["error"]),
+        (409, &json!("host_busy")),
+        "{body}"
+    );
+    assert!(body["message"].as_str().unwrap().contains("gaming-pc"));
+    let (_, listed) = p.admin("GET", "/api/moonlight/hosts", None).await;
+    assert_eq!(listed["hosts"][0]["busy"]["environmentId"], env_id);
+    let (status, body) = p
+        .admin("DELETE", &format!("/api/moonlight/hosts/{host_id}"), None)
+        .await;
+    assert_eq!((status, &body["error"]), (409, &json!("host_busy")));
+
+    // Other apps launch as before; an app the host doesn't offer is unknown.
+    let (status, body, _) = p.launch(&runtime, &format!("moonlight:{host_id}:99")).await;
+    assert_eq!((status, &body["error"]), (400, &json!("unknown_template")));
+    let (status, _, _) = p.launch(&runtime, "test-pattern").await;
+    assert_eq!(status, 200);
+
+    p.stop(&env_id).await;
+    let (status, refreshed) = p
+        .admin(
+            "POST",
+            &format!("/api/moonlight/hosts/{host_id}/refresh"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{refreshed}");
+    assert_eq!(refreshed["apps"].as_array().unwrap().len(), 2);
+    let (status, _) = p
+        .admin("DELETE", &format!("/api/moonlight/hosts/{host_id}"), None)
+        .await;
+    assert_eq!(status, 204);
+    let (_, listed) = p.admin("GET", "/api/moonlight/hosts", None).await;
+    assert_eq!(listed["hosts"], json!([]));
+    let (status, _) = p
+        .admin("DELETE", &format!("/api/moonlight/hosts/{host_id}"), None)
+        .await;
+    assert_eq!(status, 404);
+    // Back on the found list.
+    p.wait_for("/api/moonlight/found", |b| {
+        b["hosts"].as_array().unwrap().len() == 1
+    })
+    .await;
+
+    let (_, audit) = p.admin("GET", "/api/audit", None).await;
+    let actions: Vec<&str> = audit
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"moonlight.adopted") && actions.contains(&"moonlight.removed"));
+}
+
+#[tokio::test]
+async fn an_unpaired_host_gives_a_pin_and_is_adopted_when_the_node_reports_pairing() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, node, moonlight) = portal_with_moonlight(&runtime, vec![gaming_pc(false)]).await;
+    let key = format!("{node}:AB12");
+    p.wait_for("/api/moonlight/found", |b| {
+        !b["hosts"].as_array().unwrap().is_empty()
+    })
+    .await;
+
+    // A host that isn't paired can't be launched, even once adopted-looking ids are guessed.
+    let (status, body) = p
+        .admin("POST", "/api/moonlight/adopt", Some(json!({ "key": key })))
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body,
+        json!({
+            "status": "pairing", "pin": "1234",
+            "pinUrl": "https://192.168.1.9:47990/pin", "hostName": "gaming-pc",
+        })
+    );
+    assert_eq!(*moonlight.pairs.lock().unwrap(), ["AB12"]);
+    let (status, body) = p
+        .admin("GET", &format!("/api/moonlight/pairing/{key}"), None)
+        .await;
+    assert_eq!((status, &body), (200, &json!({ "status": "pairing" })));
+    let (status, _) = p
+        .admin("GET", "/api/moonlight/pairing/other:AB12", None)
+        .await;
+    assert_eq!(status, 404);
+
+    // The PIN is entered: the node's list shows it paired and it says so.
+    moonlight.hosts.send_modify(|h| h[0].paired = true);
+    let _ = moonlight.paired.send(Paired {
+        unique_id: "AB12".into(),
+        ok: true,
+        message: None,
+    });
+    let done = p
+        .wait_for(&format!("/api/moonlight/pairing/{key}"), |b| {
+            b["status"] != "pairing"
+        })
+        .await;
+    assert_eq!(done["status"], "adopted", "{done}");
+    assert_eq!(done["host"]["name"], "gaming-pc");
+    assert_eq!(done["host"]["apps"].as_array().unwrap().len(), 2);
+    let (_, listed) = p.admin("GET", "/api/moonlight/hosts", None).await;
+    assert_eq!(listed["hosts"].as_array().unwrap().len(), 1, "adopted once");
+    let (_, audit) = p.admin("GET", "/api/audit", None).await;
+    let actions: Vec<&str> = audit
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"moonlight.paired") && actions.contains(&"moonlight.adopted"));
+}
+
+#[tokio::test]
+async fn a_failed_pairing_says_why_and_can_be_tried_again() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, node, moonlight) = portal_with_moonlight(&runtime, vec![gaming_pc(false)]).await;
+    let key = format!("{node}:AB12");
+    p.wait_for("/api/moonlight/found", |b| {
+        !b["hosts"].as_array().unwrap().is_empty()
+    })
+    .await;
+    p.admin("POST", "/api/moonlight/adopt", Some(json!({ "key": key })))
+        .await;
+    let _ = moonlight.paired.send(Paired {
+        unique_id: "AB12".into(),
+        ok: false,
+        message: Some("the PIN wasn't entered on the host within 5 minutes".into()),
+    });
+    let done = p
+        .wait_for(&format!("/api/moonlight/pairing/{key}"), |b| {
+            b["status"] != "pairing"
+        })
+        .await;
+    assert_eq!(done["status"], "failed");
+    assert!(done["message"].as_str().unwrap().contains("5 minutes"));
+    let (status, body) = p
+        .admin("POST", "/api/moonlight/adopt", Some(json!({ "key": key })))
+        .await;
+    assert_eq!((status, body["status"].as_str()), (200, Some("pairing")));
+    let (_, body) = p
+        .admin("GET", &format!("/api/moonlight/pairing/{key}"), None)
+        .await;
+    assert_eq!(body["status"], "pairing");
+}
+
+#[tokio::test]
+async fn gateway_launches_go_only_to_a_node_that_sees_the_host_paired() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, node, moonlight) = portal_with_moonlight(&runtime, vec![gaming_pc(true)]).await;
+    p.wait_for("/api/moonlight/found", |b| {
+        !b["hosts"].as_array().unwrap().is_empty()
+    })
+    .await;
+    let (_, body) = p
+        .admin(
+            "POST",
+            "/api/moonlight/adopt",
+            Some(json!({ "key": format!("{node}:AB12") })),
+        )
+        .await;
+    let template = body["host"]["apps"][0]["templateId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The node loses the host (it went to sleep): nothing launches, and it shows offline.
+    moonlight.hosts.send_modify(|h| h.clear());
+    p.wait_for("/api/moonlight/hosts", |b| b["hosts"][0]["online"] == false)
+        .await;
+    let (status, body, _) = p.launch(&runtime, &template).await;
+    assert_eq!((status, &body["error"]), (409, &json!("no_node")), "{body}");
+
+    // It comes back unpaired (someone removed the client on the host): same.
+    moonlight.hosts.send_modify(|h| h.push(gaming_pc(false)));
+    p.wait_for("/api/moonlight/hosts", |b| b["hosts"][0]["online"] == true)
+        .await;
+    let (status, body, _) = p.launch(&runtime, &template).await;
+    assert_eq!((status, &body["error"]), (409, &json!("no_node")), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("no longer paired")
+    );
+    assert!(runtime.started.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_node_without_moonlight_offers_none_and_adopting_it_is_unreachable() {
+    let runtime = FakeRuntime::new(&[]);
+    let (p, node) = {
+        let (p, _) = portal_with_node(&runtime).await;
+        let (_, nodes) = p.admin("GET", "/api/nodes", None).await;
+        let node = nodes[0]["id"].as_str().unwrap().to_string();
+        (p, node)
+    };
+    let (_, found) = p.admin("GET", "/api/moonlight/found", None).await;
+    assert_eq!(found["hosts"], json!([]));
+    let (status, body) = p
+        .admin(
+            "POST",
+            "/api/moonlight/adopt",
+            Some(json!({ "key": format!("{node}:AB12") })),
+        )
+        .await;
+    assert_eq!((status, &body["error"]), (404, &json!("not_found")));
 }

@@ -44,6 +44,11 @@
 //! a node that predates it ignores it and makes Xbox 360 pads, which is what
 //! a spec without it means, so an older portal's launches are unchanged.
 //!
+//! Moonlight hosts (ADR 0008) are the same kind of addition: the node sends
+//! [`ToPortal::MoonlightHosts`] only once the welcome says the portal reads
+//! them ([`ToNode::Welcome::moonlight`]), and [`EnvironmentSpec::gateway`] is an
+//! optional field the portal sets only for a node that has sent that list.
+//!
 //! Devices (`docs/devices.md`) are two more optional fields:
 //! [`Inventory::devices`] and [`EnvironmentSpec::device`]. A node that predates
 //! them reports none, and [`Inventory::devices_or_derived`] reads its NVIDIA
@@ -118,6 +123,10 @@ pub enum ToNode {
         /// same reason.
         #[serde(default)]
         node_usage: bool,
+        /// The portal reads [`ToPortal::MoonlightHosts`] and
+        /// [`ToPortal::MoonlightPaired`]; the same guard.
+        #[serde(default)]
+        moonlight: bool,
     },
     Request {
         id: u64,
@@ -181,6 +190,20 @@ pub enum ToPortal {
     Usage {
         usage: NodeUsage,
     },
+    /// The Moonlight hosts (Sunshine, Apollo) this node sees on its network:
+    /// the whole list, sent when it changes (only once the welcome says the
+    /// portal reads it).
+    MoonlightHosts {
+        hosts: Vec<MoonlightHost>,
+    },
+    /// A pairing started with [`NodeRequest::MoonlightPair`] ended: the PIN
+    /// was entered on the host (`ok`), or it failed or timed out.
+    MoonlightPaired {
+        unique_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     Request {
         id: u64,
         request: PortalRequest,
@@ -227,6 +250,16 @@ pub enum NodeRequest {
         user: String,
         template: String,
     },
+    /// Start pairing with a found Moonlight host. Answers with the PIN as soon
+    /// as there is one; the node goes on in the background and sends
+    /// [`ToPortal::MoonlightPaired`] when the PIN has been entered (or not).
+    MoonlightPair {
+        unique_id: String,
+    },
+    /// The apps a paired Moonlight host offers.
+    MoonlightApps {
+        unique_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +286,53 @@ pub enum NodeResponse {
         user: String,
         template: String,
     },
+    MoonlightPairing {
+        /// Four digits, for the user to enter on the host.
+        pin: String,
+    },
+    MoonlightApps {
+        apps: Vec<MoonlightApp>,
+    },
+}
+
+/// A Moonlight host a node found on its network (`_nvstream._tcp`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoonlightHost {
+    /// The host's `uniqueid` from `/serverinfo`.
+    pub unique_id: String,
+    pub name: String,
+    pub address: String,
+    pub http_port: u16,
+    pub https_port: u16,
+    /// This node is paired with it.
+    pub paired: bool,
+    /// What it encodes: `h264`, `hevc`.
+    #[serde(default)]
+    pub codecs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+}
+
+/// An app a Moonlight host offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoonlightApp {
+    pub id: u32,
+    pub name: String,
+    #[serde(default)]
+    pub hdr: bool,
+}
+
+/// The Moonlight host and app a gateway environment streams.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewaySpec {
+    pub unique_id: String,
+    pub address: String,
+    pub http_port: u16,
+    pub https_port: u16,
+    pub app_id: u32,
 }
 
 /// What to run, decided by the portal from a catalog template.
@@ -303,6 +383,12 @@ pub struct EnvironmentSpec {
     /// start request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<Box<DeviceChoice>>,
+    /// A Moonlight app to stream through `cha-gateway` instead of running
+    /// `image` beside the streamer (ADR 0008). A node that predates it would
+    /// run `image` as an app, so the portal sends it only to a node that has
+    /// sent [`ToPortal::MoonlightHosts`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<Box<GatewaySpec>>,
 }
 
 /// What kind of device an environment runs on (`docs/devices.md`).
@@ -777,9 +863,98 @@ mod tests {
             ToNode::Welcome {
                 environment_warnings: false,
                 node_usage: false,
+                moonlight: false,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn moonlight_messages_round_trip_and_a_gateway_spec_is_optional() {
+        let host = MoonlightHost {
+            unique_id: "ABC".into(),
+            name: "gaming-pc".into(),
+            address: "192.168.1.9".into(),
+            http_port: 47989,
+            https_port: 47984,
+            paired: true,
+            codecs: vec!["h264".into(), "hevc".into()],
+            app_version: None,
+        };
+        let json = serde_json::to_value(ToPortal::MoonlightHosts {
+            hosts: vec![host.clone()],
+        })
+        .unwrap();
+        assert_eq!(json["type"], "moonlight_hosts");
+        assert_eq!(json["hosts"][0]["uniqueId"], "ABC");
+        assert!(json["hosts"][0].get("appVersion").is_none());
+        let back: ToPortal = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ToPortal::MoonlightHosts { hosts } if hosts == vec![host]));
+
+        let paired = serde_json::to_value(ToPortal::MoonlightPaired {
+            unique_id: "ABC".into(),
+            ok: false,
+            message: Some("timed out".into()),
+        })
+        .unwrap();
+        assert_eq!(paired["message"], "timed out");
+        assert!(matches!(
+            serde_json::from_value::<ToPortal>(paired).unwrap(),
+            ToPortal::MoonlightPaired { ok: false, .. }
+        ));
+
+        let req = serde_json::to_value(NodeRequest::MoonlightPair {
+            unique_id: "ABC".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            req,
+            serde_json::json!({ "op": "moonlight_pair", "unique_id": "ABC" })
+        );
+        let resp: NodeResponse =
+            serde_json::from_value(serde_json::json!({ "op": "moonlight_pairing", "pin": "1234" }))
+                .unwrap();
+        assert!(matches!(resp, NodeResponse::MoonlightPairing { pin } if pin == "1234"));
+        let apps: NodeResponse = serde_json::from_value(
+            serde_json::json!({ "op": "moonlight_apps", "apps": [{ "id": 1, "name": "Desktop" }] }),
+        )
+        .unwrap();
+        assert!(matches!(apps, NodeResponse::MoonlightApps { apps } if !apps[0].hdr));
+
+        // A welcome from a portal that predates Moonlight doesn't carry the flag.
+        let old: ToNode = serde_json::from_value(
+            serde_json::json!({ "type": "welcome", "node_id": "n", "heartbeat_secs": 15 }),
+        )
+        .unwrap();
+        assert!(matches!(
+            old,
+            ToNode::Welcome {
+                moonlight: false,
+                ..
+            }
+        ));
+
+        // A spec without a gateway leaves the key out and reads back without one.
+        let gw = GatewaySpec {
+            unique_id: "ABC".into(),
+            address: "192.168.1.9".into(),
+            http_port: 47989,
+            https_port: 47984,
+            app_id: 881448767,
+        };
+        let spec: EnvironmentSpec = serde_json::from_value(serde_json::json!({
+            "id": "e", "image": "cha/gateway:dev", "security": "standard", "shmMb": 64,
+            "width": 1920, "height": 1080, "fps": 60, "portalKey": "k",
+            "gateway": serde_json::to_value(&gw).unwrap()
+        }))
+        .unwrap();
+        assert_eq!(spec.gateway.as_deref(), Some(&gw));
+        let plain = serde_json::to_value(EnvironmentSpec {
+            gateway: None,
+            ..spec
+        })
+        .unwrap();
+        assert!(plain.get("gateway").is_none());
     }
 
     #[test]
@@ -896,6 +1071,7 @@ mod tests {
                 storage: None,
                 gamepad: None,
                 device: None,
+                gateway: None,
             },
         })
         .unwrap();
@@ -971,6 +1147,7 @@ mod tests {
             storage: None,
             gamepad,
             device: None,
+            gateway: None,
         };
         // Absent when unset, so an older node reads what it always did.
         let json = serde_json::to_value(spec(None)).unwrap();
@@ -1035,6 +1212,7 @@ mod tests {
             })),
             gamepad: None,
             device: None,
+            gateway: None,
         };
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(

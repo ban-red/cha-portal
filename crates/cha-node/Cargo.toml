@@ -27,6 +27,10 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 if-addrs = "0.15"
 # Advertises an unclaimed node on the LAN (ADR 0007).
 mdns-sd = "0.21"
+# The Moonlight client for GameStream hosts (ADR 0008). GPL-3.0-or-later,
+# combinable with our AGPL-3.0-or-later. Pinned: the crate is young and its API moves.
+moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-rust", rev = "104ddf11f5dabe414c11e87e607fec7976e8bbb1", default-features = false, features = ["tokio-hyper", "rustcrypto"] }
+pem = "3"
 # TLS is rustls with the ring provider throughout, trusting the system's roots
 # (add a homelab CA to the system store).
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
@@ -46,3 +50,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
 cha-control = { path = "../cha-control" }
 tempfile = "3"
+# Paused time, for the Moonlight refresh timings.
+tokio = { version = "1", features = ["test-util"] }

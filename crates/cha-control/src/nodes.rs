@@ -323,12 +323,17 @@ async fn serve_node(state: AppState, mut socket: WebSocket) -> anyhow::Result<()
         heartbeat_secs: HEARTBEAT_SECS,
         environment_warnings: true,
         node_usage: true,
+        moonlight: true,
     };
     send(&mut socket, &welcome).await?;
     info!(%node_id, name = %node.name, %agent_version, "node connected");
 
     let result = pump(&state, &node_id, &mut socket, &mut rx, &pending).await;
     state.nodes.unregister(&node_id, serial).await;
+    // Its list is stale once it is gone (unless a newer connection took over).
+    if state.nodes.connected_since(&node_id).await.is_none() {
+        state.moonlight.forget(&node_id);
+    }
     info!(%node_id, "node disconnected");
     result
 }
@@ -365,6 +370,23 @@ async fn pump(
                 match serde_json::from_str::<ToPortal>(&text)? {
                     ToPortal::Heartbeat => db::touch_node(&state.db, node_id, None).await?,
                     ToPortal::Usage { usage } => state.nodes.record_usage(node_id, usage),
+                    ToPortal::MoonlightHosts { hosts } => {
+                        let first = state.moonlight.set_found(node_id, hosts);
+                        tokio::spawn(crate::moonlight::hosts_changed(
+                            state.clone(),
+                            node_id.to_string(),
+                            first,
+                        ));
+                    }
+                    ToPortal::MoonlightPaired { unique_id, ok, message } => {
+                        tokio::spawn(crate::moonlight::pairing_finished(
+                            state.clone(),
+                            node_id.to_string(),
+                            unique_id,
+                            ok,
+                            message,
+                        ));
+                    }
                     ToPortal::Inventory { inventory } => {
                         let json = serde_json::to_string(&inventory)?;
                         db::set_node_inventory(&state.db, node_id, &json).await?;

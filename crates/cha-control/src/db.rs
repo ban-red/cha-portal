@@ -878,3 +878,141 @@ pub async fn set_user_prefs(
     .await?;
     Ok(())
 }
+
+// ---- Moonlight hosts (ADR 0008) ----
+
+#[derive(Clone, Debug, FromRow)]
+pub struct MoonlightHostRow {
+    pub id: String,
+    pub node_id: String,
+    pub unique_id: String,
+    pub name: String,
+    pub address: Option<String>,
+    pub http_port: Option<i64>,
+    pub https_port: Option<i64>,
+    /// A JSON array of codec names.
+    pub codecs: Option<String>,
+    /// A JSON array of `{id, name, hdr}`.
+    pub apps: Option<String>,
+    pub apps_at: Option<i64>,
+    pub adopted_by: Option<String>,
+    pub created_at: Option<i64>,
+}
+
+const MOONLIGHT_COLUMNS: &str = "id, node_id, unique_id, name, address, http_port, https_port, codecs, apps, apps_at, adopted_by, created_at";
+
+pub async fn moonlight_hosts(db: &SqlitePool) -> Result<Vec<MoonlightHostRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {MOONLIGHT_COLUMNS} FROM moonlight_hosts ORDER BY name, id"
+    ))
+    .fetch_all(db)
+    .await
+}
+
+pub async fn moonlight_host(
+    db: &SqlitePool,
+    id: &str,
+) -> Result<Option<MoonlightHostRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {MOONLIGHT_COLUMNS} FROM moonlight_hosts WHERE id = ?"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await
+}
+
+pub async fn moonlight_host_of_node(
+    db: &SqlitePool,
+    node_id: &str,
+    unique_id: &str,
+) -> Result<Option<MoonlightHostRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {MOONLIGHT_COLUMNS} FROM moonlight_hosts WHERE node_id = ? AND unique_id = ?"
+    ))
+    .bind(node_id)
+    .bind(unique_id)
+    .fetch_optional(db)
+    .await
+}
+
+pub async fn insert_moonlight_host(
+    db: &SqlitePool,
+    row: &MoonlightHostRow,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(&format!(
+        "INSERT INTO moonlight_hosts ({MOONLIGHT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ))
+    .bind(&row.id)
+    .bind(&row.node_id)
+    .bind(&row.unique_id)
+    .bind(&row.name)
+    .bind(&row.address)
+    .bind(row.http_port)
+    .bind(row.https_port)
+    .bind(&row.codecs)
+    .bind(&row.apps)
+    .bind(row.apps_at)
+    .bind(&row.adopted_by)
+    .bind(row.created_at)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Where the node last saw the host and what it encodes.
+pub async fn update_moonlight_host_found(
+    db: &SqlitePool,
+    id: &str,
+    name: &str,
+    address: &str,
+    http_port: i64,
+    https_port: i64,
+    codecs: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE moonlight_hosts SET name = ?, address = ?, http_port = ?, https_port = ?, codecs = ? WHERE id = ?",
+    )
+    .bind(name)
+    .bind(address)
+    .bind(http_port)
+    .bind(https_port)
+    .bind(codecs)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_moonlight_apps(db: &SqlitePool, id: &str, apps: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE moonlight_hosts SET apps = ?, apps_at = ? WHERE id = ?")
+        .bind(apps)
+        .bind(now())
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_moonlight_host(db: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM moonlight_hosts WHERE id = ?")
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected()
+        > 0)
+}
+
+/// The live environment streaming one of a host's apps: its id and its
+/// owner's display name.
+pub async fn live_moonlight_environment(
+    db: &SqlitePool,
+    host_id: &str,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT e.id, u.display_name FROM environments e JOIN users u ON u.id = e.owner_id \
+         WHERE e.template_id LIKE ? AND e.state IN ('starting', 'running', 'stopping') LIMIT 1",
+    )
+    .bind(format!("moonlight:{host_id}:%"))
+    .fetch_optional(db)
+    .await
+}

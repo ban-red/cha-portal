@@ -16,6 +16,7 @@ pub mod discovery;
 pub mod environments;
 pub mod error;
 pub mod ice;
+pub mod moonlight;
 pub mod nodes;
 pub mod placement;
 pub mod prefs;
@@ -69,6 +70,8 @@ pub struct AppState {
     pub media_key: Arc<cha_wire::NodeKey>,
     /// Unclaimed nodes seen on the LAN.
     pub discovered: Arc<discovery::Discovered>,
+    /// Moonlight hosts the nodes see, and pairings in progress (ADR 0008).
+    pub moonlight: Arc<moonlight::State>,
 }
 
 impl AppState {
@@ -83,6 +86,7 @@ impl AppState {
             nodes: Arc::default(),
             media_key,
             discovered: Arc::default(),
+            moonlight: Arc::default(),
         })
     }
 }
@@ -142,6 +146,7 @@ pub async fn run(config: Config) -> Result<()> {
     {
         warn!("can't look for nodes on the LAN: {err:#}");
     }
+    tokio::spawn(moonlight::refresh_loop(state.clone()));
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;

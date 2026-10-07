@@ -65,6 +65,7 @@ pub async fn run(
     config: &DockerConfig,
     identity: Option<&Identity>,
     state_dir: &Path,
+    moonlight: bool,
 ) -> bool {
     let mut checks = Vec::new();
     let engine = docker.version().await;
@@ -90,6 +91,7 @@ pub async fn run(
     if engine.is_ok() {
         checks.push(legacy_homes(docker, config).await);
     }
+    checks.push(moonlight_hosts(docker, config, engine.is_ok(), moonlight).await);
     checks.push(render_node(&config.render_node));
     checks.push(pad_modules(&PAD_MODULES));
     checks.push(user_namespaces());
@@ -173,6 +175,52 @@ async fn images(docker: &Docker, config: &DockerConfig) -> Check {
             });
         }
         check(level, "Images", format!("missing {}", missing.join(", "))).fix(fixes.join(" && "))
+    }
+}
+
+/// Moonlight hosts on the LAN (ADR 0008): how many this node sees and is
+/// paired with, and whether the gateway image is here.
+async fn moonlight_hosts(
+    docker: &Docker,
+    config: &DockerConfig,
+    engine: bool,
+    enabled: bool,
+) -> Check {
+    if !enabled {
+        return check(Level::Info, "Moonlight", "off (CHA_MOONLIGHT=false)");
+    }
+    let dir = crate::moonlight::dir(&config.data_root);
+    let moonlight = match crate::moonlight::Moonlight::spawn(dir) {
+        Ok(moonlight) => moonlight,
+        Err(err) => {
+            return check(
+                Level::Warn,
+                "Moonlight",
+                format!("can't browse the LAN: {err:#}"),
+            );
+        }
+    };
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let found = crate::moonlight::Control::hosts(&*moonlight)
+        .borrow()
+        .clone();
+    let paired = found.iter().filter(|h| h.paired).count();
+    let image = config.app_image(&config.gateway_image);
+    let have_image = engine && docker.image_exists(&image).await.unwrap_or(false);
+    let detail = format!(
+        "{} host(s) found, {paired} paired; gateway image {image} {}",
+        found.len(),
+        if have_image { "present" } else { "missing" }
+    );
+    if have_image || found.is_empty() {
+        check(Level::Ok, "Moonlight", detail)
+    } else {
+        let fix = if config.app_images.is_some() {
+            format!("docker pull {image}")
+        } else {
+            "docker build -f crates/cha-gateway/Dockerfile -t cha/gateway:dev .".to_string()
+        };
+        check(Level::Warn, "Moonlight", detail).fix(fix)
     }
 }
 

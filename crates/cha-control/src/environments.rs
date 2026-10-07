@@ -30,6 +30,7 @@ use crate::auth::{ClientInfo, CurrentUser};
 use crate::controllers;
 use crate::db::{self, EnvironmentRow, NodeRow, Role, User};
 use crate::error::{ApiError, ApiResult};
+use crate::moonlight;
 use crate::placement;
 use crate::storage::{self, SharedDefaults};
 
@@ -209,7 +210,12 @@ fn device_codecs(device: Device) -> Vec<String> {
     codecs
 }
 
-fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>, viewer: &User) -> EnvironmentView {
+fn view(
+    row: EnvironmentRow,
+    nodes: &HashMap<String, NodeRow>,
+    viewer: &User,
+    moonlight: &moonlight::Index,
+) -> EnvironmentView {
     let node = row.node_id.as_ref().and_then(|id| nodes.get(id));
     let inventory = node
         .and_then(|n| n.inventory.as_deref())
@@ -223,6 +229,8 @@ fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>, viewer: &User) ->
         };
         device.map(device_codecs)
     });
+    // A Moonlight environment's streamer is its host's.
+    let codecs = moonlight.codecs(&row.template_id).or(codecs);
     let host = inventory.and_then(|inv| inv.addresses.into_iter().next());
     let streamer = match (row.state.as_str(), row.http_port, row.webrtc_port) {
         ("running", Some(http_port), Some(webrtc_port)) => Some(StreamerView {
@@ -238,7 +246,9 @@ fn view(row: EnvironmentRow, nodes: &HashMap<String, NodeRow>, viewer: &User) ->
         .and_then(|j| serde_json::from_str(j).ok());
     EnvironmentView {
         template_name: template(&row.template_id)
-            .map_or_else(|| row.template_id.clone(), |t| t.name.clone()),
+            .map(|t| t.name.as_str())
+            .or_else(|| moonlight.name(&row.template_id))
+            .map_or_else(|| row.template_id.clone(), str::to_string),
         node_name: node.map(|n| n.name.clone()),
         id: row.id,
         template_id: row.template_id,
@@ -279,8 +289,11 @@ async fn list(
 ) -> ApiResult<Json<Vec<EnvironmentView>>> {
     let rows = db::list_environments(&state.db, Some(&user.id), LIST_LIMIT).await?;
     let nodes = nodes_by_id(&state).await?;
+    let index = moonlight::Index::load(&state).await?;
     Ok(Json(
-        rows.into_iter().map(|r| view(r, &nodes, &user)).collect(),
+        rows.into_iter()
+            .map(|r| view(r, &nodes, &user, &index))
+            .collect(),
     ))
 }
 
@@ -290,7 +303,12 @@ async fn show(
     Path(id): Path<String>,
 ) -> ApiResult<Json<EnvironmentView>> {
     let row = visible(&state, &user, &id).await?;
-    Ok(Json(view(row, &nodes_by_id(&state).await?, &user)))
+    Ok(Json(view(
+        row,
+        &nodes_by_id(&state).await?,
+        &user,
+        &moonlight::Index::load(&state).await?,
+    )))
 }
 
 #[derive(Deserialize)]
@@ -318,8 +336,18 @@ async fn launch(
             "guests can't launch environments",
         ));
     }
-    let template = template(&req.template_id)
+    let template = moonlight::resolve_template(&state, &req.template_id)
+        .await?
         .ok_or_else(|| ApiError::bad_request("unknown_template", "no such template"))?;
+    let template = &template;
+    // A host plays for one person at a time: the check and the new row are one step.
+    let _host = if template.class == moonlight::CLASS {
+        let guard = state.moonlight.launch.lock().await;
+        moonlight::check_free(&state, template).await?;
+        Some(guard)
+    } else {
+        None
+    };
     if db::count_live_environments(&state.db, &user.id).await? >= MAX_LIVE_PER_USER {
         return Err(ApiError::conflict(
             "too_many_environments",
@@ -343,7 +371,13 @@ async fn launch(
     }
     let gamepad = controllers::effective_for(&state, &user.id, template).await?;
     let fps = apps::fps_for(&state, &user.id, template).await?;
-    let (node, device) = place(&state, &user.id, template, &req).await?;
+    let (node, device, gateway) = if template.class == moonlight::CLASS {
+        let (node, device, gateway) = moonlight::place(&state, template).await?;
+        (node, device, Some(Box::new(gateway)))
+    } else {
+        let (node, device) = place(&state, &user.id, template, &req).await?;
+        (node, device, None)
+    };
     let app_data = storage::spec_storage(&user.id, template, settings);
     // A node that predates app data would drop what it can't read, and the
     // user's data would quietly not be kept (or shared). Placement leaves
@@ -388,13 +422,19 @@ async fn launch(
             gamepad,
             fps,
             device,
+            gateway,
         },
     );
     tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
     let row = db::environment_by_id(&state.db, &id)
         .await?
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the new environment vanished")))?;
-    Ok(Json(view(row, &nodes_by_id(&state).await?, &user)))
+    Ok(Json(view(
+        row,
+        &nodes_by_id(&state).await?,
+        &user,
+        &moonlight::Index::load(&state).await?,
+    )))
 }
 
 /// What a launch settles besides the app: the user's controller and frame rate
@@ -403,6 +443,8 @@ struct Settings {
     gamepad: GamepadKind,
     fps: u32,
     device: Device,
+    /// The Moonlight host and app it streams, for a Moonlight template.
+    gateway: Option<Box<cha_wire::GatewaySpec>>,
 }
 
 /// What a node runs for `owner`'s launch of `template`, with the app data
@@ -419,6 +461,7 @@ fn environment_spec(
         gamepad,
         fps,
         device,
+        gateway,
     } = settings;
     EnvironmentSpec {
         id,
@@ -446,6 +489,7 @@ fn environment_spec(
             kind: device.kind,
             render_node: device.render_node,
         })),
+        gateway,
     }
 }
 
@@ -475,7 +519,12 @@ async fn stop(
         }
     }
     let row = visible(&state, &user, &id).await?;
-    Ok(Json(view(row, &nodes_by_id(&state).await?, &user)))
+    Ok(Json(view(
+        row,
+        &nodes_by_id(&state).await?,
+        &user,
+        &moonlight::Index::load(&state).await?,
+    )))
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -961,6 +1010,7 @@ mod tests {
                 gamepad: GamepadKind::Xbox360,
                 fps: 60,
                 device: test_device(DeviceKind::Nvidia),
+                gateway: None,
             },
         );
         assert_eq!(spec.home, None);
@@ -988,6 +1038,7 @@ mod tests {
                 gamepad: GamepadKind::Dualsense,
                 fps: 120,
                 device: test_device(DeviceKind::Vaapi),
+                gateway: None,
             },
         );
         let device = plain.device.as_ref().expect("a device is always said");

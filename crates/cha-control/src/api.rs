@@ -29,6 +29,7 @@ pub fn routes() -> Router<AppState> {
         .route("/audit", get(audit))
         .merge(crate::nodes::routes())
         .merge(crate::environments::routes())
+        .merge(crate::moonlight::routes())
         .merge(crate::ice::routes())
         .merge(crate::storage::routes())
         .merge(crate::controllers::routes())

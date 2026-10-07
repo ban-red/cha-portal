@@ -16,6 +16,7 @@ pub mod doctor;
 pub mod environments;
 pub mod hostfiles;
 pub mod inventory;
+pub mod moonlight;
 pub mod storage;
 pub mod usage;
 
@@ -39,6 +40,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use crate::environments::{Exit, Progress, Runtime, Warning};
+use crate::moonlight::{Control, Paired};
 
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const IDENTITY_FILE: &str = "node.json";
@@ -208,6 +210,7 @@ pub struct Agent {
     key: NodeKey,
     inventory: fn() -> Inventory,
     runtime: Option<Arc<dyn Runtime>>,
+    moonlight: Option<Arc<dyn Control>>,
 }
 
 impl Agent {
@@ -217,7 +220,15 @@ impl Agent {
             identity,
             inventory: inventory::collect,
             runtime: None,
+            moonlight: None,
         })
+    }
+
+    /// Finds and pairs Moonlight hosts (ADR 0008); without it the node never
+    /// sends the portal a host list.
+    pub fn with_moonlight(mut self, moonlight: Arc<dyn Control>) -> Self {
+        self.moonlight = Some(moonlight);
+        self
     }
 
     /// Replaces the inventory probe (tests).
@@ -309,17 +320,19 @@ impl Agent {
             protocol: PROTOCOL_VERSION,
         };
         sink.send(encode(&hello)?).await?;
-        let (heartbeat, portal_reads_warnings, portal_reads_usage) =
+        let (heartbeat, portal_reads_warnings, portal_reads_usage, portal_reads_moonlight) =
             match next_message(&mut stream).await? {
                 Next::Message(ToNode::Welcome {
                     heartbeat_secs,
                     environment_warnings,
                     node_usage,
+                    moonlight,
                     ..
                 }) => (
                     Duration::from_secs(heartbeat_secs.max(1)),
                     environment_warnings,
                     node_usage,
+                    moonlight,
                 ),
                 Next::Closed(closed) => return Ok(closed),
                 Next::Message(other) => bail!("expected a welcome, got {other:?}"),
@@ -361,6 +374,20 @@ impl Agent {
                 sink.send(encode(&ToPortal::EnvironmentWarning { id, warning })?)
                     .await?;
             }
+        }
+
+        // Moonlight hosts: the whole list now (even an empty one, which tells
+        // the portal this node looks), and again whenever it changes. Only a
+        // portal that reads them gets any.
+        let moonlight = self.moonlight.clone();
+        let (mut hosts, mut paired) = match &moonlight {
+            Some(m) if portal_reads_moonlight => (Some(m.hosts()), Some(m.paired())),
+            _ => (None, None),
+        };
+        if let Some(hosts) = &mut hosts {
+            let list = hosts.borrow_and_update().clone();
+            sink.send(encode(&ToPortal::MoonlightHosts { hosts: list })?)
+                .await?;
         }
 
         // Requests run as tasks (starting an environment takes seconds) and
@@ -424,6 +451,22 @@ impl Agent {
                 Some(msg) = out_rx.recv() => {
                     sink.send(encode(&msg)?).await?;
                 }
+                changed = async {
+                    match &mut hosts {
+                        Some(hosts) => hosts.changed().await.is_ok(),
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if changed && let Some(hosts) = &mut hosts {
+                        let list = hosts.borrow_and_update().clone();
+                        sink.send(encode(&ToPortal::MoonlightHosts { hosts: list })?).await?;
+                    }
+                }
+                ended = next_event(&mut paired) => {
+                    if let Some(Paired { unique_id, ok, message }) = ended {
+                        sink.send(encode(&ToPortal::MoonlightPaired { unique_id, ok, message })?).await?;
+                    }
+                }
                 exit = next_event(&mut exits) => {
                     if let Some(Exit { id, detail, failed, log }) = exit {
                         sink.send(encode(&ToPortal::EnvironmentExited { id, detail, failed, log })?).await?;
@@ -452,9 +495,10 @@ impl Agent {
                         Message::Text(text) => match serde_json::from_str::<ToNode>(&text)? {
                             ToNode::Request { id, request } => {
                                 let runtime = self.runtime.clone();
+                                let moonlight = self.moonlight.clone();
                                 let out = out_tx.clone();
                                 tokio::spawn(async move {
-                                    let result = handle(runtime, request).await;
+                                    let result = handle(runtime, moonlight, request).await;
                                     let _ = out.send(ToPortal::Response { id, result });
                                 });
                             }
@@ -473,8 +517,10 @@ impl Agent {
 
 async fn handle(
     runtime: Option<Arc<dyn Runtime>>,
+    moonlight: Option<Arc<dyn Control>>,
     request: NodeRequest,
 ) -> Result<NodeResponse, String> {
+    const NO_MOONLIGHT: &str = "this node doesn't look for Moonlight hosts (CHA_MOONLIGHT=false)";
     const NO_RUNTIME: &str =
         "this node can't run environments: the agent has no access to a Docker engine";
     match request {
@@ -520,6 +566,22 @@ async fn handle(
                 .delete_user_data(user.clone(), template.clone())
                 .await
                 .map(|()| NodeResponse::UserDataDeleted { user, template })
+                .map_err(|e| format!("{e:#}"))
+        }
+        NodeRequest::MoonlightPair { unique_id } => {
+            let moonlight = moonlight.ok_or(NO_MOONLIGHT)?;
+            moonlight
+                .pair(unique_id)
+                .await
+                .map(|pin| NodeResponse::MoonlightPairing { pin })
+                .map_err(|e| format!("{e:#}"))
+        }
+        NodeRequest::MoonlightApps { unique_id } => {
+            let moonlight = moonlight.ok_or(NO_MOONLIGHT)?;
+            moonlight
+                .apps(unique_id)
+                .await
+                .map(|apps| NodeResponse::MoonlightApps { apps })
                 .map_err(|e| format!("{e:#}"))
         }
         NodeRequest::StopEnvironment { id } => {
