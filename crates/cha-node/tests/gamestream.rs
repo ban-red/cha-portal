@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use cha_gamestream::front::identity::fingerprint;
 use cha_node::environments::{GameStreamAccess, GameStreamPorts, RunningEnvironment};
-use cha_node::gamestream::{Config, Environments, GameStream, Ports};
+use cha_node::gamestream::{Config, Environments, GameStream, Ports, catalog};
 use cha_node::moonlight::Store;
-use cha_wire::{GameStreamDevice, NodeRequest, ToPortal};
+use cha_wire::{GameStreamDevice, NodeRequest, PortalRequest, PortalResponse, ToPortal};
 use moonlight_common::AppId;
 use moonlight_common::crypto::rustcrypto::RustCryptoBackend;
 use moonlight_common::high::tokio::MoonlightHost;
@@ -30,11 +30,12 @@ use moonlight_common::stream::{
 use pem::Pem;
 use tokio::sync::mpsc;
 
-struct FakeEnvironments(Vec<RunningEnvironment>);
+#[derive(Default)]
+struct FakeEnvironments(Mutex<Vec<RunningEnvironment>>);
 
 impl Environments for FakeEnvironments {
     fn running(&self) -> Vec<RunningEnvironment> {
-        self.0.clone()
+        self.0.lock().unwrap().clone()
     }
 }
 
@@ -58,10 +59,13 @@ fn environment(id: &str, owner: &str, template: &str) -> RunningEnvironment {
 
 struct Rig {
     host: Arc<GameStream>,
+    environments: Arc<FakeEnvironments>,
     /// What the host said to the portal, after the fake portal acted on it.
     said: mpsc::UnboundedReceiver<ToPortal>,
     /// The PIN the fake portal's user types; "" leaves requests unanswered.
     typed: Arc<Mutex<String>>,
+    /// When set, the fake portal refuses launches with this reason.
+    refuse: Arc<Mutex<Option<String>>>,
     client_cert: ClientIdentifier,
     client_key: ClientSecret,
     server: ServerIdentifier,
@@ -83,13 +87,20 @@ impl Rig {
         );
         config.bind = "127.0.0.1".parse().unwrap();
         config.mdns = false;
-        let environments = FakeEnvironments(vec![
+        // A node without a GPU: what needs one isn't offered.
+        config.directory.gpu = false;
+        let environments = Arc::new(FakeEnvironments(Mutex::new(vec![
             environment("e-chrome", "bob", "chrome"),
             environment("e-firefox", "alice", "firefox"),
-        ]);
-        let host = GameStream::start(config, Arc::new(environments))
+        ])));
+        let host = GameStream::start(config, environments.clone())
             .await
             .unwrap();
+        // As the welcome of a portal that answers launches says.
+        host.set_portal_launches(true);
+        let refuse = Arc::new(Mutex::new(None::<String>));
+        let refusal = refuse.clone();
+        let started_here = environments.clone();
         let mut outgoing = host.outgoing();
         let (tx, said) = mpsc::unbounded_channel();
         let typed = Arc::new(Mutex::new(String::new()));
@@ -128,6 +139,33 @@ impl Rig {
                             })
                             .unwrap();
                     }
+                    // The portal starts what a client launched, on this node: the
+                    // environment is running by the time it says so.
+                    ToPortal::Request {
+                        id,
+                        request:
+                            PortalRequest::GameStreamLaunch {
+                                user_id,
+                                template_id,
+                            },
+                    } => {
+                        let answer = match refusal.lock().unwrap().clone() {
+                            Some(why) => Err(why),
+                            None => {
+                                let started = format!("e-{user_id}-{template_id}");
+                                started_here.0.lock().unwrap().push(environment(
+                                    &started,
+                                    user_id,
+                                    template_id,
+                                ));
+                                Ok(PortalResponse::GameStreamLaunched {
+                                    environment_id: started,
+                                    created: true,
+                                })
+                            }
+                        };
+                        portal.answer(*id, answer);
+                    }
                     ToPortal::GameStreamUnpaired { .. } => {
                         portal
                             .handle(NodeRequest::GameStreamDevices {
@@ -147,8 +185,10 @@ impl Rig {
             std::fs::read_to_string(dir.path().join("node/gamestream/cert.pem")).unwrap();
         Rig {
             host,
+            environments,
             said,
             typed,
+            refuse,
             client_cert,
             client_key,
             server: ServerIdentifier::from_pem(Pem::from_str(&cert_pem).unwrap()),
@@ -282,8 +322,8 @@ async fn a_device_pairs_through_the_portal_lists_its_owners_apps_launches_and_un
         ("client-one", "TestDevice")
     );
 
-    // The list the portal sent makes the client bob's: it sees his
-    // environments, and not alice's.
+    // The list the portal sent makes the client bob's: it sees what he can run
+    // on this node (the catalog, less what needs a GPU), running or not.
     host.set_identity(
         rig.client_cert.clone(),
         rig.client_key.clone(),
@@ -292,21 +332,53 @@ async fn a_device_pairs_through_the_portal_lists_its_owners_apps_launches_and_un
     .await
     .unwrap();
     let apps = host.app_list().await.unwrap();
-    assert_eq!(
-        apps.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
-        ["Google Chrome"]
-    );
-    let chrome = apps[0].id.0;
-    assert_eq!(chrome, cha_node::gamestream::directory::app_id("e-chrome"));
-    launch(&host, chrome).await.unwrap();
-    // Cancelling quits the session; the environment is not the host's to stop.
+    let titles: Vec<&str> = apps.iter().map(|a| a.title.as_str()).collect();
+    let offered: Vec<String> = catalog::offered(false).map(|t| t.name.clone()).collect();
+    assert_eq!(titles.len(), offered.len(), "{titles:?}");
+    assert!(offered.iter().all(|n| titles.contains(&n.as_str())));
+    assert!(!titles.contains(&"Steam"), "it needs a GPU");
+    let id_of = |title: &str| apps.iter().find(|a| a.title == title).unwrap().id.0;
+    assert_eq!(id_of("Google Chrome"), catalog::app_id("chrome"));
+
+    // Chrome runs already: launching it resumes that. Cancelling quits the
+    // session; the environment is not the host's to stop.
+    launch(&host, id_of("Google Chrome")).await.unwrap();
     host.cancel().await.unwrap();
-    assert_eq!(host.app_list().await.unwrap().len(), 1);
-    let hers = cha_node::gamestream::directory::app_id("e-firefox");
+    assert!(rig.environments.0.lock().unwrap().len() == 2);
+
+    // Firefox runs for alice, not bob: the portal is asked to start his, and
+    // the launch returns once it runs.
+    launch(&host, id_of("Firefox")).await.unwrap();
+    let ToPortal::Request {
+        request:
+            PortalRequest::GameStreamLaunch {
+                user_id,
+                template_id,
+            },
+        ..
+    } = rig.next(5).await
+    else {
+        panic!("the portal was asked to start it");
+    };
+    assert_eq!((user_id.as_str(), template_id.as_str()), ("bob", "firefox"));
     assert!(
-        launch(&host, hers).await.is_err(),
-        "alice's environment is not bob's to launch"
+        rig.environments
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e.id == "e-bob-firefox")
     );
+    host.cancel().await.unwrap();
+
+    // A portal that refuses says why, and the client's launch fails with it.
+    *rig.refuse.lock().unwrap() = Some("your KDE Plasma is already running on box".into());
+    let refused = launch(&host, id_of("KDE Plasma")).await.unwrap_err();
+    assert!(refused.contains("already running on box"), "{refused}");
+    assert!(matches!(rig.next(5).await, ToPortal::Request { .. }));
+    // What this node can't run isn't an app at all, and nobody is asked.
+    assert!(launch(&host, catalog::app_id("steam")).await.is_err());
+    *rig.refuse.lock().unwrap() = None;
 
     // The client unpairs itself over HTTPS: the portal hears, and it is out.
     host.unpair().await.unwrap();
@@ -382,9 +454,8 @@ async fn nobody_is_paired_until_the_portal_says_so() {
     .await
     .unwrap();
     let apps = host.app_list().await.unwrap();
-    assert_eq!(
-        apps.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
-        ["Firefox"],
+    assert!(
+        apps.iter().any(|a| a.title == "Firefox"),
         "the owner in the list decides what it sees"
     );
     // And a list without it takes the access away again.

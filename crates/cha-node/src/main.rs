@@ -109,6 +109,14 @@ struct Args {
     #[cfg(feature = "gamestream")]
     #[arg(long, env = "CHA_GAMESTREAM_RTSP_PORT", default_value_t = 48010)]
     gamestream_rtsp_port: u16,
+    /// Quitting an app in Moonlight also stops its environment, when the
+    /// Moonlight launch started it (the app list is what the user can run
+    /// here, and launching one starts it). Off: a quit ends only the stream,
+    /// and the user stops the environment in the portal. Never stops one the
+    /// user started in the portal.
+    #[cfg(feature = "gamestream")]
+    #[arg(long, env = "CHA_GAMESTREAM_QUIT_STOPS", default_value_t = false, action = clap::ArgAction::Set)]
+    gamestream_quit_stops: bool,
     /// The host's uinput device: streamers make virtual gamepads with it.
     /// Empty goes without gamepads (e.g. no `uinput` module).
     #[arg(long, env = "CHA_UINPUT", default_value = "/dev/uinput")]
@@ -301,7 +309,7 @@ async fn main() -> Result<()> {
 #[cfg(feature = "gamestream")]
 fn gamestream_config(args: &Args) -> Option<gamestream::Config> {
     args.gamestream.then(|| {
-        gamestream::Config::new(
+        let mut config = gamestream::Config::new(
             String::new(),
             args.data_root.clone(),
             gamestream::Ports {
@@ -309,7 +317,9 @@ fn gamestream_config(args: &Args) -> Option<gamestream::Config> {
                 https: args.gamestream_https_port,
                 rtsp: args.gamestream_rtsp_port,
             },
-        )
+        );
+        config.directory.quit_stops = args.gamestream_quit_stops;
+        config
     })
 }
 

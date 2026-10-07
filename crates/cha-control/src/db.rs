@@ -506,6 +506,23 @@ pub async fn running_by_device(
     .await
 }
 
+/// `owner`'s live environments of a template (starting, running or stopping),
+/// oldest first.
+pub async fn live_environments_of(
+    db: &SqlitePool,
+    owner_id: &str,
+    template_id: &str,
+) -> Result<Vec<EnvironmentRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {ENVIRONMENT_COLUMNS} FROM environments WHERE owner_id = ? AND template_id = ? \
+         AND state IN ('starting', 'running', 'stopping') ORDER BY created_at, id"
+    ))
+    .bind(owner_id)
+    .bind(template_id)
+    .fetch_all(db)
+    .await
+}
+
 /// The user's live environment of `template_id`, if any.
 pub async fn live_environment_of(
     db: &SqlitePool,

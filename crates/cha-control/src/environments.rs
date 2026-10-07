@@ -383,15 +383,33 @@ async fn show(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LaunchRequest {
-    template_id: String,
+pub(crate) struct LaunchRequest {
+    pub(crate) template_id: String,
     /// Where to run it: a node's id, and one of its devices' ids (from
     /// `GET /api/placements`). Neither is the automatic choice; a node alone
     /// is its best device.
     #[serde(default)]
-    node: Option<String>,
+    pub(crate) node: Option<String>,
     #[serde(default)]
-    device: Option<String>,
+    pub(crate) device: Option<String>,
+}
+
+/// Who asked for a launch or a stop, for the audit log: where it came from
+/// (the browser's address) and by which door, when it wasn't the API (`via`).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Caller<'a> {
+    pub(crate) ip: Option<&'a str>,
+    pub(crate) via: Option<&'static str>,
+}
+
+impl Caller<'_> {
+    /// `details` with the door the request came through, if it wasn't the API.
+    fn audit_details(&self, mut details: serde_json::Value) -> serde_json::Value {
+        if let (Some(via), Some(map)) = (self.via, details.as_object_mut()) {
+            map.insert("via".into(), json!(via));
+        }
+        details
+    }
 }
 
 async fn launch(
@@ -400,20 +418,45 @@ async fn launch(
     client: ClientInfo,
     Json(req): Json<LaunchRequest>,
 ) -> ApiResult<Json<EnvironmentView>> {
+    let caller = Caller {
+        ip: client.ip.as_deref(),
+        via: None,
+    };
+    let row = launch_environment(&state, &user, caller, &req).await?;
+    Ok(Json(view(
+        row,
+        &nodes_by_id(&state).await?,
+        &user,
+        &moonlight::Index::load(&state).await?,
+    )))
+}
+
+/// Starts an environment of `req`'s template for `user`: the one way anything
+/// launches (the API, a Moonlight client's launch), so the same rules apply to
+/// all. Checks who may launch what and how many, picks the user's controller,
+/// frame rate and storage, places it (on `req`'s node and device, else the best
+/// there is), records it and has the node start it in the background. The row
+/// it returns is `starting`.
+pub(crate) async fn launch_environment(
+    state: &AppState,
+    user: &User,
+    caller: Caller<'_>,
+    req: &LaunchRequest,
+) -> ApiResult<EnvironmentRow> {
     if user.role == Role::Guest {
         return Err(ApiError::forbidden(
             "guests_cannot_launch",
             "guests can't launch environments",
         ));
     }
-    let template = moonlight::resolve_template(&state, &req.template_id)
+    let template = moonlight::resolve_template(state, &req.template_id)
         .await?
         .ok_or_else(|| ApiError::bad_request("unknown_template", "no such template"))?;
     let template = &template;
     // A host plays for one person at a time: the check and the new row are one step.
     let _host = if template.class == moonlight::CLASS {
         let guard = state.moonlight.launch.lock().await;
-        moonlight::check_free(&state, template).await?;
+        moonlight::check_free(state, template).await?;
         Some(guard)
     } else {
         None
@@ -424,28 +467,34 @@ async fn launch(
             format!("you can have {MAX_LIVE_PER_USER} environments at once; stop one first"),
         ));
     }
-    let settings = storage::effective_for(&state, &user.id, template).await?;
+    let settings = storage::effective_for(state, &user.id, template).await?;
     // Two environments would share one home.
     if settings.persistent
-        && db::live_environment_of(&state.db, &user.id, &template.id)
+        && let Some(live) = db::live_environments_of(&state.db, &user.id, &template.id)
             .await?
-            .is_some()
+            .into_iter()
+            .next()
     {
+        let node = match &live.node_id {
+            Some(id) => db::node_by_id(&state.db, id).await?.map(|n| n.name),
+            None => None,
+        };
         return Err(ApiError::conflict(
             "already_running",
             format!(
-                "your {} is already running; it keeps one home, so connect to that one",
-                template.name
+                "your {} is already running{}; it keeps one home, so connect to that one",
+                template.name,
+                node.map(|n| format!(" on {n}")).unwrap_or_default()
             ),
         ));
     }
-    let gamepad = controllers::effective_for(&state, &user.id, template).await?;
-    let fps = apps::fps_for(&state, &user.id, template).await?;
+    let gamepad = controllers::effective_for(state, &user.id, template).await?;
+    let fps = apps::fps_for(state, &user.id, template).await?;
     let (node, device, gateway) = if template.class == moonlight::CLASS {
-        let (node, device, gateway) = moonlight::place(&state, template).await?;
+        let (node, device, gateway) = moonlight::place(state, template).await?;
         (node, device, Some(Box::new(gateway)))
     } else {
-        let (node, device) = place(&state, &user.id, template, &req).await?;
+        let (node, device) = place(state, &user.id, template, req).await?;
         (node, device, None)
     };
     let app_data = storage::spec_storage(&user.id, template, settings);
@@ -477,11 +526,13 @@ async fn launch(
         Some(&user.id),
         "environment.launched",
         Some(&id),
-        Some(json!({ "template": template.id, "node": node.name, "device": device.id })),
-        client.ip.as_deref(),
+        Some(caller.audit_details(
+            json!({ "template": template.id, "node": node.name, "device": device.id }),
+        )),
+        caller.ip,
     )
     .await?;
-    info!(%id, template = %template.id, node = %node.name, device = %device.id, user = %user.username, "launching");
+    info!(%id, template = %template.id, node = %node.name, device = %device.id, user = %user.username, via = caller.via.unwrap_or("api"), "launching");
     let spec = environment_spec(
         id.clone(),
         &user.id,
@@ -496,15 +547,9 @@ async fn launch(
         },
     );
     tokio::spawn(start_on_node(state.clone(), node.id.clone(), spec));
-    let row = db::environment_by_id(&state.db, &id)
+    db::environment_by_id(&state.db, &id)
         .await?
-        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the new environment vanished")))?;
-    Ok(Json(view(
-        row,
-        &nodes_by_id(&state).await?,
-        &user,
-        &moonlight::Index::load(&state).await?,
-    )))
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the new environment vanished")))
 }
 
 /// What a launch settles besides the app: the user's controller and frame rate
@@ -570,24 +615,11 @@ async fn stop(
     Path(id): Path<String>,
 ) -> ApiResult<Json<EnvironmentView>> {
     let row = visible(&state, &user, &id).await?;
-    if db::transition_environment(&state.db, &id, &["starting", "running"], "stopping", None)
-        .await?
-    {
-        db::audit(
-            &state.db,
-            Some(&user.id),
-            "environment.stopped",
-            Some(&id),
-            Some(json!({ "template": row.template_id })),
-            client.ip.as_deref(),
-        )
-        .await?;
-        if let Some(node_id) = row.node_id.clone() {
-            tokio::spawn(stop_on_node(state.clone(), node_id, id.clone(), None));
-        } else {
-            db::transition_environment(&state.db, &id, &["stopping"], "destroyed", None).await?;
-        }
-    }
+    let caller = Caller {
+        ip: client.ip.as_deref(),
+        via: None,
+    };
+    stop_environment(&state, &user, caller, &row).await?;
     let row = visible(&state, &user, &id).await?;
     Ok(Json(view(
         row,
@@ -595,6 +627,36 @@ async fn stop(
         &user,
         &moonlight::Index::load(&state).await?,
     )))
+}
+
+/// Begins stopping `row`, which `user` may stop (the caller checked): records
+/// it and has its node stop it in the background. One that is already stopping
+/// or over is left alone.
+pub(crate) async fn stop_environment(
+    state: &AppState,
+    user: &User,
+    caller: Caller<'_>,
+    row: &EnvironmentRow,
+) -> ApiResult<()> {
+    let id = &row.id;
+    if db::transition_environment(&state.db, id, &["starting", "running"], "stopping", None).await?
+    {
+        db::audit(
+            &state.db,
+            Some(&user.id),
+            "environment.stopped",
+            Some(id),
+            Some(caller.audit_details(json!({ "template": row.template_id }))),
+            caller.ip,
+        )
+        .await?;
+        if let Some(node_id) = row.node_id.clone() {
+            tokio::spawn(stop_on_node(state.clone(), node_id, id.clone(), None));
+        } else {
+            db::transition_environment(&state.db, id, &["stopping"], "destroyed", None).await?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]

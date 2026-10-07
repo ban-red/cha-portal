@@ -34,7 +34,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use cha_wire::{
     CONNECT_PATH, ENROLL_PATH, EnrollRequest, EnrollResponse, GameStreamInfo, Inventory, NodeKey,
-    NodeRequest, NodeResponse, PROTOCOL_VERSION, ToNode, ToPortal, close,
+    NodeRequest, NodeResponse, PROTOCOL_VERSION, PortalResponse, ToNode, ToPortal, close,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -347,6 +347,7 @@ impl Agent {
             portal_reads_usage,
             portal_reads_moonlight,
             portal_reads_gamestream,
+            portal_launches,
         ) = match next_message(&mut stream).await? {
             Next::Message(ToNode::Welcome {
                 heartbeat_secs,
@@ -354,6 +355,7 @@ impl Agent {
                 node_usage,
                 moonlight,
                 gamestream,
+                gamestream_launch,
                 ..
             }) => (
                 Duration::from_secs(heartbeat_secs.max(1)),
@@ -361,11 +363,14 @@ impl Agent {
                 node_usage,
                 moonlight,
                 gamestream,
+                gamestream_launch,
             ),
             Next::Closed(closed) => return Ok(closed),
             Next::Message(other) => bail!("expected a welcome, got {other:?}"),
         };
         *welcomed = true;
+        // Whether the host may start and stop environments through this portal.
+        gamestream_set_launch(&self.gamestream, portal_reads_gamestream && portal_launches);
         info!(%node_id, portal = %self.identity.portal_url, "connected");
 
         // What the probe can't know: where this agent keeps app data.
@@ -557,8 +562,10 @@ impl Agent {
                                     let _ = out.send(ToPortal::Response { id, result });
                                 });
                             }
-                            // The agent doesn't ask the portal anything yet.
-                            ToNode::Response { .. } => {}
+                            // What the GameStream host asked it (a launch, a stop).
+                            ToNode::Response { id, result } => {
+                                gamestream_answer(&self.gamestream, id, result);
+                            }
                             other => bail!("unexpected {other:?}"),
                         },
                         Message::Close(frame) => return Ok(frame.map(closed)),
@@ -691,6 +698,26 @@ fn gamestream_request(
 fn gamestream_request(_: &GameStreamHandle, _: NodeRequest) -> Result<NodeResponse, String> {
     Err("this node was built without GameStream support".into())
 }
+
+#[cfg(feature = "gamestream")]
+fn gamestream_set_launch(host: &GameStreamHandle, on: bool) {
+    if let Some(host) = host {
+        host.set_portal_launches(on);
+    }
+}
+
+#[cfg(not(feature = "gamestream"))]
+fn gamestream_set_launch(_: &GameStreamHandle, _: bool) {}
+
+#[cfg(feature = "gamestream")]
+fn gamestream_answer(host: &GameStreamHandle, id: u64, result: Result<PortalResponse, String>) {
+    if let Some(host) = host {
+        host.answer(id, result);
+    }
+}
+
+#[cfg(not(feature = "gamestream"))]
+fn gamestream_answer(_: &GameStreamHandle, _: u64, _: Result<PortalResponse, String>) {}
 
 /// The next event from the runtime (an exit, a progress note), or never
 /// without one. A lagging receiver skips ahead: the portal reconciles on

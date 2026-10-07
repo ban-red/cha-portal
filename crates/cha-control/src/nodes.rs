@@ -149,6 +149,16 @@ impl NodeHub {
         }
     }
 
+    /// Answers a request the node made, on its connection (if it still has
+    /// one: a node that went away has no use for the answer).
+    pub async fn reply(&self, node_id: &str, id: u64, result: Result<PortalResponse, String>) {
+        if let Some(conn) = self.connections.lock().await.get(node_id) {
+            let _ = conn
+                .tx
+                .send(Outgoing::Message(ToNode::Response { id, result }));
+        }
+    }
+
     /// Hangs up on a node, telling it why.
     async fn kick(&self, node_id: &str, code: u16, reason: &'static str) {
         if let Some(conn) = self.connections.lock().await.remove(node_id) {
@@ -325,6 +335,7 @@ async fn serve_node(state: AppState, mut socket: WebSocket) -> anyhow::Result<()
         node_usage: true,
         moonlight: true,
         gamestream: true,
+        gamestream_launch: true,
     };
     send(&mut socket, &welcome).await?;
     info!(%node_id, name = %node.name, %agent_version, "node connected");
@@ -473,12 +484,23 @@ async fn pump(
                             let _ = waiter.send(result);
                         }
                     }
-                    ToPortal::Request { id, request } => {
-                        let result = match request {
-                            PortalRequest::Ping => Ok(PortalResponse::Pong { unix_ms: unix_ms() }),
-                        };
-                        send(socket, &ToNode::Response { id, result }).await?;
-                    }
+                    ToPortal::Request { id, request } => match request {
+                        PortalRequest::Ping => {
+                            let result = Ok(PortalResponse::Pong { unix_ms: unix_ms() });
+                            send(socket, &ToNode::Response { id, result }).await?;
+                        }
+                        // These wait for environments, so they run apart from
+                        // this loop and answer through the hub.
+                        request @ (PortalRequest::GameStreamLaunch { .. }
+                        | PortalRequest::GameStreamStop { .. }) => {
+                            tokio::spawn(crate::gamestream::node_request(
+                                state.clone(),
+                                node_id.to_string(),
+                                id,
+                                request,
+                            ));
+                        }
+                    },
                     ToPortal::Hello { .. } => anyhow::bail!("a second hello"),
                 }
             }

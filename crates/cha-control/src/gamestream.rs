@@ -9,6 +9,11 @@
 //! it is the node's only record of who is paired. Pending requests live in
 //! memory ([`State`]): they are minutes old at most and mean nothing after a
 //! restart or a disconnect.
+//!
+//! The node's host also asks the portal for what a paired client's launch needs:
+//! its owner's environment of an app started on that node, and stopped again
+//! when the client quits ([`node_request`]). Those go through the same launch
+//! and stop code as the API's, with the owner as the user and the node fixed.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +24,7 @@ use axum::extract::{Path, State as AxumState};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use cha_wire::{GameStreamDevice, Inventory, NodeRequest};
+use cha_wire::{GameStreamDevice, Inventory, NodeRequest, PortalRequest, PortalResponse};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -28,7 +33,9 @@ use tracing::{info, warn};
 use crate::AppState;
 use crate::auth::{ClientInfo, CurrentUser};
 use crate::db::{self, GameStreamDeviceRow, Role};
+use crate::environments::{self, Caller, LaunchRequest};
 use crate::error::{ApiError, ApiResult};
+use crate::moonlight;
 
 /// How long `POST /gamestream/pairing/{id}` waits, in milliseconds, for the
 /// node to say the handshake finished.
@@ -37,6 +44,12 @@ const OUTCOME_WAIT_MS: u64 = 20_000;
 const MAX_TTL_SECS: u64 = 300;
 /// Open requests kept per node; a node can't fill the portal's memory.
 const MAX_PER_NODE: usize = 16;
+/// How long a node's launch waits for its environment to run: a little less
+/// than the node does, so the reason arrives rather than a timeout.
+const LAUNCH_WAIT: Duration = Duration::from_secs(170);
+const LAUNCH_POLL: Duration = Duration::from_millis(250);
+/// The audit log's `via` for what a Moonlight client asked for.
+const VIA: &str = "moonlight";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -78,6 +91,10 @@ pub struct State {
     pushing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// [`OUTCOME_WAIT_MS`], unless a test shortens it.
     outcome_wait_ms: AtomicU64,
+    /// Launches for nodes' clients go one at a time between finding an
+    /// environment to join and recording a new one, so a client that asks
+    /// twice starts one environment.
+    launching: tokio::sync::Mutex<()>,
 }
 
 impl Default for State {
@@ -86,6 +103,7 @@ impl Default for State {
             requests: Mutex::default(),
             pushing: Mutex::default(),
             outcome_wait_ms: AtomicU64::new(OUTCOME_WAIT_MS),
+            launching: tokio::sync::Mutex::default(),
         }
     }
 }
@@ -634,4 +652,145 @@ pub async fn unpaired(state: AppState, node_id: String, fingerprint: String) {
         Err(err) => warn!(%node_id, "forgetting a GameStream device: {err}"),
     }
     push_devices(&state, &node_id).await;
+}
+
+// ---- What the nodes ask of us: launching and stopping for a client ----
+
+/// A node's request: answered on its connection, however long it takes.
+pub async fn node_request(state: AppState, node_id: String, id: u64, request: PortalRequest) {
+    let result = match request {
+        PortalRequest::GameStreamLaunch {
+            user_id,
+            template_id,
+        } => launch_for_client(&state, &node_id, &user_id, &template_id).await,
+        PortalRequest::GameStreamStop {
+            user_id,
+            environment_id,
+        } => stop_for_client(&state, &node_id, &user_id, &environment_id).await,
+        PortalRequest::Ping => return,
+    };
+    if let Err(why) = &result {
+        info!(%node_id, "refused a Moonlight client's request: {why}");
+    }
+    state.nodes.reply(&node_id, id, result).await;
+}
+
+/// The user a node's host speaks for: signed up, not disabled, not a guest, and
+/// with a device paired with that node (the node says who its clients are, but
+/// the portal's list of devices is what lets a user act through it).
+async fn paired_user(state: &AppState, node_id: &str, user_id: &str) -> Result<db::User, String> {
+    let user = db::user_by_id(&state.db, user_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|u| !u.disabled)
+        .ok_or("this device's owner no longer has an account here")?;
+    if user.role == Role::Guest {
+        return Err("guests can't launch environments".into());
+    }
+    let paired = db::gamestream_devices_of_node(&state.db, node_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|d| d.user_id == user.id);
+    if !paired {
+        return Err("no device of yours is paired with this node".into());
+    }
+    Ok(user)
+}
+
+/// Starts `user`'s environment of `template_id` on `node_id` through the API's
+/// launch, unless one of theirs already starts or runs there, and waits for it.
+async fn launch_for_client(
+    state: &AppState,
+    node_id: &str,
+    user_id: &str,
+    template_id: &str,
+) -> Result<PortalResponse, String> {
+    let user = paired_user(state, node_id, user_id).await?;
+    // Only what a node offers: catalog apps, never a Moonlight gateway.
+    let template = environments::template(template_id)
+        .filter(|t| t.class != moonlight::CLASS)
+        .ok_or("no such app")?;
+    let (row, created) = {
+        let _one_at_a_time = state.gamestream.launching.lock().await;
+        let live = db::live_environments_of(&state.db, &user.id, &template.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let here = live.into_iter().find(|e| {
+            e.node_id.as_deref() == Some(node_id)
+                && matches!(e.state.as_str(), "starting" | "running")
+        });
+        match here {
+            Some(row) => (row, false),
+            None => {
+                let request = LaunchRequest {
+                    template_id: template.id.clone(),
+                    node: Some(node_id.to_string()),
+                    device: None,
+                };
+                let caller = Caller {
+                    ip: None,
+                    via: Some(VIA),
+                };
+                let row = environments::launch_environment(state, &user, caller, &request)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                (row, true)
+            }
+        }
+    };
+    wait_running(state, &row.id, &template.name).await?;
+    Ok(PortalResponse::GameStreamLaunched {
+        environment_id: row.id,
+        created,
+    })
+}
+
+/// Until environment `id` runs; the reason when it fails or takes too long
+/// (it goes on starting, and a launch again joins it).
+async fn wait_running(state: &AppState, id: &str, name: &str) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + LAUNCH_WAIT;
+    loop {
+        let row = db::environment_by_id(&state.db, id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("the environment vanished")?;
+        match row.state.as_str() {
+            "running" => return Ok(()),
+            "starting" => {}
+            other => {
+                return Err(format!(
+                    "{name} didn't start: {}",
+                    row.detail.as_deref().unwrap_or(other)
+                ));
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("{name} is still starting; try again in a moment"));
+        }
+        tokio::time::sleep(LAUNCH_POLL).await;
+    }
+}
+
+/// Stops `user`'s environment `environment_id`, if it runs on `node_id`.
+async fn stop_for_client(
+    state: &AppState,
+    node_id: &str,
+    user_id: &str,
+    environment_id: &str,
+) -> Result<PortalResponse, String> {
+    let user = paired_user(state, node_id, user_id).await?;
+    let row = db::environment_by_id(&state.db, environment_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|e| e.owner_id == user.id && e.node_id.as_deref() == Some(node_id))
+        .ok_or("no such environment of yours on this node")?;
+    let caller = Caller {
+        ip: None,
+        via: Some(VIA),
+    };
+    environments::stop_environment(state, &user, caller, &row)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(PortalResponse::GameStreamStopped)
 }

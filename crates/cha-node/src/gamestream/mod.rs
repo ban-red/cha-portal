@@ -4,8 +4,10 @@
 //! The protocol is `cha-gamestream`'s; this module adapts it to the node.
 //! One host per node, run by the agent: it holds the host's identity
 //! ([`identity`]), advertises over mDNS and serves nvhttp, pairing and RTSP.
-//! The apps a client lists are its owner's running environments, and a
-//! session's media is served by that environment's streamer ([`directory`]).
+//! The apps a client lists are what its owner can run on this node (the
+//! catalog, [`catalog`]); launching one runs the owner's environment of it,
+//! started through the portal if none runs ([`portal`]), and a session's media
+//! is served by that environment's streamer ([`directory`]).
 //! Who is paired is the portal's to say ([`pairing`]): a device pairs with a
 //! PIN a signed-in user types in the portal, and the node keeps the list it
 //! is sent. Everything GameStream on the node is in here, behind the
@@ -16,23 +18,27 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 pub use cha_gamestream::Ports;
 use cha_gamestream::{Capabilities, Host, HostConfig, RunningHost, VideoCodec};
-use cha_wire::{GameStreamInfo, NodeRequest, NodeResponse, ToPortal};
+use cha_wire::{
+    Device, DeviceKind, GameStreamInfo, NodeRequest, NodeResponse, PortalResponse, ToPortal,
+};
 use tokio::sync::broadcast;
 use tracing::info;
 
+pub mod catalog;
 pub mod directory;
 pub mod identity;
 pub mod pairing;
+pub mod portal;
 mod streamer;
 
 pub use directory::Environments;
 use directory::NodeDirectory;
 use pairing::Pairings;
+use portal::PortalLink;
 
 /// What the host is started with.
 #[derive(Clone, Debug)]
@@ -48,31 +54,35 @@ pub struct Config {
     pub mdns: bool,
     /// What the node's encoders make.
     pub codecs: Vec<VideoCodec>,
-    /// How often a session's media is asked whether it still runs.
-    pub poll: Duration,
+    /// What the node offers and how launches and quits behave.
+    pub directory: directory::Options,
 }
 
 impl Config {
     /// The usual host: every address, on `ports`, advertised, with the codecs
-    /// this machine's GPU encodes.
+    /// this machine's GPU encodes, offering the apps that need a GPU only if
+    /// it has one.
     pub fn new(name: impl Into<String>, data_root: PathBuf, ports: Ports) -> Self {
+        let devices = crate::inventory::collect().devices_or_derived();
         Self {
             name: name.into(),
             ports,
             data_root,
             bind: IpAddr::from([0, 0, 0, 0]),
             mdns: true,
-            codecs: codecs_here(),
-            poll: directory::POLL,
+            codecs: codecs_of(&devices),
+            directory: directory::Options {
+                gpu: devices.iter().any(|d| d.kind != DeviceKind::Cpu),
+                ..directory::Options::default()
+            },
         }
     }
 }
 
-/// The codecs the first device with encoders makes (the streamers use it);
-/// H.264 and HEVC when the probe finds none, which most clients can take.
-fn codecs_here() -> Vec<VideoCodec> {
-    let found: Vec<VideoCodec> = crate::inventory::collect()
-        .devices_or_derived()
+/// The codecs the devices' encoders make (the streamers use them); H.264 and
+/// HEVC when there are none, which most clients can take.
+fn codecs_of(devices: &[Device]) -> Vec<VideoCodec> {
+    let found: Vec<VideoCodec> = devices
         .iter()
         .flat_map(|d| d.codecs.iter())
         .filter_map(|c| match c.as_str() {
@@ -97,6 +107,7 @@ fn codecs_here() -> Vec<VideoCodec> {
 /// The running host and what the agent needs of it.
 pub struct GameStream {
     pairings: Arc<Pairings>,
+    portal: Arc<PortalLink>,
     out: broadcast::Sender<ToPortal>,
     info: GameStreamInfo,
     unique_id: String,
@@ -113,7 +124,13 @@ impl GameStream {
         };
         let (out, _) = broadcast::channel(64);
         let pairings = Pairings::new(out.clone(), Some(&dir));
-        let directory = NodeDirectory::new(environments, pairings.clone(), config.poll);
+        let portal = Arc::new(PortalLink::new(out.clone()));
+        let directory = NodeDirectory::new(
+            environments,
+            pairings.clone(),
+            portal.clone(),
+            config.directory,
+        );
 
         let mut host = HostConfig::new(&config.name, &identity.unique_id);
         host.bind = config.bind;
@@ -148,6 +165,7 @@ impl GameStream {
         );
         Ok(Arc::new(Self {
             pairings,
+            portal,
             out,
             info: GameStreamInfo {
                 http_port: addrs.http.port(),
@@ -173,10 +191,22 @@ impl GameStream {
         self.host.addrs()
     }
 
-    /// What the host says to the portal (pairing requests and outcomes). One
+    /// What the host says to the portal (pairing requests and outcomes, and
+    /// its requests to start and stop environments). One
     /// connection listens at a time; what is said while none does is dropped.
     pub fn outgoing(&self) -> broadcast::Receiver<ToPortal> {
         self.out.subscribe()
+    }
+
+    /// Whether the connected portal answers launches and stops (its welcome
+    /// says so). Without, apps are only the running environments.
+    pub fn set_portal_launches(&self, on: bool) {
+        self.portal.set_launches(on);
+    }
+
+    /// The portal's answer to a [`ToPortal::Request`] the host sent.
+    pub fn answer(&self, id: u64, result: Result<PortalResponse, String>) {
+        self.portal.answer(id, result);
     }
 
     /// A request from the portal that is the host's: a PIN, or the paired

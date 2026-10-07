@@ -10,7 +10,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use cha_control::{AppState, Config, app, db};
 use cha_wire::{
-    GameStreamDevice, GameStreamInfo, Inventory, NodeKey, NodeRequest, NodeResponse, ToNode,
+    Device, DeviceKind, EnvironmentSpec, GameStreamDevice, GameStreamInfo, GamepadKind, Inventory,
+    NodeKey, NodeRequest, NodeResponse, PortalRequest, PortalResponse, StreamerEndpoint, ToNode,
     ToPortal,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -178,6 +179,17 @@ fn inventory(gamestream: bool) -> Inventory {
     Inventory {
         hostname: "box".into(),
         addresses: vec!["192.168.1.20".into(), "100.64.0.2".into()],
+        // One NVIDIA GPU and a data root: what a launch needs of a node.
+        data_root: Some("/data".into()),
+        devices: Some(vec![Device {
+            id: "nvidia:0".into(),
+            kind: DeviceKind::Nvidia,
+            name: "NVIDIA GeForce RTX 4090".into(),
+            render_node: None,
+            vendor: Some("nvidia".into()),
+            codecs: vec!["h264".into(), "hevc".into()],
+            cores: None,
+        }]),
         gamestream: gamestream.then(|| GameStreamInfo {
             http_port: 47989,
             name: "box".into(),
@@ -257,6 +269,48 @@ impl FakeNode {
         };
         self.accept(id).await;
         devices
+    }
+
+    /// A request of the node's own, as its GameStream host makes them.
+    async fn ask(&mut self, id: u64, request: PortalRequest) {
+        self.send(ToPortal::Request { id, request }).await;
+    }
+
+    /// The portal's next answer to such a request.
+    async fn answer(&mut self) -> (u64, Result<PortalResponse, String>) {
+        loop {
+            if let ToNode::Response { id, result } = next_text(&mut self.ws).await {
+                return (id, result);
+            }
+        }
+    }
+
+    /// Takes the start the portal asks for and says the environment is up.
+    async fn start(&mut self) -> EnvironmentSpec {
+        let (id, request) = self.request().await;
+        let NodeRequest::StartEnvironment { environment } = request else {
+            panic!("expected a start, got {request:?}");
+        };
+        self.send(ToPortal::Response {
+            id,
+            result: Ok(NodeResponse::EnvironmentStarted {
+                id: environment.id.clone(),
+                streamer: StreamerEndpoint {
+                    http_port: 7600,
+                    webrtc_port: 7601,
+                    webtransport_port: 0,
+                },
+            }),
+        })
+        .await;
+        environment
+    }
+
+    /// Nothing more is asked of the node for a moment.
+    async fn is_left_alone(&mut self) -> bool {
+        tokio::time::timeout(Duration::from_millis(300), self.request())
+            .await
+            .is_err()
     }
 
     async fn pair_request(&mut self, attempt: &str, expires_in_secs: u64) {
@@ -905,4 +959,290 @@ async fn guests_cannot_pair_or_see_hosts_and_everyone_must_be_signed_in() {
             "{path}"
         );
     }
+}
+
+// ---- Launching and stopping for a paired client ----
+
+impl Portal {
+    /// `user` has a device paired with `node`, as a pairing leaves it.
+    async fn pair_device(&self, node: &FakeNode, user: &str, n: u8) {
+        db::upsert_gamestream_device(
+            &self.state.db,
+            user,
+            &node.id,
+            &fingerprint(n),
+            None,
+            "Deck",
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Two nodes with a GPU each that run a host, nothing paired yet.
+    async fn two_nodes(&self) -> (FakeNode, FakeNode) {
+        let mut a = FakeNode::connect(self, "box-a", true).await;
+        let mut b = FakeNode::connect(self, "box-b", true).await;
+        a.devices().await;
+        b.devices().await;
+        (a, b)
+    }
+
+    async fn environments(&self) -> Vec<db::EnvironmentRow> {
+        db::list_environments(&self.state.db, None, 50)
+            .await
+            .unwrap()
+    }
+
+    /// The `environment.*` audit entries with their detail, oldest first.
+    async fn audited(&self, action: &str) -> Vec<Value> {
+        let rows = self.call("GET", "/api/audit", &self.admin, None).await;
+        let mut found: Vec<Value> = rows
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["action"] == action)
+            .map(|e| serde_json::from_str(e["detail"].as_str().unwrap_or("null")).unwrap())
+            .collect();
+        found.reverse();
+        found
+    }
+}
+
+fn launch(user: &str, template: &str) -> PortalRequest {
+    PortalRequest::GameStreamLaunch {
+        user_id: user.into(),
+        template_id: template.into(),
+    }
+}
+
+#[tokio::test]
+async fn a_clients_launch_starts_its_owners_environment_on_that_node_with_their_settings() {
+    let p = Portal::start().await;
+    let (bob, bob_id) = p.account("bob", "user").await;
+    let (mut a, mut b) = p.two_nodes().await;
+    p.pair_device(&a, &bob_id, 1).await;
+    p.pair_device(&b, &bob_id, 2).await;
+    // Their own choices for the app, as the browser's launch would use.
+    for (path, body) in [
+        (
+            "/api/controllers/apps/chrome",
+            json!({ "kind": "dualsense" }),
+        ),
+        ("/api/apps/settings/chrome", json!({ "fps": 120 })),
+    ] {
+        let set = p.call("PUT", path, &bob, Some(body)).await;
+        assert_eq!(set.status, StatusCode::OK, "{:?}", set.body);
+    }
+
+    a.ask(7, launch(&bob_id, "chrome")).await;
+    let spec = a.start().await;
+    assert_eq!(spec.owner, bob_id);
+    assert_eq!(spec.template, "chrome");
+    assert_eq!(spec.gamepad, Some(GamepadKind::Dualsense));
+    assert_eq!(spec.fps, 120);
+    assert_eq!(spec.device.as_ref().unwrap().id, "nvidia:0");
+    // The answer comes once it runs.
+    let (id, result) = a.answer().await;
+    assert_eq!(id, 7);
+    assert_eq!(
+        result,
+        Ok(PortalResponse::GameStreamLaunched {
+            environment_id: spec.id.clone(),
+            created: true
+        })
+    );
+    let rows = p.environments().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].node_id.as_deref(), rows[0].state.as_str()),
+        (Some(a.id.as_str()), "running"),
+        "on the node that asked, and nowhere else"
+    );
+    assert!(b.is_left_alone().await);
+    // The audit log says how it was launched.
+    let launched = p.audited("environment.launched").await;
+    assert_eq!(launched.len(), 1);
+    assert_eq!(launched[0]["via"], "moonlight");
+    assert_eq!(launched[0]["template"], "chrome");
+    assert_eq!(launched[0]["node"], "box-a");
+
+    // Asked again while it runs, the launch joins it: nothing starts.
+    a.ask(8, launch(&bob_id, "chrome")).await;
+    let (id, result) = a.answer().await;
+    assert_eq!(id, 8);
+    assert_eq!(
+        result,
+        Ok(PortalResponse::GameStreamLaunched {
+            environment_id: spec.id.clone(),
+            created: false
+        })
+    );
+    assert!(a.is_left_alone().await);
+    assert_eq!(p.environments().await.len(), 1);
+
+    // Quitting stops it, through the API's stop, and the log says so.
+    a.ask(
+        9,
+        PortalRequest::GameStreamStop {
+            user_id: bob_id.clone(),
+            environment_id: spec.id.clone(),
+        },
+    )
+    .await;
+    // The portal's answer and its stop of the node can arrive in either order.
+    let (mut stop, mut answer) = (None, None);
+    while stop.is_none() || answer.is_none() {
+        match next_text::<ToNode>(&mut a.ws).await {
+            ToNode::Request {
+                id,
+                request: NodeRequest::StopEnvironment { id: env },
+            } => {
+                assert_eq!(env, spec.id);
+                stop = Some(id);
+            }
+            ToNode::Response { id, result } => answer = Some((id, result)),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    a.send(ToPortal::Response {
+        id: stop.unwrap(),
+        result: Ok(NodeResponse::EnvironmentStopped {
+            id: spec.id.clone(),
+        }),
+    })
+    .await;
+    assert_eq!(answer, Some((9, Ok(PortalResponse::GameStreamStopped))));
+    let stopped = p.audited("environment.stopped").await;
+    assert_eq!(stopped.len(), 1);
+    assert_eq!(stopped[0]["via"], "moonlight");
+    wait_for(&p, &format!("/api/environments/{}", spec.id), &bob, |e| {
+        e["state"] == "destroyed"
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_launch_for_someone_without_a_paired_device_here_is_refused() {
+    let p = Portal::start().await;
+    let (_, bob_id) = p.account("bob", "user").await;
+    let (_, carol_id) = p.account("carol", "user").await;
+    let (_, visitor_id) = p.account("visitor", "guest").await;
+    let (mut a, b) = p.two_nodes().await;
+    // Carol's device is paired with the other node; the guest's with this one
+    // (a guest can't pair, but the row could have been made before the role changed).
+    p.pair_device(&b, &carol_id, 1).await;
+    p.pair_device(&a, &visitor_id, 2).await;
+    p.pair_device(&a, &bob_id, 3).await;
+    for (n, (user, template, wants)) in [
+        (carol_id.as_str(), "chrome", "no device of yours"),
+        (visitor_id.as_str(), "chrome", "guests"),
+        ("no-such-user", "chrome", "no longer has an account"),
+        (bob_id.as_str(), "no-such-app", "no such app"),
+        // A gateway to someone else's Moonlight host is not an app of this one.
+        (bob_id.as_str(), "moonlight:abc:1", "no such app"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        a.ask(n as u64, launch(user, template)).await;
+        let (id, result) = a.answer().await;
+        assert_eq!(id, n as u64);
+        let why = result.expect_err(template);
+        assert!(why.contains(wants), "{user} {template}: {why}");
+    }
+    assert!(p.environments().await.is_empty(), "nothing was started");
+    // Nor may a client stop what isn't its owner's.
+    let (mut other, _) = (a, b);
+    other
+        .ask(
+            50,
+            PortalRequest::GameStreamStop {
+                user_id: carol_id,
+                environment_id: "whatever".into(),
+            },
+        )
+        .await;
+    assert!(other.answer().await.1.is_err());
+}
+
+#[tokio::test]
+async fn the_one_copy_of_a_persistent_app_is_refused_when_it_runs_on_another_node() {
+    let p = Portal::start().await;
+    let (_, bob_id) = p.account("bob", "user").await;
+    let (mut a, b) = p.two_nodes().await;
+    p.pair_device(&a, &bob_id, 1).await;
+    // Steam keeps one home per user: bob's copy runs on box-b.
+    db::insert_environment(
+        &p.state.db,
+        "e-steam",
+        &bob_id,
+        "steam",
+        &b.id,
+        Some("nvidia:0"),
+        "running",
+    )
+    .await
+    .unwrap();
+    a.ask(1, launch(&bob_id, "steam")).await;
+    let (_, result) = a.answer().await;
+    let why = result.unwrap_err();
+    assert!(why.contains("already running on box-b"), "{why}");
+    assert_eq!(p.environments().await.len(), 1);
+    assert!(a.is_left_alone().await);
+}
+
+#[tokio::test]
+async fn a_node_that_cannot_run_the_app_or_fails_to_start_it_says_why() {
+    let p = Portal::start().await;
+    let (_, bob_id) = p.account("bob", "user").await;
+    // A node with no GPU: the app that needs one has nowhere to run.
+    let mut plain = FakeNode::connect(&p, "plain", true).await;
+    plain.devices().await;
+    sqlx::query("UPDATE nodes SET inventory = ? WHERE id = ?")
+        .bind(
+            serde_json::to_string(&Inventory {
+                devices: Some(vec![Device {
+                    id: "cpu".into(),
+                    kind: DeviceKind::Cpu,
+                    name: "CPU".into(),
+                    render_node: None,
+                    vendor: None,
+                    codecs: vec!["h264".into()],
+                    cores: Some(8),
+                }]),
+                data_root: Some("/data".into()),
+                gamestream: Some(GameStreamInfo {
+                    http_port: 47989,
+                    name: "plain".into(),
+                }),
+                ..Inventory::default()
+            })
+            .unwrap(),
+        )
+        .bind(&plain.id)
+        .execute(&p.state.db)
+        .await
+        .unwrap();
+    p.pair_device(&plain, &bob_id, 1).await;
+    plain.ask(1, launch(&bob_id, "steam")).await;
+    let why = plain.answer().await.1.unwrap_err();
+    assert!(why.contains("it needs a GPU"), "{why}");
+    assert!(p.environments().await.is_empty());
+
+    // The node tries and can't: the client hears the node's reason.
+    plain.ask(2, launch(&bob_id, "chrome")).await;
+    let (id, request) = plain.request().await;
+    assert!(matches!(request, NodeRequest::StartEnvironment { .. }));
+    plain
+        .send(ToPortal::Response {
+            id,
+            result: Err("the image is missing".into()),
+        })
+        .await;
+    let why = plain.answer().await.1.unwrap_err();
+    assert!(
+        why.contains("didn't start") && why.contains("the image is missing"),
+        "{why}"
+    );
 }

@@ -89,6 +89,7 @@ services:
       CHA_GAMESTREAM_HTTP_PORT: ${CHA_GAMESTREAM_HTTP_PORT:-47989}
       CHA_GAMESTREAM_HTTPS_PORT: ${CHA_GAMESTREAM_HTTPS_PORT:-47984}
       CHA_GAMESTREAM_RTSP_PORT: ${CHA_GAMESTREAM_RTSP_PORT:-48010}
+      CHA_GAMESTREAM_QUIT_STOPS: ${CHA_GAMESTREAM_QUIT_STOPS:-false}
       RUST_LOG: ${RUST_LOG:-info}
     # The host's process list, so the agent can match the GPU memory NVML
     # reports (by host pid) to each environment's containers: the per-app VRAM

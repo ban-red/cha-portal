@@ -129,9 +129,18 @@ pub enum ToNode {
         moonlight: bool,
         /// The portal reads the `GameStream*` messages of [`ToPortal`] and
         /// sends the node's host [`NodeRequest::GameStreamPin`] and
-        /// [`NodeRequest::GameStreamDevices`]; the same guard.
+        /// [`NodeRequest::GameStreamDevices`], and answers the node's
+        /// [`PortalRequest::GameStreamLaunch`] and
+        /// [`PortalRequest::GameStreamStop`]; the same guard.
         #[serde(default)]
         gamestream: bool,
+        /// The portal answers [`PortalRequest::GameStreamLaunch`] and
+        /// [`PortalRequest::GameStreamStop`] (G3.1). Apart from `gamestream`
+        /// because a portal from before G3.1 reads the other `GameStream*`
+        /// messages but drops the connection on these; without it the node's
+        /// host lists only running environments and never sends them.
+        #[serde(default)]
+        gamestream_launch: bool,
     },
     Request {
         id: u64,
@@ -622,16 +631,43 @@ pub struct StreamerEndpoint {
 }
 
 /// What a node asks the portal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum PortalRequest {
     Ping,
+    /// A paired Moonlight client launched `template_id` on this node's
+    /// GameStream host and nothing of `user_id`'s runs it here: start it on
+    /// this node, as a launch in the portal would, and answer once it runs
+    /// (or failed, with the reason as the error). Only sent once the welcome
+    /// says the portal reads the `GameStream*` messages.
+    GameStreamLaunch {
+        user_id: String,
+        template_id: String,
+    },
+    /// The client quit an app its launch started: stop `environment_id`, if it
+    /// is `user_id`'s and runs on this node.
+    GameStreamStop {
+        user_id: String,
+        environment_id: String,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum PortalResponse {
-    Pong { unix_ms: u64 },
+    Pong {
+        unix_ms: u64,
+    },
+    /// The environment of a [`PortalRequest::GameStreamLaunch`] is running.
+    GameStreamLaunched {
+        environment_id: String,
+        /// This launch started it. `false`: it was already starting (an
+        /// earlier launch, or the browser's) and the launch joined it.
+        created: bool,
+    },
+    /// A [`PortalRequest::GameStreamStop`] was taken: the environment is
+    /// stopping, or already gone.
+    GameStreamStopped,
 }
 
 /// What a node has, refreshed when it changes.
@@ -966,6 +1002,7 @@ mod tests {
                 node_usage: false,
                 moonlight: false,
                 gamestream: false,
+                gamestream_launch: false,
                 ..
             }
         ));
@@ -1031,6 +1068,82 @@ mod tests {
             serde_json::from_str::<NodeResponse>(&accepted).unwrap(),
             NodeResponse::Accepted
         ));
+    }
+
+    #[test]
+    fn launching_has_its_own_welcome_flag_which_defaults_off() {
+        let old: ToNode = serde_json::from_value(serde_json::json!({
+            "type": "welcome", "node_id": "n", "heartbeat_secs": 15, "gamestream": true
+        }))
+        .unwrap();
+        assert!(matches!(
+            old,
+            ToNode::Welcome {
+                gamestream: true,
+                gamestream_launch: false,
+                ..
+            }
+        ));
+        let new = ToNode::Welcome {
+            node_id: "n".into(),
+            heartbeat_secs: 15,
+            environment_warnings: true,
+            node_usage: true,
+            moonlight: true,
+            gamestream: true,
+            gamestream_launch: true,
+        };
+        let text = serde_json::to_string(&new).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<ToNode>(&text).unwrap(),
+            ToNode::Welcome {
+                gamestream_launch: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_nodes_gamestream_requests_to_the_portal_round_trip() {
+        let requests = [
+            PortalRequest::GameStreamLaunch {
+                user_id: "u1".into(),
+                template_id: "chrome".into(),
+            },
+            PortalRequest::GameStreamStop {
+                user_id: "u1".into(),
+                environment_id: "e1".into(),
+            },
+        ];
+        for request in requests {
+            let msg = ToPortal::Request { id: 7, request };
+            let text = serde_json::to_string(&msg).unwrap();
+            let back: ToPortal = serde_json::from_str(&text).unwrap();
+            assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        }
+        let said = serde_json::to_value(PortalRequest::GameStreamLaunch {
+            user_id: "u1".into(),
+            template_id: "chrome".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            said,
+            serde_json::json!({ "op": "game_stream_launch", "user_id": "u1", "template_id": "chrome" })
+        );
+        let results: [Result<PortalResponse, String>; 3] = [
+            Ok(PortalResponse::GameStreamLaunched {
+                environment_id: "e1".into(),
+                created: true,
+            }),
+            Ok(PortalResponse::GameStreamStopped),
+            Err("your Steam is already running on box".into()),
+        ];
+        for result in results {
+            let msg = ToNode::Response { id: 7, result };
+            let text = serde_json::to_string(&msg).unwrap();
+            let back: ToNode = serde_json::from_str(&text).unwrap();
+            assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        }
     }
 
     #[test]
