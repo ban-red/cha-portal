@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use cha_node::claim::{self, ClaimConfig};
 use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime, PublishedImages};
 use cha_node::storage::{DataRoot, parse_shared_dirs};
@@ -26,12 +27,20 @@ struct Args {
     /// the node's traffic and impersonate the portal.
     #[arg(long, env = "CHA_ALLOW_INSECURE_PORTAL")]
     allow_insecure_portal: bool,
-    /// One-time join token from the portal (needed only to enroll).
+    /// One-time join token from the portal (to enroll without being claimed).
     #[arg(long, env = "CHA_JOIN_TOKEN", hide_env_values = true)]
     join_token: Option<String>,
     /// This node's name in the portal; defaults to the hostname.
     #[arg(long, env = "CHA_NODE_NAME")]
     name: Option<String>,
+    /// Without an identity or a join token, advertise this node on the LAN and
+    /// show a pairing code to claim it with in the portal (Admin → Nodes).
+    /// false needs a join token instead.
+    #[arg(long, env = "CHA_DISCOVERY", default_value_t = true, action = clap::ArgAction::Set)]
+    discovery: bool,
+    /// The port an unclaimed node listens on for a claim.
+    #[arg(long, env = "CHA_CLAIM_PORT", default_value_t = cha_wire::claim::DEFAULT_CLAIM_PORT)]
+    claim_port: u16,
     /// Where the node keeps its identity (including its private key).
     #[arg(long, env = "CHA_NODE_STATE", default_value = "/var/lib/cha-node")]
     state_dir: PathBuf,
@@ -128,7 +137,7 @@ async fn main() -> Result<()> {
     let config = docker_config(&args)?;
     if args.doctor {
         let identity = Identity::load(&args.state_dir).ok().flatten();
-        let ok = doctor::run(&docker, &config, identity.as_ref()).await;
+        let ok = doctor::run(&docker, &config, identity.as_ref(), &args.state_dir).await;
         std::process::exit(if ok { 0 } else { 1 });
     }
 
@@ -147,10 +156,24 @@ async fn main() -> Result<()> {
             }
             identity
         }
+        None if args.join_token.is_none() && args.discovery => {
+            let name = args.name.unwrap_or_else(|| inventory::collect().hostname);
+            let identity = claim::wait_for_claim(ClaimConfig {
+                state_dir: args.state_dir.clone(),
+                name: name.clone(),
+                portal_url: args.portal_url.clone(),
+                allow_insecure_portal: args.allow_insecure_portal,
+                port: args.claim_port,
+            })
+            .await?;
+            info!(node_id = %identity.node_id, %name, "claimed");
+            identity
+        }
         None => {
-            let portal_url = args
-                .portal_url
-                .context("not enrolled yet: pass --portal-url and --join-token")?;
+            let portal_url = args.portal_url.context(
+                "not enrolled yet: pass --portal-url and --join-token, or leave the token out \
+                 and claim this node in the portal (CHA_DISCOVERY)",
+            )?;
             check_portal_transport(
                 &normalize_portal_url(&portal_url)?,
                 args.allow_insecure_portal,

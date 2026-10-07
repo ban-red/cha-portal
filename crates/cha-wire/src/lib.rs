@@ -50,6 +50,7 @@
 //! GPU as the one `nvidia` device it always ran on; a spec without a device
 //! means `nvidia`, which an older node does whatever the spec says.
 
+pub mod claim;
 mod storage;
 
 pub use storage::*;

@@ -1,12 +1,14 @@
 //! `cha-node`: the agent on each machine that runs environments.
 //!
-//! It enrolls once with an admin's join token, keeping its Ed25519 identity in
+//! It enrolls once, with an admin's join token or by being claimed in the
+//! portal with a pairing code ([`claim`]), keeping its Ed25519 identity in
 //! a state directory, then holds one WebSocket to the portal (ADR 0001):
 //! answering the portal's challenge, reporting inventory and the environments
 //! it runs, sending heartbeats, and serving requests: starting and stopping
 //! environments ([`environments`]) through the Docker engine ([`docker`]), and
 //! keeping and deleting the data users keep for apps ([`storage`]).
 
+pub mod claim;
 pub mod crashlog;
 pub mod devices;
 pub mod docker;
@@ -70,6 +72,15 @@ impl std::fmt::Debug for Identity {
 }
 
 impl Identity {
+    pub fn new(portal_url: String, node_id: String, name: String, key: &NodeKey) -> Self {
+        Self {
+            portal_url,
+            node_id,
+            name,
+            secret_key: STANDARD.encode(key.secret()),
+        }
+    }
+
     pub fn key(&self) -> Result<NodeKey> {
         let secret: [u8; 32] = STANDARD
             .decode(&self.secret_key)

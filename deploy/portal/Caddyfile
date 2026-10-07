@@ -3,5 +3,5 @@
 # 443 must reach it.
 {$CHA_DOMAIN} {
 	encode zstd gzip
-	reverse_proxy portal:7676
+	reverse_proxy 127.0.0.1:7676
 }

@@ -9,8 +9,10 @@
 pub mod api;
 pub mod apps;
 pub mod auth;
+pub mod claim;
 pub mod controllers;
 pub mod db;
+pub mod discovery;
 pub mod environments;
 pub mod error;
 pub mod ice;
@@ -48,6 +50,11 @@ pub struct Config {
     /// the `dev` admin and signs in without a password, or signs in as any
     /// existing enabled admin. Never for a real portal.
     pub dev_login: bool,
+    /// Browse the LAN for unclaimed nodes (ADR 0007).
+    pub discover_nodes: bool,
+    /// The URL nodes are told to reach the portal at when claimed; without
+    /// it, the one the claiming admin's browser is using.
+    pub public_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -60,6 +67,8 @@ pub struct AppState {
     pub nodes: Arc<nodes::NodeHub>,
     /// Signs media tokens; nodes' streamers check them with its public half.
     pub media_key: Arc<cha_wire::NodeKey>,
+    /// Unclaimed nodes seen on the LAN.
+    pub discovered: Arc<discovery::Discovered>,
 }
 
 impl AppState {
@@ -73,6 +82,7 @@ impl AppState {
             setup_lock: Arc::default(),
             nodes: Arc::default(),
             media_key,
+            discovered: Arc::default(),
         })
     }
 }
@@ -126,6 +136,11 @@ pub async fn run(config: Config) -> Result<()> {
     }
     if config.dev_login {
         warn!("dev login is ON: any loopback client can sign in as the `dev` admin");
+    }
+    if config.discover_nodes
+        && let Err(err) = discovery::browse(Arc::clone(&state.discovered))
+    {
+        warn!("can't look for nodes on the LAN: {err:#}");
     }
     tokio::spawn(async move {
         loop {

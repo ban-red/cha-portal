@@ -18,6 +18,12 @@ clap = { version = "4", features = ["derive", "env"] }
 getrandom = "0.3"
 # TURN credentials (coturn's shared-secret scheme).
 hmac = "0.12"
+# The claim exchange with a node on the LAN (plain HTTP, one request each).
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# Browses the LAN for unclaimed nodes (ADR 0007).
+mdns-sd = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
@@ -33,6 +39,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
-http-body-util = "0.1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

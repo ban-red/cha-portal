@@ -60,7 +60,12 @@ impl Check {
 }
 
 /// Runs every check, prints the report; true when nothing failed.
-pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Identity>) -> bool {
+pub async fn run(
+    docker: &Docker,
+    config: &DockerConfig,
+    identity: Option<&Identity>,
+    state_dir: &Path,
+) -> bool {
     let mut checks = Vec::new();
     let engine = docker.version().await;
     checks.push(match &engine {
@@ -90,9 +95,7 @@ pub async fn run(docker: &Docker, config: &DockerConfig, identity: Option<&Ident
     checks.push(user_namespaces());
     checks.push(match identity {
         Some(identity) => clock(&identity.portal_url).await,
-        None => check(Level::Info, "Portal", "not enrolled yet").fix(
-            "run the agent once with CHA_PORTAL_URL and a join token from the portal's Nodes page",
-        ),
+        None => unclaimed(crate::claim::read_code(state_dir).as_deref()),
     });
     checks.push(ports(config));
     checks.push(host_files(Path::new(hostfiles::HOST_ETC)));
@@ -970,6 +973,21 @@ async fn clock(portal_url: &str) -> Check {
 }
 
 /// The first environment's ports, if nothing holds them.
+/// A node with no identity: waiting to be claimed, if it shows a code.
+fn unclaimed(code: Option<&str>) -> Check {
+    match code {
+        Some(code) => check(
+            Level::Info,
+            "Portal",
+            format!("not claimed yet: pairing code {code}"),
+        )
+        .fix("in the portal, open Admin → Nodes, pick this node under Found on your network and enter the code"),
+        None => check(Level::Info, "Portal", "not enrolled yet").fix(
+            "run the agent once with CHA_PORTAL_URL and a join token from the portal's Nodes page",
+        ),
+    }
+}
+
 fn ports(config: &DockerConfig) -> Check {
     let http = config.port_base;
     let webrtc = http + 1;
@@ -997,6 +1015,13 @@ fn ports(config: &DockerConfig) -> Check {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unclaimed_node_shows_its_code() {
+        let shown = unclaimed(Some("4821-9375"));
+        assert!(shown.detail.contains("4821-9375"));
+        assert!(unclaimed(None).detail.contains("not enrolled yet"));
+    }
 
     #[test]
     fn modules_are_found_by_name_with_either_dash() {

@@ -6,7 +6,10 @@
 #
 # Set the release in deploy/quickstart/.env (CHA_VERSION=0.1.0), then:
 #   docker compose -f deploy/quickstart/compose.yaml up -d portal
-#   CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/quickstart/compose.yaml up -d
+#   docker compose -f deploy/quickstart/compose.yaml up -d
+# then claim the node in the portal (Admin → Nodes, with the pairing code in
+# `docker compose -f deploy/quickstart/compose.yaml logs agent`), or give it a
+# join token instead: CHA_JOIN_TOKEN=chajoin_… docker compose -f … up -d
 #
 # Every setting here is the same as in deploy/portal and deploy/node; see
 # deploy/README.md for what each one does.
@@ -16,18 +19,25 @@ services:
   portal:
     image: ghcr.io/ban-red/cha-portal:${CHA_VERSION:?set CHA_VERSION to a release, e.g. 0.1.0}
     restart: unless-stopped
-    ports:
+    # Host networking: the portal finds unclaimed nodes with mDNS, which
+    # Docker's bridge network doesn't pass. It listens on CHA_LISTEN.
+    network_mode: host
+    environment:
       # Every interface by default, so the portal answers on this machine's LAN
       # address as well as on localhost. Serve it over HTTPS with
       # `tailscale serve --bg 7676`, and use the https:// URL that prints.
       # Plain http://<this machine>:7676 from another device reaches the portal,
       # but sign-in only sticks with CHA_SECURE_COOKIES=false, and the browser
       # then holds back gamepads, keyboard lock and WebTransport (SETUP.md,
-      # "Without HTTPS"). Docker's published ports go around ufw and firewalld:
-      # on a machine with a public address, or to keep the portal off the LAN,
+      # "Without HTTPS"). Host networking goes around ufw and firewalld's
+      # container rules, not their host ones; to keep the portal off the LAN,
       # set CHA_BIND=127.0.0.1:7676 (tailscale serve still reaches it).
-      - ${CHA_BIND:-0.0.0.0:7676}:7676
-    environment:
+      CHA_LISTEN: ${CHA_BIND:-0.0.0.0:7676}
+      # Looks for unclaimed nodes on the LAN, to claim in Admin → Nodes.
+      CHA_DISCOVER_NODES: ${CHA_DISCOVER_NODES:-true}
+      # The URL a claimed node is told to reach the portal at; the agent here
+      # keeps its own (below).
+      CHA_PUBLIC_URL: ${CHA_PUBLIC_URL:-}
       # The session cookie is marked Secure, which browsers keep only over
       # HTTPS (or on localhost). false for plain HTTP on a trusted LAN.
       CHA_SECURE_COOKIES: ${CHA_SECURE_COOKIES:-true}
@@ -46,10 +56,16 @@ services:
     # the portal is then on this machine's loopback, which needs no TLS.
     network_mode: host
     environment:
+      # The agent here always reaches the portal over loopback, however it is
+      # claimed or enrolled.
       CHA_PORTAL_URL: http://127.0.0.1:7676
-      # Only for the first start: a token from Admin → Nodes → Add node.
+      # Optional, for the first start only: a token from Admin → Nodes → Add
+      # node. Without one, the agent logs a pairing code and waits to be
+      # claimed in Admin → Nodes (CHA_DISCOVERY=false needs a token).
       CHA_JOIN_TOKEN: ${CHA_JOIN_TOKEN:-}
       CHA_NODE_NAME: ${CHA_NODE_NAME:-}
+      CHA_DISCOVERY: ${CHA_DISCOVERY:-true}
+      CHA_CLAIM_PORT: ${CHA_CLAIM_PORT:-7679}
       CHA_STREAMER_IMAGE: ghcr.io/ban-red/cha-streamer:${CHA_VERSION:?set CHA_VERSION to a release, e.g. 0.1.0}
       # The environments: empty runs the ones built here (cha/env-*:dev);
       # ghcr.io/ban-red (setup.sh sets it, unless --build) runs the release's

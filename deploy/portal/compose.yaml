@@ -27,10 +27,17 @@ services:
     # one `--build` makes here.
     image: ${CHA_PORTAL_IMAGE:-cha-portal:dev}
     restart: unless-stopped
-    ports:
-      # Localhost by default: for tailscale serve or a proxy on this host.
-      - ${CHA_BIND:-127.0.0.1:7676}:7676
+    # Host networking: the portal finds unclaimed nodes with mDNS, which
+    # Docker's bridge network doesn't pass. It listens on CHA_LISTEN.
+    network_mode: host
     environment:
+      # Localhost by default: for tailscale serve or a proxy on this host.
+      CHA_LISTEN: ${CHA_BIND:-127.0.0.1:7676}
+      # Looks for unclaimed nodes on the LAN, to claim in Admin → Nodes.
+      CHA_DISCOVER_NODES: ${CHA_DISCOVER_NODES:-true}
+      # The URL a claimed node is told to reach the portal at (default: the
+      # one the claiming admin's browser is using).
+      CHA_PUBLIC_URL: ${CHA_PUBLIC_URL:-}
       CHA_SECURE_COOKIES: ${CHA_SECURE_COOKIES:-true}
       CHA_STUN_URLS: ${CHA_STUN_URLS:-}
       CHA_TURN_URLS: ${CHA_TURN_URLS:-}
@@ -43,10 +50,9 @@ services:
     profiles: [tls]
     image: caddy:2
     restart: unless-stopped
-    ports:
-      - 80:80
-      - 443:443
-      - 443:443/udp
+    # Host networking, to reach the portal on 127.0.0.1:7676 (CHA_BIND must
+    # leave it there or on every interface); it serves ports 80 and 443.
+    network_mode: host
     environment:
       CHA_DOMAIN: ${CHA_DOMAIN:-localhost}
     volumes:

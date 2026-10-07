@@ -37,6 +37,8 @@ async fn portal() -> Portal {
         session_days: 1,
         ice: Default::default(),
         dev_login: false,
+        discover_nodes: false,
+        public_url: None,
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool).await.unwrap();

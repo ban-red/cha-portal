@@ -50,6 +50,8 @@ pub fn routes() -> axum::Router<AppState> {
         .route("/node/connect", get(connect))
         .route("/nodes", get(list))
         .route("/nodes/join-tokens", post(create_join_token))
+        .route("/nodes/discovered", get(crate::claim::discovered))
+        .route("/nodes/discovered/claim", post(crate::claim::claim))
         .route("/nodes/{id}", delete(remove))
         .route("/nodes/{id}/ping", post(ping))
 }

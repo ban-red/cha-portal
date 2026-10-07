@@ -36,6 +36,14 @@ struct Args {
     /// development only).
     #[arg(long, env = "CHA_DEV_LOGIN")]
     dev_login: bool,
+    /// Browse the LAN for unclaimed nodes, which admins can then claim with
+    /// the code the node shows (needs multicast: the host network in Docker).
+    #[arg(long, env = "CHA_DISCOVER_NODES", default_value_t = true, action = clap::ArgAction::Set)]
+    discover_nodes: bool,
+    /// The URL nodes are told to reach the portal at when claimed, e.g.
+    /// https://portal.example. Default: the URL the claiming admin is using.
+    #[arg(long, env = "CHA_PUBLIC_URL")]
+    public_url: Option<String>,
 }
 
 #[tokio::main]
@@ -67,6 +75,8 @@ async fn main() -> Result<()> {
             turn_secret: args.turn_secret.filter(|s| !s.is_empty()),
         },
         dev_login: args.dev_login,
+        discover_nodes: args.discover_nodes,
+        public_url: args.public_url.filter(|u| !u.trim().is_empty()),
     })
     .await
 }

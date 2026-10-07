@@ -12,6 +12,7 @@ use tower::ServiceExt;
 struct TestPortal {
     app: Router,
     db: sqlx::SqlitePool,
+    discovered: std::sync::Arc<cha_control::discovery::Discovered>,
     _dir: tempfile::TempDir,
 }
 
@@ -29,10 +30,13 @@ async fn portal_with(dev_login: bool) -> TestPortal {
         session_days: 14,
         ice: Default::default(),
         dev_login,
+        discover_nodes: true,
+        public_url: None,
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool.clone()).await.unwrap();
     TestPortal {
+        discovered: state.discovered.clone(),
         app: app(state),
         db: pool,
         _dir: dir,
@@ -1584,4 +1588,394 @@ async fn catalog_logos_are_inert_images() {
             .status,
         StatusCode::UNAUTHORIZED
     );
+}
+
+// ---- Claiming nodes found on the LAN (ADR 0007) ----
+
+mod claiming {
+    use super::*;
+    use axum::Json;
+    use axum::extract::State;
+    use axum::routing::post;
+    use cha_control::discovery::{DiscoveredNode, unix_ms};
+    use cha_wire::NodeKey;
+    use cha_wire::claim::{self, *};
+    use std::sync::{Arc, Mutex};
+
+    const CODE: &str = "48219375";
+
+    /// A node's claim port, played with the same helpers the real one uses.
+    struct FakeNode {
+        port: u16,
+        key: NodeKey,
+        /// The URL the portal said it was reached at.
+        portal_url: Mutex<Option<String>>,
+        /// The id the portal gave the node, once it did.
+        node_id: Mutex<Option<String>>,
+        session: Mutex<Option<ClaimSession>>,
+        /// Answers `/claim/start` with this refusal instead.
+        refuse: Option<(StatusCode, &'static str)>,
+        /// Fails `/claim/done`.
+        fail_done: bool,
+    }
+
+    fn refusal(status: StatusCode, code: &str, message: &str) -> (StatusCode, Json<ErrorBody>) {
+        (
+            status,
+            Json(ErrorBody {
+                error: code.into(),
+                message: message.into(),
+            }),
+        )
+    }
+
+    async fn fake_node(
+        refuse: Option<(StatusCode, &'static str)>,
+        fail_done: bool,
+    ) -> Arc<FakeNode> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let node = Arc::new(FakeNode {
+            port: listener.local_addr().unwrap().port(),
+            key: NodeKey::from_secret([9; 32]),
+            portal_url: Mutex::new(None),
+            node_id: Mutex::new(None),
+            session: Mutex::new(None),
+            refuse,
+            fail_done,
+        });
+        let router = Router::new()
+            .route(
+                START_PATH,
+                post(
+                    |State(n): State<Arc<FakeNode>>, Json(req): Json<StartRequest>| async move {
+                        if let Some((status, message)) = n.refuse {
+                            return Err(refusal(status, "insecure_portal", message));
+                        }
+                        *n.portal_url.lock().unwrap() = Some(req.portal_url.clone());
+                        let (spake, session) =
+                            NodeStart::respond(CODE, &req.spake, &req.portal_url, "claim-1")
+                                .unwrap();
+                        *n.session.lock().unwrap() = Some(session);
+                        Ok(Json(StartResponse {
+                            claim_id: "claim-1".into(),
+                            spake,
+                        }))
+                    },
+                ),
+            )
+            .route(
+                FINISH_PATH,
+                post(
+                    |State(n): State<Arc<FakeNode>>, Json(req): Json<FinishRequest>| async move {
+                        let session = n.session.lock().unwrap();
+                        let session = session.as_ref().unwrap();
+                        if session.verify_portal_mac(&req.mac).is_err() {
+                            return Err(refusal(StatusCode::FORBIDDEN, "wrong_code", "no"));
+                        }
+                        let public_key = n.key.public_b64();
+                        Ok(Json(FinishResponse {
+                            mac: session.node_mac(&public_key).unwrap(),
+                            public_key,
+                            name: "gpu-box".into(),
+                            agent_version: "0.1.0".into(),
+                        }))
+                    },
+                ),
+            )
+            .route(
+                DONE_PATH,
+                post(
+                    |State(n): State<Arc<FakeNode>>, Json(req): Json<DoneRequest>| async move {
+                        if n.fail_done {
+                            return Err(refusal(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "bad_request",
+                                "disk full",
+                            ));
+                        }
+                        let session = n.session.lock().unwrap();
+                        let session = session.as_ref().unwrap();
+                        if session.verify_done_mac(&req.node_id, &req.mac).is_err() {
+                            return Err(refusal(StatusCode::FORBIDDEN, "wrong_code", "no"));
+                        }
+                        *n.node_id.lock().unwrap() = Some(req.node_id);
+                        Ok(Json(serde_json::json!({})))
+                    },
+                ),
+            )
+            .with_state(Arc::clone(&node));
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        node
+    }
+
+    impl FakeNode {
+        fn fingerprint(&self) -> String {
+            claim::fingerprint_b64(&self.key.public_b64()).unwrap()
+        }
+
+        fn discovered(&self, id: &str) -> DiscoveredNode {
+            DiscoveredNode {
+                id: id.into(),
+                name: "gpu-box".into(),
+                gpu: "RTX 4090".into(),
+                fingerprint: self.fingerprint(),
+                addresses: vec!["::1".into(), "127.0.0.1".into()],
+                port: self.port,
+                last_seen: unix_ms(),
+            }
+        }
+    }
+
+    impl TestPortal {
+        async fn claim(
+            &self,
+            cookie: Option<&str>,
+            origin: Option<&str>,
+            id: &str,
+            code: &str,
+        ) -> Reply {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/api/nodes/discovered/claim")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::HOST, "portal.lan:7676");
+            if let Some(cookie) = cookie {
+                req = req.header(header::COOKIE, cookie);
+            }
+            if let Some(origin) = origin {
+                req = req.header(header::ORIGIN, origin);
+            }
+            let req = req
+                .body(Body::from(json!({ "id": id, "code": code }).to_string()))
+                .unwrap();
+            let res = self.app.clone().oneshot(req).await.unwrap();
+            let status = res.status();
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            Reply {
+                status,
+                body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+                cookie: None,
+            }
+        }
+
+        async fn node_count(&self) -> i64 {
+            sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
+                .fetch_one(&self.db)
+                .await
+                .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_found_node_is_listed_to_admins_until_it_is_enrolled() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let (player, _) = p.account(&admin, "player1", "user").await;
+        let node = fake_node(None, false).await;
+        p.discovered
+            .insert(node.discovered("gpu-box._cha-node._tcp.local."));
+
+        let listed = p
+            .call("GET", "/api/nodes/discovered", Some(&admin), None)
+            .await;
+        assert_eq!(listed.status, StatusCode::OK);
+        assert_eq!(listed.body["enabled"], true);
+        let nodes = listed.body["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0]["id"], "gpu-box._cha-node._tcp.local.");
+        assert_eq!(nodes[0]["name"], "gpu-box");
+        assert_eq!(nodes[0]["gpu"], "RTX 4090");
+        assert_eq!(nodes[0]["fingerprint"], node.fingerprint());
+        assert_eq!(nodes[0]["port"], node.port);
+        assert!(nodes[0]["lastSeen"].as_i64().unwrap() > 0);
+
+        assert_eq!(
+            p.call("GET", "/api/nodes/discovered", Some(&player), None)
+                .await
+                .status,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            p.call("GET", "/api/nodes/discovered", None, None)
+                .await
+                .status,
+            StatusCode::UNAUTHORIZED
+        );
+
+        // Once its key is enrolled it isn't offered again.
+        db::insert_node(
+            &p.db,
+            &db::new_id(),
+            "gpu-box",
+            &node.key.public_b64(),
+            "0.1.0",
+        )
+        .await
+        .unwrap();
+        let listed = p
+            .call("GET", "/api/nodes/discovered", Some(&admin), None)
+            .await;
+        assert_eq!(listed.body["nodes"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn the_right_code_enrolls_the_node_and_tells_it_its_id() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let node = fake_node(None, false).await;
+        p.discovered.insert(node.discovered("n1"));
+
+        let claimed = p
+            .claim(
+                Some(&admin),
+                Some("https://portal.example/"),
+                "n1",
+                "4821-9375",
+            )
+            .await;
+        assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+        assert_eq!(claimed.body["name"], "gpu-box");
+        let node_id = claimed.body["nodeId"].as_str().unwrap();
+        assert_eq!(node.node_id.lock().unwrap().as_deref(), Some(node_id));
+        assert_eq!(
+            node.portal_url.lock().unwrap().as_deref(),
+            Some("https://portal.example"),
+            "the admin's origin"
+        );
+
+        let nodes = p.call("GET", "/api/nodes", Some(&admin), None).await;
+        assert_eq!(nodes.body[0]["id"], node_id);
+        assert_eq!(nodes.body[0]["agentVersion"], "0.1.0");
+        let audit = db::recent_audit(&p.db, 10).await.unwrap();
+        let entry = audit.iter().find(|e| e.action == "node.claimed").unwrap();
+        assert_eq!(entry.target.as_deref(), Some(node_id));
+        assert!(
+            entry
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains(&node.fingerprint())
+        );
+        let listed = p
+            .call("GET", "/api/nodes/discovered", Some(&admin), None)
+            .await;
+        assert_eq!(listed.body["nodes"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn without_an_origin_the_host_header_names_the_portal() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let node = fake_node(None, false).await;
+        p.discovered.insert(node.discovered("n1"));
+        let claimed = p.claim(Some(&admin), None, "n1", "48219375").await;
+        assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+        assert_eq!(
+            node.portal_url.lock().unwrap().as_deref(),
+            Some("http://portal.lan:7676")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_code_enrolls_nothing() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let node = fake_node(None, false).await;
+        p.discovered.insert(node.discovered("n1"));
+        let claimed = p.claim(Some(&admin), None, "n1", "00000000").await;
+        assert_eq!(claimed.status, StatusCode::FORBIDDEN);
+        assert_eq!(claimed.body["error"], "wrong_code");
+        assert_eq!(p.node_count().await, 0);
+        assert!(node.node_id.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn bad_requests_are_told_apart() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let (player, _) = p.account(&admin, "player1", "user").await;
+        let node = fake_node(None, false).await;
+        p.discovered.insert(node.discovered("n1"));
+
+        let bad = p.claim(Some(&admin), None, "n1", "1234").await;
+        assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+        assert_eq!(bad.body["error"], "bad_code");
+        let missing = p.claim(Some(&admin), None, "nope", "48219375").await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+        assert_eq!(missing.body["error"], "not_found");
+        let denied = p.claim(Some(&player), None, "n1", "48219375").await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN);
+        assert_eq!(denied.body["error"], "admin_only");
+        assert_eq!(
+            p.claim(None, None, "n1", "48219375").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(p.node_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_key_already_enrolled_is_a_conflict() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let node = fake_node(None, false).await;
+        db::insert_node(&p.db, &db::new_id(), "old", &node.key.public_b64(), "0.1.0")
+            .await
+            .unwrap();
+        p.discovered.insert(node.discovered("n1"));
+        let claimed = p.claim(Some(&admin), None, "n1", "48219375").await;
+        assert_eq!(claimed.status, StatusCode::CONFLICT);
+        assert_eq!(claimed.body["error"], "already_enrolled");
+        assert_eq!(p.node_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn what_the_node_refuses_is_passed_on() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let node = fake_node(
+            Some((StatusCode::CONFLICT, "open the portal over https")),
+            false,
+        )
+        .await;
+        p.discovered.insert(node.discovered("n1"));
+        let claimed = p.claim(Some(&admin), None, "n1", "48219375").await;
+        assert_eq!(claimed.status, StatusCode::CONFLICT);
+        assert_eq!(claimed.body["error"], "node_refused");
+        assert_eq!(claimed.body["message"], "open the portal over https");
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_or_swapped_node_is_a_bad_gateway() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let node = fake_node(None, false).await;
+        let mut gone = node.discovered("gone");
+        gone.port = 1;
+        gone.addresses = vec!["127.0.0.1".into()];
+        p.discovered.insert(gone);
+        let claimed = p.claim(Some(&admin), None, "gone", "48219375").await;
+        assert_eq!(claimed.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(claimed.body["error"], "node_unreachable");
+
+        // Another machine answering where the advertised one was.
+        let mut swapped = node.discovered("swapped");
+        swapped.fingerprint = "ffffffffffffffff".into();
+        p.discovered.insert(swapped);
+        let claimed = p.claim(Some(&admin), None, "swapped", "48219375").await;
+        assert_eq!(claimed.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(p.node_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_node_that_misses_its_id_stays_enrolled_and_the_error_says_so() {
+        let p = portal().await;
+        let admin = p.setup_admin().await;
+        let node = fake_node(None, true).await;
+        p.discovered.insert(node.discovered("n1"));
+        let claimed = p.claim(Some(&admin), None, "n1", "48219375").await;
+        assert_eq!(claimed.status, StatusCode::BAD_GATEWAY);
+        let message = claimed.body["message"].as_str().unwrap();
+        assert!(message.contains("claim it again"), "{message}");
+        assert_eq!(p.node_count().await, 1);
+    }
 }

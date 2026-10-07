@@ -281,6 +281,20 @@ pub async fn redeem_join_token(
     if used == 0 {
         return Ok(false);
     }
+    insert_node(&mut *tx, node_id, name, public_key, agent_version).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Records an enrolled node. A key that is already enrolled is a unique
+/// violation.
+pub async fn insert_node(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    node_id: &str,
+    name: &str,
+    public_key: &str,
+    agent_version: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO nodes (id, name, public_key, agent_version, enrolled_at) VALUES (?, ?, ?, ?, ?)",
     )
@@ -288,11 +302,10 @@ pub async fn redeem_join_token(
     .bind(name)
     .bind(public_key)
     .bind(agent_version)
-    .bind(now)
-    .execute(&mut *tx)
+    .bind(now())
+    .execute(executor)
     .await?;
-    tx.commit().await?;
-    Ok(true)
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, FromRow)]

@@ -4,10 +4,14 @@
 # First build the images it runs (once, and after updates):
 #   docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
 #   docker compose -f images/compose.yaml build
-# First run, with a join token from the portal's Nodes page:
+# First run, either claim the node from the portal: start it, then in the
+# portal open Admin → Nodes and enter the pairing code the agent logs
+# (`docker compose -f deploy/node/compose.yaml logs agent`; same LAN only):
+#   docker compose -f deploy/node/compose.yaml up -d
+# or give it a join token from the portal's Nodes page:
 #   CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… \
 #     docker compose -f deploy/node/compose.yaml up -d
-# Later runs only need CHA_PORTAL_URL; the identity lives in the `state` volume.
+# The identity lives in the `state` volume, so later runs need nothing.
 name: cha-node
 
 services:
@@ -22,8 +26,16 @@ services:
     # Host networking, so the inventory reports the machine's own addresses.
     network_mode: host
     environment:
-      CHA_PORTAL_URL: ${CHA_PORTAL_URL:?set CHA_PORTAL_URL to the portal's URL}
+      # Needed with a join token. When the node is claimed in the portal
+      # instead, the node dials the URL its admin used, unless this is set.
+      CHA_PORTAL_URL: ${CHA_PORTAL_URL:-}
       CHA_JOIN_TOKEN: ${CHA_JOIN_TOKEN:-}
+      # Without a join token, an unclaimed node advertises itself on the LAN
+      # and logs a pairing code to claim it with in the portal; false needs a
+      # join token instead.
+      CHA_DISCOVERY: ${CHA_DISCOVERY:-true}
+      # The port an unclaimed node takes a claim on (TCP, until it is claimed).
+      CHA_CLAIM_PORT: ${CHA_CLAIM_PORT:-7679}
       # Development only: lets CHA_PORTAL_URL be plain http:// to another
       # machine, e.g. a dev portal on your LAN (`CHA_LISTEN=0.0.0.0:7677 bun run dev`).
       # Otherwise it must be https://, or http:// to this machine (a tunnel).
