@@ -147,7 +147,7 @@ const showOwner = (d: GamestreamDevice) => d.owner.id !== session.user?.id;
         <p v-else-if="hosts.isSuccess.value" class="text-sm text-ink-3">
           No node has Moonlight turned on (<code class="font-mono">CHA_GAMESTREAM</code> on the node).
         </p>
-        <p class="text-sm text-ink-2">Your running environments appear in Moonlight as apps; start them here first.</p>
+        <p class="text-sm text-ink-2">Moonlight lists the apps the node can run; picking one starts it there, or resumes your copy if it's already running.</p>
       </section>
 
       <section class="card space-y-3 px-4 py-4 sm:px-5" aria-labelledby="ml-waiting">

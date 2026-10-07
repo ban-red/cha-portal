@@ -18,7 +18,7 @@ The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC,
 - **Remote access:** Tailscale or WireGuard, a port-forward, or your own TURN server. Nothing goes through a cha.sh service.
 
 - **Moonlight hosts:** a gaming PC running Sunshine or Apollo on the LAN is found by a node, adopted from the portal with a PIN, and its apps played in the browser through `cha-gateway` (new in Phase 3; not yet run against a real host).
-- **Moonlight clients:** stock Moonlight apps can play your running environments: each node is one PC in Moonlight, paired with a PIN typed into the portal (`CHA_GAMESTREAM`; new, not yet tried with a real client).
+- **Moonlight clients:** stock Moonlight apps can play your environments: each node is one PC in Moonlight, its apps the catalog (picking one starts it), paired with a PIN typed into the portal (`CHA_GAMESTREAM`; new, not yet tried with a real client).
 
 Not yet: sharing a session with another user, our own native client. See the [roadmap](docs/PLAN.md#9-roadmap).
 
