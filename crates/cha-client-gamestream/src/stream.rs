@@ -317,6 +317,15 @@ impl Relay {
                     None => return (Ended::Stopped, false),
                 },
                 event = self.stream.drive() => match event {
+                    // A frame that couldn't be put back together (a lost
+                    // packet the FEC couldn't recover): drop it and ask for a
+                    // keyframe, as for any lost frame, rather than ending the
+                    // stream. The decoder waits for that keyframe.
+                    Err(err) if is_lost_frame(&err) => {
+                        warn!("a video frame couldn't be reassembled; asking for a keyframe: {err:?}");
+                        waiting_key = true;
+                        self.request_idr();
+                    }
                     Err(err) => return (Ended::Failed(format!("the host's stream failed: {err:?}")), false),
                     Ok(MoonlightStreamEvent::Video(VideoStreamEvent::OnFrame(frame))) => {
                         let received = Instant::now();
@@ -441,8 +450,25 @@ async fn close(stream: &mut MoonlightStream) {
     }
 }
 
+/// Whether a stream error is only one video frame lost in reassembly (its
+/// FEC block couldn't be recovered), which a keyframe repairs.
+fn is_lost_frame(err: &moonlight_common::error::Error) -> bool {
+    use moonlight_common::stream::proto::video::depayloader::VideoDepayloaderError;
+    matches!(err, moonlight_common::error::Error::Other(inner) if inner.downcast_ref::<VideoDepayloaderError>().is_some())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_frame_lost_in_reassembly_is_not_the_end_of_the_stream() {
+        use moonlight_common::stream::proto::video::depayloader::VideoDepayloaderError;
+        let lost: moonlight_common::error::Error = VideoDepayloaderError::PacketInvalidSize.into();
+        assert!(super::is_lost_frame(&lost));
+        assert!(!super::is_lost_frame(
+            &moonlight_common::error::Error::ConnectionTimeout
+        ));
+    }
+
     use super::*;
 
     #[test]

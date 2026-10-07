@@ -485,6 +485,12 @@ async fn stream(
                 None => break Ok(()),
             },
             event = stream.drive() => match event {
+                // One frame lost in reassembly (its FEC block couldn't be
+                // recovered): a keyframe repairs it; don't end the stream.
+                Err(err) if lost_frame(&err) => {
+                    warn!("a video frame couldn't be reassembled; asking for a keyframe: {err:?}");
+                    let _ = stream.send_raw(ControlPacket::RequestIdr);
+                }
                 Err(err) => break Err(anyhow!("the host's stream failed: {err:?}")),
                 Ok(MoonlightStreamEvent::Video(VideoStreamEvent::OnFrame(frame))) => {
                     let received = Instant::now();
@@ -570,6 +576,12 @@ async fn close(stream: &mut MoonlightStream) {
     if flushed.is_err() {
         warn!("the host didn't acknowledge the disconnect within 500 ms");
     }
+}
+
+/// Whether a stream error is only one video frame lost in reassembly.
+fn lost_frame(err: &moonlight_common::error::Error) -> bool {
+    use moonlight_common::stream::proto::video::depayloader::VideoDepayloaderError;
+    matches!(err, moonlight_common::error::Error::Other(inner) if inner.downcast_ref::<VideoDepayloaderError>().is_some())
 }
 
 #[cfg(test)]
