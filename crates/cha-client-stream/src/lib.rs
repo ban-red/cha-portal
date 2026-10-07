@@ -19,9 +19,7 @@
 //! - [`session`]: the task that owns a connection. One bidirectional stream
 //!   carries JSON lines both ways (the first, a `ping`, is written at once);
 //!   everything else is datagrams. Clock sync from ping/pong every second, a
-//!   `report` every 100 ms, a 4 s silence watchdog that ends the session. The
-//!   whole QUIC side runs on a thread of its own per session (see the
-//!   module's notes for why).
+//!   `report` every 100 ms, a 4 s silence watchdog that ends the session.
 //! - [`receiver`] and [`video`]: the Sans-IO receive logic with injected
 //!   time: datagram demux, video reassembly with FEC recovery, in-order
 //!   delivery gated on a keyframe (or a RECOVERY frame after loss), `rfi`
