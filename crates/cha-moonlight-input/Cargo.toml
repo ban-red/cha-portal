@@ -1,0 +1,14 @@
+[package]
+name = "cha-moonlight-input"
+version = "0.1.0"
+description = "The browser input model (W3C key codes, standard-mapping pads) to Moonlight input events, shared by cha-gateway and the native client"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+cha-client = { path = "../cha-client" }
+# GPL-3.0-or-later, combinable with our AGPL-3.0-or-later (both licenses' §13).
+# Pinned as in cha-gateway: the crate is young and its API moves.
+moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-rust", rev = "104ddf11f5dabe414c11e87e607fec7976e8bbb1", default-features = false, features = ["tokio-hyper", "rustcrypto"] }

@@ -13,3 +13,11 @@ cha-proto = { path = "crates/cha-proto" }
 [profile.release]
 debug = 1
 lto = "thin"
+
+# RSA key generation (the client's Moonlight identity, pairing) takes tens of
+# seconds in an unoptimised build, which the client's tests would pay.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3

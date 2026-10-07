@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
+use cha_moonlight_input::InputState;
 use serde::Serialize;
 use str0m::change::{SdpAnswer, SdpOffer};
 use str0m::channel::ChannelId;
@@ -24,7 +25,7 @@ use tracing::{info, warn};
 
 use crate::host::{Codec, HostAudio, HostFrame, HostRumble, Link, StreamInfo};
 use crate::hub::{Datagram, Hub, Peer};
-use crate::input::{BrowserInput, InputState};
+use crate::input::BrowserInput;
 use crate::viewers::Seat;
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
@@ -594,7 +595,10 @@ impl Session {
                 let info = self.params.info;
                 match serde_json::from_value::<BrowserInput>(msg) {
                     Ok(input) => {
-                        let events = self.input.apply(&input, info.width, info.height);
+                        let events = input
+                            .into_input()
+                            .map(|input| self.input.apply(&input, info.width, info.height))
+                            .unwrap_or_default();
                         if events.is_empty() {
                             self.stats.inputs_unmapped += 1;
                         }

@@ -1,0 +1,14 @@
+[package]
+name = "cha-client"
+version = "0.1.0"
+description = "The native client's platform-neutral core: sessions, the transport traits and the input model (ADR 0010)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync"] }

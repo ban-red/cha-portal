@@ -11,7 +11,6 @@
 mod host;
 mod hub;
 mod input;
-mod keys;
 mod net;
 mod session;
 mod signal;

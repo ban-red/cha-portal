@@ -532,7 +532,7 @@ async fn stream(
                         ..
                     },
                 ))) => {
-                    let (lo, hi) = crate::input::rumble_levels(low_frequency, high_frequency);
+                    let (lo, hi) = cha_moonlight_input::rumble_levels(low_frequency, high_frequency);
                     let _ = plumbing.rumble.send(HostRumble {
                         pad: usize::from(controller_number),
                         lo,

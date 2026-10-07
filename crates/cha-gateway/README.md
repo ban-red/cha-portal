@@ -15,7 +15,7 @@ Sunshine/Apollo ──GameStream (RTSP, ENet, RTP+FEC)──▶ cha-gateway ─�
 - Keeps that one stream for the environment's life. Up to 4 WebRTC viewers share it; each starts at the next keyframe (the gateway asks the host for one when a viewer joins or falls behind).
 - Passes video access units and the host's Opus packets through unchanged. Audio is sent only when the host's stream is 2-channel single-stream Opus; surround is logged and dropped.
 - Serves what the streamer serves: `GET /info`, `GET /streams`, `POST /webrtc/media?name=live-<codec>&token=<media token>` (the portal's token, checked with `cha_wire::verify_media_token`), and the `control` DataChannel. WebTransport is off (`wt_port: 0`), and the picture size is fixed for the session (`resize: false`).
-- Maps the player's input to Moonlight: keys by `KeyboardEvent.code` to Windows virtual keys (US layout), absolute and relative mouse, buttons, wheel (a 100 px page notch is 120 units), and Gamepad API pads as Xbox controllers. Host rumble goes back as `rumble`.
+- Maps the player's input to Moonlight (the mapping is `cha-moonlight-input`, shared with the native client; the page's JSON stays in `src/input.rs`): keys by `KeyboardEvent.code` to Windows virtual keys (US layout), absolute and relative mouse, buttons, wheel (a 100 px page notch is 120 units), and Gamepad API pads as Xbox controllers. Host rumble goes back as `rumble`.
 - On SIGTERM or SIGINT it quits the app on the host, flushes the disconnect and exits 0. If the host's stream dies it logs why and exits 1, and the agent ends the environment as failed.
 
 ## Arguments
