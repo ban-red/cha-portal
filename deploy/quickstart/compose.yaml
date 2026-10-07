@@ -78,6 +78,17 @@ services:
       CHA_DATA_ROOT: ${CHA_DATA_ROOT:-/srv/cha-portal}
       CHA_SHARED_DIRS: ${CHA_SHARED_DIRS:-}
       CHA_NVIDIA_WINE_DIR: ${CHA_NVIDIA_WINE_DIR-/usr/lib/x86_64-linux-gnu/nvidia/wine}
+      # Moonlight hosts on the LAN (Sunshine, Apollo): find them, and the image
+      # that streams an adopted one (deploy/README.md, Moonlight hosts).
+      CHA_MOONLIGHT: ${CHA_MOONLIGHT:-true}
+      CHA_GATEWAY_IMAGE: ${CHA_GATEWAY_IMAGE:-cha/gateway:dev}
+      # Moonlight clients: the node hosts GameStream and gives each environment
+      # a block of media ports (deploy/README.md, Playing from Moonlight).
+      CHA_GAMESTREAM: ${CHA_GAMESTREAM:-false}
+      CHA_GAMESTREAM_PORT_BASE: ${CHA_GAMESTREAM_PORT_BASE:-7700}
+      CHA_GAMESTREAM_HTTP_PORT: ${CHA_GAMESTREAM_HTTP_PORT:-47989}
+      CHA_GAMESTREAM_HTTPS_PORT: ${CHA_GAMESTREAM_HTTPS_PORT:-47984}
+      CHA_GAMESTREAM_RTSP_PORT: ${CHA_GAMESTREAM_RTSP_PORT:-48010}
       RUST_LOG: ${RUST_LOG:-info}
     # The host's process list, so the agent can match the GPU memory NVML
     # reports (by host pid) to each environment's containers: the per-app VRAM
