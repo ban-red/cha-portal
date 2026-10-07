@@ -1,0 +1,97 @@
+# cha-gamestream
+
+A GameStream (Moonlight protocol) **host** as a library, ported from [Moonshine](https://github.com/hgaiser/moonshine) ([ADR 0009](../../docs/adr/0009-gamestream-host-module.md)). It knows the protocol and nothing of our engine, so it can be read, tested and removed as a unit. Stock Moonlight and Artemis clients pair with it, list apps, launch, resume and cancel, and stream.
+
+It comes in two halves that do not depend on each other. A node runs the **front**; each environment's streamer, a separate process, runs the **media** of its session.
+
+```
+Moonlight ──nvhttp, pairing, RTSP, mDNS──▶  front::Host            (node agent)
+                                              │ Directory (launch, resume, start_media, ...)
+                                              │ PairingStore
+                                              ▼   SessionHandoff (serde)
+Moonlight ◀──ENet control, RTP video+FEC, RTP audio+FEC──  media::MediaSession   (streamer)
+                                              ▲
+                                              │ MediaBackend (encoded video, Opus, input, feedback)
+```
+
+| Path | What |
+|---|---|
+| `src/front/` | `Host` (builder, `start`, `run`, `HostHandle`), `nvhttp/` (HTTP and HTTPS, `xml.rs`, `tls.rs`), `pairing/` (the five phases and their crypto), `rtsp/` (parser, `sdp.rs`), `identity.rs`, `mdns.rs`, `session.rs` (the session state machine) |
+| `src/media/` | `MediaSession`, `MediaSockets`, `control/` (ENet loop, AES-GCM wrapper, messages, feedback), `video/` (packetizer, FEC plan, GSO sender), `audio/` (packetizer), `ping.rs` |
+| `src/handoff.rs` | what both halves share: `StreamParams`, `SessionHandoff`, `MediaPorts`, `ClientId`, Opus layouts |
+| `src/directory.rs`, `src/backend.rs` | the trait boundary (below) |
+| `src/input.rs`, `src/hdr.rs` | input packets to neutral `InputEvent`s; HDR SEI and OBU metadata |
+| `LICENSE-MOONSHINE` | Moonshine's BSD-2-Clause text. Each ported file starts with its notice and a line on what changed; our changes are AGPL-3.0-or-later like the rest of the repo |
+
+## The boundary
+
+Everything the embedding application decides is a trait method; the crate decides nothing about users, apps or processes.
+
+- **`Directory`** (front): `apps`, `app_image`, `launch -> SessionTarget { media_ports }`, `resume`, `start_media(SessionHandoff)`, `stop_media(session_id)`, `cancel`, and `pin_for(PairingAttempt) -> PinWaiter`. The front calls `launch` after it has checked the client's certificate and that no session runs, and expects the media ports **reserved**: RTSP `SETUP` tells the client the ports before `ANNOUNCE` says what the stream is. `start_media` comes at RTSP `PLAY`. The directory runs `media::MediaSession::start` in process, or sends the handoff to a streamer.
+- **`PairingStore`**: `is_paired`, `add`, `remove`, `list`, by certificate fingerprint (`ClientId`). `MemoryPairingStore` is there for tests.
+- **`MediaBackend`** (media): `capabilities()` and `start(StreamParams) -> MediaStreams { video, audio, feedback, control }`. Video is `EncodedVideo { data, key, index, captured }` (Annex-B or OBUs), audio `OpusPacket { data, samples }`, feedback `Feedback` (rumble, trigger rumble, LED, motion enable, trigger effect, HDR mode). `control` is a `MediaControl`: `request_keyframe`, `invalidate(first, last)` (in the backend's own frame indexes; the host maps the client's), `set_bitrate`, `input(InputEvent)`, `release_input`, `stop`. No compositor or evdev types cross it.
+- **`HostHandle`** (from `RunningHost::handle()`): `media_ended(session_id)` tells the front the media ended by itself (the session then waits for a resume), and `cancel_session()`.
+
+`SessionHandoff` is plain serde data: session id, the `rikey`/`rikeyid`, which streams are encrypted, the ENet connect data and ping payload the client was told, and `StreamParams` (client address and certificate, codec, size, fps, bitrate, packet size, FEC, HDR, chroma, audio layout). It holds the session key; send it only over a channel the two halves trust.
+
+## Security fixes made while porting
+
+| Gap in Moonshine | Now | Test |
+|---|---|---|
+| A PIN was accepted from `POST /submit-pin` with no authentication | The PIN comes only from `Directory::pin_for`; the HTTP pages are gone, and a pairing request waits (bounded) for the directory | `pairing.rs`: `the_pin_cannot_be_submitted_over_http`, `pairing_waits_for_the_directory_and_gives_up_without_a_pin` |
+| Video and audio sockets followed whoever sent `PING` | A `PING` counts only from the IP of the client whose session it is (IPv4-mapped addresses compared as IPv4), and is the legacy `PING` or carries the session's `X-SS-Ping-Payload`; others are counted | `media.rs`: `video_and_audio_follow_only_pings_from_the_sessions_client`; `ping.rs` units |
+| Any paired client could resume or cancel the session | A session belongs to the certificate that launched it; resume and cancel by another are refused, launch over a running session is refused, and RTSP answers only the launching address | `security.rs`: `another_paired_client_cannot_resume_or_cancel_a_running_session`; `session.rs` units |
+| `/unpair` did nothing | It removes the client through `PairingStore::remove` (over HTTPS, by the client's own certificate; plain-HTTP `/unpair?uniqueid=`, which anyone can send and which many clients share one `uniqueid` for, is off unless `unauthenticated_unpair` is set; devices are otherwise removed where they were paired, the portal) and ends that client's session | `pairing.rs` (happy path), `security.rs`: `unpairing_a_client_ends_its_session`, `plain_unpair_can_be_switched_off` |
+| A malformed control packet ended the session | It is dropped and counted (`MediaStatsSnapshot`); so is a packet that doesn't authenticate or isn't encrypted | `media.rs`: `a_malformed_control_packet_is_dropped_and_counted_never_fatal` |
+| One feedback message per 10 ms tick | Every pending message goes out each tick | `media.rs`: `every_feedback_message_of_a_burst_reaches_the_client` |
+| Unbounded or slow requests, panics on hostile input | HTTP: header limit, body limit (413), header-read timeout, connection cap; RTSP: head and body limits, read timeout, connection cap; ranges checked on every number; the parsers (input packets, control framing, RTSP, SDP) run on random bytes in tests | `security.rs`: `nvhttp_bounds_request_size_time_and_connections`, `rtsp_answers_only_with_a_session_and_refuses_what_it_should`, `the_https_port_survives_rubbish`; `hostile_bytes_never_panic` in `input.rs`, `rtsp/mod.rs`, `rtsp/sdp.rs`, `control/messages.rs` |
+
+Three more differences, beyond the brief, that follow from the same reasoning:
+
+- **Control messages must be encrypted.** The host advertises `encryptionRequested` for control (Moonlight and moonlight-common-rust then enable it) and refuses an `ANNOUNCE` that doesn't, and drops any plain control message. Moonshine accepted plain ones, so anyone who could reach the ENet port could inject input.
+- **The ENet peer is authenticated.** Only the session client's address, presenting the session's `X-SS-Connect-Data`, may connect, and only one peer.
+- **A pending pairing is bound to the requester's address, is capped at 32 and expires.** A pairing finishes with a `pairchallenge` over HTTPS that must come from a certificate now in the store.
+
+## What was ported, and from where
+
+| Here | Moonshine | How |
+|---|---|---|
+| `front/pairing/crypto.rs`, `pairing/mod.rs` | `clients.rs`, `webserver/pairing.rs` | maths kept (SHA-256 key from salt and PIN, AES-ECB challenges, RSA PKCS#1 signatures via aws-lc-rs), state machine rewritten around the Directory and the store |
+| `front/nvhttp/` | `webserver/mod.rs`, `tls.rs` | endpoints and the lenient client-certificate verifier kept; apps, launching and sessions rewritten; XML built from typed values |
+| `front/rtsp/` | `rtsp.rs` | handlers and the SDP attributes kept; the `rtsp-types` and `sdp-types` crates replaced by a small parser; SETUP reports the reserved ports |
+| `front/identity.rs` | `tls.rs` (certificate generation) | RSA-2048 from aws-lc-rs (the `rsa` crate is slow in debug builds) |
+| `front/mdns.rs` | `discovery.rs` | without `network-interface` and `gethostname` |
+| `front/session.rs` | `session/manager.rs` (the state machine only) | rewritten; no engine |
+| `media/control/` | `stream/control/{mod,feedback}.rs` | message types, framing and encryption kept; loop rewritten for the fixes above |
+| `input.rs` | `stream/control/input/{mod,keyboard,mouse,touch,gamepad}.rs`, parse halves | neutral types; pen and touch contact areas, controller touch added |
+| `media/video/` | `stream/video/{packetizer,shard_batch,gso_socket}.rs` | NV video RTP layout, GCM and `tokio`/`quinn-udp` GSO kept; no `unsafe`; the FEC block plan is new (parity counted as Moonlight counts it, at most four blocks, a frame too large for the FEC setting sheds FEC) |
+| `media/audio/packetizer.rs` | `stream/audio/encoder.rs` (RTP, FEC and CBC halves) | RS(4,2) with Moonlight's parity matrix kept; the Opus encoder is the backend's |
+| `hdr.rs` | `stream/video/pipeline/hdr_sei.rs` | neutral metadata type |
+| not ported | compositor, pipeline encode loop, PulseAudio server, inputtino, application launching, healthcheck, app scanners | ADR 0004 |
+
+## Dependencies
+
+New to the workspace: `tokio-enet` (BSD-2-Clause, Moonshine's author) and `pem` 4 (MIT, via `rcgen`'s `pem` feature). Already in the lock and used here: `fec-rs` (BSD-2-Clause), `aws-lc-rs`, `rcgen`, `rustls`, `tokio-rustls`, `hyper`, `x509-parser`, `aes`, `aes-gcm`, `cbc`, `sha2`, `mdns-sd`, `quinn-udp`, `form_urlencoded`. `rtsp-types` and `sdp-types` (MIT) were not needed. `moonlight-common` (GPL-3.0-or-later, as in `cha-gateway` and `cha-node`) is a **dev-dependency**, the client the tests drive.
+
+## Tests
+
+```bash
+cargo test -p cha-gamestream
+cargo clippy -p cha-gamestream --all-targets -- -D warnings
+```
+
+Runs on macOS and Linux. Unit tests (golden packets, pure functions, hostile bytes) live next to the code: the video packetizer's shard layout, FEC recovery, AES-GCM against a NIST vector; the audio packetizer's parity against Moonlight's matrix; control framing both ways; every input event; serverinfo and applist XML; the SDP; the session state machine against a stub `Directory`. The integration tests in `tests/` use `moonlight-common-rust` as a real client on loopback against fake traits (`tests/common/mod.rs`): a `FakeDirectory` reserves sockets at launch and starts `MediaSession` at `start_media`, which is the production seam in process.
+
+- `pairing.rs`: a full pairing with the PIN from the fake directory (then apps over HTTPS and unpair), a wrong PIN refused by the client, no PIN, no PIN over HTTP, unpaired certificates refused.
+- `stream.rs`: launch, RTSP, control, then video (a keyframe and frames of 200 B to 100 kB reassembled), audio, keyboard, mouse, scroll, a pad, a keyframe request, a reference invalidation (client frame numbers mapped to backend indexes), a burst of rumble, cancel; resume after the client leaves; encrypted audio decrypted by the client; HEVC.
+- `media.rs`: the media half alone with a hand-written control client: refused peers, malformed and unauthenticated packets, PING sources (over IPv6 and IPv4 on one dual-stack socket), feedback bursts, goodbye on stop, timeout, client leaving, backend ending, HDR mode and SEI.
+- `security.rs`: ownership, unpair, RTSP and nvhttp bounds.
+
+Not covered: video encryption end to end (moonlight-common-rust cannot decrypt video, so the client tests run it off; the encrypted shards are checked in the packetizer test by decrypting them), real Moonlight clients, mDNS on a real network, and the Linux build (nothing here is Linux-only; quinn-udp uses GSO there).
+
+## Not done in G1
+
+- Key rotation under a live media session. A resume stops the old media and starts new media under the new key, so there is no rotating key to watch.
+- Plain (unencrypted) control for clients that cannot do control v2; none of the clients we know of (Moonlight, Artemis, moonlight-common-rust) is one.
+- DSCP/QoS marking of the UDP sockets (`x-nv-vqos[0].qosTrafficType`).
+- Surround, 4:4:4, HDR and AV1 are protocol-complete (negotiated, passed to the backend, HDR mode and metadata sent) but only HDR and HEVC are tested; the backends of G2 decide what is real.

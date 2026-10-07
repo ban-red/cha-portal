@@ -525,6 +525,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "cha-gamestream"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "aws-lc-rs",
+ "bytes",
+ "cbc",
+ "fec-rs",
+ "form_urlencoded",
+ "futures-util",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "mdns-sd",
+ "moonlight-common",
+ "pem 3.0.6",
+ "quinn-udp",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-enet",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
+]
+
+[[package]]
 name = "cha-gateway"
 version = "0.1.0"
 dependencies = [
@@ -535,7 +568,7 @@ dependencies = [
  "clap",
  "libc",
  "moonlight-common",
- "pem",
+ "pem 3.0.6",
  "rustls",
  "serde",
  "serde_json",
@@ -568,7 +601,7 @@ dependencies = [
  "if-addrs",
  "mdns-sd",
  "moonlight-common",
- "pem",
+ "pem 3.0.6",
  "reqwest",
  "rustix 1.1.5",
  "rustls",
@@ -876,6 +909,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
+ "rand_core 0.6.4",
  "typenum",
 ]
 
@@ -2345,7 +2379,7 @@ dependencies = [
  "num",
  "num-derive",
  "num-traits",
- "pem",
+ "pem 3.0.6",
  "pin-project-lite",
  "pkcs8",
  "rand 0.8.8",
@@ -2609,6 +2643,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
 dependencies = [
  "base64 0.22.1",
+ "serde_core",
+]
+
+[[package]]
+name = "pem"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
+dependencies = [
+ "base64 0.23.1",
  "serde_core",
 ]
 
@@ -2964,6 +3008,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
  "aws-lc-rs",
+ "pem 4.0.0",
  "ring",
  "rustls-pki-types",
  "time",
@@ -3292,7 +3337,7 @@ dependencies = [
  "bytes",
  "clap",
  "moonlight-common",
- "pem",
+ "pem 3.0.6",
  "rustls",
  "serde",
  "serde_json",
@@ -4157,6 +4202,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-enet"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ede1e4e6d38df6dcd4891668f532905c6b19640caa142128a6957849cafea3d6"
+dependencies = [
+ "socket2",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tokio-macros"
 version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4938,7 +4995,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4273ce3157a3262a68665f8d3f20a0ac0c5b8a69ffd67f05ae986832ebec036"
 dependencies = [
  "bytes",
- "pem",
+ "pem 3.0.6",
  "quinn",
  "rcgen",
  "rustls",
