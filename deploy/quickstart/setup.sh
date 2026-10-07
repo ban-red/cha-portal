@@ -66,6 +66,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 env_file=$here/.env
 min_docker=26.0
+# Older Compose plugins hand a CDI device (nvidia.com/gpu=all) to the engine as a
+# file path: "error gathering device information while adding custom device".
+# The exact release that fixed it is unconfirmed; 2.30 is a conservative floor.
+min_compose=2.30.0
 # Where releases publish the images (.github/workflows/publish.yml).
 registry=ghcr.io/ban-red
 
@@ -191,6 +195,27 @@ if [ -n "$docker_version" ]; then
             did "installed docker-$plugin-plugin"
         fi
     done
+    compose_version=$(docker compose version --short 2>/dev/null | sed 's/^v//' || true)
+    if [ "$nvidia" = 1 ] && [ -n "$compose_version" ] && dpkg --compare-versions "$compose_version" lt "$min_compose"; then
+        if [ "$check_only" = 1 ]; then
+            todo "update docker-compose-plugin ($compose_version; NVIDIA devices need $min_compose or newer)"
+        else
+            add_repo docker "https://download.docker.com/linux/$distro/gpg" \
+                "deb [arch=$(dpkg --print-architecture) signed-by=KEYRING] https://download.docker.com/linux/$distro $codename stable"
+            apt_install docker-compose-plugin
+            compose_version=$(docker compose version --short 2>/dev/null | sed 's/^v//' || true)
+            if dpkg --compare-versions "${compose_version:-0}" lt "$min_compose"; then
+                warn "Docker Compose is $compose_version, older than $min_compose: it can't pass the GPU (CDI device) to
+           the agent. Install a newer docker-compose-plugin, or put a newer docker-compose in
+           /usr/local/lib/docker/cli-plugins/ (which takes precedence)."
+                failed=1
+            else
+                did "updated docker-compose-plugin to $compose_version"
+            fi
+        fi
+    elif [ -n "$compose_version" ]; then
+        ok "docker compose $compose_version"
+    fi
 fi
 
 echo "==> NVIDIA"
@@ -251,8 +276,16 @@ with open(path, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")
 PY
-            systemctl restart docker
-            did "turned CDI on in /etc/docker/daemon.json (the old file is kept beside it)"
+            if [ -n "$(docker ps -q 2>/dev/null)" ] &&
+                ! docker info --format '{{.LiveRestoreEnabled}}' 2>/dev/null | grep -qx true; then
+                warn "CDI is now on in /etc/docker/daemon.json, but Docker has to restart to read it, and that
+           stops the $(docker ps -q | wc -l | tr -d ' ') running container(s) (live-restore is off). Restart it when that's fine:
+           sudo systemctl restart docker, then run this again."
+                failed=1
+            else
+                systemctl restart docker
+                did "turned CDI on in /etc/docker/daemon.json and restarted Docker"
+            fi
         fi
     fi
 fi

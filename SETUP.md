@@ -119,7 +119,7 @@ Now go to [First launch](#first-launch).
 
 **The node** (the machine that runs environments) needs:
 
-- Linux on x86-64, with Docker Engine 26 or newer and Docker Compose.
+- Linux on x86-64, with Docker Engine 26 or newer and Docker Compose 2.30 or newer (older plugins fail on the GPU with `error gathering device information while adding custom device "nvidia.com/gpu=all"`). With Docker older than 28.2, CDI must be switched on in `/etc/docker/daemon.json` (`"features": {"cdi": true}`) and Docker restarted, which stops running containers unless `live-restore` is on; `setup.sh` leaves the restart to you when containers are running.
 - A GPU, ideally:
   - **NVIDIA:** the proprietary driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html), with a CDI spec generated (below). This is the best-tested path, and the only one that runs Steam well.
   - **Intel or AMD:** only the kernel driver (`i915`/`xe` or `amdgpu`) and `/dev/dri/renderD*`; the streamer image brings the rest.
