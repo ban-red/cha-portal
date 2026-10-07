@@ -772,6 +772,7 @@ dependencies = [
  "cha-proto",
  "cha-workspace-hack",
  "libc",
+ "quinn-udp",
  "rustls",
  "serde_json",
  "sha2 0.10.9",

@@ -23,6 +23,12 @@ url = "2"
 wtransport = { version = "0.7", features = ["quinn"] }
 cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 
+# macOS's batched recvmsg_x/sendmsg_x instead of one system call per
+# datagram: PyroWave 4:4:4 is ~76,000 datagrams a second, and one call each
+# capped the receiver near 300 Mbit/s (Chrome, batching, took 600).
+[target.'cfg(target_os = "macos")'.dependencies]
+quinn-udp = { version = "0.5", features = ["fast-apple-datapath"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 libc = "0.2"
