@@ -525,6 +525,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cha-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "cha-wire",
+ "clap",
+ "libc",
+ "moonlight-common",
+ "pem",
+ "rustls",
+ "serde",
+ "serde_json",
+ "str0m",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cha-node"
 version = "0.1.0"
 dependencies = [
@@ -544,6 +567,8 @@ dependencies = [
  "hyper-util",
  "if-addrs",
  "mdns-sd",
+ "moonlight-common",
+ "pem",
  "reqwest",
  "rustix 1.1.5",
  "rustls",
