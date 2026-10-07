@@ -727,7 +727,7 @@ If S1 fails, Phase 4 starts in parallel with Phase 2.
 ### Later / backlog
 
 - JPEG XS as a CPU LAN tier (§3.3a): licensing, then spike S9.
-- Moonlight *host* façade inside `cha-streamer`, so stock Moonlight/Artemis clients can play our environments (adopt Vibepollo's PyroWave contract there too).
+- Moonlight *host* façade, so stock Moonlight/Artemis clients can play our environments (adopt Vibepollo's PyroWave contract there too). *Pulled into Phase 3 and built 2026-10-07* ([ADR 0009](adr/0009-gamestream-host-module.md)): `cha-gamestream`, ported from Moonshine, as one host per node with pairing in the portal (G1–G3). Open: a real client run; G4 (per-viewer encoders, surround, 5 ms on other paths, pad kind per client, NumpadEnter); the PyroWave contract.
 - End-to-end HDR10.
 - Pre-warmed pools; mic, webcam and file transfer; recording.
 - Compat environments (Selkies/webtop, KasmVNC, Neko proxied behind portal auth); Guacamole RDP/VNC/SSH.

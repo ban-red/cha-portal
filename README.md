@@ -18,8 +18,9 @@ The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC,
 - **Remote access:** Tailscale or WireGuard, a port-forward, or your own TURN server. Nothing goes through a cha.sh service.
 
 - **Moonlight hosts:** a gaming PC running Sunshine or Apollo on the LAN is found by a node, adopted from the portal with a PIN, and its apps played in the browser through `cha-gateway` (new in Phase 3; not yet run against a real host).
+- **Moonlight clients:** stock Moonlight apps can play your running environments: each node is one PC in Moonlight, paired with a PIN typed into the portal (`CHA_GAMESTREAM`; new, not yet tried with a real client).
 
-Not yet: sharing a session with another user, a native client. See the [roadmap](docs/PLAN.md#9-roadmap).
+Not yet: sharing a session with another user, our own native client. See the [roadmap](docs/PLAN.md#9-roadmap).
 
 ## How it works
 
@@ -97,6 +98,7 @@ To point a real node at a dev portal on your LAN, start the portal with `bun run
 | [`crates/cha-wire`](crates/cha-wire) | Node ⇄ portal messages and the node's Ed25519 identity |
 | [`crates/cha-proto`](crates/cha-proto) | `cha-stream/1`: Sans-IO framing, fragmentation and reassembly |
 | [`crates/cha-nvenc`](crates/cha-nvenc), [`cha-pyrowave`](crates/cha-pyrowave) | Our bindings to NVENC/CUDA and libpyrowave, loaded at runtime |
+| [`crates/cha-gamestream`](crates/cha-gamestream) | The GameStream (Moonlight) host protocol, ported from Moonshine: the node's host and each streamer's media, behind traits and a cargo feature |
 | [`crates/cha-gateway`](crates/cha-gateway) | Streams an adopted Moonlight host (Sunshine, Apollo) to the browser: GameStream in, WebRTC out, video and sound passed through |
 | [`crates/cha-sysinfo`](crates/cha-sysinfo) | CPU, RAM and NVIDIA GPU use, from `/proc` and NVML |
 | [`crates/cha-testpattern`](crates/cha-testpattern), [`cha-x11-clipboard`](crates/cha-x11-clipboard) | The test-pattern environment; the X11 clipboard bridge for XFCE and Steam |
