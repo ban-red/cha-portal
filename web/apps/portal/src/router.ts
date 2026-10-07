@@ -27,6 +27,7 @@ export const router = createRouter({
         { path: "settings/appearance", name: "appearance", component: () => import("./views/AppearanceView.vue"), meta: { title: "Appearance" } },
         { path: "settings/storage", name: "storage", component: () => import("./views/StorageView.vue"), meta: { title: "Storage" } },
         { path: "admin/nodes", name: "nodes", component: () => import("./views/NodesView.vue"), meta: { admin: true, title: "Nodes" } },
+        { path: "admin/settings", name: "admin-settings", component: () => import("./views/SettingsView.vue"), meta: { admin: true, title: "Settings", subtitle: "Portal-wide settings." } },
         { path: "admin/users", name: "users", component: () => import("./views/UsersView.vue"), meta: { admin: true, title: "Users" } },
         { path: "admin/storage", name: "admin-storage", component: () => import("./views/AdminStorageView.vue"), meta: { admin: true, title: "App data" } },
         { path: "admin/audit", name: "audit", component: () => import("./views/AuditView.vue"), meta: { admin: true, title: "Audit log" } },

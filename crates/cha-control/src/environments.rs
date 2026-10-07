@@ -527,7 +527,7 @@ async fn stop(
         )
         .await?;
         if let Some(node_id) = row.node_id.clone() {
-            tokio::spawn(stop_on_node(state.clone(), node_id, id.clone()));
+            tokio::spawn(stop_on_node(state.clone(), node_id, id.clone(), None));
         } else {
             db::transition_environment(&state.db, &id, &["stopping"], "destroyed", None).await?;
         }
@@ -832,7 +832,14 @@ async fn start_on_node(state: AppState, node_id: String, spec: EnvironmentSpec) 
     }
 }
 
-async fn stop_on_node(state: AppState, node_id: String, id: String) {
+/// Stops an environment on its node and records the end; `reason` is what the
+/// list says about it afterwards (when it wasn't the owner who stopped it).
+pub(crate) async fn stop_on_node(
+    state: AppState,
+    node_id: String,
+    id: String,
+    reason: Option<String>,
+) {
     let reply = state
         .nodes
         .request_timeout(
@@ -842,7 +849,7 @@ async fn stop_on_node(state: AppState, node_id: String, id: String) {
         )
         .await;
     let (to, detail) = match reply {
-        Ok(_) => ("destroyed", None),
+        Ok(_) => ("destroyed", reason),
         // It goes when the node reconnects and reports it (reconcile).
         Err(ApiError::Conflict("node_offline", _)) => (
             "destroyed",

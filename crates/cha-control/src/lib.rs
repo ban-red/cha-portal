@@ -20,6 +20,7 @@ pub mod moonlight;
 pub mod nodes;
 pub mod placement;
 pub mod prefs;
+pub mod settings;
 pub mod storage;
 
 use std::net::SocketAddr;
@@ -147,6 +148,7 @@ pub async fn run(config: Config) -> Result<()> {
         warn!("can't look for nodes on the LAN: {err:#}");
     }
     tokio::spawn(moonlight::refresh_loop(state.clone()));
+    tokio::spawn(settings::idle_loop(state.clone()));
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;

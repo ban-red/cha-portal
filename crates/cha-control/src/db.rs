@@ -848,6 +848,19 @@ pub async fn setting(db: &SqlitePool, key: &str) -> Result<Option<String>, sqlx:
         .await
 }
 
+/// Stores `value` under `key`, replacing what was there.
+pub async fn set_setting(db: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) \
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Stores `value` unless the key already has one; returns the value that won
 /// (so two portals starting at once agree).
 pub async fn setting_or_insert(

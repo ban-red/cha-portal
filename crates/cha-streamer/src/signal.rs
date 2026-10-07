@@ -550,6 +550,9 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "height": height,
         "resize": true,
         "fps": state.media.fps(),
+        // Browsers watching now: the portal stops an environment nobody has
+        // watched for a while (`settings.rs` in cha-control).
+        "viewers": state.viewers.count(),
         "wt_port": state.wt_port,
         "cert_hash_hex": state.cert_hash_hex,
         "addresses": state.hosts.iter().chain(&state.public).collect::<Vec<_>>(),

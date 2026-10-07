@@ -1979,3 +1979,49 @@ mod claiming {
         assert_eq!(p.node_count().await, 1);
     }
 }
+
+#[tokio::test]
+async fn admins_set_the_idle_shutoff_and_it_defaults_to_thirty_minutes() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, _) = p.account(&admin, "alice", "user").await;
+
+    let seen = p
+        .call("GET", "/api/admin/settings", Some(&admin), None)
+        .await;
+    assert_eq!(seen.status, StatusCode::OK);
+    assert_eq!(seen.body, json!({ "idleShutdownMinutes": 30 }));
+
+    let set = p
+        .call(
+            "PUT",
+            "/api/admin/settings",
+            Some(&admin),
+            Some(json!({ "idleShutdownMinutes": 0 })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    let seen = p
+        .call("GET", "/api/admin/settings", Some(&admin), None)
+        .await;
+    assert_eq!(
+        seen.body["idleShutdownMinutes"], 0,
+        "0 is off, and it stays"
+    );
+
+    let too_long = p
+        .call(
+            "PUT",
+            "/api/admin/settings",
+            Some(&admin),
+            Some(json!({ "idleShutdownMinutes": 100_000 })),
+        )
+        .await;
+    assert_eq!(too_long.status, StatusCode::BAD_REQUEST);
+
+    // Admins only.
+    let denied = p
+        .call("GET", "/api/admin/settings", Some(&alice), None)
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+}

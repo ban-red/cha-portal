@@ -107,6 +107,12 @@ export interface GpuUsage {
 export type SecurityProfile = "standard" | "browser";
 
 /** Something users can launch (`images/catalog.json`). */
+/** Portal-wide settings (`/admin/settings`). */
+export interface AdminSettings {
+  /** Minutes an environment nobody is watching keeps running; 0 turns the shutoff off. */
+  idleShutdownMinutes: number;
+}
+
 export interface Template {
   id: string;
   name: string;
@@ -169,6 +175,8 @@ export interface Environment {
   log: string[] | null;
   /** The codecs its device encodes (a CPU one: H.264 only); absent from older portals. */
   codecs?: string[] | null;
+  /** The device it runs on; absent from older portals, null when the node doesn't say. */
+  device?: { kind: DeviceKind; name: string } | null;
   createdAt: number;
   updatedAt: number;
   /** Where its streamer listens while it runs. */
@@ -355,12 +363,15 @@ export const api = {
   createUser: (body: { username: string; displayName?: string; password: string; role: Role }) =>
     request<User>("POST", "/users", body),
   audit: () => request<AuditEntry[]>("GET", "/audit"),
+  health: () => request<{ status: string; version: string }>("GET", "/health"),
   nodes: () => request<NodeInfo[]>("GET", "/nodes"),
   discoveredNodes: () => request<DiscoveredNodes>("GET", "/nodes/discovered"),
   claimNode: (body: { id: string; code: string }) =>
     request<ClaimNodeResult>("POST", "/nodes/discovered/claim", body),
   createJoinToken: (body: { label?: string }) =>
     request<{ token: string; expiresAt: number }>("POST", "/nodes/join-tokens", body),
+  renameNode: (id: string, name: string) =>
+    request<{ id: string; name: string }>("PATCH", `/nodes/${encodeURIComponent(id)}`, { name }),
   removeNode: (id: string) => request<{ removed: string }>("DELETE", `/nodes/${encodeURIComponent(id)}`),
   pingNode: (id: string) => request<{ rttMs: number; nodeUnixMs: number }>("POST", `/nodes/${encodeURIComponent(id)}/ping`, {}),
   foundMoonlightHosts: () => request<{ hosts: FoundMoonlightHost[] }>("GET", "/moonlight/found"),
@@ -370,8 +381,6 @@ export const api = {
   refreshMoonlightHost: (id: string) =>
     request<AdoptedHost>("POST", `/moonlight/hosts/${encodeURIComponent(id)}/refresh`, {}),
   removeMoonlightHost: (id: string) => request<null>("DELETE", `/moonlight/hosts/${encodeURIComponent(id)}`),
-  renameNode: (id: string, name: string) =>
-    request<{ id: string; name: string }>("PATCH", `/nodes/${encodeURIComponent(id)}`, { name }),
   catalog: () => request<Template[]>("GET", "/catalog"),
   environments: () => request<Environment[]>("GET", "/environments"),
   /** Without a choice, the server picks the best place (what `placements` calls `auto`). */
@@ -403,6 +412,8 @@ export const api = {
   prefs: () => request<{ prefs: Partial<UserPrefs> }>("GET", "/me/prefs"),
   /** Replaces the stored preferences whole. */
   setPrefs: (prefs: Partial<UserPrefs>) => request<{ prefs: Partial<UserPrefs> }>("PUT", "/me/prefs", { prefs }),
+  adminSettings: () => request<AdminSettings>("GET", "/admin/settings"),
+  setAdminSettings: (body: AdminSettings) => request<AdminSettings>("PUT", "/admin/settings", body),
   adminStorage: () => request<AdminStorageInfo>("GET", "/admin/storage"),
   setAdminStorage: (template: string, body: { defaultPersistent?: boolean; sharedAccess?: SharedAccess }) =>
     request<AdminStorageApp>("PUT", `/admin/storage/${encodeURIComponent(template)}`, body),
