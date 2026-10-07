@@ -8,11 +8,18 @@ mod overlay;
 mod settings;
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use cha_client::{App, Host, Transport};
 use egui::{Color32, RichText};
 
 use crate::config::Config;
+use crate::input::pads::{InputAccess, input_access};
+
+const INPUT_ACCESS_RECHECK: Duration = Duration::from_secs(2);
+/// System Settings, Privacy & Security, Input Monitoring.
+const INPUT_MONITORING_SETTINGS: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
 
 pub use overlay::{StatsSnapshot, show_stats};
 
@@ -92,6 +99,8 @@ pub struct Launcher {
     error: Option<String>,
     info: Option<String>,
     settings_open: bool,
+    /// Input Monitoring, checked now and then: a user may grant it meanwhile.
+    input_access: (InputAccess, Instant),
 }
 
 impl Launcher {
@@ -107,6 +116,7 @@ impl Launcher {
             error: None,
             info: None,
             settings_open: false,
+            input_access: (input_access(), Instant::now()),
         }
     }
 
@@ -272,6 +282,23 @@ impl Launcher {
                 ui.colored_label(Color32::from_rgb(235, 90, 90), error);
                 if ui.small_button("Dismiss").clicked() {
                     self.error = None;
+                }
+            });
+        }
+        if self.input_access.1.elapsed() > INPUT_ACCESS_RECHECK {
+            self.input_access = (input_access(), Instant::now());
+        }
+        if self.input_access.0 == InputAccess::Denied {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    Color32::from_rgb(230, 180, 80),
+                    "Some gamepads (Steam Controller) need Input Monitoring: allow Cha Player in \
+                     System Settings → Privacy & Security → Input Monitoring, then reopen it.",
+                );
+                if ui.small_button("Open Settings").clicked() {
+                    let _ = std::process::Command::new("open")
+                        .arg(INPUT_MONITORING_SETTINGS)
+                        .spawn();
                 }
             });
         }

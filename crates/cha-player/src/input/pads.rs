@@ -67,6 +67,32 @@ impl PadService {
     }
 }
 
+/// Whether macOS lets this app read input devices (Privacy & Security, Input
+/// Monitoring). Without it SDL's HIDAPI drivers open nothing, so a Steam
+/// Controller, among others, is silently missing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputAccess {
+    Granted,
+    Denied,
+    /// Not asked yet: macOS asks when the first device is opened.
+    Unknown,
+}
+
+pub fn input_access() -> InputAccess {
+    // IOKit's IOHIDRequestType and IOHIDAccessType.
+    const LISTEN_EVENT: u32 = 1;
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOHIDCheckAccess(request: u32) -> u32;
+    }
+    // SAFETY: takes and returns plain integers.
+    match unsafe { IOHIDCheckAccess(LISTEN_EVENT) } {
+        0 => InputAccess::Granted,
+        1 => InputAccess::Denied,
+        _ => InputAccess::Unknown,
+    }
+}
+
 struct Slot {
     id: JoystickId,
     pad: Gamepad,
@@ -81,6 +107,13 @@ fn run(commands: Receiver<Command>) -> Result<()> {
     // Without it, pads come through IOKit and SDL's HIDAPI drivers (DualSense,
     // Xbox, Steam Controller, with rumble and LEDs).
     sdl3::hint::set("SDL_JOYSTICK_MFI", "0");
+    let access = input_access();
+    if access != InputAccess::Granted {
+        tracing::warn!(
+            ?access,
+            "Input Monitoring not granted: some gamepads won't be seen"
+        );
+    }
     let sdl = sdl3::init().context("SDL init")?;
     let subsystem = sdl.gamepad().context("SDL gamepad subsystem")?;
     let mut events = sdl.event_pump().context("SDL event pump")?;

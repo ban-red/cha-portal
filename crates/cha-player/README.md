@@ -42,7 +42,9 @@ Losing focus releases the pointer and every held key and button. Relative motion
 
 ## Gamepads
 
-Gamepads go through SDL3 on their own thread, with SDL's Apple GameController (MFi) backend turned off (`SDL_JOYSTICK_MFI=0`): started off the main thread it kept macOS from ever showing the window as visible, so nothing was drawn. Controllers come through IOKit and SDL's HIDAPI drivers instead (DualSense, Xbox, Steam Controller, with rumble and LEDs). `CHA_PLAYER_NO_PADS=1` starts without gamepads, to rule them out when something looks wrong.
+Gamepads go through SDL3 on their own thread, with SDL's Apple GameController (MFi) backend turned off (`SDL_JOYSTICK_MFI=0`): started off the main thread it kept macOS from ever showing the window as visible, so nothing was drawn. Controllers come through IOKit and SDL's HIDAPI drivers instead (DualSense, Xbox, Steam Controller, with rumble and LEDs).
+
+macOS gates those drivers behind **Input Monitoring** (System Settings → Privacy & Security). It asks the first time a controller is opened; until Cha Player is allowed, a Steam Controller in particular is simply not there, while keyboard and mouse (read from the window) still work. When access has been denied the launcher says so, with a button to the settings pane; reopen the player after allowing it. `bundle.sh` signs the app ad hoc, and macOS keeps an ad-hoc app's permission only for that exact binary: after a rebuild, turn Cha Player off and on again in Input Monitoring. To keep it across rebuilds, sign with a stable identity: `CHA_SIGN_IDENTITY="Apple Development: …" crates/cha-player/macos/bundle.sh` (Xcode makes one from a free Apple ID; `security find-identity -v -p codesigning` lists them). `CHA_PLAYER_NO_PADS=1` starts without gamepads, to rule them out when something looks wrong.
 
 ## Wi-Fi: AWDL latency spikes
 
