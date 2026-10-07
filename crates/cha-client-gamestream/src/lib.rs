@@ -16,7 +16,7 @@
 //!   or five minutes pass.
 //! - **Launch:** the codec is the first of `StreamConfig::codecs` the host can
 //!   encode (AV1, HEVC or H.264, in the player's order); stereo audio only;
-//!   video and audio are encrypted only when the host insists. A host
+//!   video and audio are encrypted whenever the host supports it. A host
 //!   already running the requested app is resumed; one running another app
 //!   is refused, rather than quitting a game the user may be in.
 //!

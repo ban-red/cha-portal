@@ -136,10 +136,9 @@ pub async fn start(host: HostClient, app_id: u32, config: StreamConfig) -> Resul
     request.bitrate_kbps = config.bitrate_kbps;
     request.codecs = codecs;
     request.audio_channels = 2;
-    // Encrypted only where the host insists: the player is on a LAN or a
-    // tunnel, as it was before our own client.
-    request.video_encryption = Encrypt::Off;
-    request.audio_encryption = Encrypt::Off;
+    // Encrypted wherever the host can: Wi-Fi and shared LANs are not private.
+    request.video_encryption = Encrypt::IfSupported;
+    request.audio_encryption = Encrypt::IfSupported;
 
     let started = Instant::now();
     let setup = if running == app_id {

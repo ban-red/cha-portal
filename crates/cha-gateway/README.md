@@ -10,7 +10,7 @@ Sunshine/Apollo ──GameStream (RTSP, ENet, RTP+FEC)──▶ cha-gateway ─�
 
 ## What it does
 
-- Binds signalling on `--listen:--http-port` at once, then connects to `--host` as the node's paired Moonlight client (identity from `--identity-dir`: `client-cert.pem`, `client-key.pem`, `hosts/<uniqueid>/server-cert.pem`), and launches `--app-id` at `--width`×`--height`@`--fps` (resuming it if the host already runs it; any other running app is closed first). Stereo audio, video and audio unencrypted unless the host insists.
+- Binds signalling on `--listen:--http-port` at once, then connects to `--host` as the node's paired Moonlight client (identity from `--identity-dir`: `client-cert.pem`, `client-key.pem`, `hosts/<uniqueid>/server-cert.pem`), and launches `--app-id` at `--width`×`--height`@`--fps` (resuming it if the host already runs it; any other running app is closed first). Stereo audio; video and audio encrypted whenever the host supports it.
 - The codec is the host's choice at launch: HEVC if it can encode it, else H.264 (`--codec` forces one). A viewer asking for another codec gets a 400.
 - Keeps that one stream for the environment's life. Up to 4 WebRTC viewers share it; each starts at the next keyframe (the gateway asks the host for one when a viewer joins or falls behind).
 - Passes video access units and the host's Opus packets through unchanged. Audio is sent only when the host's stream is 2-channel single-stream Opus; surround is logged and dropped.
@@ -24,7 +24,7 @@ The node agent passes `--listen --http-port --webrtc-port --portal-key --environ
 
 ## Limits
 
-No AV1 (the browser path is H.264 and HEVC), no video encryption unless the host insists (the node and host share a LAN; the browser leg is DTLS), loss recovery by IDR only (the client drops the frame, asks the host for a keyframe and resumes at it), one session per host. WebRTC uses one UDP socket per advertised address on `--webrtc-port`, shared by all viewers.
+No AV1 (the browser path is H.264 and HEVC), lost packets rebuilt from FEC, and past that the frame is dropped and a keyframe asked for, one session per host. WebRTC uses one UDP socket per advertised address on `--webrtc-port`, shared by all viewers.
 
 ## Develop
 

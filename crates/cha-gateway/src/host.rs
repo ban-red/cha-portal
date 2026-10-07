@@ -365,10 +365,10 @@ async fn stream(
     request.bitrate_kbps = config.bitrate_kbps;
     request.codecs = vec![codec.wire()];
     request.audio_channels = 2;
-    // Node and host share a LAN and the browser leg is WebRTC's DTLS:
-    // encrypted only where the host insists.
-    request.video_encryption = Encrypt::Off;
-    request.audio_encryption = Encrypt::Off;
+    // The browser leg is WebRTC's DTLS; the leg to the host is encrypted
+    // wherever the host can, so the whole path is.
+    request.video_encryption = Encrypt::IfSupported;
+    request.audio_encryption = Encrypt::IfSupported;
 
     let started = Instant::now();
     let setup = if running == config.app_id {

@@ -45,8 +45,8 @@ pub struct HostConfig {
     /// Upper bound on the client's video packet size; 0 for none. The wire
     /// size is this plus 16 (plus 32 when video is encrypted).
     pub max_packet_size: usize,
-    /// Let clients encrypt video (they ask for it; Moonlight leaves it off
-    /// on a LAN by default). Control and audio encryption need no setting.
+    /// Let clients encrypt video when they ask (Moonlight doesn't on a LAN;
+    /// Cha Player does). Control and audio encryption need no setting.
     pub video_encryption: bool,
     /// The MAC address `serverinfo` reports (for Wake-on-LAN); unknown if `None`.
     pub mac: Option<String>,
@@ -87,7 +87,7 @@ impl HostConfig {
             capabilities: Capabilities::default(),
             fec_percent: 20,
             max_packet_size: 0,
-            video_encryption: false,
+            video_encryption: true,
             mac: None,
             mdns: true,
             pin_timeout: Duration::from_secs(300),

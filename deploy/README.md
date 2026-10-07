@@ -77,7 +77,7 @@ A gaming PC running Sunshine or Apollo on a node's LAN can be played in the brow
 - **Finding.** Each node looks for Moonlight hosts (`_nvstream._tcp` over mDNS, `CHA_MOONLIGHT=false` to stop) and reports them to the portal, which lists them under **Admin → Nodes → Moonlight hosts**.
 - **Adopting.** **Adopt** pairs the node with the host if it isn't paired yet: the portal shows a 4-digit PIN to type on the host's PIN page (Sunshine and Apollo: `https://<host>:47990/pin`). Once paired, the host is adopted and its apps listed. The node is the Moonlight client: its identity and each paired host's certificate are kept in `<CHA_DATA_ROOT>/node/moonlight/` (root only, keys 0600). Removing a host in the portal doesn't unpair it; the host's own client list does.
 - **Playing.** Every user sees each adopted host as its own section of the dashboard, with the host's apps. Launching one runs `cha-gateway` on the node that paired the host (`CHA_GATEWAY_IMAGE`, `cha/gateway:dev`; build it with `docker build -f deploy/gateway/Dockerfile -t cha/gateway:dev .`, or use the published `cha-gateway`). The gateway starts the app on the host and passes its H.264 or HEVC video and stereo sound to the browser, and the browser's keyboard, mouse and gamepads back. A host plays one session at a time.
-- **Limits.** No AV1; no video encryption between node and host (keep them on one LAN; the browser's leg is encrypted by WebRTC); loss recovery by keyframes; hosts on another subnet aren't found yet.
+- **Limits.** No AV1; video between node and host is encrypted only when the host supports it (Sunshine and Apollo do), the browser's leg always by WebRTC; lost packets rebuilt from FEC, keyframes past that; hosts on another subnet aren't found yet.
 
 ## Playing from Moonlight
 

@@ -253,6 +253,8 @@ pub(crate) mod tests {
             hdr: true,
             yuv444: false,
         };
+        // Tests opt in to video encryption where they need it.
+        c.video_encryption = false;
         c
     }
 
@@ -293,6 +295,11 @@ pub(crate) mod tests {
         let text = describe(&config());
         assert!(text.contains("a=x-ss-general.encryptionSupported:5\n"));
         assert!(text.contains("a=x-ss-general.encryptionRequested:1\n"));
+        let host = HostConfig::new("Test", "ABCDEF0123456789ABCDEF0123456789");
+        assert!(
+            describe(&host).contains("a=x-ss-general.encryptionSupported:7\n"),
+            "a host offers video encryption by default"
+        );
         assert!(
             text.contains("sprop-parameter-sets=AAAAAU\n"),
             "HEVC on offer"
