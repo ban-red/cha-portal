@@ -12,6 +12,7 @@
 //! - GPUs (NVIDIA): through NVML, loaded at runtime like the other NVIDIA
 //!   libraries (the container runtime's CDI spec provides `libnvidia-ml.so.1`).
 //!   Without NVML there are no GPUs.
+//! - Which processes hold GPU memory ([`gpu_processes`]), to tell environments apart.
 //! - This process's CPU from `/proc/self/stat`, in percent of one core (so
 //!   it may pass 100).
 
@@ -22,12 +23,12 @@ mod nvml;
 #[cfg(target_os = "linux")]
 pub use linux::Sampler;
 #[cfg(target_os = "linux")]
-pub use nvml::{gpu_at, gpus};
+pub use nvml::{gpu_at, gpu_processes, gpus};
 
 #[cfg(not(target_os = "linux"))]
 mod other;
 #[cfg(not(target_os = "linux"))]
-pub use other::{Sampler, gpu_at, gpus};
+pub use other::{Sampler, gpu_at, gpu_processes, gpus};
 
 /// One reading of the host (percent 0..100, bytes).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -62,4 +63,13 @@ pub struct GpuSample {
     pub power_limit: Option<f64>,
     /// The streaming multiprocessors' clock, MHz.
     pub clock: Option<u32>,
+}
+
+/// A process holding GPU memory (any NVIDIA GPU), by the pid NVML reports: the
+/// host's, which a container sees as is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuProcess {
+    pub pid: u32,
+    /// Bytes of GPU memory it holds.
+    pub vram: u64,
 }

@@ -6,6 +6,7 @@ import { computed, nextTick, reactive, ref } from "vue";
 import { ApiError, api, type Environment, type EnvironmentState, type PlacementChoice, type StorageApp, type Template } from "../api";
 import AppCard from "../components/AppCard.vue";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
+import EnvironmentUsage from "../components/EnvironmentUsage.vue";
 import FormError from "../components/FormError.vue";
 import GpuBadge from "../components/GpuBadge.vue";
 import MoonlightHostSection from "../components/MoonlightHostSection.vue";
@@ -307,6 +308,7 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             <p class="truncate text-xs text-ink-3" :title="dateTime(e.createdAt)">
               {{ STATES[e.state].text }} on {{ e.nodeName ?? "a removed node" }} · started {{ ago(e.createdAt) }}
             </p>
+            <EnvironmentUsage v-if="e.usage" :usage="e.usage" class="mt-0.5" />
           </div>
           <RouterLink
             v-if="e.state === 'running'"

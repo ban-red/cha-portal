@@ -64,6 +64,11 @@ services:
       # empty goes without. Needs no mount here: the agent asks the engine.
       CHA_NVIDIA_WINE_DIR: ${CHA_NVIDIA_WINE_DIR-/usr/lib/x86_64-linux-gnu/nvidia/wine}
       RUST_LOG: ${RUST_LOG:-info}
+    # The host's process list, so the agent can match the GPU memory NVML
+    # reports (by host pid) to each environment's containers: the per-app VRAM
+    # on the Running list. Without it the agent sees no GPU processes and that
+    # figure is left out; nothing else changes.
+    pid: host
     # NVIDIA through CDI (nvidia-ctk cdi generate), which also brings nvidia-smi
     # and the render node (whose group the apps get).
     # Intel and AMD GPUs need nothing here: the agent reads their names and

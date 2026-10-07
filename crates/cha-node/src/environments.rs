@@ -169,6 +169,11 @@ pub trait Runtime: Send + Sync + 'static {
         let _ = environment_id;
         Box::pin(async { bail!("this runtime can't describe its streamers") })
     }
+    /// The Docker engine behind this runtime, to read what environments use;
+    /// `None` from a runtime that has none.
+    fn engine(&self) -> Option<Docker> {
+        None
+    }
     /// Environments that stop on their own from now on.
     fn exits(&self) -> broadcast::Receiver<Exit>;
     /// What starting environments say they are doing, from now on.
@@ -1967,6 +1972,10 @@ impl DockerRuntime {
 }
 
 impl Runtime for DockerRuntime {
+    fn engine(&self) -> Option<Docker> {
+        Some(self.docker.clone())
+    }
+
     fn start(&self, spec: EnvironmentSpec) -> BoxFuture<'_, Result<StreamerEndpoint>> {
         Box::pin(self.start_environment(spec))
     }

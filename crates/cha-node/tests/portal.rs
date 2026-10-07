@@ -988,6 +988,12 @@ async fn a_nodes_usage_shows_on_the_nodes_page_while_it_is_connected() {
             ..cha_wire::GpuUsage::default()
         }],
         environments: 2,
+        by_environment: vec![cha_wire::EnvironmentUsage {
+            id: "e1".into(),
+            cpu: 12.5,
+            mem: 2 << 30,
+            vram: Some(3 << 30),
+        }],
     };
     let msg = cha_wire::ToPortal::Usage { usage };
     ws.send(Message::text(serde_json::to_string(&msg).unwrap()))
@@ -1005,6 +1011,8 @@ async fn a_nodes_usage_shows_on_the_nodes_page_while_it_is_connected() {
     assert_eq!(usage["gpus"][0]["util"], 88);
     assert_eq!(usage["gpus"][0]["powerLimit"], 450.0);
     assert!(usage["gpus"][0].get("dec").is_none());
+    assert_eq!(usage["byEnvironment"][0]["id"], "e1");
+    assert_eq!(usage["byEnvironment"][0]["vram"], 3u64 << 30);
     assert!(usage["at"].as_i64().unwrap() > 0);
 
     // Gone with the connection.

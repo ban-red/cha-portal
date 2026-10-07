@@ -183,11 +183,61 @@ struct EnvironmentView {
     /// The device it runs on, so the page can say whether it is hardware
     /// accelerated; `None` when the node doesn't say.
     device: Option<DeviceView>,
+    /// What it uses of its node now (running, on a node that reports it).
+    usage: Option<UsageView>,
     created_at: i64,
     updated_at: i64,
     /// Where the streamer listens, while it runs (the portal brokers
     /// connections from P1.5; until then this is for diagnostics).
     streamer: Option<StreamerView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageView {
+    /// Percent of the node's whole CPU.
+    cpu: f64,
+    /// Bytes of RAM.
+    mem: u64,
+    /// Bytes of GPU memory; absent when the node can't tell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vram: Option<u64>,
+    /// The node's RAM, and the memory of the GPU it runs on, for scale.
+    mem_total: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vram_total: Option<u64>,
+}
+
+/// Fills in what a running environment uses, from its node's latest report.
+fn attach_usage(state: &AppState, view: &mut EnvironmentView) {
+    if view.state != "running" {
+        return;
+    }
+    let Some(node_id) = view.node_id.as_deref() else {
+        return;
+    };
+    let device_name = view.device.as_ref().map(|d| d.name.as_str());
+    view.usage = state.nodes.usage(node_id).and_then(|(usage, _)| {
+        // The GPU it runs on: by name, else the node's first.
+        let vram_total = usage
+            .gpus
+            .iter()
+            .find(|g| Some(g.name.as_str()) == device_name)
+            .or(usage.gpus.first())
+            .and_then(|g| g.vram_total);
+        let mem_total = usage.mem_total;
+        usage
+            .by_environment
+            .into_iter()
+            .find(|e| e.id == view.id)
+            .map(|e| UsageView {
+                cpu: e.cpu,
+                mem: e.mem,
+                vram: e.vram,
+                mem_total,
+                vram_total,
+            })
+    });
 }
 
 #[derive(Serialize)]
@@ -273,6 +323,7 @@ fn view(
         log,
         codecs,
         device: device_view,
+        usage: None,
         created_at: row.created_at,
         updated_at: row.updated_at,
         streamer,
@@ -304,11 +355,14 @@ async fn list(
     let rows = db::list_environments(&state.db, Some(&user.id), LIST_LIMIT).await?;
     let nodes = nodes_by_id(&state).await?;
     let index = moonlight::Index::load(&state).await?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|r| view(r, &nodes, &user, &index))
-            .collect(),
-    ))
+    let mut views: Vec<_> = rows
+        .into_iter()
+        .map(|r| view(r, &nodes, &user, &index))
+        .collect();
+    for v in &mut views {
+        attach_usage(&state, v);
+    }
+    Ok(Json(views))
 }
 
 async fn show(
@@ -317,12 +371,14 @@ async fn show(
     Path(id): Path<String>,
 ) -> ApiResult<Json<EnvironmentView>> {
     let row = visible(&state, &user, &id).await?;
-    Ok(Json(view(
+    let mut v = view(
         row,
         &nodes_by_id(&state).await?,
         &user,
         &moonlight::Index::load(&state).await?,
-    )))
+    );
+    attach_usage(&state, &mut v);
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]

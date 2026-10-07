@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use tracing::info;
 
-use crate::GpuSample;
+use crate::{GpuProcess, GpuSample};
 
 type Device = *mut c_void;
 
@@ -24,7 +24,22 @@ struct MemoryInfo {
     used: u64,
 }
 
+/// `nvmlProcessInfo_t`: a process on a GPU and the memory it holds.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct ProcessInfo {
+    pid: c_uint,
+    used_gpu_memory: u64,
+    gpu_instance_id: c_uint,
+    compute_instance_id: c_uint,
+}
+
+type ProcessList = unsafe extern "C" fn(Device, *mut c_uint, *mut ProcessInfo) -> c_int;
+
 const NVML_SUCCESS: c_int = 0;
+const NVML_ERROR_INSUFFICIENT_SIZE: c_int = 7;
+/// What NVML says when it can't tell how much memory a process holds.
+const NVML_VALUE_NOT_AVAILABLE: u64 = u64::MAX;
 const NVML_TEMPERATURE_GPU: c_uint = 0;
 const NVML_CLOCK_SM: c_uint = 1;
 
@@ -53,6 +68,9 @@ struct Nvml {
     power: unsafe extern "C" fn(Device, *mut c_uint) -> c_int,
     power_limit: unsafe extern "C" fn(Device, *mut c_uint) -> c_int,
     clock: unsafe extern "C" fn(Device, c_uint, *mut c_uint) -> c_int,
+    /// Processes with a compute or a graphics context; missing in old drivers.
+    compute_processes: Option<ProcessList>,
+    graphics_processes: Option<ProcessList>,
 }
 
 // SAFETY: NVML's calls are thread-safe, and the device handles are plain
@@ -76,6 +94,12 @@ fn nvml() -> Option<&'static Nvml> {
 /// Every NVIDIA GPU's reading now; none without NVML.
 pub fn gpus() -> Vec<GpuSample> {
     nvml().map(Nvml::all).unwrap_or_default()
+}
+
+/// Every process holding memory on any NVIDIA GPU (graphics and compute
+/// contexts together, once per pid); none without NVML.
+pub fn gpu_processes() -> Vec<GpuProcess> {
+    nvml().map(Nvml::processes).unwrap_or_default()
 }
 
 /// The reading of the GPU at PCI `slot` (`0000:01:00.0`), else of GPU 0.
@@ -120,7 +144,15 @@ impl Nvml {
         if status != NVML_SUCCESS {
             return Err(format!("nvmlInit failed ({status})"));
         }
+        // The newest list call a driver has (the older ones lack a field we
+        // don't read, but their struct differs); none is fine.
+        let optional = |name: &CStr| -> Option<ProcessList> {
+            // SAFETY: the symbol is NVML's list call of that name.
+            symbol(name).ok().map(|p| unsafe { function_pointer(p) })
+        };
         Ok(Self {
+            compute_processes: optional(c"nvmlDeviceGetComputeRunningProcesses_v3"),
+            graphics_processes: optional(c"nvmlDeviceGetGraphicsRunningProcesses_v3"),
             count: function!(c"nvmlDeviceGetCount_v2"),
             by_index: function!(c"nvmlDeviceGetHandleByIndex_v2"),
             by_slot: function!(c"nvmlDeviceGetHandleByPciBusId_v2"),
@@ -134,6 +166,40 @@ impl Nvml {
             power_limit: function!(c"nvmlDeviceGetEnforcedPowerLimit"),
             clock: function!(c"nvmlDeviceGetClockInfo"),
         })
+    }
+
+    fn processes(&self) -> Vec<GpuProcess> {
+        let mut count = 0;
+        // SAFETY: an out pointer.
+        if unsafe { (self.count)(&mut count) } != NVML_SUCCESS {
+            return Vec::new();
+        }
+        let mut by_pid: std::collections::BTreeMap<u32, u64> = Default::default();
+        for index in 0..count {
+            let mut device: Device = std::ptr::null_mut();
+            // SAFETY: an out pointer.
+            if unsafe { (self.by_index)(index, &mut device) } != NVML_SUCCESS {
+                continue;
+            }
+            for list in [self.compute_processes, self.graphics_processes]
+                .into_iter()
+                .flatten()
+            {
+                for p in processes_of(list, device) {
+                    if p.used_gpu_memory == NVML_VALUE_NOT_AVAILABLE {
+                        continue;
+                    }
+                    // One process in both lists holds the same memory once; on
+                    // several GPUs it holds some on each.
+                    let held = by_pid.entry(p.pid).or_insert(0);
+                    *held = (*held).max(p.used_gpu_memory);
+                }
+            }
+        }
+        by_pid
+            .into_iter()
+            .map(|(pid, vram)| GpuProcess { pid, vram })
+            .collect()
     }
 
     fn all(&self) -> Vec<GpuSample> {
@@ -214,8 +280,36 @@ impl Nvml {
     }
 }
 
+/// What one of NVML's process lists says for `device`.
+fn processes_of(list: ProcessList, device: Device) -> Vec<ProcessInfo> {
+    let mut capacity: c_uint = 32;
+    for _ in 0..2 {
+        let mut count = capacity;
+        let mut buffer = vec![ProcessInfo::default(); capacity as usize];
+        // SAFETY: a valid device, and a buffer of `count` entries.
+        let status = unsafe { list(device, &mut count, buffer.as_mut_ptr()) };
+        if status == NVML_SUCCESS {
+            buffer.truncate(count as usize);
+            return buffer;
+        }
+        if status != NVML_ERROR_INSUFFICIENT_SIZE {
+            return Vec::new();
+        }
+        // `count` is how many there are now; leave room for one that starts.
+        capacity = count + 8;
+    }
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
+    /// Prints the processes on the GPUs, to compare with `nvidia-smi` by hand.
+    #[test]
+    #[ignore = "needs an NVIDIA GPU"]
+    fn prints_the_processes() {
+        println!("{:#?}", super::gpu_processes());
+    }
+
     /// Prints the GPUs, to compare with `nvidia-smi` by hand.
     #[test]
     #[ignore = "needs an NVIDIA GPU"]

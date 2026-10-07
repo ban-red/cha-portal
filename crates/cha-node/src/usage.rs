@@ -36,6 +36,7 @@ fn usage(host: HostSample, gpus: Vec<GpuSample>, environments: u32) -> NodeUsage
             })
             .collect(),
         environments,
+        by_environment: Vec::new(),
     }
 }
 

@@ -448,6 +448,18 @@ impl Docker {
         volume_names(&bytes, prefix)
     }
 
+    /// One reading of a running container's use (`GET /containers/<id>/stats`,
+    /// without waiting for a second sample: the caller keeps the last one).
+    pub async fn stats(&self, id: &str) -> Result<Value> {
+        let path = format!(
+            "/containers/{}/stats?stream=false&one-shot=true",
+            encode(id)
+        );
+        Ok(serde_json::from_slice(
+            &self.call(Method::GET, &path, None).await?,
+        )?)
+    }
+
     /// Every container (running or not) carrying `label`.
     pub async fn list(&self, label: &str) -> Result<Vec<ContainerSummary>> {
         let filters = serde_json::json!({ "label": [label] }).to_string();

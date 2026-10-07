@@ -159,6 +159,19 @@ export interface Placements {
 
 export type EnvironmentState = "starting" | "running" | "stopping" | "destroyed" | "failed";
 
+/** One running environment's use of its node. */
+export interface EnvironmentUsage {
+  /** Percent of the node's whole CPU. */
+  cpu: number;
+  /** Bytes of RAM. */
+  mem: number;
+  /** Bytes of GPU memory; absent when the node can't tell. */
+  vram?: number;
+  /** The node's RAM, and the memory of the GPU it runs on. */
+  memTotal: number;
+  vramTotal?: number;
+}
+
 export interface Environment {
   id: string;
   templateId: string;
@@ -177,6 +190,8 @@ export interface Environment {
   codecs?: string[] | null;
   /** The device it runs on; absent from older portals, null when the node doesn't say. */
   device?: { kind: DeviceKind; name: string } | null;
+  /** What it uses of its node now; absent while it isn't running or its node doesn't report it. */
+  usage?: EnvironmentUsage | null;
   createdAt: number;
   updatedAt: number;
   /** Where its streamer listens while it runs. */

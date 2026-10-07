@@ -1,6 +1,6 @@
 //! Where there is no /proc or NVML: nothing is available.
 
-use crate::{GpuSample, HostSample};
+use crate::{GpuProcess, GpuSample, HostSample};
 
 pub struct Sampler;
 
@@ -26,4 +26,8 @@ pub fn gpus() -> Vec<GpuSample> {
 
 pub fn gpu_at(_slot: Option<&str>) -> Option<GpuSample> {
     None
+}
+
+pub fn gpu_processes() -> Vec<GpuProcess> {
+    Vec::new()
 }

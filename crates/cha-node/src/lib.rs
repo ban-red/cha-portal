@@ -13,6 +13,7 @@ pub mod crashlog;
 pub mod devices;
 pub mod docker;
 pub mod doctor;
+pub mod envusage;
 pub mod environments;
 pub mod hostfiles;
 pub mod inventory;
@@ -408,6 +409,16 @@ impl Agent {
         let usage_every = Duration::from_secs(cha_wire::USAGE_INTERVAL_SECS);
         let mut usage_ticks = tokio::time::interval_at(start + usage_every, usage_every);
         usage_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // What each environment uses, read in its own task so a slow engine
+        // can't hold up the heartbeats; it stops when this connection ends.
+        let env_usage = if portal_reads_usage {
+            self.runtime
+                .as_ref()
+                .and_then(|r| r.engine())
+                .map(|engine| envusage::Watcher::start(engine, usage_every))
+        } else {
+            None
+        };
         let mut last_heard = Instant::now();
         loop {
             tokio::select! {
@@ -437,7 +448,10 @@ impl Agent {
                         usage::sample(&mut sampler, environments)
                     })
                     .await?;
-                    if let Some(usage) = usage {
+                    if let Some(mut usage) = usage {
+                        if let Some(watcher) = &env_usage {
+                            usage.by_environment = watcher.latest();
+                        }
                         sink.send(encode(&ToPortal::Usage { usage })?).await?;
                     }
                 }

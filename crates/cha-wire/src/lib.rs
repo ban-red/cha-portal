@@ -664,6 +664,23 @@ pub struct NodeUsage {
     pub gpus: Vec<GpuUsage>,
     /// Environments this node is running.
     pub environments: u32,
+    /// What each running environment uses of it (absent from an older node).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_environment: Vec<EnvironmentUsage>,
+}
+
+/// One environment's use of its node: its app and streamer containers together.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentUsage {
+    pub id: String,
+    /// Percent of the whole machine's CPU, like [`NodeUsage::cpu`].
+    pub cpu: f64,
+    /// Bytes of RAM (without reclaimable file cache).
+    pub mem: u64,
+    /// Bytes of GPU memory its processes hold; absent when the node can't tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram: Option<u64>,
 }
 
 /// One GPU's use; what the driver didn't give is absent.
@@ -972,6 +989,12 @@ mod tests {
                 ..GpuUsage::default()
             }],
             environments: 2,
+            by_environment: vec![EnvironmentUsage {
+                id: "e1".into(),
+                cpu: 3.5,
+                mem: 1024,
+                vram: None,
+            }],
         };
         let json = serde_json::to_value(ToPortal::Usage {
             usage: usage.clone(),
@@ -979,6 +1002,11 @@ mod tests {
         .unwrap();
         assert_eq!(json["type"], "usage");
         assert_eq!(json["usage"]["memUsed"], 4);
+        // What the node couldn't say is left out; an older node sends none at all.
+        assert_eq!(
+            json["usage"]["byEnvironment"][0],
+            serde_json::json!({ "id": "e1", "cpu": 3.5, "mem": 1024 })
+        );
         assert_eq!(
             json["usage"]["gpus"][0],
             serde_json::json!({ "index": 0, "name": "RTX", "util": 40 })

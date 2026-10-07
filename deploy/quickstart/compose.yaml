@@ -79,6 +79,11 @@ services:
       CHA_SHARED_DIRS: ${CHA_SHARED_DIRS:-}
       CHA_NVIDIA_WINE_DIR: ${CHA_NVIDIA_WINE_DIR-/usr/lib/x86_64-linux-gnu/nvidia/wine}
       RUST_LOG: ${RUST_LOG:-info}
+    # The host's process list, so the agent can match the GPU memory NVML
+    # reports (by host pid) to each environment's containers: the per-app VRAM
+    # on the Running list. Without it the agent sees no GPU processes and that
+    # figure is left out; nothing else changes.
+    pid: host
     # NVIDIA through CDI. On a machine without an NVIDIA GPU, delete these two
     # lines: Intel, AMD and CPU-only nodes need nothing here.
     devices:
