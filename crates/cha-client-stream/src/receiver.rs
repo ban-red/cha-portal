@@ -166,6 +166,8 @@ pub struct Output {
     pub asks: Vec<Ask>,
     pub lost: u32,
     pub recovered: u32,
+    /// PyroWave frames delivered with only their whole packets.
+    pub partial: u32,
 }
 
 pub struct Receiver {
@@ -210,8 +212,9 @@ impl Receiver {
         self.dropped
     }
 
-    pub fn intra_dropped(&self) -> u64 {
-        self.video.intra_dropped()
+    /// The stream carries PyroWave: no keyframes, nothing is asked for.
+    pub fn is_intra(&self) -> bool {
+        self.video.is_intra()
     }
 
     /// The value of the next ping's `c`.
@@ -274,6 +277,7 @@ impl Receiver {
             asks: v.asks,
             lost: v.lost,
             recovered: v.recovered,
+            partial: v.partial,
         }
     }
 
@@ -290,6 +294,7 @@ impl Receiver {
         self.out.asks.extend(v.asks);
         self.out.lost += v.lost;
         self.out.recovered += v.recovered;
+        self.out.partial += v.partial;
     }
 
     /// Audio in order: a duplicate or a packet behind one already passed is

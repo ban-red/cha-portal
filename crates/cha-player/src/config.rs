@@ -133,4 +133,21 @@ mod tests {
         assert_eq!(repaired.codecs, vec![Codec::Hevc, Codec::H264]);
         std::fs::remove_dir_all(dir).ok();
     }
+
+    #[test]
+    fn pyrowave_orders_survive_and_are_spelled_as_the_portal_does() {
+        let config = Config {
+            codecs: vec![Codec::PyroWave444, Codec::Hevc, Codec::H264],
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            json.contains(r#""codecs":["pyrowave444","hevc","h264"]"#),
+            "{json}"
+        );
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sanitized().codecs, config.codecs);
+        // The default stays HEVC first.
+        assert_eq!(Config::default().codecs[0], Codec::Hevc);
+    }
 }

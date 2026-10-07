@@ -244,6 +244,7 @@ struct Stats {
     frames: u64,
     lost: u64,
     recovered: u64,
+    partial: u64,
     dropped_for_player: u64,
 }
 
@@ -350,6 +351,7 @@ impl Task {
             frames = self.stats.frames,
             lost = self.stats.lost,
             recovered = self.stats.recovered,
+            partial = self.stats.partial,
             dropped_for_the_player = self.stats.dropped_for_player,
             bad_datagrams = self.rx.dropped(),
             ?reason,
@@ -377,6 +379,7 @@ impl Task {
         let now = Instant::now();
         self.stats.lost += u64::from(out.lost);
         self.stats.recovered += u64::from(out.recovered);
+        self.stats.partial += u64::from(out.partial);
         if out.lost > 0 {
             debug!(frames = out.lost, "frames given up on");
         }
@@ -390,6 +393,7 @@ impl Task {
                 codec: self.codec,
                 data: f.data,
                 key: f.key,
+                partial: f.partial,
                 number: self.numbering.number(f.id),
                 received: f.last_at,
             };

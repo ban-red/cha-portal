@@ -89,7 +89,7 @@ The player never runs this itself. The detector (`src/awdl.rs`) looks only at vi
 | `src/app.rs` | the `winit` handler: Launcher and Streaming states, pointer lock, hotkeys, drawing |
 | `src/ui/` | egui launcher, settings, stats overlay |
 | `src/render/` | `wgpu` device and surface, the YCbCr video pipeline (aspect-fit, WGSL), egui layer |
-| `src/video/` | `VideoDecoder` trait; Annex-B to AVCC; the VideoToolbox decoder |
+| `src/video/` | `VideoDecoder` trait; Annex-B to AVCC; the VideoToolbox decoder; `pyrowave.rs`, the PyroWave presenter (decode on the window's `wgpu` device, via `cha-pyrowave-wgpu`) |
 | `src/present/` | `FrameImporter` trait; Metal zero-copy import |
 | `src/audio/` | Opus decode, playout buffer (30 ms target), `cpal` output |
 | `src/input/` | W3C key codes, mouse and wheel, hotkeys, SDL3 gamepads |
@@ -104,6 +104,15 @@ A Linux or Windows port adds a decoder (`VideoDecoder`) and an importer (`FrameI
 ## How the picture gets on screen
 
 The decoder returns an IOSurface-backed `CVPixelBuffer`. `CVMetalTextureCache` wraps each plane as an `MTLTexture` over the same memory, and `wgpu`'s Metal HAL adopts it (`Device::texture_from_raw`, `create_texture_from_hal`) as an `R8Unorm` and an `Rg8Unorm` texture (`R16Unorm`/`Rg16Unorm` for 10-bit, when the GPU has them). No copy is made. A WGSL shader does YCbCr to RGB with the range and matrix (BT.601/709/2020) read from the buffer. Only the newest decoded frame is kept; a newer one replaces an unshown older one (counted as dropped). The surface uses Mailbox, else Immediate, else Fifo, with one frame of latency; Metal gives Immediate here.
+
+## PyroWave
+
+PyroWave (`PyroWave420`/`PyroWave444` from a node over `cha-stream/1`) is intra-only, decoded by compute shaders in [`cha-pyrowave-wgpu`](../cha-pyrowave-wgpu/README.md) and drawn straight from the planes buffer: no VideoToolbox, no IOSurface. It is meant for the wired LAN: roughly 300 to 600 Mbit/s at 1440p60.
+
+- **Needs GPU subgroups.** The player's `wgpu` device requests `Features::SUBGROUP` (and `TIMESTAMP_QUERY` for decode timing) when the adapter has them; Apple silicon does. Without subgroups starting a PyroWave stream fails with a message saying so, and H.264/HEVC are unaffected.
+- **Decoded on the render thread.** The decode shares the window's device and queue, so the video thread only keeps the newest raw frame (a newer one replaces an unshown older one, counted as dropped). `draw_stream` decodes it into the same command encoder and submit as the frame's render pass, then draws it aspect-fit like any other picture. The pipelines compile at the first PyroWave stream; the decoder is made from the first frame's sequence header and remade if the size or chroma changes.
+- **No keyframes.** Every frame stands alone; a frame that fails to decode is counted under "decode errors" and the next one is decoded. A frame the transport delivered at the 60 ms deadline with only its whole packets decodes as a partial frame (softer where blocks are missing) and is counted under "partial" in the stats overlay.
+- **Decode time in the overlay** is the GPU time for dequant plus inverse transform when timestamps are available (measured on about one frame in a few, the latest reading is shown), else the CPU time to parse and record.
 
 ## Versions
 

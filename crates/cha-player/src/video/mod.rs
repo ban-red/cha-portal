@@ -2,6 +2,7 @@
 //! a picture the presenter can draw without a copy.
 
 pub mod annexb;
+pub mod pyrowave;
 mod videotoolbox;
 
 use std::time::Instant;
@@ -55,7 +56,13 @@ pub trait VideoDecoder: Send {
     fn decode(&mut self, frame: VideoFrame) -> Result<Option<DecodedFrame>>;
 }
 
-/// The best decoder this platform has for `codec`.
+/// The best decoder this platform has for `codec`. PyroWave is not here: it
+/// decodes on the render thread's GPU device ([`pyrowave::PyroPresenter`]),
+/// and is never fed to VideoToolbox.
 pub fn new_decoder(codec: Codec) -> Result<Box<dyn VideoDecoder>> {
+    anyhow::ensure!(
+        !codec.is_pyrowave(),
+        "PyroWave is decoded by the renderer, not a VideoDecoder"
+    );
     Ok(Box::new(videotoolbox::VideoToolboxDecoder::new(codec)?))
 }

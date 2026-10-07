@@ -23,7 +23,7 @@ pub struct Hello {
 }
 
 impl Hello {
-    /// The codec as the core knows it; `None` for ones it can't decode (PyroWave).
+    /// The codec as the core knows it; `None` for ones it doesn't know.
     pub fn codec(&self) -> Option<Codec> {
         codec_named(&self.codec)
     }
@@ -34,6 +34,8 @@ pub fn codec_named(name: &str) -> Option<Codec> {
         "h264" => Some(Codec::H264),
         "hevc" => Some(Codec::Hevc),
         "av1" => Some(Codec::Av1),
+        "pyrowave420" => Some(Codec::PyroWave420),
+        "pyrowave444" => Some(Codec::PyroWave444),
         _ => None,
     }
 }
@@ -44,6 +46,8 @@ pub fn codec_name(codec: Codec) -> &'static str {
         Codec::H264 => "h264",
         Codec::Hevc => "hevc",
         Codec::Av1 => "av1",
+        Codec::PyroWave420 => "pyrowave420",
+        Codec::PyroWave444 => "pyrowave444",
     }
 }
 
@@ -234,6 +238,11 @@ mod tests {
         );
         let pyro = hello.replace("hevc", "pyrowave420");
         let Some(ServerMsg::Hello(h)) = parse(&pyro) else {
+            panic!()
+        };
+        assert_eq!(h.codec(), Some(Codec::PyroWave420));
+        let unknown = hello.replace("hevc", "vp9");
+        let Some(ServerMsg::Hello(h)) = parse(&unknown) else {
             panic!()
         };
         assert_eq!(h.codec(), None);

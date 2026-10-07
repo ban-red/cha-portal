@@ -32,6 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytemuck = { version = "1", features = ["derive"] }
 cha-client-gamestream = { path = "../cha-client-gamestream", optional = true }
 cha-client-portal = { path = "../cha-client-portal", optional = true }
+cha-pyrowave-wgpu = { path = "../cha-pyrowave-wgpu" }
 cpal = "0.18"
 egui = "0.35"
 egui-wgpu = "0.35"

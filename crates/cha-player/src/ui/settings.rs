@@ -15,11 +15,21 @@ const RESOLUTIONS: [(u32, u32, &str); 5] = [
 const FPS: [u32; 3] = [60, 90, 120];
 
 /// Codec order choices, as the config stores them.
-const CODEC_ORDERS: [(&[Codec], &str); 4] = [
+const CODEC_ORDERS: [(&[Codec], &str); 6] = [
     (&[Codec::Hevc, Codec::H264], "HEVC, then H.264"),
     (&[Codec::H264, Codec::Hevc], "H.264, then HEVC"),
     (&[Codec::Hevc], "HEVC only"),
     (&[Codec::H264], "H.264 only"),
+    // PyroWave only streams from a Cha environment on an NVIDIA node (a
+    // Moonlight host never offers it), so these fall back.
+    (
+        &[Codec::PyroWave420, Codec::Hevc, Codec::H264],
+        "PyroWave 4:2:0 (LAN), then HEVC, H.264",
+    ),
+    (
+        &[Codec::PyroWave444, Codec::Hevc, Codec::H264],
+        "PyroWave 4:4:4 (LAN, desktops), then HEVC, H.264",
+    ),
 ];
 
 /// Draws the settings; true when something changed.

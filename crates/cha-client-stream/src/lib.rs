@@ -33,11 +33,13 @@
 //! and HEVC, OBUs for AV1, exactly as the streamer sent them. Parameter sets
 //! ride in every keyframe; a frame flagged RECOVERY (after the streamer
 //! referred around a loss) is a non-key P-frame the decoder takes as it is.
+//! PyroWave frames (flagged INTRA) leave as the concatenated wavelet packets
+//! that arrived whole, [`cha_client::VideoFrame::partial`] when some did not.
 //! Audio leaves as 10 ms Opus packets, 48 kHz stereo.
 //!
 //! Not here: finding or launching the environment and the media token (the
-//! portal transport, `cha-client-portal`), reconnecting, codec switching and
-//! PyroWave (C2.3), the clipboard, the streamer's cursor images.
+//! portal transport, `cha-client-portal`), reconnecting, codec switching, the
+//! clipboard, the streamer's cursor images.
 
 pub mod control;
 pub mod input;

@@ -29,8 +29,16 @@
 //!   one; 200 ms later it "settles" and what never came counts as missing,
 //!   for the `l` of the rate-control report.
 //!
-//! PyroWave (flagged INTRA) frames are not handled (C2.3): their datagrams
-//! are counted and dropped.
+//! - **PyroWave (INTRA).** A stream whose first datagram is flagged INTRA
+//!   (every frame stands alone, `fec=0`) is handled differently, as in the
+//!   browser's `wt-worker.ts` (`deliverIntra`, `expire`): a datagram carries
+//!   one wavelet packet or a slice of one (all slices but the last flagged
+//!   CONTINUES, all but the first CONTINUED). A frame goes out the moment it
+//!   is complete; one still missing datagrams [`FRAME_DEADLINE`] after its
+//!   first goes out with only its whole packets ([`Frame::partial`]), or is
+//!   counted lost when none was whole. A frame not after the last delivered
+//!   is dropped. There is no waiting for a keyframe and nothing is ever
+//!   asked of the streamer (no keyframe, no RFI): a loss blurs a region.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -51,6 +59,9 @@ pub const REORDER: Duration = Duration::from_millis(200);
 pub const MAX_WAITING: usize = 240;
 /// While waiting for a start frame, a frame silent this long is forgotten.
 const ABANDONED: Duration = Duration::from_secs(2);
+/// A PyroWave frame still missing datagrams this long after its first goes
+/// out with the packets that came.
+pub const FRAME_DEADLINE: Duration = Duration::from_millis(60);
 /// Settled frames count towards the loss report for this long.
 const LOSS_WINDOW: Duration = Duration::from_secs(1);
 
@@ -78,6 +89,9 @@ pub struct Frame {
     pub first_at: Instant,
     pub last_at: Instant,
     pub data: Bytes,
+    /// PyroWave only: delivered at the deadline with only the packets that
+    /// arrived whole (some of the frame never came).
+    pub partial: bool,
 }
 
 /// What the receiver asks the streamer for.
@@ -97,6 +111,9 @@ pub struct Output {
     pub lost: u32,
     /// Frames rebuilt from parity.
     pub recovered: u32,
+    /// PyroWave frames delivered at the deadline with only their whole
+    /// packets (these are also in `frames`, flagged `partial`).
+    pub partial: u32,
     /// The `send_ts` of each frame that completed (for the delay report).
     pub completed: Vec<u32>,
 }
@@ -105,6 +122,9 @@ struct Partial {
     total: u16,
     received: u16,
     parts: Vec<Option<Vec<u8>>>,
+    /// PyroWave: each fragment's CONTINUES / CONTINUED flags.
+    continues: Vec<bool>,
+    continued: Vec<bool>,
     /// Parity fragments per block, those that came, a data shard's length
     /// and the frame's.
     fec: u8,
@@ -154,7 +174,10 @@ pub struct VideoRx {
     tally_order: VecDeque<u32>,
     /// Settled frames' datagrams and how many never came.
     settled: VecDeque<(Instant, u32, u32)>,
-    intra_seen: u64,
+    /// The stream is PyroWave (its first datagram was flagged INTRA).
+    intra: bool,
+    /// PyroWave: the newest frame handed over.
+    last_delivered: Option<u32>,
     out: Output,
 }
 
@@ -178,14 +201,15 @@ impl VideoRx {
             tally: HashMap::new(),
             tally_order: VecDeque::new(),
             settled: VecDeque::new(),
-            intra_seen: 0,
+            intra: false,
+            last_delivered: None,
             out: Output::default(),
         }
     }
 
-    /// Datagrams of PyroWave frames seen and dropped.
-    pub fn intra_dropped(&self) -> u64 {
-        self.intra_seen
+    /// The stream carries PyroWave.
+    pub fn is_intra(&self) -> bool {
+        self.intra
     }
 
     /// What the calls so far produced.
@@ -202,11 +226,7 @@ impl VideoRx {
             {
                 return;
             }
-            self.start_stream(h.stream);
-        }
-        if h.flags.has(Flags::INTRA) {
-            self.intra_seen += 1;
-            return;
+            self.start_stream(h.stream, h.flags.has(Flags::INTRA));
         }
         let id = h.frame_id;
         let total = h.frag_count;
@@ -218,10 +238,15 @@ impl VideoRx {
         if self.next.is_some_and(|next| before(id, next)) {
             return; // already given up on
         }
+        if self.intra && self.last_delivered.is_some_and(|last| !before(last, id)) {
+            return; // not after what was already shown
+        }
         let f = self.partials.entry(id).or_insert_with(|| Partial {
             total,
             received: 0,
             parts: vec![None; usize::from(total)],
+            continues: vec![false; usize::from(total)],
+            continued: vec![false; usize::from(total)],
             fec: h.fec,
             parity: vec![None; usize::from(h.fec) * usize::from(total).div_ceil(BLOCK)],
             shard_len: 0,
@@ -258,6 +283,8 @@ impl VideoRx {
                 return;
             }
             f.parts[index] = Some(payload.to_vec());
+            f.continues[index] = h.flags.has(Flags::CONTINUES);
+            f.continued[index] = h.flags.has(Flags::CONTINUED);
             f.bytes += payload.len();
             f.received += 1;
             if f.received < f.total {
@@ -275,6 +302,10 @@ impl VideoRx {
     /// Run about every 10 ms: give up on frames that won't complete, or that
     /// later ones overtook, and deliver what can go.
     pub fn tick(&mut self, now: Instant) {
+        if self.intra {
+            self.expire_intra(now);
+            return;
+        }
         if self.next.is_none() || self.need_key {
             self.deliver(now);
             if self.need_key && self.lost_from.is_some() {
@@ -324,6 +355,12 @@ impl VideoRx {
     /// The consumer fell behind and frames were dropped after this one:
     /// start over from the next keyframe.
     pub fn resync(&mut self, now: Instant) {
+        if self.intra {
+            // Nothing to wait for: the next frame stands alone. Forget the
+            // pieces of frames in flight; ask for nothing.
+            self.partials.clear();
+            return;
+        }
         self.complete.clear();
         self.partials.clear();
         self.need_key = true;
@@ -377,8 +414,10 @@ impl VideoRx {
         c.got += 1;
     }
 
-    fn start_stream(&mut self, stream: u8) {
+    fn start_stream(&mut self, stream: u8, intra: bool) {
         self.stream = Some(stream);
+        self.intra = intra;
+        self.last_delivered = None;
         self.partials.clear();
         self.complete.clear();
         self.tally.clear();
@@ -398,6 +437,10 @@ impl VideoRx {
             self.out.recovered += 1;
         }
         self.out.completed.push(f.send_ts);
+        if self.intra {
+            self.deliver_intra(now, id, &f, false);
+            return;
+        }
         // A rebuilt frame is exactly the length the parity said.
         let size = if rebuilt { f.frame_len } else { f.bytes };
         let mut data = Vec::with_capacity(size.min(1 << 26));
@@ -477,8 +520,79 @@ impl VideoRx {
                 first_at: f.first_at,
                 last_at: f.last_at,
                 data: f.data,
+                partial: false,
             });
             self.next = Some(next.wrapping_add(1));
+        }
+    }
+
+    /// PyroWave: hands over the frame's whole packets, now. False when none
+    /// was whole: nothing to show.
+    fn deliver_intra(&mut self, now: Instant, id: u32, f: &Partial, partial: bool) -> bool {
+        // A packet starts at a part not CONTINUED and runs through parts that
+        // CONTINUE; any part missing, and the packet is dropped.
+        let mut data = Vec::with_capacity(f.bytes);
+        for i in 0..usize::from(f.total) {
+            let Some(first) = &f.parts[i] else { continue };
+            if f.continued[i] {
+                continue;
+            }
+            let mut unit: Vec<&[u8]> = vec![first];
+            let mut whole = true;
+            let mut j = i;
+            while f.continues[j] {
+                match (f.parts.get(j + 1), f.continued.get(j + 1)) {
+                    (Some(Some(next)), Some(true)) => unit.push(next),
+                    _ => {
+                        whole = false;
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            if whole {
+                for part in unit {
+                    data.extend_from_slice(part);
+                }
+            }
+        }
+        if data.is_empty() {
+            return false;
+        }
+        self.last_delivered = Some(id);
+        self.out.frames.push(Frame {
+            stream: self.stream.unwrap_or(0),
+            id,
+            key: true,
+            recovery: false,
+            send_ts: f.send_ts,
+            first_at: f.first_at,
+            last_at: now,
+            data: Bytes::from(data),
+            partial,
+        });
+        true
+    }
+
+    /// PyroWave: a frame still incomplete at its deadline goes out with the
+    /// packets that came (softer where blocks are missing); it is lost only
+    /// when it was not after the last shown, or nothing in it was whole.
+    fn expire_intra(&mut self, now: Instant) {
+        let due: Vec<u32> = self
+            .partials
+            .iter()
+            .filter(|(_, f)| now.saturating_duration_since(f.first_at) >= FRAME_DEADLINE)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in due {
+            let f = self.partials.remove(&id).expect("just listed");
+            let shown = self.last_delivered.is_none_or(|last| before(last, id))
+                && self.deliver_intra(now, id, &f, true);
+            if shown {
+                self.out.partial += 1;
+            } else {
+                self.out.lost += 1;
+            }
         }
     }
 
@@ -976,17 +1090,151 @@ mod tests {
         assert_eq!(ids(&rx.take()), [2]);
     }
 
+    /// One PyroWave datagram: `packet` of the frame, `part` of `parts` of
+    /// that packet, `index` of `total` in the frame.
+    fn intra_dg(id: u32, index: u16, total: u16, flags: u8, payload: &[u8]) -> Vec<u8> {
+        let mut head = [0u8; cha_proto::HEADER_LEN];
+        DatagramHeader {
+            kind: Kind::Video,
+            flags: Flags(Flags::KEYFRAME | Flags::INTRA | flags),
+            stream: 0,
+            fec: 0,
+            frame_id: id,
+            frag_index: index,
+            frag_count: total,
+            send_ts_us: id,
+        }
+        .encode(&mut head);
+        let mut d = head.to_vec();
+        d.extend_from_slice(payload);
+        d
+    }
+
+    /// A frame of three packets over four datagrams: A, B (split in two:
+    /// B1 CONTINUES, B2 CONTINUED), C.
+    fn intra_frame(id: u32) -> Vec<Vec<u8>> {
+        vec![
+            intra_dg(id, 0, 4, 0, b"AA"),
+            intra_dg(id, 1, 4, Flags::CONTINUES, b"B1"),
+            intra_dg(id, 2, 4, Flags::CONTINUED, b"B2"),
+            intra_dg(id, 3, 4, 0, b"CC"),
+        ]
+    }
+
     #[test]
-    fn intra_datagrams_are_counted_and_dropped() {
+    fn a_complete_pyrowave_frame_goes_out_at_once_without_asks() {
         let mut rx = VideoRx::new();
         let now = t0();
+        let mut d = intra_frame(7);
+        d.reverse(); // out of order is fine
+        feed(&mut rx, now, &d);
+        let out = rx.take();
+        assert!(rx.is_intra());
+        assert_eq!(ids(&out), [7]);
+        assert_eq!(out.frames[0].data.as_ref(), b"AAB1B2CC");
+        assert!(out.frames[0].key && !out.frames[0].partial);
+        assert_eq!(out.completed, [7]);
+        assert!(out.asks.is_empty() && out.lost == 0 && out.partial == 0);
+        // Ticking never asks for a keyframe or RFI.
+        rx.tick(now + ms(500));
+        rx.resync(now + ms(501));
+        assert!(rx.take().asks.is_empty());
+    }
+
+    #[test]
+    fn a_pyrowave_frame_missing_a_datagram_goes_out_partial_at_the_deadline() {
+        let mut rx = VideoRx::new();
+        let now = t0();
+        let mut d = intra_frame(1);
+        d.remove(3); // C never comes
+        feed(&mut rx, now, &d);
+        assert!(rx.take().frames.is_empty());
+        rx.tick(now + ms(59));
+        assert!(rx.take().frames.is_empty());
+        rx.tick(now + ms(60));
+        let out = rx.take();
+        assert_eq!(ids(&out), [1]);
+        assert!(out.frames[0].partial);
+        assert_eq!(out.frames[0].data.as_ref(), b"AAB1B2");
+        assert_eq!((out.partial, out.lost), (1, 0));
+        assert!(out.asks.is_empty());
+        // Delivered once only.
+        rx.tick(now + ms(200));
+        assert!(rx.take().frames.is_empty());
+    }
+
+    #[test]
+    fn a_split_packet_with_a_lost_part_is_left_out() {
+        let mut rx = VideoRx::new();
+        let now = t0();
+        let mut d = intra_frame(1);
+        d.remove(2); // B2 lost: B1 alone is not a packet
+        feed(&mut rx, now, &d);
+        rx.tick(now + ms(60));
+        let out = rx.take();
+        assert_eq!(out.frames[0].data.as_ref(), b"AACC");
+        assert!(out.frames[0].partial);
+
+        // The first part lost: B2 (CONTINUED) can't pass for a start.
+        let mut d = intra_frame(2);
+        d.remove(1);
+        feed(&mut rx, now + ms(100), &d);
+        rx.tick(now + ms(160));
+        assert_eq!(rx.take().frames[0].data.as_ref(), b"AACC");
+    }
+
+    #[test]
+    fn a_pyrowave_frame_with_no_whole_packet_counts_as_lost() {
+        let mut rx = VideoRx::new();
+        let now = t0();
+        // Only the two halves of a packet's start: nothing usable.
         feed(
             &mut rx,
             now,
-            &datagrams(0, Flags::KEYFRAME | Flags::INTRA, 0, 300, 0),
+            &[
+                intra_dg(1, 0, 3, Flags::CONTINUES, b"B1"),
+                intra_dg(1, 1, 3, Flags::CONTINUED | Flags::CONTINUES, b"B2"),
+            ],
         );
+        rx.tick(now + ms(60));
         let out = rx.take();
         assert!(out.frames.is_empty());
-        assert!(rx.intra_dropped() > 0);
+        assert_eq!((out.lost, out.partial), (1, 0));
+        assert!(out.asks.is_empty());
+    }
+
+    #[test]
+    fn a_pyrowave_frame_older_than_the_last_delivered_is_dropped() {
+        let mut rx = VideoRx::new();
+        let now = t0();
+        // Frame 5 starts, then frame 6 completes first.
+        let mut five = intra_frame(5);
+        let rest = five.split_off(2);
+        feed(&mut rx, now, &five);
+        feed(&mut rx, now + ms(5), &intra_frame(6));
+        assert_eq!(ids(&rx.take()), [6]);
+        // 5's remaining datagrams are too late; it is lost at its deadline.
+        feed(&mut rx, now + ms(10), &rest);
+        assert!(rx.take().frames.is_empty());
+        rx.tick(now + ms(60));
+        let out = rx.take();
+        assert!(out.frames.is_empty());
+        assert_eq!(out.lost, 1);
+        // A whole older frame arriving now is ignored too.
+        feed(&mut rx, now + ms(70), &intra_frame(4));
+        assert!(rx.take().frames.is_empty());
+        // Newer ones still go.
+        feed(&mut rx, now + ms(80), &intra_frame(8));
+        assert_eq!(ids(&rx.take()), [8]);
+    }
+
+    #[test]
+    fn pyrowave_loss_is_counted_for_the_report() {
+        let mut rx = VideoRx::new();
+        let now = t0();
+        let mut d = intra_frame(1);
+        d.remove(0);
+        feed(&mut rx, now, &d);
+        assert_eq!(rx.loss(now + ms(250)), Some(0.25));
     }
 }

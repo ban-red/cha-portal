@@ -31,6 +31,8 @@ enum Seen {
 enum Script {
     /// Hello, floor, the media with induced loss, and an answer to `rfi`.
     Media,
+    /// PyroWave: hello says `pyrowave420`, then intra frames with induced loss.
+    Pyro,
     /// Hello and floor, nothing else.
     Quiet,
     /// Hello and floor, then the streamer's encoder stops and it hangs up.
@@ -127,6 +129,11 @@ async fn serve(conn: Connection, script: Script, seen: mpsc::UnboundedSender<See
             let mut lines = LineBuf::default();
             let mut buf = vec![0u8; 4096];
             let mut hello_sent = false;
+            let codec = if script == Script::Pyro {
+                "pyrowave420"
+            } else {
+                "hevc"
+            };
             loop {
                 let Ok(Some(n)) = recv.read(&mut buf).await else {
                     break;
@@ -142,7 +149,7 @@ async fn serve(conn: Connection, script: Script, seen: mpsc::UnboundedSender<See
                         hello_sent = true;
                         out_tx
                             .send(
-                                json!({"t":"hello","stream":{"codec":"hevc","width":1280,"height":720,
+                                json!({"t":"hello","stream":{"codec":codec,"width":1280,"height":720,
                                     "input":true,"audio":true,"gamepads":true,"fps":60,
                                     "overlay":null,"transport":"webtransport","maxDatagram":MAX_DATAGRAM}})
                                 .to_string(),
@@ -232,6 +239,38 @@ async fn serve(conn: Connection, script: Script, seen: mpsc::UnboundedSender<See
         pause().await;
         frame(6, 0, 1800, 0, &[]);
         audio(106);
+    }
+    if script == Script::Pyro {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // A datagram of a PyroWave frame: `index` of `total`, a packet or a
+        // slice of one.
+        let dg = |id: u32, index: u16, total: u16, flags: u8, payload: &[u8]| {
+            let mut base = header(
+                Kind::Video,
+                Flags::KEYFRAME | Flags::INTRA | flags,
+                id,
+                ts(),
+            );
+            base.frag_index = index;
+            base.frag_count = total;
+            let mut head = [0u8; HEADER_LEN];
+            base.encode(&mut head);
+            let mut d = head.to_vec();
+            d.extend_from_slice(payload);
+            conn.send_datagram(d).unwrap();
+        };
+        // 0: whole, out of order.
+        dg(0, 2, 3, Flags::CONTINUED, b"b2");
+        dg(0, 0, 3, 0, b"aa");
+        dg(0, 1, 3, Flags::CONTINUES, b"b1");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // 1: the datagram after a split packet's first part never comes; the
+        // frame goes out after the deadline with the other packet only.
+        dg(1, 0, 3, 0, b"cc");
+        dg(1, 1, 3, Flags::CONTINUES, b"d1");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // 2: whole again, after the loss.
+        dg(2, 0, 1, 0, b"ee");
     }
     if script == Script::Close {
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -448,4 +487,57 @@ async fn the_pin_does_not_check_dates() {
         .await
         .expect("connect with an expired certificate");
     session.control.stop(false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pyrowave_frames_arrive_whole_or_partial_and_nothing_is_asked_for() {
+    let mut streamer = start_streamer(Script::Pyro, false);
+    let mut t = target(streamer.port, &streamer.hash);
+    t.codec = Codec::PyroWave420;
+    let mut session: Session = connect(&t, 1280, 720).await.expect("connect");
+    assert_eq!(session.codec, Codec::PyroWave420);
+
+    let mut frames = Vec::new();
+    while frames.len() < 3 {
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.video.recv())
+            .await
+            .expect("a frame in time")
+            .expect("the video channel is open");
+        frames.push(frame);
+    }
+    assert!(
+        frames
+            .iter()
+            .all(|f| f.codec == Codec::PyroWave420 && f.key)
+    );
+    assert_eq!(
+        frames.iter().map(|f| f.number).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    assert_eq!(frames[0].data.as_ref(), b"aab1b2");
+    assert!(!frames[0].partial);
+    assert_eq!(frames[1].data.as_ref(), b"cc");
+    assert!(frames[1].partial);
+    assert_eq!(frames[2].data.as_ref(), b"ee");
+    assert!(!frames[2].partial);
+
+    // Reports carry the loss; no keyframe or rfi is ever asked for.
+    let mut loss = 0.0_f64;
+    for _ in 0..8 {
+        let r = next_line(&mut streamer, "report").await;
+        loss = loss.max(r["l"].as_f64().unwrap_or(0.0));
+    }
+    assert!(loss > 0.0, "the induced loss never showed in `l`");
+    session.control.stop(false);
+    let mut asked = false;
+    while let Ok(Some(seen)) =
+        tokio::time::timeout(Duration::from_millis(300), streamer.seen.recv()).await
+    {
+        if let Seen::Line(v) = seen
+            && (v["t"] == "keyframe" || v["t"] == "rfi")
+        {
+            asked = true;
+        }
+    }
+    assert!(!asked, "PyroWave never asks for a keyframe or an rfi");
 }

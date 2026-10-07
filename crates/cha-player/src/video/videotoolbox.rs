@@ -167,6 +167,9 @@ impl VideoToolboxDecoder {
                 active: None,
             }),
             Codec::Av1 => bail!("AV1 decode is not implemented yet"),
+            Codec::PyroWave420 | Codec::PyroWave444 => {
+                bail!("PyroWave is not a VideoToolbox codec (see video::pyrowave)")
+            }
         }
     }
 

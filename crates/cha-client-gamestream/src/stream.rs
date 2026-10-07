@@ -28,11 +28,14 @@ const GOODBYE: Duration = Duration::from_secs(2);
 /// The host's Opus is 48 kHz.
 const SAMPLE_RATE: u32 = 48_000;
 
-fn wire_codec(codec: Codec) -> VideoCodec {
+/// A Moonlight host never offers PyroWave (that is our own codec, carried
+/// only by `cha-stream/1`), so those are `None` and left out of what is asked.
+fn wire_codec(codec: Codec) -> Option<VideoCodec> {
     match codec {
-        Codec::H264 => VideoCodec::H264,
-        Codec::Hevc => VideoCodec::Hevc,
-        Codec::Av1 => VideoCodec::Av1,
+        Codec::H264 => Some(VideoCodec::H264),
+        Codec::Hevc => Some(VideoCodec::Hevc),
+        Codec::Av1 => Some(VideoCodec::Av1),
+        Codec::PyroWave420 | Codec::PyroWave444 => None,
     }
 }
 
@@ -49,7 +52,7 @@ fn player_codec(codec: VideoCodec) -> Codec {
 pub fn offered(host: &[VideoCodec], wanted: &[Codec]) -> Result<Vec<VideoCodec>> {
     let offered: Vec<VideoCodec> = wanted
         .iter()
-        .map(|c| wire_codec(*c))
+        .filter_map(|c| wire_codec(*c))
         .filter(|c| host.contains(c))
         .collect();
     if offered.is_empty() {
@@ -246,6 +249,7 @@ async fn forward_video(
                 codec,
                 data: frame.data,
                 key: frame.key,
+                partial: false,
                 number: u64::from(frame.number),
                 received: frame.received,
             })
@@ -394,6 +398,16 @@ mod tests {
         assert!(offered(&both, &[Codec::Av1]).is_err());
         assert!(offered(&both, &[]).is_err());
         assert!(offered(&[], &[Codec::H264]).is_err());
+        // PyroWave is never asked of a Moonlight host.
+        assert_eq!(
+            offered(
+                &both,
+                &[Codec::PyroWave420, Codec::PyroWave444, Codec::Hevc]
+            )
+            .unwrap(),
+            [VideoCodec::Hevc]
+        );
+        assert!(offered(&both, &[Codec::PyroWave444]).is_err());
     }
 
     #[test]

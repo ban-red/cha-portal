@@ -46,7 +46,12 @@ impl Gpu {
         tracing::info!(adapter = %adapter.get_info().name, "GPU");
 
         // 16-bit normalised planes carry 10-bit video; most Apple GPUs have them.
-        let features = adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+        // Subgroups run the PyroWave decoder (without them PyroWave is refused,
+        // the other codecs are unaffected); timestamps time it.
+        let features = adapter.features()
+            & (wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::SUBGROUP
+                | wgpu::Features::TIMESTAMP_QUERY);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("cha-player"),
             required_features: features,

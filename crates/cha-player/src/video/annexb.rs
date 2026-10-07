@@ -114,7 +114,8 @@ fn classify(codec: Codec, nal: &[u8]) -> Kind {
             16..=21 => Kind::Slice { key: true },
             _ => Kind::Slice { key: false },
         },
-        Codec::Av1 => Kind::Skip,
+        // Not NAL units: PyroWave never goes through here.
+        Codec::Av1 | Codec::PyroWave420 | Codec::PyroWave444 => Kind::Skip,
     }
 }
 

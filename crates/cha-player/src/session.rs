@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cha_client::{Codec, Ended, Session, SessionControl};
+use cha_client::{Codec, Ended, Session, SessionControl, VideoFrame};
 use tokio::runtime::Handle;
 
 use crate::audio::AudioOut;
@@ -31,6 +31,8 @@ pub struct Stats {
     pub offscreen: AtomicU64,
     pub latency_us: AtomicU64,
     pub decode_errors: AtomicU64,
+    /// PyroWave frames decoded from only the packets that arrived.
+    pub partial: AtomicU64,
     pub audio_underruns: AtomicU64,
     pub audio_dropped_frames: AtomicU64,
 }
@@ -40,6 +42,9 @@ pub struct Shared {
     /// The newest decoded frame, if the window hasn't taken it yet: never more
     /// than one waits.
     pub latest: Mutex<Option<DecodedFrame>>,
+    /// PyroWave: the newest raw frame, if the window hasn't taken it yet. It
+    /// is decoded on the window's GPU device when drawn, not on a thread here.
+    pub latest_pyro: Mutex<Option<VideoFrame>>,
     pub stats: Stats,
     /// Recent video arrival times (ms since the session began), for the AWDL check.
     arrivals: Mutex<VecDeque<u64>>,
@@ -52,6 +57,7 @@ impl Shared {
     fn new(wake: Box<dyn Fn() + Send + Sync>) -> Self {
         Self {
             latest: Mutex::new(None),
+            latest_pyro: Mutex::new(None),
             stats: Stats::default(),
             arrivals: Mutex::new(VecDeque::new()),
             began: Instant::now(),
@@ -126,11 +132,20 @@ pub fn start(
     let control: Arc<dyn SessionControl> = Arc::from(control);
     let shared = Arc::new(Shared::new(Box::new(wake)));
 
-    let decoder = video::new_decoder(codec)?;
-    spawn("video", {
-        let (shared, control) = (shared.clone(), control.clone());
-        move || video_loop(video, decoder, &shared, &*control)
-    })?;
+    if codec.is_pyrowave() {
+        // Decoded by the window on its own device; frames stand alone, so
+        // nothing here ever asks for a keyframe.
+        spawn("video", {
+            let shared = shared.clone();
+            move || pyrowave_loop(video, &shared)
+        })?;
+    } else {
+        let decoder = video::new_decoder(codec)?;
+        spawn("video", {
+            let (shared, control) = (shared.clone(), control.clone());
+            move || video_loop(video, decoder, &shared, &*control)
+        })?;
+    }
     spawn("audio", {
         let shared = shared.clone();
         move || audio_loop(audio, &shared)
@@ -198,6 +213,19 @@ fn video_loop(
                 }
             }
         }
+    }
+}
+
+/// PyroWave: keep only the newest frame for the window to decode. A frame
+/// replaced before it was taken is dropped, as for the other codecs.
+fn pyrowave_loop(mut video: tokio::sync::mpsc::Receiver<VideoFrame>, shared: &Shared) {
+    while let Some(frame) = video.blocking_recv() {
+        shared.note_arrival(frame.received);
+        let replaced = shared.latest_pyro.lock().unwrap().replace(frame);
+        if replaced.is_some() {
+            shared.stats.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        shared.frame_ready();
     }
 }
 
@@ -296,6 +324,7 @@ impl Rates {
         }
         self.shown.dropped = stats.dropped.load(Ordering::Relaxed);
         self.shown.decode_errors = stats.decode_errors.load(Ordering::Relaxed);
+        self.shown.partial = stats.partial.load(Ordering::Relaxed);
         self.shown.audio_underruns = stats.audio_underruns.load(Ordering::Relaxed);
         self.shown.audio_dropped_ms =
             stats.audio_dropped_frames.load(Ordering::Relaxed) * 1000 / 48_000;
@@ -315,12 +344,13 @@ pub fn summary(stats: &Stats) -> String {
         }
     };
     format!(
-        "decoded={decoded} presented={presented} (offscreen {}) dropped={} decode_errors={} \
+        "decoded={decoded} presented={presented} (offscreen {}) dropped={} decode_errors={} partial={} \
          decode_ms_avg={:.2} received_to_presented_ms_avg={:.2} \
          audio_underruns={} audio_dropped_frames={}",
         stats.offscreen.load(Ordering::Relaxed),
         stats.dropped.load(Ordering::Relaxed),
         stats.decode_errors.load(Ordering::Relaxed),
+        stats.partial.load(Ordering::Relaxed),
         avg(&stats.decode_us, decoded),
         avg(&stats.latency_us, presented),
         stats.audio_underruns.load(Ordering::Relaxed),

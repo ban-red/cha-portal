@@ -232,6 +232,7 @@ fn run_video(
             codec: Codec::H264,
             data: Bytes::from(encoded.annexb),
             key: encoded.key,
+            partial: false,
             number,
             received: Instant::now(),
         };

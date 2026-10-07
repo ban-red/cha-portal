@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 const SURFACE_RETRY: Duration = Duration::from_millis(50);
 
 use anyhow::{Context, Result};
-use cha_client::{Ended, Session, Transport};
+use cha_client::{Ended, Session, Transport, VideoFrame};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{
@@ -33,6 +33,7 @@ use crate::render::video::{VideoPipeline, aspect_fit};
 use crate::render::{Gpu, Skip};
 use crate::session::{self, Rates, Running};
 use crate::ui::{self, Action, Launcher};
+use crate::video::pyrowave::PyroPresenter;
 
 /// Command-line behaviour that isn't in the config.
 pub struct Options {
@@ -99,6 +100,12 @@ struct Graphics {
     /// Stand-in target for `--frames` runs whose window can't present
     /// (hidden, or no display): the same draw, nowhere to show it.
     offscreen: Option<wgpu::Texture>,
+    /// PyroWave decode and draw, made with the first PyroWave stream (the
+    /// pipelines compile once) and kept for later ones.
+    pyro: Option<PyroPresenter>,
+    /// The newest PyroWave frame, taken from the session but not yet decoded
+    /// (no drawable yet): a newer one replaces it.
+    pyro_pending: Option<VideoFrame>,
 }
 
 struct Stream {
@@ -430,6 +437,9 @@ impl App {
     // ---- streaming --------------------------------------------------------
 
     fn start_stream(&mut self, session: Session) {
+        if session.codec.is_pyrowave() && !self.prepare_pyrowave() {
+            return;
+        }
         self.generation += 1;
         let generation = self.generation;
         let (wake, ended) = (self.proxy.clone(), self.proxy.clone());
@@ -471,6 +481,31 @@ impl App {
         }
     }
 
+    /// Makes the PyroWave presenter on the window's device, or tells the user
+    /// why this GPU can't. False: don't start the stream.
+    fn prepare_pyrowave(&mut self) -> bool {
+        let result = match self.gfx.as_mut() {
+            None => Err(anyhow::anyhow!("no window to draw in yet")),
+            Some(gfx) => {
+                gfx.pyro_pending = None;
+                if let Some(pyro) = &mut gfx.pyro {
+                    pyro.reset();
+                    Ok(())
+                } else {
+                    PyroPresenter::new(&gfx.gpu.device, &gfx.gpu.queue, gfx.gpu.format).map(|p| {
+                        gfx.pyro = Some(p);
+                    })
+                }
+            }
+        };
+        if let Err(e) = &result {
+            self.launcher.set_busy(None);
+            self.launcher
+                .show_error(format!("Could not start the stream: {e:#}"));
+        }
+        result.is_ok()
+    }
+
     /// Back to the launcher. `quit_app` also quits the app on the host.
     fn leave(&mut self, quit_app: bool) {
         let Some(stream) = self.stream.take() else {
@@ -482,6 +517,7 @@ impl App {
         self.pads.detach();
         if let Some(gfx) = &mut self.gfx {
             gfx.history.clear();
+            gfx.pyro_pending = None;
         }
         if let Some(w) = self.window() {
             w.set_title("Cha Player");
@@ -539,12 +575,12 @@ impl App {
     /// Where the picture sits in the window now.
     fn picture(&self) -> Option<crate::render::video::Viewport> {
         let (gfx, stream) = (self.gfx.as_ref()?, self.stream.as_ref()?);
-        let (w, h) = gfx
-            .history
-            .back()
-            .map_or((stream.running.width, stream.running.height), |f| {
-                (f.width, f.height)
-            });
+        let shown = if stream.running.codec.is_pyrowave() {
+            gfx.pyro.as_ref().and_then(|p| p.picture_size())
+        } else {
+            gfx.history.back().map(|f| (f.width, f.height))
+        };
+        let (w, h) = shown.unwrap_or((stream.running.width, stream.running.height));
         Some(aspect_fit((w, h), gfx.gpu.size()))
     }
 
@@ -742,6 +778,16 @@ impl App {
         // video thread.
         let fresh = shared.latest.lock().unwrap().take();
         let mut received = None;
+        // PyroWave: decoded below, in the same encoder as the draw. A frame
+        // still pending from a redraw that had no drawable is replaced.
+        if let Some(raw) = shared.latest_pyro.lock().unwrap().take()
+            && gfx.pyro_pending.replace(raw).is_some()
+        {
+            shared
+                .stats
+                .dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if let Some(frame) = fresh {
             match gfx.importer.import(&frame) {
                 Ok(imported) => {
@@ -804,6 +850,30 @@ impl App {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("stream"),
             });
+        if let (Some(pyro), Some(raw)) = (gfx.pyro.as_mut(), gfx.pyro_pending.take()) {
+            let stats = &shared.stats;
+            match pyro.encode(&mut encoder, &raw) {
+                Ok(done) => {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    stats.decoded.fetch_add(1, Relaxed);
+                    stats
+                        .decode_us
+                        .fetch_add(u64::from(done.decode_us), Relaxed);
+                    if done.partial {
+                        stats.partial.fetch_add(1, Relaxed);
+                    }
+                    received = Some(raw.received);
+                }
+                Err(e) => {
+                    // Frames stand alone: count it, wait for the next, and
+                    // never ask for a keyframe.
+                    stats
+                        .decode_errors
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::debug!("pyrowave: {e:#}");
+                }
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("video"),
@@ -821,7 +891,11 @@ impl App {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if let Some(frame) = gfx.history.back() {
+            if stream.running.codec.is_pyrowave() {
+                if let Some(pyro) = &gfx.pyro {
+                    pyro.draw(&mut pass, gfx.gpu.size());
+                }
+            } else if let Some(frame) = gfx.history.back() {
                 let prepared = gfx.video.prepare(&gfx.gpu.device, frame, gfx.gpu.size());
                 gfx.video.draw(&mut pass, &prepared);
             }
@@ -834,6 +908,9 @@ impl App {
             gfx.egui.paint(&gfx.gpu, &mut encoder, &view, &frame, None);
         }
         gfx.gpu.queue.submit([encoder.finish()]);
+        if let Some(pyro) = &mut gfx.pyro {
+            pyro.after_submit();
+        }
         match surface {
             Some(surface) => {
                 window.pre_present_notify();
@@ -885,6 +962,8 @@ impl ApplicationHandler<UserEvent> for App {
                     importer,
                     history: VecDeque::new(),
                     offscreen: None,
+                    pyro: None,
+                    pyro_pending: None,
                     gpu,
                 })
             });

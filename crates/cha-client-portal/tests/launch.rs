@@ -401,3 +401,32 @@ async fn codecs_are_the_players_choices_the_environment_encodes() {
     assert!(format!("{e}").contains("h264") && format!("{e}").contains("av1"));
     assert!(pick_codecs(&wanted, Some(&names(&["pyrowave420"]))).is_err());
 }
+
+#[tokio::test]
+async fn pyrowave_is_chosen_like_the_other_codecs() {
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let wanted = [
+        Codec::PyroWave420,
+        Codec::PyroWave444,
+        Codec::Hevc,
+        Codec::H264,
+    ];
+    // An NVIDIA node offers all of them: the player's order stands.
+    let nvidia = names(&["h264", "hevc", "av1", "pyrowave420", "pyrowave444"]);
+    assert_eq!(pick_codecs(&wanted, Some(&nvidia)).unwrap(), wanted);
+    // Only what the environment encodes is kept.
+    assert_eq!(
+        pick_codecs(&wanted, Some(&names(&["h264", "pyrowave444"]))).unwrap(),
+        [Codec::PyroWave444, Codec::H264]
+    );
+    // A node without PyroWave falls back to the hardware codecs.
+    assert_eq!(
+        pick_codecs(&wanted, Some(&names(&["h264", "hevc"]))).unwrap(),
+        [Codec::Hevc, Codec::H264]
+    );
+    // Not saying what it encodes: all are tried, the portal refuses some.
+    assert_eq!(pick_codecs(&wanted, None).unwrap(), wanted);
+    // PyroWave alone, and not offered: an error naming both sides.
+    let e = pick_codecs(&[Codec::PyroWave420], Some(&names(&["hevc"]))).unwrap_err();
+    assert!(format!("{e}").contains("hevc") && format!("{e}").contains("pyrowave420"));
+}

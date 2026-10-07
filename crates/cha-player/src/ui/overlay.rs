@@ -14,6 +14,8 @@ pub struct StatsSnapshot {
     pub latency_ms: f32,
     pub dropped: u64,
     pub decode_errors: u64,
+    /// PyroWave frames decoded from only some of their packets.
+    pub partial: u64,
     pub audio_underruns: u64,
     pub audio_dropped_ms: u64,
     /// Periodic arrival gaps typical of AWDL were seen over the last seconds.
@@ -53,8 +55,8 @@ pub fn show_stats(ctx: &egui::Context, stats: &StatsSnapshot) {
                     line(
                         ui,
                         format!(
-                            "dropped {}  decode errors {}",
-                            stats.dropped, stats.decode_errors
+                            "dropped {}  decode errors {}  partial {}",
+                            stats.dropped, stats.decode_errors, stats.partial
                         ),
                     );
                     line(

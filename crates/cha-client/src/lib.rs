@@ -28,6 +28,20 @@ pub enum Codec {
     H264,
     Hevc,
     Av1,
+    /// PyroWave, 4:2:0: an intra wavelet codec for a fast LAN (`cha-stream/1`
+    /// over WebTransport only). Every frame stands alone; no keyframes.
+    #[serde(rename = "pyrowave420")]
+    PyroWave420,
+    /// PyroWave, 4:4:4 (sharper text and desktops, more bandwidth).
+    #[serde(rename = "pyrowave444")]
+    PyroWave444,
+}
+
+impl Codec {
+    /// PyroWave (either chroma format): intra-only, decoded on the GPU.
+    pub fn is_pyrowave(self) -> bool {
+        matches!(self, Codec::PyroWave420 | Codec::PyroWave444)
+    }
 }
 
 /// Something that can be played: a Moonlight host, or later a portal.
@@ -63,12 +77,18 @@ pub struct StreamConfig {
     pub audio_channels: u8,
 }
 
-/// One encoded picture: Annex-B for H.264/HEVC, OBUs for AV1.
+/// One encoded picture: Annex-B for H.264/HEVC, OBUs for AV1, concatenated
+/// wavelet packets (starting with the 8-byte sequence header) for PyroWave.
 #[derive(Clone, Debug)]
 pub struct VideoFrame {
     pub codec: Codec,
     pub data: Bytes,
+    /// Always true for PyroWave (every frame stands alone).
     pub key: bool,
+    /// PyroWave only: some of the frame's datagrams never came, so `data`
+    /// holds only the packets that arrived whole and the decoder fills in the
+    /// rest (softer where blocks are missing). Always false otherwise.
+    pub partial: bool,
     /// The transport's frame counter, increasing.
     pub number: u64,
     pub received: Instant,
