@@ -70,6 +70,15 @@ export class PyroPresenter {
     if (!this.colorSet) {
       this.renderer.setSource(decoder.planes, decoder.parser.color);
       this.colorSet = true;
+      const c = decoder.parser.color;
+      // What the stream says its colours are, to check against what the picture looks like.
+      console.info(
+        `[pyrowave] ${width}x${height} ${chroma}: ` +
+          (c
+            ? `${c.primaries ? "BT.2020" : "BT.709"} primaries, ${c.transfer ? "PQ" : "BT.709"} transfer, ` +
+              `${c.ycbcrTransform ? "BT.2020" : "BT.709"} matrix, ${c.fullRange ? "full" : "limited"} range`
+            : "no colour info in the stream (decoded as BT.709 limited)"),
+      );
     }
     const device = this.pw.device;
     const cmd = device.createCommandEncoder();
