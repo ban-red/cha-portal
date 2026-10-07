@@ -17,7 +17,9 @@ The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC,
 - **Portal:** local accounts, an audit log, nodes claimed in the portal with a pairing code when it finds them on the LAN (or enrolled with a one-time join token elsewhere), live CPU/RAM/GPU usage per node, placement across NVIDIA, Intel/AMD (VA-API) and CPU-only devices, per-user app data kept between launches, and a shared Steam library (optionally on a NAS).
 - **Remote access:** Tailscale or WireGuard, a port-forward, or your own TURN server. Nothing goes through a cha.sh service.
 
-Not yet: an external Moonlight host as a source, sharing a session with another user, a native client. See the [roadmap](docs/PLAN.md#9-roadmap).
+- **Moonlight hosts:** a gaming PC running Sunshine or Apollo on the LAN is found by a node, adopted from the portal with a PIN, and its apps played in the browser through `cha-gateway` (new in Phase 3; not yet run against a real host).
+
+Not yet: sharing a session with another user, a native client. See the [roadmap](docs/PLAN.md#9-roadmap).
 
 ## How it works
 
@@ -95,6 +97,7 @@ To point a real node at a dev portal on your LAN, start the portal with `CHA_LIS
 | [`crates/cha-wire`](crates/cha-wire) | Node ⇄ portal messages and the node's Ed25519 identity |
 | [`crates/cha-proto`](crates/cha-proto) | `cha-stream/1`: Sans-IO framing, fragmentation and reassembly |
 | [`crates/cha-nvenc`](crates/cha-nvenc), [`cha-pyrowave`](crates/cha-pyrowave) | Our bindings to NVENC/CUDA and libpyrowave, loaded at runtime |
+| [`crates/cha-gateway`](crates/cha-gateway) | Streams an adopted Moonlight host (Sunshine, Apollo) to the browser: GameStream in, WebRTC out, video and sound passed through |
 | [`crates/cha-sysinfo`](crates/cha-sysinfo) | CPU, RAM and NVIDIA GPU use, from `/proc` and NVML |
 | [`crates/cha-testpattern`](crates/cha-testpattern), [`cha-x11-clipboard`](crates/cha-x11-clipboard) | The test-pattern environment; the X11 clipboard bridge for XFCE and Steam |
 | [`web/apps/portal`](web/apps/portal) | The portal web app: Vue 3, TypeScript, Tailwind 4 |

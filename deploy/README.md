@@ -70,9 +70,18 @@ An agent with no identity and no join token is **unclaimed** ([ADR 0007](../docs
 
 mDNS stays on one LAN: it doesn't cross subnets or a tailnet, where the join token is the way. The portal needs to see multicast, so its compose files run it on the host network. `CHA_DISCOVERY=false` on a node, or `CHA_DISCOVER_NODES=false` on the portal, turns this off.
 
+## Moonlight hosts
+
+A gaming PC running Sunshine or Apollo on a node's LAN can be played in the browser ([ADR 0008](../docs/adr/0008-moonlight-hosts-adopted-by-a-node.md)):
+
+- **Finding.** Each node looks for Moonlight hosts (`_nvstream._tcp` over mDNS, `CHA_MOONLIGHT=false` to stop) and reports them to the portal, which lists them under **Admin → Nodes → Moonlight hosts**.
+- **Adopting.** **Adopt** pairs the node with the host if it isn't paired yet: the portal shows a 4-digit PIN to type on the host's PIN page (Sunshine and Apollo: `https://<host>:47990/pin`). Once paired, the host is adopted and its apps listed. The node is the Moonlight client: its identity and each paired host's certificate are kept in `<CHA_DATA_ROOT>/node/moonlight/` (root only, keys 0600). Removing a host in the portal doesn't unpair it; the host's own client list does.
+- **Playing.** Every user sees each adopted host as its own section of the dashboard, with the host's apps. Launching one runs `cha-gateway` on the node that paired the host (`CHA_GATEWAY_IMAGE`, `cha/gateway:dev`; build it with `docker build -f deploy/gateway/Dockerfile -t cha/gateway:dev .`, or use the published `cha-gateway`). The gateway starts the app on the host and passes its H.264 or HEVC video and stereo sound to the browser, and the browser's keyboard, mouse and gamepads back. A host plays one session at a time.
+- **Limits.** No AV1; no video encryption between node and host (keep them on one LAN; the browser's leg is encrypted by WebRTC); loss recovery by keyframes; hosts on another subnet aren't found yet.
+
 ## Published images
 
-A release (a `v*` tag) publishes every image to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, and the environments, `cha-env-test-pattern`, `-chrome`, `-firefox`, `-xfce`, `-kde` and `-steam` (with their base, `cha-env-base`). Each is tagged with the version (`0.1.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all of them, since they change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.1.0 --owner ban-red`). The Chrome and Steam images contain Google Chrome and Valve's Steam bootstrap, under their owners' terms.
+A release (a `v*` tag) publishes every image to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, the Moonlight gateway, `cha-gateway`, and the environments, `cha-env-test-pattern`, `-chrome`, `-firefox`, `-xfce`, `-kde` and `-steam` (with their base, `cha-env-base`). Each is tagged with the version (`0.1.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all of them, since they change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.1.0 --owner ban-red`). The Chrome and Steam images contain Google Chrome and Valve's Steam bootstrap, under their owners' terms.
 
 For a portal and a node on one machine, [`quickstart/compose.yaml`](quickstart/compose.yaml) runs both from these images ([SETUP.md](../SETUP.md#quick-start)). With the separate stacks, set the image variables and pull instead of building:
 
@@ -127,6 +136,8 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image: the local build, or a published one, which the agent pulls when it starts |
 | `CHA_IMAGE_REGISTRY` | | Run the environments from published images, e.g. `ghcr.io/ban-red` ([Published images](#published-images)); empty runs the ones built on the node. Must name a registry's host |
 | `CHA_IMAGE_TAG` | | The release of those images, e.g. `0.1.0`; needed with `CHA_IMAGE_REGISTRY` |
+| `CHA_MOONLIGHT` | `true` | Look for Moonlight hosts (Sunshine, Apollo) on the LAN ([Moonlight hosts](#moonlight-hosts)) |
+| `CHA_GATEWAY_IMAGE` | `cha/gateway:dev` | The image that streams an adopted Moonlight host; mapped through `CHA_IMAGE_REGISTRY` like the environments |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
 | `CHA_UHID` | `/dev/uhid` | For virtual DualSense and Steam Controllers; empty goes without (no `uhid` module), and those fall back to an Xbox 360 pad |
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |

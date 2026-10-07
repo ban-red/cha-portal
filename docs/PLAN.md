@@ -632,7 +632,9 @@ Seven milestones, each shippable and verified on its own:
 - **Auth for P1.1: local accounts with Argon2id passwords. Passkeys (webauthn-rs) are next**, with the same session model.
 - **Our own engine, without Wolf** (ADR 0004, superseding 0003). Each environment's streamer is its own container that the agent supervises over a local socket, so restarting the agent doesn't drop sessions (§5.1).
 
-### Phase 2: Steam, KDE, PyroWave and WebTransport (XL)
+### Phase 2: Steam, KDE, PyroWave and WebTransport (XL) *(closed 2026-10-07)*
+
+*Closed by the owner's decision on 2026-10-07. Every milestone (P2.1–P2.6) is built, and three exit criteria were met with measurements (Steam playable in Chrome, KDE, adaptive AV1 on a bad WAN). The six measured runs in [`plans/phase2-exit.md`](plans/phase2-exit.md) (Firefox and Safari clients, 120 fps, WAN with Steam, the Steam Controller in real Steam) weren't run before closing; they stay open as checks, and their results go into `benchmarks/phase2-exit.md` when they are.*
 
 Delivers **features 4, 6 and 7**, and KDE for feature 3.
 
@@ -701,7 +703,7 @@ Delivers **features 5 and 8**.
 - WAN hardening: netem suite across the fallback chain (direct → TURN-UDP → TURN-TLS 443 → WebSocket), RTT-based placement, Chrome LNA UX, an optional ACME mode for WebTransport. The deployment side (an always-on portal over HTTPS, nodes on TLS channels, tailnet access, sign-in hardening, TURN-TLS, backups and upgrades) is planned in [docs/plans/production-deployment.md](plans/production-deployment.md).
 - Sharing: share links (viewer / controller / player-N), control hand-off, multi-viewer encoders.
 - **External GameStream hosts:**
-  - pair Sunshine, Apollo, Vibepollo or Polaris from the portal (OTP/PIN), with the gateway on a node in the same LAN;
+  - pair Sunshine, Apollo, Vibepollo or Polaris from the portal (OTP/PIN), with the gateway on a node in the same LAN. *Built 2026-10-07* ([ADR 0008](adr/0008-moonlight-hosts-adopted-by-a-node.md)): nodes find hosts over mDNS, the admin adopts one with Moonlight's PIN, each host is a dashboard section of its apps, and `cha-gateway` passes H.264/HEVC and stereo Opus to WebRTC with keyboard, mouse and gamepad input. Open: a run against a real Sunshine/Apollo host, AV1 and video encryption (upstream `moonlight-common-rust`), Apollo's OTP pairing, hosts added by address;
   - **Vibepollo PyroWave contract → browser WebGPU decode**;
   - expose Vibepollo's session controls where its API allows.
 - AMD and Intel nodes: our own encode path (VA-API or Vulkan Video; a spike picks one) and the compositor on their render nodes.

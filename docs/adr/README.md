@@ -11,3 +11,4 @@ One file per decision, numbered, never rewritten: a later ADR supersedes an earl
 | [0005](0005-theme-token-contract.md) | Theme token contract: roles, runtime variables and a contrast test | Accepted |
 | [0006](0006-claim-on-first-visit.md) | First admin by claiming a fresh portal; 3-character minimums | Accepted; supersedes parts of 0002 |
 | [0007](0007-claim-nodes-found-on-the-lan.md) | Claim nodes found on the LAN with a pairing code (mDNS + SPAKE2) | Accepted |
+| [0008](0008-moonlight-hosts-adopted-by-a-node.md) | Moonlight hosts found and adopted by a node, streamed through cha-gateway | Accepted |

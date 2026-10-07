@@ -1,5 +1,7 @@
 # Phase 2 exit pass
 
+*Phase 2 was closed by the owner on 2026-10-07 without these runs; they remain open checks (docs/PLAN.md).*
+
 What closes Phase 2 (docs/PLAN.md §9, *Phase 2*), what is already met, and the
 runs left for the owner on the baseline (MacBook Pro M4, wired 1 GbE). Every
 run uses the session's **Record 30 s** (stats panel), and its Markdown summary
