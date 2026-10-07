@@ -5,6 +5,7 @@ import { computed, nextTick, ref } from "vue";
 
 import { ApiError, api, type NodeInfo } from "../api";
 import FormError from "../components/FormError.vue";
+import MoonlightHostsCard from "../components/MoonlightHostsCard.vue";
 import NodeUsage from "../components/NodeUsage.vue";
 import { normalizePairingCode } from "../pairingCode";
 import { ago, clockTime, dateTime, megabytes } from "../format";
@@ -296,6 +297,8 @@ function status(node: NodeInfo): { text: string; dot: string } {
         </li>
       </ul>
     </section>
+
+    <MoonlightHostsCard />
 
     <FormError :message="actionError" />
 

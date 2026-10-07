@@ -7,9 +7,11 @@ import { ApiError, api, type Environment, type EnvironmentState, type PlacementC
 import AppCard from "../components/AppCard.vue";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import FormError from "../components/FormError.vue";
+import MoonlightHostSection from "../components/MoonlightHostSection.vue";
 import SegmentedControl from "../components/SegmentedControl.vue";
 import WarningNote from "../components/WarningNote.vue";
 import { ago, dateTime } from "../format";
+import { MOONLIGHT_HOSTS_KEY, hostMatches, isMissing, liveByTemplate, visibleApps } from "../moonlight";
 import { useSession } from "../stores/session";
 import { useAppFps } from "../appFps";
 import { useControllerApps } from "../controllerKinds";
@@ -170,6 +172,31 @@ const shown = computed(() => {
   });
 });
 
+// ---- Moonlight hosts: each adopted host is a section of its own ----------------------------
+
+// A server without Moonlight answers 404: no sections, no noise. Guests can't
+// launch, and the server refuses them the list (403), so they don't ask.
+const moonlight = useQuery({
+  queryKey: MOONLIGHT_HOSTS_KEY,
+  queryFn: api.moonlightHosts,
+  enabled: computed(() => session.user?.role !== "guest"),
+  refetchInterval: 10_000,
+  refetchIntervalInBackground: false,
+  retry: (count, err) => !isMissing(err) && count < 2,
+});
+const liveByTpl = computed(() => liveByTemplate(environments.data.value ?? []));
+const moonlightHosts = computed(() => {
+  // Pins and desktops aren't about these apps.
+  if (filter.value === "pinned" || filter.value === "desktops") return [];
+  const q = query.value.trim();
+  return (moonlight.data.value?.hosts ?? [])
+    .map((host) => ({ host, all: hostMatches(host, q, fold) && !!q }))
+    .filter(
+      ({ host, all }) =>
+        !q || all || visibleApps(host, q, fold, "name", new Map()).length > 0,
+    );
+});
+
 const error = ref<string | null>(null);
 const message = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
 
@@ -183,6 +210,19 @@ const launch = useMutation({
     void queryClient.invalidateQueries({ queryKey: PLACEMENTS_KEY });
   },
   onError: (err) => (error.value = message(err, "Couldn't launch it.")),
+});
+
+const launchingMoonlight = useMutation({
+  mutationFn: (templateId: string) => api.launch(templateId),
+  onMutate: () => (error.value = null),
+  onSuccess: () => {
+    void queryClient.invalidateQueries({ queryKey: ["environments"] });
+    void queryClient.invalidateQueries({ queryKey: MOONLIGHT_HOSTS_KEY });
+  },
+  onError: (err) => {
+    error.value = message(err, "Couldn't launch it.");
+    void queryClient.invalidateQueries({ queryKey: MOONLIGHT_HOSTS_KEY });
+  },
 });
 
 const stop = useMutation({
@@ -366,6 +406,22 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
         </div>
       </template>
     </section>
+
+    <MoonlightHostSection
+      v-for="{ host, all } in moonlightHosts"
+      :key="host.id"
+      :host="host"
+      :view="view"
+      :query="query"
+      :sort="sort"
+      :last-used="lastUsed"
+      :live="liveByTpl"
+      :fold="fold"
+      :all="all"
+      :guest="session.user?.role === 'guest'"
+      :launching="launchingMoonlight.isPending.value ? (launchingMoonlight.variables.value ?? null) : null"
+      @launch="(id) => launchingMoonlight.mutate(id)"
+    />
 
     <FormError :message="error" />
 

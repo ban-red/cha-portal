@@ -265,6 +265,50 @@ export interface ClaimNodeResult {
   name: string;
 }
 
+/** A Moonlight host (Sunshine/Apollo) a node sees on its LAN, not adopted yet. */
+export interface FoundMoonlightHost {
+  key: string;
+  nodeId: string;
+  nodeName: string;
+  name: string;
+  address: string;
+  uniqueId: string;
+  /** The node is already paired with it. */
+  paired: boolean;
+}
+
+export interface MoonlightApp {
+  /** The template id to launch: `moonlight:<host>:<app>`. */
+  templateId: string;
+  appId: number;
+  name: string;
+  hdr: boolean;
+}
+
+export interface AdoptedHost {
+  id: string;
+  name: string;
+  nodeId: string;
+  nodeName: string;
+  online: boolean;
+  codecs: string[];
+  apps: MoonlightApp[];
+  /** When the app list was fetched (unix seconds). */
+  appsAt: number | null;
+  /** Someone is streaming from it (a host serves one session at a time). */
+  busy: { environmentId: string; owner: string } | null;
+}
+
+export type AdoptResult =
+  | { status: "adopted"; host: AdoptedHost }
+  | { status: "pairing"; pin: string; pinUrl: string; hostName: string };
+
+export interface PairingState {
+  status: "pairing" | "adopted" | "failed";
+  message?: string;
+  host?: AdoptedHost;
+}
+
 /** An error the API returned: HTTP status, stable code, readable message. */
 export class ApiError extends Error {
   constructor(
@@ -319,6 +363,13 @@ export const api = {
     request<{ token: string; expiresAt: number }>("POST", "/nodes/join-tokens", body),
   removeNode: (id: string) => request<{ removed: string }>("DELETE", `/nodes/${encodeURIComponent(id)}`),
   pingNode: (id: string) => request<{ rttMs: number; nodeUnixMs: number }>("POST", `/nodes/${encodeURIComponent(id)}/ping`, {}),
+  foundMoonlightHosts: () => request<{ hosts: FoundMoonlightHost[] }>("GET", "/moonlight/found"),
+  adoptMoonlightHost: (key: string) => request<AdoptResult>("POST", "/moonlight/adopt", { key }),
+  moonlightPairing: (key: string) => request<PairingState>("GET", `/moonlight/pairing/${encodeURIComponent(key)}`),
+  moonlightHosts: () => request<{ hosts: AdoptedHost[] }>("GET", "/moonlight/hosts"),
+  refreshMoonlightHost: (id: string) =>
+    request<AdoptedHost>("POST", `/moonlight/hosts/${encodeURIComponent(id)}/refresh`, {}),
+  removeMoonlightHost: (id: string) => request<null>("DELETE", `/moonlight/hosts/${encodeURIComponent(id)}`),
   catalog: () => request<Template[]>("GET", "/catalog"),
   environments: () => request<Environment[]>("GET", "/environments"),
   /** Without a choice, the server picks the best place (what `placements` calls `auto`). */
