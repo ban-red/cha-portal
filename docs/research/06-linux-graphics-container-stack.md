@@ -1,5 +1,7 @@
 # 06: Node-side Linux graphics, capture, input, audio and GPU-in-container stack
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 Research slice 06 for **Cha Portal**. Written 2026-10-03.
 
 Sources are linked inline. Wherever a claim comes from reading source code, the repo and commit are given. Shallow clones live in the session scratchpad under `repos/06/`. Anything I could not verify is marked **(unverified)**.

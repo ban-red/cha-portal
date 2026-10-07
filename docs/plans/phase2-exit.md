@@ -24,7 +24,7 @@ decoded size.
 - The node's GPU has room: ComfyUI holds ~16 GB of the 4090's 24 GB. Cyberpunk
   wants ~8–10 GB more. Stop ComfyUI's job (or the container) for runs 1–5.
 - The node agent and streamer image are on the build with this pass's fixes
-  (a recreate, with the owner's OK).
+  (a recreate).
 
 ## Runs
 

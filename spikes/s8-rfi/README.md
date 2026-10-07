@@ -16,7 +16,7 @@ Each frame predicts from one reference, but the encoder keeps a DPB of recent fr
 | Streamer | The S7 bench's (`spikes/s7-wan/compose.yaml`): test pattern with 20 % noise at the bench page's size (1792×1008: the picture follows the page's element), 60 fps, ~40 Mbit/s target, on the RTX 4090. NVENC reports RFI support (`NV_ENC_CAPS_SUPPORT_REF_PIC_INVALIDATION`) for all three codecs. |
 | Dump | `CHA_DUMP_RFI=<dir>,<at>,<lost>` (here `/tmp/rfi,120,3`, set through `DUMP_RFI` in the compose file) writes each codec's first frames to `<dir>/<codec>/NNNNN.bin`, plus `index.jsonl` (`{index, key, recovery, lost}` per frame). It acts as if frames 120–122 were lost: before encoding frame 123 it invalidates 120–122, so 123 is a recovery frame. |
 | Encoders | A codec's encoder is made by the first page session on it, so the bench page switches codec live, one session per codec. |
-| Page | `index.html`, served as `python3 -m http.server 5192 --directory spikes/s8-rfi` (the `.claude/launch.json` config `s8-rfi`), reads the dumps from `results/` (gitignored). For each codec it decodes with WebCodecs twice, all frames and without 120–122, with `prefer-hardware` and again with `prefer-software`. |
+| Page | `index.html`, served as `python3 -m http.server 5192 --directory spikes/s8-rfi`, reads the dumps from `results/` (gitignored). For each codec it decodes with WebCodecs twice, all frames and without 120–122, with `prefer-hardware` and again with `prefer-software`. |
 | Metric | The luma plane of frames 123–138 from the two decodes: PSNR, where "identical" is bit-exact. |
 | Control | The same, skipping three frames nothing was invalidated for (116–118), and comparing frame 119. It shows the page can tell a broken reference from a sound one. |
 

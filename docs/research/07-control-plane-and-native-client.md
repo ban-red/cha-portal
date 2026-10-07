@@ -1,5 +1,7 @@
 # 07 — Control plane, node agent, networking, persistence, and thin native client
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 Research date: 2026-10-03. Researcher slice 07 of 8.
 Scope: how existing systems split control plane and nodes; how nodes enroll and connect; how browsers and clients reach media endpoints (certs, NAT, relays, signaling); persistence; image catalogs; authN/Z; control-plane stack; thin native client options.
 

@@ -1,5 +1,7 @@
 # 02 — PyroWave and the low-latency codec landscape
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 Research slice for **Cha Portal** (portal.cha.sh). Snapshot as of **2026-10-03**. Sources are linked inline. Anything I could not confirm from a primary source is tagged **(unverified)**. Source code was read from shallow clones (nothing was built or run):
 
 - `Themaister/pyrowave` @ `89f7e47` (2026-09-25)

@@ -1,5 +1,7 @@
 # 03 — Moonlight / Sunshine / Apollo / Vibepollo ecosystem & the GameStream protocol
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 Research slice for **Cha Portal** (portal.cha.sh). Researched 2026-10-03. Repo metadata comes from the GitHub REST API and from shallow clones read on that date. Anything I could not check against a primary source is tagged **(unverified)**.
 
 User decisions to factor in (from the coordinator): Cha Portal will be **copyleft OSS (AGPL/GPL)**, so linking or forking GPL-3 code is acceptable. The first target is **homelab / small groups**. **LAN and WAN are equally first-class.**

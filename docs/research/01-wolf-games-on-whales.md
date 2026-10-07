@@ -1,5 +1,7 @@
 # 01: Games on Whales / Wolf and Steam-in-Docker
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 Research slice 01 for **Cha Portal** (portal.cha.sh). Snapshot date: **2026-10-03**.
 Method: shallow clones of the repos (source read, nothing built or run), GitHub pages, author blogs and docs.
 Anything not confirmed from a primary source is tagged **(unverified)**.

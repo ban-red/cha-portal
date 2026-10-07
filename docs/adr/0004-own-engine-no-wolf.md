@@ -5,7 +5,7 @@
   - The plan bootstrapped Phase 1 on Wolf: Wolf hosts the environments, and `cha-gateway` bridges its Moonlight stream to the browser. Our own engine, `cha-streamer`, was to replace it in Phase 2.
   - Phase 0 then built a minimal `cha-streamer` (S2). It runs Chrome in a headless compositor, encodes with NVENC and streams over str0m WebRTC to Chrome on the Mac, with keyboard and mouse back. That takes ~6 ms from the node's compositor to the Mac's (p50, 1440p60, 1 GbE), and the stream resizes in 30–48 ms.
   - Everything Wolf-specific in Phase 1 would be thrown away in Phase 2: the adapter for Wolf's API, pairing with Wolf, Wolf's encoder settings, and the gateway beside Wolf.
-  - The user wants our own implementation of everything, and only the most efficient pieces.
+  - We want to own every piece we can, and to keep only the most efficient ones.
 - **Decision:**
   - No Wolf, and no Games-on-Whales images or container contract. Phase 1 ships on `cha-streamer`.
   - **Build vs borrow.** We write every piece on the hot path, and every piece small enough to own. We use a library only when rebuilding it would be a project of its own *and* the library is already lean. GStreamer and FFmpeg leave the node's media path.

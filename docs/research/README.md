@@ -1,5 +1,8 @@
 # Cha Portal: research synthesis (snapshot 2026-10-03)
 
+> [!NOTE]
+> Background research from planning: surveys of the field, kept for the reasoning behind the plan. Naming a project here doesn't mean any of its code is in Cha Portal. [`docs/PROVENANCE.md`](../PROVENANCE.md) records what was ported and from where.
+
 Eight parallel research slices, each with sources inline and claims we could not confirm tagged **(unverified)**. This page holds the cross-cutting conclusions. The numbered notes have the evidence.
 
 | # | Slice | File |

@@ -486,7 +486,7 @@ These are targets to validate in Phase 0, not measured facts.
 - **Shared code**: the same `cha-proto` and transport as the streamer.
 - **Launch**: the portal stays in the browser. "Open in Cha Player" uses a `cha://connect?ticket=…` deep link with a one-time ticket that is exchanged for candidates, hashes and a token.
 - **Targets**: Linux (incl. Steam Deck Game Mode), Windows, macOS. Android and iOS/tvOS come later through a Rust core with uniffi bindings.
-- **References**: Magic Mirror `mm-client` (MIT) for structure; moonlight-qt (GPL-3) for frame pacing, HDR and raw input.
+- **Prior art**: Magic Mirror `mm-client` (MIT) on structure; moonlight-qt (GPL-3) on frame pacing, HDR and raw input. Studied for approach; anything ported is listed in [PROVENANCE.md](PROVENANCE.md).
 - **Not Tauri**: WKWebView pointer lock needs private API, and WebKitGTK lacks WebTransport/WebCodecs.
 
 ---
@@ -601,14 +601,14 @@ Seven milestones, each shippable and verified on its own:
 - Chrome (typing in its search box), XFCE (a terminal command) and the test pattern work with keyboard and mouse. The picture follows the window, and XFCE's X screen with it. (Steam's gamescope has a fixed size, so its catalog entry says `fixedSize` and the page never asks for a resize: the browser letterboxes the picture.)
 - The player's probe on the test pattern: click → shown 15.8 ms p50 (in the app's browser; `docs/benchmarks/p15-…`).
 - Fixed on the way: new windows get the keyboard once they first show something (Chrome ignored an earlier `enter`), and XFCE's Xwayland had stayed at 640×480 with `-fullscreen`.
-- Firefox's Terms of Use dialog is skipped by policy (`SkipTermsOfUse`, the owner's call).
+- Firefox's Terms of Use dialog is skipped by policy (`SkipTermsOfUse`).
 - Open: one unexplained Firefox window going black, not reproduced since; keys without a physical code wait for the text-input protocol. |
 | **P1.6** *(built 2026-10-04; the A/V offset awaits a measured run)* | Sound + gamepads | **Audio:** our minimal PulseAudio-protocol server in the streamer → a 10 ms mixer → libopus (our binding) → a WebRTC audio track. **Gamepads:** our uinput Xbox 360 pad (DualSense over uhid next). The streamer owns the devices and shares their nodes and udev entries with the app through volumes; the app's device cgroup allows input devices. The player's Gamepad API; host udev rules | Sound in the browser with the A/V offset measured; the test pattern shows the pad's state, and a game plays with it. **So far** (`crates/cha-streamer/README.md`):
 - **Sound:** `pactl`, `pacat` (44.1 and 48 kHz) and the test pattern play through our server. Chrome gets stereo Opus (2 channels, 100 packets/s, nothing concealed); NetEq holds 25–36 ms.
 - **Click → sound** (the test pattern's tone at the speakers, timed by an AudioWorklet): 85–90 ms p50 in the app's browser. About 15–20 ms of that is the test pattern's own 20 ms buffer, 12 ms the mixer and Opus, and ~30 ms NetEq.
 - **Gamepads:** in the environment, Chrome sees "Xbox 360 pad (STANDARD GAMEPAD 045e:028e)" with its buttons and both sticks, and SDL2 sees an "X360 Controller" (A, sticks, triggers). Both find it in the app's own `/dev/input` and udev data.
 - **Open:** the A/V offset and the pad panel on the baseline Chrome (the app's browser wasn't painting); a game, with Steam (Phase 2); rumble on a real pad through the page (built 2026-10-05: force feedback on the virtual pads, forwarded as `rumble` messages; untested on hardware); a host udev rule so the host's own desktop ignores the virtual pads; microphones. |
-| **P1.7** *(built 2026-10-04; the exit runs are the owner's)* | Deploy + exit | `deploy/` compose for the portal and a node; `cha doctor` v0; the Tailscale guide; an optional coturn profile | Phase 1 exit criteria above. **So far** ([`deploy/README.md`](../deploy/README.md)):
+| **P1.7** *(built 2026-10-04; the exit runs are manual)* | Deploy + exit | `deploy/` compose for the portal and a node; `cha doctor` v0; the Tailscale guide; an optional coturn profile | Phase 1 exit criteria above. **So far** ([`deploy/README.md`](../deploy/README.md)):
 - **The portal's image and compose file** (`deploy/portal`): SPA and API in one container, SQLite in a volume only its user can enter, on localhost by default. HTTPS through `tailscale serve`, or Caddy with public DNS (profile `tls`).
 - **TURN** (profile `turn`): coturn relaying to the nodes only; the portal mints a day's credentials per connection (`GET /api/ice`, coturn's shared-secret scheme).
 - **Reaching nodes:** streamers offer every node address (LAN and mesh: Tailscale, WireGuard) as candidates, and a port-forward's public address when the agent has `CHA_PUBLIC_ADDRESS`.
@@ -622,11 +622,11 @@ Seven milestones, each shippable and verified on its own:
 |---|---|
 | Chrome, Firefox and XFCE environments with keyboard and mouse | Done (P1.5), from Chrome on the Mac |
 | … with a controller | Done (P1.6): Chrome and SDL2 in an environment see the pad; a game waits for Steam (Phase 2) |
-| … with sound | Done (P1.6): stereo Opus in Chrome; the A/V offset needs the owner's run |
-| … from Firefox and Safari as clients | The owner's run. Firefox takes H.264 (no HEVC over WebRTC); Safari HEVC or H.264 |
-| … over WAN (port-forward or mesh) | Built (candidates on every address, `CHA_PUBLIC_ADDRESS`, TURN); the owner's run from outside the LAN |
+| … with sound | Done (P1.6): stereo Opus in Chrome; the A/V offset needs a manual run |
+| … from Firefox and Safari as clients | A manual run. Firefox takes H.264 (no HEVC over WebRTC); Safari HEVC or H.264 |
+| … over WAN (port-forward or mesh) | Built (candidates on every address, `CHA_PUBLIC_ADDRESS`, TURN); a manual run from outside the LAN |
 | `cha-streamer` matches or beats S2 on the same node | Done (P1.3): ≈ 5.65 ms node → Mac compositor (S2: 6.0), click → browser compositor 24.6 ms (S2: 34–35) |
-| Glass-to-glass latency measured and published | Click → screen 15.8 ms (P1.5, `docs/benchmarks/`); a camera-based run is the owner's |
+| Glass-to-glass latency measured and published | Click → screen 15.8 ms (P1.5, `docs/benchmarks/`); a camera-based run is still to do |
 
 
 **Decisions, recorded as ADRs in `docs/adr/`:**
@@ -636,7 +636,7 @@ Seven milestones, each shippable and verified on its own:
 
 ### Phase 2: Steam, KDE, PyroWave and WebTransport (XL) *(closed 2026-10-07)*
 
-*Closed by the owner's decision on 2026-10-07. Every milestone (P2.1–P2.6) is built, and three exit criteria were met with measurements (Steam playable in Chrome, KDE, adaptive AV1 on a bad WAN). The six measured runs in [`plans/phase2-exit.md`](plans/phase2-exit.md) (Firefox and Safari clients, 120 fps, WAN with Steam, the Steam Controller in real Steam) weren't run before closing; they stay open as checks, and their results go into `benchmarks/phase2-exit.md` when they are.*
+*Closed on 2026-10-07. Every milestone (P2.1–P2.6) is built, and three exit criteria were met with measurements (Steam playable in Chrome, KDE, adaptive AV1 on a bad WAN). The six measured runs in [`plans/phase2-exit.md`](plans/phase2-exit.md) (Firefox and Safari clients, 120 fps, WAN with Steam, the Steam Controller in real Steam) weren't run before closing; they stay open as checks, and their results go into `benchmarks/phase2-exit.md` when they are.*
 
 Delivers **features 4, 6 and 7**, and KDE for feature 3.
 
@@ -671,7 +671,7 @@ Delivers **features 4, 6 and 7**, and KDE for feature 3.
 - Clipboard: gamescope doesn't pass it between our compositor and its X server, so the Steam image runs XFCE's `cha-x11-clipboard` beside Steam; pasting into Steam works.
 - Fixed on the way: Ubuntu's `/usr/games` on `PATH`; the launcher's interactive `steamdeps`; the base image's bubblewrap stand-in, which pressure-vessel picked up; GTK 4 dialogs crashing under gamescope's Vulkan WSI (GL renderer).
 - A first launch leaves the picture black while Steam downloads ~500 MB, so any image can now write a setup status (`/run/cha/status`, a label with optional progress) that the streamer sends to every viewer and the portal shows over the picture, and `steam-status` fills it from Steam's bootstrap log until the UI is up.
-- **Exit (2026-10-05):** Cyberpunk 2077 (Proton, from the NAS library, DLSS) plays well in the owner's Chrome with a Steam Controller (2026) read over WebHID and the virtual Steam Controller in the environment: Steam opens it and Steam Input's output reaches the game; sound through our PulseAudio server.
+- **Exit (2026-10-05):** Cyberpunk 2077 (Proton, from the NAS library, DLSS) plays well in Chrome on the baseline Mac with a Steam Controller (2026) read over WebHID and the virtual Steam Controller in the environment: Steam opens it and Steam Input's output reaches the game; sound through our PulseAudio server.
 - Open: a real first run's progress on a fresh home; gamescope aborts (exit 134), seen twice: `steam-run` now keeps its output (container log and `~/.local/state/cha/gamescope.log`) and names the crash on the page, but the cause is still unknown (the next abort will say). |
 | **P2.2** *(done 2026-10-04)* | KDE Plasma | Nested `kwin_wayland --xwayland` under `dbus-run-session`, no systemd, sound through our server | A Plasma desktop in the browser with keyboard, mouse and sound. **Done:** `startplasma-wayland` in our `kde` image; KWin opens one window in our compositor and follows its size (1616×1256 in the test), with its own Xwayland; plasmashell, ksmserver and kded run, and Plasma's volume applet talks to our sound server. Alt+Space then "konsole" and Enter, sent from the browser, starts Konsole. Fixed on the way: `kwin_wayland` carries a file capability (`CAP_SYS_NICE`), which a container without capabilities refuses to exec; the image drops it. |
 | **P2.3** *(built 2026-10-04; send → shown needs a painted browser)* | WebTransport | `cha-stream/1` over WebTransport (quinn) beside WebRTC, with the §3.1 congestion rules; the player's Chromium fast path (track generator → `<video>`), WebRTC elsewhere, and switching between them | Send → shown below WebRTC's on the baseline (S1d: 2.7–3.4 ms vs 5.4–6.4). **So far** (`crates/cha-streamer/README.md`):
@@ -742,7 +742,7 @@ If S1 fails, Phase 4 starts in parallel with Phase 2.
 - **WebTransport in Safari and Firefox:** WebTransport has worked in every major browser since March 2026, so the player's fast path (Chromium only today) should be enabled and measured there too.
 - A Media-over-QUIC spectator/fan-out mode for many viewers. MoQ is in production at CDNs (2026) at 200–300 ms end to end: right for watching, not for playing.
 - Postgres and multi-portal HA for team scale.
-- **Steam Controller rumble through its motors.** On the `steam` pad kind, Steam turns a game's rumble into trackpad haptic pulses, not the 2026 controller's motors: during a Cyberpunk drive (2026-10-06) the game asked Steam's virtual pad for rumble (mostly ~25 %, peaks at full) and our virtual Steam Controller got no `0x80` rumble report at all, so the user felt it only weakly (inferred: the `0x81` pulses aren't logged yet). Log the pulses to confirm, then find which answer makes Steam think the controller has no motors (it sends `0xc1`, `0xdc`, `0xe2` and `0xf2`, which the streamer doesn't handle). Then, if still wanted, a per-controller rumble strength on the Controllers page, applied in the player to rumble and pulses alike. The streamer logs the first 60 rumble reports' bytes and the shim each effect's strong/weak magnitudes for this.
+- **Steam Controller rumble through its motors.** On the `steam` pad kind, Steam turns a game's rumble into trackpad haptic pulses, not the 2026 controller's motors: during a Cyberpunk drive (2026-10-06) the game asked Steam's virtual pad for rumble (mostly ~25 %, peaks at full) and our virtual Steam Controller got no `0x80` rumble report at all, so it felt weak in the hand (inferred: the `0x81` pulses aren't logged yet). Log the pulses to confirm, then find which answer makes Steam think the controller has no motors (it sends `0xc1`, `0xdc`, `0xe2` and `0xf2`, which the streamer doesn't handle). Then, if still wanted, a per-controller rumble strength on the Controllers page, applied in the player to rumble and pulses alike. The streamer logs the first 60 rumble reports' bytes and the shim each effect's strong/weak magnitudes for this.
 
 ---
 

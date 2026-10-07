@@ -29,7 +29,7 @@ Read on the node's running Steam container (read-only; no restarts, no input):
 | Effort | Medium: shim ~500 lines of C in two bitnesses, validator and broker in Rust | High: FUSE ioctl retry protocol, compat layouts, no Rust CUSE crate | Low | Very low |
 | Risk | Steam updates; `syscall` or unknown helper processes bypass the shim | Compat of a 32-bit caller; FUSE edge cases | Not safe (below) | Steam may try to make its own pad too (unverified) |
 | Security | Validator in the streamer is the boundary; the socket is reachable by games too, so it must hold alone | Same validator; kernel path is the real uinput ABI | Can't restrict `UI_DEV_SETUP` or writes | Strong: nothing new |
-| Host needs | None | `modprobe cuse` (new in `modules-load.d`), `/dev/cuse` in the streamer, owner's sudo | `/dev/uinput` in the app | None |
+| Host needs | None | `modprobe cuse` (new in `modules-load.d`), `/dev/cuse` in the streamer, sudo on the host | `/dev/uinput` in the app | None |
 
 **(a)** Needs `libcha-uinput.so` for i386 and amd64, loaded through `LD_PRELOAD=/opt/cha/$LIB/libcha-uinput.so` (the dynamic loader expands `$LIB`; unverified under Steam's runtime). `steam.sh` and pressure-vessel handle `LD_PRELOAD` themselves, so check it survives into `ubuntu12_32/steam`. Games run inside pressure-vessel and don't need the shim: Steam makes the pad, the game only reads it.
 
@@ -63,7 +63,7 @@ Build **(a)**, with the streamer's broker as the whole trust boundary, so a late
 
 **Cleanup.** The socket closing (Steam exits or crashes) destroys the device: drop the fd, remove the node and udev file, and finish any pending FF requests with an error. The streamer's exit removes everything as it does for pads now. Steam makes and destroys a pad per game launch (the log shows several), so this path runs often.
 
-**Node agent and host.** No new device, mount or cgroup rule: `/run/cha` is already shared, and the input volumes and `device_cgroup_rules` already allow evdev nodes. The agent only sets the Steam image's `LD_PRELOAD` environment (or the image does in `start-steam`) and passes `--steam-uinput` to the streamer for the `steam` kind. No `deploy/node/host` change; `deploy/README.md` and `docs/controllers.md` get a line (the "planned" fix becomes the behavior), and the node needs the new streamer and Steam images, a normal rollout with the owner's OK to recreate the agent.
+**Node agent and host.** No new device, mount or cgroup rule: `/run/cha` is already shared, and the input volumes and `device_cgroup_rules` already allow evdev nodes. The agent only sets the Steam image's `LD_PRELOAD` environment (or the image does in `start-steam`) and passes `--steam-uinput` to the streamer for the `steam` kind. No `deploy/node/host` change; `deploy/README.md` and `docs/controllers.md` get a line (the "planned" fix becomes the behavior), and the node needs the new streamer and Steam images, a normal rollout that recreates the agent.
 
 ## Open questions
 
@@ -78,7 +78,7 @@ Build **(a)**, with the streamer's broker as the whole trust boundary, so a late
 
 - **Unit:** the validator (allowed and refused bits, ranges, counts, rate), the protocol codec both bitnesses (16- and 24-byte `input_event`, `uinput_ff_upload`), device-limit and cleanup on disconnect, `udev_entry` for the new identity.
 - **Shim, in the dev container:** a C test program opens `/dev/uinput`, sets bits, creates, writes events, reads FF upload requests; run as i386 and amd64 against a fake broker, then against the real streamer on the node.
-- **Live on the node (owner's OK first):** `steam` kind, no launch options. Pass: Steam's console log no longer says it couldn't open uinput; `virtualgamepadinfo.txt` lists the `11ff` pad; Cyberpunk and Balatro see a controller and play; Steam's in-game menu shows the controller and focus returns after closing it; rumble reaches the Steam Controller; killing Steam leaves no device node, udev file or `/sys/devices/virtual/input` entry behind; two launches in a row work.
+- **Live on the node:** `steam` kind, no launch options. Pass: Steam's console log no longer says it couldn't open uinput; `virtualgamepadinfo.txt` lists the `11ff` pad; Cyberpunk and Balatro see a controller and play; Steam's in-game menu shows the controller and focus returns after closing it; rumble reaches the Steam Controller; killing Steam leaves no device node, udev file or `/sys/devices/virtual/input` entry behind; two launches in a row work.
 
 ## Implementation
 

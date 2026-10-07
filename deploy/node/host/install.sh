@@ -12,7 +12,7 @@
 #   loaded with apparmor_parser; skipped on a host without AppArmor;
 # - /etc/modules-load.d/cha.conf, so uinput and uhid load at boot; both are
 #   loaded now too.
-# This is the owner's step: the agent and its containers never write these.
+# This is the operator's step: the agent and its containers never write these.
 #
 # CHA_HOST_ROOT is a prefix for every destination path (the tests use it).
 set -eu

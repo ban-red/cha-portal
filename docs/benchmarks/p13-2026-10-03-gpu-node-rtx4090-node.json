@@ -5,7 +5,7 @@
     "host": "gpu-node.lan",
     "gpu": "NVIDIA GeForce RTX 4090",
     "driver": "595.71.05",
-    "gpu_shared_with": "the owner's ComfyUI (22 GB, generating) and llama-server; nvidia-smi showed 88-100% utilization and 250-346 W during most runs"
+    "gpu_shared_with": "a ComfyUI job (22 GB, generating) and llama-server; nvidia-smi showed 88-100% utilization and 250-346 W during most runs"
   },
   "content": "Google Chrome 154.0.8037.97 (kiosk) showing spikes/s2-compositor/bench/page/live.html",
   "stream": { "width": 2560, "height": 1440, "fps": 60, "bitrate_mbps": 40, "path": "WebRTC (str0m), playout-delay 0" },

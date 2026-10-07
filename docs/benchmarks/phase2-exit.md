@@ -1,7 +1,7 @@
 # Phase 2 exit pass: results
 
 Runs from [`docs/plans/phase2-exit.md`](../plans/phase2-exit.md), each a
-**Record 30 s** summary from the owner's browser on the baseline MacBook Pro
+**Record 30 s** summary from the browser on the baseline MacBook Pro
 M4 (wired 1 GbE) against gpu-node (RTX 4090).
 
 ## Safari 26.5, Google Chrome app playing a video, HEVC over WebRTC, 120 fps (2026-10-06)

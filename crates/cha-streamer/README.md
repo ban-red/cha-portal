@@ -216,7 +216,7 @@ The LAN tier (plan §3.2–3.3): Themaister's wavelet codec, intra-only, a few t
 
 A homelab GPU often runs other work (image generation, LLMs). NVIDIA time-slices the GPU between processes, so whenever another process has work queued, the compositor's render and each encode wait for that process's timeslice to end: up to ~2.3 ms each on the RTX 4090 at the default timeslice. Fewer GPU contexts per frame mean fewer waits. Sharing one Vulkan device between the compositor and PyroWave (plan §3.3) would make it one.
 
-- **The owner's lever:** a shorter compute timeslice, `sudo nvidia-smi compute-policy --set-timeslice=1` (SHORT; 0 restores the default). It costs the other jobs some throughput, and it doesn't persist across reboots.
+- **The operator's lever:** a shorter compute timeslice, `sudo nvidia-smi compute-policy --set-timeslice=1` (SHORT; 0 restores the default). It costs the other jobs some throughput, and it doesn't persist across reboots.
 - **Queue priority:** PyroWave can ask for a high-priority (async compute) queue, but on driver 595.71 the first encode on it never completes, so we stay at the default priority until that's understood.
 
 ## Sound (P1.6)
@@ -379,7 +379,7 @@ The agent starts one streamer container per environment, with signalling on `127
 
 **Node side, A/B against S2's GStreamer streamer (`gst-wayland-display` → `nvh265enc`).**
 - Both ran back to back with Chrome at 240 fps on S2's live page, at 2560×1440, 60 fps, 40 Mbit/s.
-- The GPU was shared with the owner's ComfyUI and llama.cpp, at up to 100% utilization and 346 W. That load sets the tail latency, so only back-to-back runs compare.
+- The GPU was shared with ComfyUI and llama.cpp jobs, at up to 100% utilization and 346 W. That load sets the tail latency, so only back-to-back runs compare.
 - Raw data: [`docs/benchmarks/p13-2026-10-03-gpu-node-rtx4090-node.json`](../../docs/benchmarks/p13-2026-10-03-gpu-node-rtx4090-node.json).
 
 | HEVC, compositor → encoded (ms) | p50 | p99 |

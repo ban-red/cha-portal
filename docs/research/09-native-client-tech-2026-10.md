@@ -1,5 +1,7 @@
 # 09: Technology for the native client, October 2026
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 A survey made when starting the native client ([ADR 0010](../adr/0010-native-client-macos-first.md)): what is new and worth using, what to keep in view, and what doesn't suit interactive streaming. The decisions it led to are in ADR 0010 and [PLAN.md](../PLAN.md) §9, Phase 4.
 
 ## Adopted

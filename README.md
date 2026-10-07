@@ -2,7 +2,7 @@
 
 A self-hosted dashboard for streaming remote environments to your browser with Moonlight-class latency. You open the portal, pick Chrome, Firefox, an XFCE or KDE desktop, or Steam Big Picture, and it starts in a container on one of your GPU servers and streams full screen to the tab, with sound, keyboard, mouse, gamepads and clipboard.
 
-The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC, VA-API or PyroWave encoding, and WebRTC or WebTransport straight from the GPU server to the browser. There is no Wolf, GStreamer, FFmpeg, PulseAudio or PipeWire in the media path ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)).
+The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC, VA-API or PyroWave encoding, and WebRTC or WebTransport straight from the GPU server to the browser ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)). [`docs/PROVENANCE.md`](docs/PROVENANCE.md) lists the code we ported from other projects and the libraries we build on.
 
 > [!WARNING]
 > **Early releases (0.x).** Each release publishes every image, so a machine needs nothing built: see the [Quick start](SETUP.md#quick-start) and the [releases](https://github.com/ban-red/cha-portal/releases). Expect breaking changes to the database, the node protocol and the deploy files. It is developed and tested on one setup (a MacBook Pro M4 with Google Chrome on wired 1 GbE, and an NVIDIA RTX 4090 node).
@@ -119,7 +119,8 @@ To point a real node at a dev portal on your LAN, start the portal with `bun run
 - [`crates/cha-streamer/README.md`](crates/cha-streamer/README.md), [`web/packages/player/README.md`](web/packages/player/README.md), [`web/apps/portal/README.md`](web/apps/portal/README.md): the engine, the player, the web app and its themes
 - [`docs/PLAN.md`](docs/PLAN.md): architecture and roadmap
 - [`docs/adr/`](docs/adr/README.md): architecture decisions
-- [`docs/research/`](docs/research/README.md): the October 2026 landscape survey behind the plan
+- [`docs/PROVENANCE.md`](docs/PROVENANCE.md): ported code, its licences, and the main dependencies
+- [`docs/research/`](docs/research/README.md): background survey from planning, October 2026
 - [`docs/benchmarks/`](docs/benchmarks/README.md): measured latency, quality and WAN results
 
 ## Contributing and security
@@ -130,4 +131,4 @@ Contributions are welcome: read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. Repo
 
 Copyright © 2026 Alex Red and the Cha Portal contributors.
 
-Cha Portal is free software under the [GNU Affero General Public License v3.0 or later](LICENSE). If you run a modified version for others over a network, the AGPL requires you to offer them its source.
+Cha Portal is free software under the [GNU Affero General Public License v3.0 or later](LICENSE). If you run a modified version for others over a network, the AGPL requires you to offer them its source. Contributors sign a [CLA](CLA.md) so that Cha Player can also ship through app stores; every version stays available under the AGPL.

@@ -1,6 +1,6 @@
 # Architecture decision records
 
-One file per decision, numbered, never rewritten: a later ADR supersedes an earlier one.
+One file per decision, numbered, never rewritten: a later ADR supersedes an earlier one. Fixes to wording that leave the decision as it was are fine.
 
 | # | Decision | Status |
 |---|---|---|
@@ -14,3 +14,4 @@ One file per decision, numbered, never rewritten: a later ADR supersedes an earl
 | [0008](0008-moonlight-hosts-adopted-by-a-node.md) | Moonlight hosts found and adopted by a node, streamed through cha-gateway | Accepted |
 | [0009](0009-gamestream-host-module.md) | A GameStream host module (cha-gamestream), ported from Moonshine, behind traits and a cargo feature | Accepted |
 | [0010](0010-native-client-macos-first.md) | A native client, macOS first: Rust core, pluggable transports, GameStream first | Accepted |
+| [0012](0012-cla-for-app-store-builds.md) | A contributor licence agreement, so Cha Player can ship in app stores; no public App Store exception | Accepted; settles the open question in 0010 |

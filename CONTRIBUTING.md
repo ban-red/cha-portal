@@ -41,6 +41,7 @@ Read [`docs/PLAN.md`](docs/PLAN.md) and the [ADRs](docs/adr/README.md) before pr
 - **Our own media engine** ([ADR 0004](docs/adr/0004-own-engine-no-wolf.md)). No Wolf, Games-on-Whales, GStreamer, FFmpeg, PulseAudio, PipeWire, inputtino or fake-udev in the node's media path. We borrow only foundations too big to rebuild (Smithay, str0m, quinn, libopus, libpyrowave).
 - **Self-hosted only.** No hosted relays, DNS or other services run by the project. Remote access is Tailscale, a port-forward or the owner's own TURN server.
 - **No code from Magic Mirror / mm-server**, which is under the BUSL.
+- **Ported code keeps its notice.** Code translated or adapted from another project needs a licence compatible with the AGPL, a header naming the source, its licence and what changed, the upstream licence text beside it when the licence asks for it, and a row in [`docs/PROVENANCE.md`](docs/PROVENANCE.md).
 
 To change a decision, propose a new ADR that supersedes the old one. ADRs are never rewritten.
 
@@ -56,9 +57,13 @@ To change a decision, propose a new ADR that supersedes the old one. ADRs are ne
 ## Commits and pull requests
 
 - [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): what changed`, lowercase and imperative, at most 72 characters, e.g. `fix(controllers): show WebHID as available where it is`. Types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `ci`, `build`, `chore`. Scopes follow the area: `portal`, `node`, `streamer`, `player`, `proto`, `wire`, `controllers`, `steam`, `images`, `deploy`, `plans`, `spikes`. An optional body, wrapped at 72, explains why.
-- Sign off every commit (below).
+- Sign the [CLA](CLA.md) once, and sign off every commit (below).
 - Keep a pull request to one change, with tests where the code has them.
 - Say how you tested it, and on what hardware if the streamer, a node or a browser is involved.
+
+## Contributor License Agreement
+
+Before your first pull request is merged, you sign the [Contributor License Agreement](CLA.md), once, by posting a comment the bot asks for. You keep the copyright in your work. The agreement lets the maintainer also distribute it in builds for stores whose terms the AGPL doesn't allow, such as Apple's App Store, and commits the maintainer to keeping every version that includes it available under the AGPL with its source. Read it before you sign; it's short.
 
 ## Sign your commits off
 

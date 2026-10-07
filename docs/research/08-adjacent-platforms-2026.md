@@ -1,5 +1,7 @@
 # 08: Adjacent self-hosted and open cloud-gaming / streaming platforms (as of 2026-10-03)
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 Researcher slice 08: projects that overlap with Cha Portal as a whole, especially new entrants. Other slices cover Wolf/GoW internals, PyroWave and codecs, Moonlight/Sunshine/Apollo/Vibepollo, Kasm/Selkies/Neko/Guacamole, browser transport APIs, Linux container graphics and control-plane patterns. Those come up here only where an adjacent project depends on them.
 
 How this was gathered: shallow clones (some blobless, for history) into `scratchpad/repos/08/`, reading the source and the in-repo design docs, plus GitHub API and search, WebSearch and WebFetch. The GitHub REST API was rate-limited for much of the session, and the session's WebSearch budget ran out partway through. Anything I could not confirm against a primary source is tagged **(unverified)**. Star counts come from the GitHub search API on 2026-10-03.

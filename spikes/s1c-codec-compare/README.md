@@ -43,7 +43,7 @@ python3 spikes/s1c-codec-compare/tools/make-streams.py
 Sync the repo (without the S1b clips) to the node:
 
 ```bash
-rsync -az --delete --exclude .git --exclude target --exclude node_modules --exclude dist --exclude .claude --exclude clips --exclude .cache --exclude 'spikes/*/results' ./ gpu-node.lan:/home/cha/docker/cha-portal-node/
+rsync -az --delete --exclude .git --exclude target --exclude node_modules --exclude dist --exclude clips --exclude .cache --exclude 'spikes/*/results' ./ gpu-node.lan:/home/cha/docker/cha-portal-node/
 ```
 
 Rebuild and restart the server on the node:

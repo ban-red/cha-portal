@@ -37,9 +37,9 @@ The rest assumes D1 (b), D2 (a), D3 (a)→(c), D4 none at first.
 - Pin the image by version (D5). Add `deploy/release.sh`: builds `cha-portal`, `cha-node`, `cha/streamer` and the env images with one version, from a clean `git` tree, tagging the commit.
 
 **Carry the dev database over (important)**
-- App data is keyed by user id (`/srv/cha-portal/users/<uuid>/<app>`), the node by its enrolled id, and settings (storage, controllers, frame rates, audit) live in `data/dev.db`. A fresh database would orphan the owner's Steam home and need the node re-enrolled.
+- App data is keyed by user id (`/srv/cha-portal/users/<uuid>/<app>`), the node by its enrolled id, and settings (storage, controllers, frame rates, audit) live in `data/dev.db`. A fresh database would orphan the existing Steam home and need the node re-enrolled.
 - Cutover: stop the dev portal → `sqlite3 data/dev.db ".backup data/cutover.db"` → copy into the production `data` volume as `cha.db` (the image's `CHA_DATABASE=/var/lib/cha/cha.db`), owned by the image's `cha` user (the directory is private to it); the database also holds the media-token key, so tokens keep validating → start the production portal (migrations run) → check the users, nodes and settings are there.
-- Remove the `dev` account afterwards (it was created by dev login); keep the owner's `admin`.
+- Remove the `dev` account afterwards (it was created by dev login); keep the `admin` account.
 
 **Host the portal (D1 b)**
 - A Debian/Ubuntu VM or LXC with Docker and Tailscale; the portal publishes on `127.0.0.1:7676` only (the compose default).

@@ -1,5 +1,7 @@
 # 04 — Browser-based remote desktop / app streaming platforms (Kasm-like)
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 Research slice for **Cha Portal** (portal.cha.sh). Snapshot as of **2026-10-03**. Sources are inline. I verified repo facts (license, last push, latest release) against the GitHub REST API or shallow clones made on 2026-10-03. I read source for Selkies, pixelflux, pcmflux, SealSkin, Neko, neko-rooms, KasmVNC, Kasm's noVNC fork, Kasm workspaces images, xpra-html5, cloud-game and BrowserPane. Anything I could not confirm is tagged **(unverified)**.
 
 User decisions received mid-research and applied to the verdicts: Cha Portal will be **copyleft OSS (AGPL/GPL)**, it targets **homelab / small groups first** (simple RBAC, no heavy DLP or multi-tenancy), and **LAN and WAN are equally first-class**.
@@ -629,7 +631,7 @@ Legend:
 
 ## 13. Recommendations for Cha Portal
 
-These are scoped by the user's decisions: AGPL/GPL, homelab/small group first, LAN = WAN.
+These are scoped by the project's decisions: AGPL/GPL, homelab/small group first, LAN = WAN.
 
 ### 13.1 Product features and UX patterns to adopt
 

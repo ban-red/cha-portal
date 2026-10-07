@@ -1,5 +1,7 @@
 # 05: Browser platform for ultra-low-latency streaming, and how commercial cloud gaming does it
 
+> Background research from planning ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+
 Research pass for **Cha Portal** (portal.cha.sh). Written 2026-10-03. Every claim has a source link inline. Anything I could not confirm from a primary source is tagged **(unverified)**.
 
 Browser versions current on 2026-10-03:
