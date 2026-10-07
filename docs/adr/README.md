@@ -16,3 +16,4 @@ One file per decision, numbered, never rewritten: a later ADR supersedes an earl
 | [0010](0010-native-client-macos-first.md) | A native client, macOS first: Rust core, pluggable transports, GameStream first | Accepted |
 | [0011](0011-own-gamestream-client.md) | Our own GameStream client in cha-gamestream, replacing moonlight-common-rust | Accepted; changes the library choice in 0008 and 0010 |
 | [0012](0012-cla-for-app-store-builds.md) | A contributor licence agreement, so Cha Player can ship in app stores; no public App Store exception | Accepted; settles the open question in 0010 |
+| [0013](0013-native-player-on-cha-stream.md) | Cha Player on `cha-stream/1`: per-install device tokens (a `cha://` link first, a device code too) and WebTransport to the existing endpoint | Accepted; shapes C2 of 0010 |
