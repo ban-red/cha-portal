@@ -479,6 +479,8 @@ These are targets to validate in Phase 0, not measured facts.
 
 ### 6.2 Native thin client (`cha-player`)
 
+*Updated 2026-10-07 by [ADR 0010](adr/0010-native-client-macos-first.md): macOS comes first, with a platform-neutral core (`cha-client`) and pluggable transports (GameStream first, then `cha-stream/1` over WebTransport and iroh). On macOS it renders with `wgpu` on Metal and decodes with VideoToolbox directly (no MoltenVK, no FFmpeg); SDL3 covers gamepads only, and the UI is `egui`. It also uses Game Mode, an optional MetalFX upscaling pass, and an AWDL hint. The original design follows; Linux and Windows still take its shape.*
+
 - **Rust**: SDL3 for windowing, raw input, gamepads/haptics and HID; ash/Vulkan for presentation and VRR/HDR swapchains.
 - **Decode**: FFmpeg hwaccel (Vulkan Video, D3D11VA, VideoToolbox, VAAPI) plus libpyrowave on Vulkan or Metal.
 - **Shared code**: the same `cha-proto` and transport as the streamer.
@@ -713,11 +715,14 @@ Delivers **features 5 and 8**.
   - A Vibepollo Windows host can be played in the browser with PyroWave on LAN.
   - A remote client on the tailnet streams with WAN-tier codecs. With the optional TURN profile, a UDP-blocked client connects via TURN-TLS on 443.
 
-### Phase 4: native thin client (L)
+### Phase 4: native thin client (L) *(started 2026-10-07, macOS first: [ADR 0010](adr/0010-native-client-macos-first.md))*
 
 Delivers **feature 6 (native)**.
 
-- `cha-player` for Linux (incl. Steam Deck), Windows and macOS: SDL3 + Vulkan/Metal, HW decode plus PyroWave, raw input, VRR, HDR, haptics, and the `cha://` hand-off from the portal.
+- `cha-player` for macOS first, then Linux (incl. Steam Deck) and Windows: a platform-neutral Rust core (`cha-client`) with pluggable transports, and per-platform decode and present. On macOS: `winit`, `wgpu` on Metal, VideoToolbox decode with zero-copy present, Opus to CoreAudio, SDL3 for gamepads and haptics, an `egui` launcher. Raw input, VRR, HDR, haptics, and the `cha://` hand-off from the portal.
+- **C1** *(in progress)*: the macOS player with the GameStream transport (Sunshine/Apollo hosts and our nodes through their GameStream host, [ADR 0009](adr/0009-gamestream-host-module.md)), Game Mode (the bundle declares itself a game: double Bluetooth controller sampling) and a hint when Wi-Fi latency spikes look like AWDL.
+- **C2:** the `cha-stream/1` transport through the portal (device-login sign-in, launch, media tokens; our rate control, FEC, RFI, clipboard, AV1, PyroWave on `wgpu`): WebTransport on the LAN, **iroh 1.0** beyond it (key-addressed QUIC, NAT hole-punching, self-hosted relays: nodes behind CGNAT without TURN or a mesh). An optional **MetalFX spatial upscaling** pass (macOS 26), so a node can send 1080p/1440p at a lower bitrate; checked against VideoToolbox's `VTFrameProcessor` first. An **L4S/SCReAMv2** controller tried here first, since the native client can read ECN marks.
+- **C3:** `cha://` links from the dashboard, settings, a signed and notarised direct download (and a Homebrew cask). The Mac App Store needs every copyright holder's permission (ADR 0010).
 - **Exit:**
   - Wired LAN glass-to-glass ≤ 12 ms (p50) at 120 Hz with PyroWave.
   - Parity with the browser for the input and gamepad features.
@@ -733,8 +738,9 @@ If S1 fails, Phase 4 starts in parallel with Phase 2.
 - Compat environments (Selkies/webtop, KasmVNC, Neko proxied behind portal auth); Guacamole RDP/VNC/SSH.
 - Windows VMs (libvirt + Vibepollo in guest); microVM isolation tier (virtio-gpu native context, Nestri's virtio-nvgpu).
 - Mobile and TV clients.
-- An L4S/ECN-aware controller on the QUIC path (Chrome already reports ECN in QUIC ACKs).
-- A Media-over-QUIC spectator/fan-out mode for many viewers.
+- An L4S/ECN-aware controller on the QUIC path (Chrome already reports ECN in QUIC ACKs). SCReAMv2 (IETF draft, July 2026) targets exactly remote-control and VR streams; tried in the native client first (Phase 4, C2).
+- **WebTransport in Safari and Firefox:** WebTransport has worked in every major browser since March 2026, so the player's fast path (Chromium only today) should be enabled and measured there too.
+- A Media-over-QUIC spectator/fan-out mode for many viewers. MoQ is in production at CDNs (2026) at 200–300 ms end to end: right for watching, not for playing.
 - Postgres and multi-portal HA for team scale.
 - **Steam Controller rumble through its motors.** On the `steam` pad kind, Steam turns a game's rumble into trackpad haptic pulses, not the 2026 controller's motors: during a Cyberpunk drive (2026-10-06) the game asked Steam's virtual pad for rumble (mostly ~25 %, peaks at full) and our virtual Steam Controller got no `0x80` rumble report at all, so the user felt it only weakly (inferred: the `0x81` pulses aren't logged yet). Log the pulses to confirm, then find which answer makes Steam think the controller has no motors (it sends `0xc1`, `0xdc`, `0xe2` and `0xf2`, which the streamer doesn't handle). Then, if still wanted, a per-controller rumble strength on the Controllers page, applied in the player to rumble and pulses alike. The streamer logs the first 60 rumble reports' bytes and the shim each effect's strong/weak magnitudes for this.
 

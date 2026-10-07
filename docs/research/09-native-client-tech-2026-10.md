@@ -1,0 +1,20 @@
+# 09: Technology for the native client, October 2026
+
+A survey made when starting the native client ([ADR 0010](../adr/0010-native-client-macos-first.md)): what is new and worth using, what to keep in view, and what doesn't suit interactive streaming. The decisions it led to are in ADR 0010 and [PLAN.md](../PLAN.md) §9, Phase 4.
+
+## Adopted
+
+- **Game Mode on macOS.** Full-screen apps whose category is games get Game Mode: Bluetooth sampling doubles for controllers and AirPods (lower input and audio latency) and the app gets CPU/GPU priority. The client declares `LSApplicationCategoryType = public.app-category.games` (C1). [Apple](https://support.apple.com/105118), [Eclectic Light](https://eclecticlight.co/2023/10/17/what-does-game-mode-do/).
+- **AWDL.** Apple's AirDrop/Continuity radio makes the Wi-Fi hop channels; Moonlight users see it as periodic latency spikes. visionOS has a low-latency streaming entitlement that avoids it; macOS apps can't turn it off without admin rights. The client recognises the pattern in its stats and explains it (C1). [Apple Communities](https://communities.apple.com/de/thread/255758896).
+- **MetalFX upscaling (Metal 4, macOS 26).** Metal 4 adds MetalFX frame interpolation, denoising and upscaling. Spatial upscaling works on any picture, so the client can scale a 1080p/1440p stream to the display and let the node send less. Frame interpolation needs a renderer's motion vectors and depth, which a video stream lacks, so it isn't used. VideoToolbox's video processing (`VTFrameProcessor`, with low-latency super-resolution and frame-rate conversion) is to be checked against it before choosing; not yet verified (C2). [TechRadar](https://www.techradar.com/computing/macs/apple-just-leveled-up-mac-gaming-with-these-two-new-features-and-its-about-time), [Apple docs](https://developer.apple.com/documentation/metalfx/mtlfxframeinterpolatordescriptor.md).
+- **iroh 1.0 (15 June 2026).** QUIC addressed by public key; direct hole-punching (about 90 % success) with stateless relays as the fallback, self-hostable; IETF QUIC NAT traversal (QNT) and n0's own multipath QUIC (`noq`). For the native client it means reaching a node behind CGNAT with no port-forward, TURN or mesh, and no service of ours in the middle. Browsers can only use it through a relay. Research note 07 already recommended it for the native client (C2). [iroh](https://iroh.computer/blog/v1), [docs.rs](https://docs.rs/crate/iroh/1.0.0), [Pinggy](https://pinggy.io/blog/iroh_1_0_dial_keys_not_ips/).
+
+## In view
+
+- **SCReAMv2 with L4S** (IETF CCWG draft, July 2026): congestion control for real-time media that uses ECN/L4S marks, aimed at remote control and VR. Our controller is delay-based; the native client can read ECN, so it's where an L4S-aware controller is tried first (C2, an experiment). [datatracker](https://datatracker.ietf.org/doc/draft-ietf-ccwg-rfc8298bis-screamv2/).
+- **WebTransport is Baseline** in every major browser since March 2026, Safari included. The browser player's WebTransport fast path, Chromium-only today, should be enabled and measured in Safari and Firefox (PLAN backlog). [Fora Soft](https://www.forasoft.com/blog/article/media-over-quic-moq-streaming-2026).
+- **Apollo and Artemis** remain the most active Moonlight-ecosystem host and client (virtual displays, custom resolutions); our GameStream transport plays Apollo hosts. [Artemis](https://github.com/ClassicOldSong/moonlight-android).
+
+## Not for interactive play
+
+- **Media over QUIC (MoQ)** is in production at CDNs (Cloudflare, nanocosmos, CDN77) at 200–300 ms end to end: a good fit for the backlog's spectator/fan-out mode, not for playing, where a wired LAN is under 10 ms. [IBC 2026](https://show.ibc.org/ibc2026/media-over-quic-moq-real-world-lessons-from-private-video-cdn-deployments), [Rethink](https://rethinkresearch.biz/articles/buzz-builds-around-moq-at-nab-but-use-cases-remain-niche/).
