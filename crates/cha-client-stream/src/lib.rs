@@ -19,7 +19,9 @@
 //! - [`session`]: the task that owns a connection. One bidirectional stream
 //!   carries JSON lines both ways (the first, a `ping`, is written at once);
 //!   everything else is datagrams. Clock sync from ping/pong every second, a
-//!   `report` every 100 ms, a 4 s silence watchdog that ends the session.
+//!   `report` every 100 ms, a 4 s silence watchdog that ends the session. The
+//!   whole QUIC side runs on a thread of its own per session (see the
+//!   module's notes for why).
 //! - [`receiver`] and [`video`]: the Sans-IO receive logic with injected
 //!   time: datagram demux, video reassembly with FEC recovery, in-order
 //!   delivery gated on a keyframe (or a RECOVERY frame after loss), `rfi`
@@ -36,6 +38,10 @@
 //! PyroWave frames (flagged INTRA) leave as the concatenated wavelet packets
 //! that arrived whole, [`cha_client::VideoFrame::partial`] when some did not.
 //! Audio leaves as 10 ms Opus packets, 48 kHz stereo.
+//!
+//! `cargo run --release -p cha-client-stream --example bench` measures the
+//! receive path against a PyroWave-shaped stream over loopback (frames per
+//! second, delivery jitter, CPU); see the example's header.
 //!
 //! Not here: finding or launching the environment and the media token (the
 //! portal transport, `cha-client-portal`), reconnecting, codec switching, the

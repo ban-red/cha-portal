@@ -6,6 +6,18 @@
 //! in, 10 ms ticks (loss, rumble expiry), 100 ms ticks (the rate-control
 //! report, the silence watchdog) and 1 s ticks (ping). Writes to the control
 //! stream go through a writer task so a slow stream never holds up datagrams.
+//!
+//! ## Its own thread
+//!
+//! The whole QUIC side (the UDP socket's driver, quinn's connection driver,
+//! wtransport's datagram worker, this task) runs on a current-thread runtime
+//! on a thread of its own, one per session, not on the player's shared
+//! runtime. wtransport hands each datagram from its worker to
+//! `receive_datagram` over a capacity-1 channel, so a PyroWave 4:4:4 stream
+//! (76,000 datagrams a second) costs two task switches per datagram. On a
+//! multi-thread runtime those are cross-thread wake-ups (about 40% more CPU,
+//! measured with the `bench` example) and any other task on the same workers
+//! can hold them up; on one thread they are run-queue pushes.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -114,6 +126,47 @@ impl SessionControl for Control {
 /// them down to a multiple of 8 within 320x240 .. 3840x2160 and the returned
 /// session says what it made of them.
 pub async fn connect(target: &Target, width: u32, height: u32) -> Result<Session> {
+    let target = target.clone();
+    let (tx, rx) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("cha-stream".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx.send(Err(anyhow!("starting the stream's runtime: {e}")));
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                match start(&target, width, height).await {
+                    Ok((session, task)) => {
+                        // A caller that gave up drops the session, which stops the task.
+                        let _ = tx.send(Ok(session));
+                        let _ = task.await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                    }
+                }
+            });
+            // What is left (the control stream's writer) ends with the runtime.
+        })
+        .map_err(|e| anyhow!("starting the stream's thread: {e}"))?;
+    rx.await
+        .map_err(|_| anyhow!("the stream's thread ended before it started"))?
+}
+
+/// [`connect`], on the stream's runtime: the session, and the task that runs
+/// it (which ends when the session does).
+async fn start(
+    target: &Target,
+    width: u32,
+    height: u32,
+) -> Result<(Session, tokio::task::JoinHandle<()>)> {
     let hash = net::parse_hash(&target.cert_hash)?;
     let link = net::race(&target.urls, hash, net::CONNECT_TIMEOUT).await?;
     let began = Instant::now();
@@ -181,7 +234,7 @@ pub async fn connect(target: &Target, width: u32, height: u32) -> Result<Session
         rumble_until: [None; PADS],
         stats: Stats::default(),
     };
-    tokio::spawn(task.run(link, recv, commands_rx, ended_tx));
+    let task = tokio::spawn(task.run(link, recv, commands_rx, ended_tx));
 
     let ready = match tokio::time::timeout(READY_TIMEOUT, ready_rx).await {
         Ok(Ok(Ok(ready))) => ready,
@@ -195,7 +248,7 @@ pub async fn connect(target: &Target, width: u32, height: u32) -> Result<Session
         height = ready.height,
         "cha-stream/1 session up"
     );
-    Ok(Session {
+    let session = Session {
         video,
         audio,
         feedback,
@@ -204,7 +257,8 @@ pub async fn connect(target: &Target, width: u32, height: u32) -> Result<Session
         width: ready.width,
         height: ready.height,
         control: Box::new(control),
-    })
+    };
+    Ok((session, task))
 }
 
 /// Writes lines to the control stream, several to a write when they queue up.
@@ -246,6 +300,9 @@ struct Stats {
     recovered: u64,
     partial: u64,
     dropped_for_player: u64,
+    /// The longest time between two datagrams reaching the receiver.
+    max_datagram_gap: Duration,
+    last_datagram: Option<Instant>,
 }
 
 struct Task {
@@ -297,7 +354,12 @@ impl Task {
             tokio::select! {
                 datagram = conn.receive_datagram() => match datagram {
                     Ok(d) => {
-                        self.rx.on_datagram(Instant::now(), &d.payload());
+                        let now = Instant::now();
+                        if let Some(last) = self.stats.last_datagram.replace(now) {
+                            let gap = now.saturating_duration_since(last);
+                            self.stats.max_datagram_gap = self.stats.max_datagram_gap.max(gap);
+                        }
+                        self.rx.on_datagram(now, &d.payload());
                         self.drain();
                     }
                     Err(e) => break ended_from(&e),
@@ -354,6 +416,7 @@ impl Task {
             partial = self.stats.partial,
             dropped_for_the_player = self.stats.dropped_for_player,
             bad_datagrams = self.rx.dropped(),
+            max_datagram_gap_ms = self.stats.max_datagram_gap.as_secs_f64() * 1000.0,
             ?reason,
             "cha-stream/1 session over"
         );

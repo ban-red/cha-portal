@@ -25,3 +25,5 @@ cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+libc = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
