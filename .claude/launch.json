@@ -89,7 +89,8 @@
         "run",
         "dev"
       ],
-      "port": 7678
+      "port": 7678,
+      "autoPort": false
     },
     {
       "name": "s7-web",
