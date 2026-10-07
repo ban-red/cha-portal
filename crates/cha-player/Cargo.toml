@@ -1,0 +1,47 @@
+[package]
+name = "cha-player"
+version = "0.1.0"
+description = "The native game-streaming client, macOS first: winit, wgpu on Metal, VideoToolbox, CoreAudio, SDL3 gamepads (ADR 0010)"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = ["gamestream"]
+# The Moonlight transport: Sunshine and Apollo hosts, and Cha nodes.
+gamestream = ["dep:cha-client-gamestream"]
+# A fake host with an in-process VideoToolbox encoder, for trying the player
+# without a network. Always built on macOS; the feature only gates the flag.
+demo = []
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+cha-client = { path = "../cha-client" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+cha-client-gamestream = { path = "../cha-client-gamestream", optional = true }
+cpal = "0.18"
+egui = "0.35"
+egui-wgpu = "0.35"
+egui-winit = "0.35"
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-foundation = "0.3"
+objc2-metal = "0.3"
+objc2-video-toolbox = "0.3"
+opus = "0.4"
+pollster = "0.4"
+sdl3 = { version = "0.20", features = ["build-from-source-static"] }
+wgpu = "29"
+winit = "0.30"
