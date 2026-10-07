@@ -14,7 +14,7 @@ The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC,
 - **WAN:** delay-based rate control, FEC and reference-frame invalidation, so a stream adapts to loss and throttling instead of stalling.
 - **Input:** keyboard (with keyboard lock), mouse with pointer lock, text clipboard both ways, and virtual Xbox 360, DualSense and Steam Controller pads fed from the browser's Gamepad API or WebHID.
 - **Sound:** stereo Opus from our own PulseAudio-protocol server.
-- **Portal:** local accounts, an audit log, node enrollment with one-time join tokens, live CPU/RAM/GPU usage per node, placement across NVIDIA, Intel/AMD (VA-API) and CPU-only devices, per-user app data kept between launches, and a shared Steam library (optionally on a NAS).
+- **Portal:** local accounts, an audit log, nodes claimed in the portal with a pairing code when it finds them on the LAN (or enrolled with a one-time join token elsewhere), live CPU/RAM/GPU usage per node, placement across NVIDIA, Intel/AMD (VA-API) and CPU-only devices, per-user app data kept between launches, and a shared Steam library (optionally on a NAS).
 - **Remote access:** Tailscale or WireGuard, a port-forward, or your own TURN server. Nothing goes through a cha.sh service.
 
 Not yet: an external Moonlight host as a source, sharing a session with another user, a native client. See the [roadmap](docs/PLAN.md#9-roadmap).
@@ -32,7 +32,7 @@ Not yet: an external Moonlight host as a source, sharing a session with another 
 ```
 
 - **`cha-control`** is the portal: a Rust server with SQLite that serves the web app and the API. It only brokers sessions; media never passes through it.
-- **`cha-node`** runs on each GPU server. It enrolls with a join token, then holds one outbound WebSocket to the portal, so a node needs no inbound port for control. It starts environments through the Docker socket.
+- **`cha-node`** runs on each GPU server. It's claimed in the portal with the pairing code it logs (or enrolls with a join token), then holds one outbound WebSocket to the portal, so a node needs no inbound port for control. It starts environments through the Docker socket.
 - **`cha-streamer`** runs beside each environment's app container. It is the app's Wayland compositor, audio server and input devices, and it encodes and sends the picture straight to the browser.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md).
@@ -42,7 +42,7 @@ The full design is in [`docs/PLAN.md`](docs/PLAN.md).
 [`SETUP.md`](SETUP.md) walks through a first install, including a quick start with the portal and node on one machine. In short: you need a machine for the portal (anything that runs Docker) and a Linux server with a GPU for the node (NVIDIA with the Container Toolkit's CDI spec, an Intel or AMD GPU, or none at all for a CPU-only node).
 
 1. Start the portal with `docker compose -f deploy/portal/compose.yaml up -d --build`, and serve it over HTTPS (browsers only give gamepads, keyboard lock and audio worklets to secure pages).
-2. Build the streamer and environment images on the node, and start the agent with a join token from **Admin → Nodes → Add node**.
+2. Build or pull the streamer and environment images on the node, start the agent, and claim it under **Admin → Nodes → Found on your network** with the code from its log (or use a join token from **Add node**).
 3. Install the node's host files (`sudo deploy/node/host/install.sh`) and check it with `--doctor`.
 
 [`deploy/README.md`](deploy/README.md) has every step, setting and option: HTTPS, Tailscale, TURN, app data, NAS libraries and devices.

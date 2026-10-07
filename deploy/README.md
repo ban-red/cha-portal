@@ -26,7 +26,17 @@
    docker compose -f images/compose.yaml build
    ```
 
-   Then enroll it with a join token from **Admin → Nodes → Add node**:
+   Then start the agent and claim it. On the portal's LAN, start it with nothing else: it shows a pairing code in its log and appears in the portal under **Admin → Nodes → Found on your network**, where **Claim** asks for that code ([Claiming a node](#claiming-a-node)):
+
+   ```bash
+   docker compose -f deploy/node/compose.yaml up -d --build
+   ```
+
+   ```bash
+   docker compose -f deploy/node/compose.yaml logs agent
+   ```
+
+   Anywhere else (another subnet, a tailnet), enroll it with a join token from **Admin → Nodes → Add node** instead:
 
    ```bash
    CHA_PORTAL_URL=https://portal.example CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
@@ -47,6 +57,18 @@
    ```
 
    It checks Docker, the images, the GPU through CDI, NVIDIA's Wine DLLs for DLSS, PyroWave's Vulkan device, `/dev/uinput` and `/dev/uhid`, the kernel modules for the DualSense and Steam Controller, the Steam sandbox, whether the host files above are installed and current, the data root and any shared directories kept outside it, the home volumes left from before app data moved, the render node, user namespaces, the clock against the portal's (media tokens last 60 s), and the streamers' ports. It says how to fix each problem and changes nothing itself. The agent also logs a warning when it starts if the host files are missing or old.
+
+## Claiming a node
+
+An agent with no identity and no join token is **unclaimed** ([ADR 0007](../docs/adr/0007-claim-nodes-found-on-the-lan.md)):
+
+- It picks an 8-digit pairing code, logs it (`unclaimed: … claim "<name>" with code 4821-9375`), and keeps it in its state directory for `--doctor`, which shows it too.
+- It advertises itself on the LAN over mDNS (`_cha-node._tcp`), with its name, GPU and key fingerprint, and listens for a claim on TCP 7679 (`CHA_CLAIM_PORT`). It does both only until it is claimed.
+- The portal lists what it finds under **Admin → Nodes → Found on your network**. **Claim** asks for the code. The portal and the node then prove to each other that they know it, without sending it (SPAKE2), and the portal records the node's key as enrolled. No token or secret crosses the network.
+- Five wrong codes make the node pick a new one, logged, and refuse claims for 30 s.
+- After the claim, the node connects to its own `CHA_PORTAL_URL` if it has one, else to the URL the admin's browser used for the portal (or the portal's `CHA_PUBLIC_URL`). It refuses a plain-`http://` URL to another machine unless `CHA_ALLOW_INSECURE_PORTAL` is set, and the portal shows why.
+
+mDNS stays on one LAN: it doesn't cross subnets or a tailnet, where the join token is the way. The portal needs to see multicast, so its compose files run it on the host network. `CHA_DISCOVERY=false` on a node, or `CHA_DISCOVER_NODES=false` on the portal, turns this off.
 
 ## Published images
 
@@ -86,6 +108,7 @@ Every Cha Portal service sits in the 76xx range.
 | TCP 7676 | The portal (`cha-control`), `127.0.0.1` only by default |
 | TCP 7677 | The dev portal (`bun run dev`) |
 | TCP 7678 | The Vite dev server for the web app |
+| TCP 7679 | An unclaimed node agent, waiting for a claim; UDP 5353 for its mDNS advertisement |
 | 7600–7647 | Environment streamers: three ports each from `CHA_PORT_BASE` (TCP signalling on localhost, UDP WebRTC, UDP WebTransport), 16 environments by default |
 | TCP 7660, UDP 7661–7662 | A standalone `cha-streamer` (signalling, WebRTC, WebTransport) |
 
@@ -95,9 +118,11 @@ The spikes under `spikes/` keep their own ports.
 
 | Variable | Default | What |
 |---|---|---|
-| `CHA_PORTAL_URL` | (required) | The portal's URL: `https://`, or `http://` to this machine (a tunnel) |
+| `CHA_PORTAL_URL` | | The portal's URL: `https://`, or `http://` to this machine (a tunnel). Needed with a join token; when a claim enrolls the node, it is used instead of the URL the claim brings |
 | `CHA_ALLOW_INSECURE_PORTAL` | `false` | Development only: allow plain `http://` to another machine, e.g. a dev portal on your LAN (`CHA_LISTEN=0.0.0.0:7677 bun run dev`). The node's traffic, which can start containers here, then crosses the network unencrypted |
-| `CHA_JOIN_TOKEN` | | One-time, to enroll |
+| `CHA_JOIN_TOKEN` | | One-time, to enroll; without it (and without an identity) the agent waits to be claimed ([Claiming a node](#claiming-a-node)) |
+| `CHA_DISCOVERY` | `true` | An unclaimed agent advertises itself on the LAN and waits for a claim; `false` asks for a join token instead |
+| `CHA_CLAIM_PORT` | `7679` | Where an unclaimed agent listens for a claim |
 | `CHA_NODE_IMAGE` | `cha-node:dev` | The agent's image, for the compose file: the local build, or a published one ([Published images](#published-images)) |
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image: the local build, or a published one, which the agent pulls when it starts |
 | `CHA_IMAGE_REGISTRY` | | Run the environments from published images, e.g. `ghcr.io/ban-red` ([Published images](#published-images)); empty runs the ones built on the node. Must name a registry's host |
@@ -139,7 +164,9 @@ An environment runs on one **device** of a node (`docs/devices.md`), and the use
 
 | Variable | Default | What |
 |---|---|---|
-| `CHA_BIND` | `127.0.0.1:7676` | Where the compose file publishes the portal |
+| `CHA_BIND` | `127.0.0.1:7676` | Where the portal listens (the compose file passes it as `CHA_LISTEN`; the portal runs on the host network) |
+| `CHA_DISCOVER_NODES` | `true` | List unclaimed nodes found on the LAN ([Claiming a node](#claiming-a-node)) |
+| `CHA_PUBLIC_URL` | | The URL nodes should use for the portal after a claim; by default the one the admin's browser used |
 | `CHA_PORTAL_IMAGE` | `cha-portal:dev` | The portal's image: the local build, or a published one ([Published images](#published-images)) |
 | `CHA_SECURE_COOKIES` | `true` | Keep it on behind HTTPS |
 | `CHA_DOMAIN` | | For the `tls` profile (Caddy) |

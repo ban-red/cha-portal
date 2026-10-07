@@ -25,7 +25,7 @@ Tailscale (or plain WireGuard) is the simplest way to reach a homelab portal fro
    ```
 
    `tailscale serve status` shows the URL. Open it and claim the portal: the first visitor creates the first admin.
-5. **Add each node**: **Admin → Nodes → Add node**, then on the node:
+5. **Add each node**: **Admin → Nodes → Add node**, then on the node (a node on the portal's own LAN can instead be claimed with a pairing code, [Claiming a node](../../deploy/README.md#claiming-a-node); that discovery doesn't cross the tailnet):
 
    ```bash
    CHA_PORTAL_URL=https://portal-host.your-tailnet.ts.net CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build

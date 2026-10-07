@@ -211,9 +211,16 @@ else
         apt_install nvidia-container-toolkit
         did "installed the NVIDIA Container Toolkit"
     fi
-    # The spec names the driver's files, so it is made again after every
-    # driver update; regenerating an unchanged one is harmless.
-    if [ "$check_only" = 1 ]; then
+    # The CDI spec that gives containers the GPU. Toolkit 1.18 and later keep
+    # their own in /var/run/cdi (the nvidia-cdi-refresh service, regenerated
+    # after driver updates): then there's nothing to do, and a second spec in
+    # /etc/cdi would define the same devices twice. Otherwise we keep
+    # /etc/cdi/nvidia.yaml, made again on every run since it names the
+    # driver's files.
+    if have nvidia-ctk && [ ! -f /etc/cdi/nvidia.yaml ] &&
+        nvidia-ctk cdi list 2>/dev/null | grep -qx 'nvidia.com/gpu=all'; then
+        ok "CDI spec: nvidia.com/gpu=all, from the toolkit's own spec"
+    elif [ "$check_only" = 1 ]; then
         if [ -f /etc/cdi/nvidia.yaml ]; then
             ok "CDI spec /etc/cdi/nvidia.yaml (setup.sh regenerates it)"
         else
@@ -352,7 +359,7 @@ tag=$(git -c safe.directory="$repo" -C "$repo" describe --tags --exact-match 2>/
 if [ "$tag" = "v$version" ]; then
     ok "checkout is v$version"
 elif [ "$build" = 0 ]; then
-    echo "info       the checkout is ${tag:-not a release tag}; the published images are v$version's"
+    echo "info       the checkout is ${tag:-not a release tag}; the published images are $version's"
 else
     warn "the checkout is ${tag:-not a release tag}, not v$version: the environment images
            built from it may not match the streamer. Run: git checkout v$version"
@@ -423,14 +430,15 @@ compose="docker compose -f $repo/deploy/quickstart/compose.yaml"
 cat <<NEXT
 Done. Next (SETUP.md, "Quick start"):
 
-  $compose up -d portal
+  $compose up -d
   sudo tailscale up                 # once, if this machine isn't on your tailnet
   sudo tailscale serve --bg 7676    # HTTPS; 'tailscale serve status' prints the URL
 
 Open the portal's URL and claim it: the first visitor creates the first
-admin. Then add a node in the portal (Admin -> Nodes -> Add node) and start the agent:
+admin. Then claim this machine's node under Admin -> Nodes -> Found on your
+network, with the pairing code from the agent's log:
 
-  CHA_JOIN_TOKEN=chajoin_... $compose up -d
+  $compose logs agent | grep unclaimed
   $compose run --rm agent --doctor
 NEXT
 if [ "$owner" != root ] && ! id -nG "$owner" | grep -qw docker; then

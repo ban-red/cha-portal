@@ -357,7 +357,7 @@ These are targets to validate in Phase 0, not measured facts.
 ### 5.1 Enrollment, channel, reconciliation
 
 1. An admin clicks "Add node" and gets a **one-time join token** (128-bit, 60-minute TTL, stored hashed). The token embeds the portal URL plus a **pin of the portal's TLS cert/CA**, in the style of k3s `K10<hash>::`.
-2. On the node, `docker compose up` with `CHA_JOIN_TOKEN=…`. The agent generates an **Ed25519 node key** and redeems the token. The portal stores the public key. After that, the node authenticates at the application layer with its key, which works through any reverse proxy.
+2. On the node, `docker compose up` with `CHA_JOIN_TOKEN=…`, or, on the portal's LAN, with nothing: the unclaimed agent advertises itself over mDNS and the admin claims it with the pairing code it logs (SPAKE2, no secret on the wire; *built 2026-10-07*, [ADR 0007](adr/0007-claim-nodes-found-on-the-lan.md)). The agent generates an **Ed25519 node key** and redeems the token. The portal stores the public key. After that, the node authenticates at the application layer with its key, which works through any reverse proxy.
 3. The agent holds **one outbound WSS** connection, multiplexed with yamux and carrying protobuf RPC in both directions, as Coder does with dRPC. Heartbeats every 30 s; the node counts as offline after 3 misses (Nestri).
 4. **Desired-state reconciliation.** The portal writes desired environment state and the agent converges, so disconnects heal themselves. Commands are idempotent.
 5. **Inventory**, refreshed on change:

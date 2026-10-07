@@ -78,6 +78,45 @@ Signed-off-by: Jane Doe <jane@example.com>
 
 Use your real name, or the name you are known by, and an email address that reaches you. Don't sign off code you copied from somewhere whose licence you don't know or that isn't compatible with the AGPL (Magic Mirror / mm-server, for example, is under the BUSL). If you forgot, `git commit --amend -s` fixes the last commit and `git rebase --signoff main` fixes a branch. A check on each pull request looks for the line on every commit.
 
+## Releasing
+
+Maintainers only. A release is a `v*` tag on `main`, and every image is built from it by [`.github/workflows/publish.yml`](.github/workflows/publish.yml): the portal, the node agent, the streamer, the environments' base and the six environments, at `ghcr.io/ban-red/<name>`. All of them share the release's version, since the portal, agent, streamer and environments change together.
+
+Versions are [semver](https://semver.org) without the `v` in image tags: tag `v0.2.0` publishes `:0.2.0`, and every image also gets `:sha-<commit>`. There is no `latest`, so nodes stay on the version they were given.
+
+1. **Check `main` is green.** The `check` workflow passed on the commit you'll tag, and it ran on the node you test with.
+2. **Try the images first** (optional, worth it for a large change): **Actions → publish → Run workflow** on `main` builds and pushes `:sha-<commit>` without a release. A node runs those with `CHA_VERSION=sha-<commit>`.
+3. **Update the docs that name a version or the release state:** the examples in `SETUP.md` (`v0.1.0`, `--version 0.1.0`) and, before the first release, the README's pre-release note and SETUP's "the first release isn't tagged yet" line.
+4. **Tag and push:**
+
+   ```bash
+   git tag -a v0.2.0 -m "v0.2.0"
+   ```
+
+   ```bash
+   git push origin v0.2.0
+   ```
+
+5. **Watch the build** (about 15 minutes; Steam is the longest):
+
+   ```bash
+   gh run watch
+   ```
+
+6. **Publish the release notes** from the commits since the last tag:
+
+   ```bash
+   gh release create v0.2.0 --verify-tag --generate-notes
+   ```
+
+7. **Check an image** is pullable without signing in and carries its provenance:
+
+   ```bash
+   gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.2.0 --owner ban-red
+   ```
+
+A new image name (a new environment) starts out private on GitHub's registry: set it to Public in its package settings once, or nodes can't pull it. A bad release isn't deleted or retagged, since nodes may already run it: fix forward with the next patch version.
+
 ## Dependencies and licence
 
 Cha Portal is under the [AGPL-3.0-or-later](LICENSE). New dependencies must have a compatible licence (MIT, Apache-2.0, BSD, ISC, MPL-2.0, LGPL, GPL-3.0 or AGPL-3.0 are fine), and should be lean: say why a new one is worth it.

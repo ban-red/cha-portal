@@ -59,14 +59,14 @@ The first release isn't tagged yet, so there are no published images to pull: un
 
    </details>
 
-3. **Start the portal**, and give it HTTPS on your tailnet:
+3. **Start Cha Portal**, both the portal and this machine's node, and give the portal HTTPS on your tailnet:
 
    ```bash
    sudo tailscale up
    ```
 
    ```bash
-   docker compose -f deploy/quickstart/compose.yaml up -d portal
+   docker compose -f deploy/quickstart/compose.yaml up -d
    ```
 
    ```bash
@@ -77,13 +77,13 @@ The first release isn't tagged yet, so there are no published images to pull: un
 
 4. **Claim the portal.** Open that URL straight away: a fresh portal shows **Claim this portal**, where you pick the first admin's username and password. Whoever opens it first claims it.
 
-5. **Start the node.** In the portal, open **Admin → Nodes → Add node**, copy the join token, and start the agent with it:
+5. **Claim the node.** In the portal, open **Admin → Nodes**: this machine is under **Found on your network**. Click **Claim** and type the pairing code from the agent's log:
 
    ```bash
-   CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/quickstart/compose.yaml up -d
+   docker compose -f deploy/quickstart/compose.yaml logs agent
    ```
 
-   The agent pulls the streamer image, enrolls, and shows up under **Admin → Nodes**. The token works once; later starts don't need it.
+   The line reads `unclaimed: … claim "<machine>" with code 4821-9375`. The code proves you can see the node, since whoever claims it controls the machine; five wrong codes make it pick a new one. Once claimed, the node shows up under **Admin → Nodes** and later starts need nothing.
 
 6. **Check the node**, and fix anything it reports:
 
@@ -132,13 +132,21 @@ Now go to [First launch](#first-launch).
 
 **The browser** must reach the portal over **HTTPS**. Browsers only give gamepads, keyboard lock and audio worklets to secure pages, and the session cookie is marked Secure. The easy way is [Tailscale](https://tailscale.com), which gives the portal a real certificate without exposing anything to the internet. That is what this guide uses. Chrome and Safari are tested; Firefox works with H.264.
 
-### NVIDIA: generate the CDI spec
+### NVIDIA: the CDI spec
 
-On an NVIDIA node, after installing the Container Toolkit:
+Containers get the GPU through a CDI spec. The Container Toolkit 1.18 and later keep one themselves, in `/var/run/cdi`, refreshed after driver updates; check that it lists the GPU:
+
+```bash
+nvidia-ctk cdi list
+```
+
+If `nvidia.com/gpu=all` isn't there (an older toolkit), generate one, and run this again after every driver update:
 
 ```bash
 sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 ```
+
+Don't add one in `/etc/cdi` beside the toolkit's own: the GPU would then be defined twice.
 
 Check that containers can see the GPU:
 
@@ -146,7 +154,6 @@ Check that containers can see the GPU:
 docker run --rm --device nvidia.com/gpu=all ubuntu nvidia-smi
 ```
 
-Run the `generate` command again after every driver update.
 
 ## One machine, from source
 
@@ -196,13 +203,13 @@ The portal and the node on the same Linux machine, with the browser anywhere on 
    sudo deploy/node/host/install.sh
    ```
 
-7. **Enroll the node.** In the portal, open **Admin → Nodes → Add node** and copy the join token. The agent uses host networking, so it reaches the portal at `http://127.0.0.1:7676`, which it allows without TLS because it never leaves the machine:
+7. **Start and claim the node.** The agent uses host networking, so it reaches the portal at `http://127.0.0.1:7676`, which it allows without TLS because it never leaves the machine:
 
    ```bash
-   CHA_PORTAL_URL=http://127.0.0.1:7676 CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
+   CHA_PORTAL_URL=http://127.0.0.1:7676 docker compose -f deploy/node/compose.yaml up -d --build
    ```
 
-   The token is used once. Later starts only need `CHA_PORTAL_URL`; the node's identity is kept in the agent's `state` volume.
+   With no identity and no join token, it waits to be claimed and logs a pairing code (`docker compose -f deploy/node/compose.yaml logs agent`). In the portal, open **Admin → Nodes**, find it under **Found on your network**, check the fingerprint matches the log, and **Claim** it with the code. The node's identity is then kept in the agent's `state` volume, and later starts only need `CHA_PORTAL_URL`. (With `CHA_JOIN_TOKEN=…` from **Add node** instead, it enrolls with the token.)
 
 8. **Check the node:**
 
@@ -224,17 +231,25 @@ The same steps, split across machines. The portal can run on any small always-on
 CHA_DOMAIN=portal.example.com docker compose -f deploy/portal/compose.yaml --profile tls up -d --build
 ```
 
-**On each node:** clone the repository, then steps 5 and 6 of the same section. Enroll and check it with the portal's HTTPS URL:
+**On each node:** clone the repository, then steps 5 and 6 of the same section. On the portal's LAN, start the agent and claim it in the portal with the code from its log, as in step 7 ([Claiming a node](deploy/README.md#claiming-a-node)):
+
+```bash
+docker compose -f deploy/node/compose.yaml up -d --build
+```
+
+Across subnets or over a tailnet, where the portal can't see the node's broadcast, enroll it with a join token from **Admin → Nodes → Add node** and the portal's HTTPS URL instead:
 
 ```bash
 CHA_PORTAL_URL=https://portal-host.your-tailnet.ts.net CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d --build
 ```
 
+Then check it:
+
 ```bash
 CHA_PORTAL_URL=https://portal-host.your-tailnet.ts.net docker compose -f deploy/node/compose.yaml run --rm agent --doctor
 ```
 
-Set `CHA_NODE_NAME` to name a node in the portal. Every node needs its own join token. The portal only brokers sessions: the browser needs a UDP path to each node (ports 7600–7647 by default), and on a LAN or tailnet it already has one. For anything else, see [Reaching nodes](deploy/README.md#reaching-nodes).
+Set `CHA_NODE_NAME` to name a node in the portal. A join token works once: every node needs its own. The portal only brokers sessions: the browser needs a UDP path to each node (ports 7600–7647 by default), and on a LAN or tailnet it already has one. For anything else, see [Reaching nodes](deploy/README.md#reaching-nodes).
 
 ## Without HTTPS (a trusted LAN only)
 
@@ -263,11 +278,13 @@ Skip the `tailscale serve` step, and open `http://<portal-host>:7676`.
 
 **A node on the same machine** needs nothing more: the agent reaches the portal over loopback, which never leaves the machine.
 
-**A node on another machine** must be told to accept plain HTTP to the portal, or it refuses to connect:
+**A node on another machine** must be told to accept plain HTTP to the portal, or it refuses to connect, and refuses a claim from it:
 
 ```bash
-CHA_PORTAL_URL=http://portal-host.lan:7676 CHA_ALLOW_INSECURE_PORTAL=true CHA_JOIN_TOKEN=chajoin_… docker compose -f deploy/node/compose.yaml up -d
+CHA_PORTAL_URL=http://portal-host.lan:7676 CHA_ALLOW_INSECURE_PORTAL=true docker compose -f deploy/node/compose.yaml up -d
 ```
+
+Then claim it in the portal with the code from its log, or add `CHA_JOIN_TOKEN=…` to enroll with a token.
 
 Put both `CHA_PORTAL_URL` and `CHA_ALLOW_INSECURE_PORTAL=true` in `deploy/node/.env`, so later runs and `--doctor` get them too. The agent logs a warning on every start while the flag is set.
 
