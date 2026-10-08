@@ -167,13 +167,19 @@ pub(super) fn tls_config(
     let cert =
         CertificateDer::from_pem_slice(identity.cert_pem().as_bytes()).map_err(|e| tls(&e))?;
     let key = PrivateKeyDer::from_pem_slice(identity.key_pem().as_bytes()).map_err(|e| tls(&e))?;
-    let config = ClientConfig::builder_with_provider(CryptoProvider::clone(&provider).into())
+    let mut config = ClientConfig::builder_with_provider(CryptoProvider::clone(&provider).into())
         .with_safe_default_protocol_versions()
         .map_err(|e| tls(&e))?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_client_auth_cert(vec![cert], key)
         .map_err(|e| tls(&e))?;
+    // Every request is a new connection, and rustls would resume the last
+    // one's session. Sunshine and its forks (Apollo, Vibepollo) ask for a
+    // client certificate without setting OpenSSL's session id context, so
+    // OpenSSL refuses any resumption with an `internal_error` alert: the
+    // first HTTPS request works and the second fails.
+    config.resumption = rustls::client::Resumption::disabled();
     Ok(Arc::new(config))
 }
 
