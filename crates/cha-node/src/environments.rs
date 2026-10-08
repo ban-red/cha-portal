@@ -2708,13 +2708,15 @@ mod tests {
         let port = rt.allocate("e1").unwrap();
         rt.allocate_gamestream("e1", port).unwrap();
         assert!(rt.gamestream_access("e1").is_none());
-        let s = rt.streamer_config(&spec(SecurityProfile::Standard), port);
+        let sp = spec(SecurityProfile::Standard);
+        let s = rt.streamer_config(&sp, port);
         assert!(!cmd_of(&s).iter().any(|a| a.contains("gamestream")));
         assert_eq!(
             s["Env"],
             json!([
                 format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"),
-                "RUST_LOG=info,smithay=warn,str0m=warn"
+                "RUST_LOG=info,smithay=warn,str0m=warn",
+                format!("CHA_PAD_IDENTITY={}/{}", sp.owner, sp.template),
             ])
         );
         assert!(s["Labels"].get(LABEL_GAMESTREAM_PORTS).is_none());
