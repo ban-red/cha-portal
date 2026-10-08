@@ -25,6 +25,7 @@ const PREFS = join(ROOT, "web/packages/ui-spec/prefs.json");
 const PREFS_CASES = join(ROOT, "web/packages/ui-spec/prefs-cases.json");
 const TOOLBAR = join(ROOT, "web/packages/ui-spec/toolbar.json");
 const TOOLBAR_CASES = join(ROOT, "web/packages/ui-spec/toolbar-cases.json");
+const CAPTURE_CASES = join(ROOT, "web/packages/ui-spec/capture-cases.json");
 const THEMES_INDEX = join(ROOT, "web/apps/portal/src/themes/index.ts");
 const PORTAL_SRC = join(ROOT, "web/apps/portal/src");
 const errors: string[] = [];
@@ -917,7 +918,18 @@ function checkRow(r: Obj, menuId: string, platforms: string[], at: string) {
   void menuId;
 }
 
-if (!isNum(toolbar.timing && (toolbar.timing as Obj).fold_after_ms) || !isNum(toolbar.timing && (toolbar.timing as Obj).near_top_px)) fail("toolbar.json: timing needs numbers fold_after_ms and near_top_px");
+for (const k of ["fold_after_ms", "near_top_px", "release_hold_ms", "release_hint_ms"]) {
+  if (!isNum(toolbar.timing && (toolbar.timing as Obj)[k])) fail(`toolbar.json: timing needs a number ${k}`);
+}
+{
+  const t = (isObj(toolbar.timing) ? toolbar.timing : {}) as Obj;
+  if (isNum(t.release_hold_ms) && isNum(t.release_hint_ms) && !(0 < t.release_hint_ms && t.release_hint_ms < t.release_hold_ms)) {
+    fail("toolbar.json: timing.release_hint_ms is above 0 and below release_hold_ms");
+  }
+  checkTbText(toolbar.release_hint, [], "toolbar.json release_hint");
+  const ps = isObj(toolbar.release_hint) ? Object.keys(toolbar.release_hint) : [];
+  if (ps.length && !(ps.includes("web") && ps.includes("native"))) fail("toolbar.json: release_hint has words for both web and native");
+}
 {
   const p = (isObj(toolbar.power_off) ? toolbar.power_off : {}) as Obj;
   if (!isNum(p.seconds) || (p.seconds as number) <= 0) fail("toolbar.json: power_off.seconds is a positive number");
@@ -1174,6 +1186,45 @@ for (const file of files(PORTAL_SRC)) {
   }
 }
 
+// --- capture-cases.json: the hold-Esc release ---
+const captureCases = JSON.parse(readFileSync(CAPTURE_CASES, "utf8")) as Obj;
+const escEvents = ["down", "repeat", "up", "blur", "tick", "uncapture"];
+{
+  const at = "capture-cases.json";
+  unknownKeys(captureCases, ["notes", "timing", "cases"], at);
+  const t = (isObj(captureCases.timing) ? captureCases.timing : {}) as Obj;
+  const spec = (isObj(toolbar.timing) ? toolbar.timing : {}) as Obj;
+  for (const k of ["release_hold_ms", "release_hint_ms"]) {
+    if (t[k] !== spec[k]) fail(`${at}: timing.${k} is ${String(t[k])}, toolbar.json says ${String(spec[k])} (the cases were worked out with the first)`);
+  }
+}
+const escCaseList = (Array.isArray(captureCases.cases) ? captureCases.cases : []) as Obj[];
+if (escCaseList.length < 10) fail(`capture-cases.json: at least 10 cases (has ${escCaseList.length})`);
+const escNames = new Set<string>();
+const escSeenEvents = new Set<string>();
+for (const c of escCaseList) {
+  const at = `capture-cases.json "${String(c.name)}"`;
+  unknownKeys(c, ["name", "steps"], at);
+  if (typeof c.name !== "string" || !c.name || escNames.has(c.name)) fail(`${at}: names are unique`);
+  escNames.add(String(c.name));
+  const steps = (Array.isArray(c.steps) ? c.steps : []) as Obj[];
+  if (!steps.length) fail(`${at}: needs steps`);
+  let last = -1;
+  steps.forEach((st, n) => {
+    const a = `${at} step ${n}`;
+    unknownKeys(st, ["t", "ev", "captured", "host", "release", "hint"], a);
+    if (!isNum(st.t) || st.t < last) fail(`${a}: t is a number, not before the step above`);
+    else last = st.t;
+    if (typeof st.ev !== "string" || !escEvents.includes(st.ev)) fail(`${a}: ev is one of ${escEvents.join(", ")}`);
+    else escSeenEvents.add(st.ev);
+    if (st.captured !== undefined && typeof st.captured !== "boolean") fail(`${a}: captured is true or false`);
+    if (st.host !== undefined && st.host !== "down" && st.host !== "up") fail(`${a}: host is down or up`);
+    if (st.release !== undefined && st.release !== true) fail(`${a}: release is true when set`);
+    if (st.hint !== undefined && !(isNum(st.hint) && st.hint > 0 && st.hint <= 1)) fail(`${a}: hint is a progress above 0, up to 1`);
+  });
+}
+for (const ev of escEvents) if (!escSeenEvents.has(ev)) fail(`capture-cases.json: no case uses the event "${ev}"`);
+
 if (errors.length) {
   for (const e of errors) console.error(e);
   console.error(`ui-spec check failed: ${errors.length} problem(s)`);
@@ -1183,5 +1234,5 @@ console.log(
   `ui-spec ok: ${Object.keys(icons).length} icons, ${used} uses in the portal; ${issueSpecs.length} health issues ` +
     `(${placeholderUses} placeholders), ${cases.length} health cases (${caseCount.shared} shared, ${caseCount.web} web-only, ${caseCount.native} native-only), ${fillCases.length} fill cases; ` +
     `saved settings: ${[...prefCover.keys()].length} fields, ${prefCases.length} cases; stats panel: ${seenSections.size} sections, ${panelRows} rows, ${panelTemplates} templates, ${panelCases.length} cases, ${formatNames.size} format cases; ` +
-    `toolbar: ${tbControls.length} controls, ${tbRows} menu rows, ${Object.keys(tbCaps).length} capabilities, ${tbTemplates} templates, ${tbCaseList.length} cases`,
+    `toolbar: ${tbControls.length} controls, ${tbRows} menu rows, ${Object.keys(tbCaps).length} capabilities, ${tbTemplates} templates, ${tbCaseList.length} cases; hold-Esc: ${escCaseList.length} cases`,
 );

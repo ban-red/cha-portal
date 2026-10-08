@@ -154,6 +154,8 @@ struct Stream {
     overlay_wanted: Option<u8>,
     /// Esc closed a menu: its release is not sent either.
     swallow_escape_up: bool,
+    /// Holding Esc with the pointer captured lets go of it.
+    esc: cha_ui_spec::esc_hold::EscHold,
 }
 
 struct App {
@@ -659,6 +661,7 @@ impl App {
                     held: 0,
                     overlay_wanted: prefs.overlay,
                     swallow_escape_up: false,
+                    esc: cha_ui_spec::esc_hold::EscHold::from_spec(),
                 });
                 if let Some(w) = self.window() {
                     w.set_title(
@@ -767,9 +770,53 @@ impl App {
         }
         if let Some(stream) = &mut self.stream {
             stream.locked = lock;
+            // Let go some other way (the toolbar hotkey) mid-hold: the hold is moot. One that
+            // released has already finished and keeps swallowing the key-up.
+            if !lock && stream.esc.holding() {
+                stream.esc.uncapture();
+            }
         }
         if lock {
             self.toolbar.on_capture();
+        }
+    }
+
+    /// Milliseconds on the clock the Esc hold runs on.
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Carry out what the Esc hold decided: Esc's key event to the host, and letting go of the
+    /// pointer.
+    fn apply_esc(&mut self, step: cha_ui_spec::esc_hold::Step) {
+        use cha_ui_spec::esc_hold::HostKey;
+        if let (Some(key), Some(stream)) = (step.host, &mut self.stream) {
+            let down = key == HostKey::Down;
+            for (code, down) in stream
+                .keys
+                .translate(winit::keyboard::KeyCode::Escape, down)
+            {
+                stream.running.control.input(cha_client::Input::Key {
+                    code: code.to_string(),
+                    down,
+                });
+            }
+        }
+        if step.release {
+            self.set_locked(None, false);
+        }
+        self.request_redraw();
+    }
+
+    /// Fire the Esc hold's release if its time has come.
+    fn poll_esc(&mut self) {
+        let now = self.now_ms();
+        let Some(stream) = &mut self.stream else {
+            return;
+        };
+        let step = stream.esc.tick(now);
+        if step.host.is_some() || step.release {
+            self.apply_esc(step);
         }
     }
 
@@ -887,6 +934,18 @@ impl App {
                     {
                         return true;
                     }
+                    // Esc goes to the host as every key does; held with the pointer captured it
+                    // also lets go of the pointer. Repeats are dropped, as for every key.
+                    let now = self.now_ms();
+                    if let Some(stream) = &mut self.stream {
+                        let step = if down {
+                            stream.esc.key_down(now, *repeat, stream.locked)
+                        } else {
+                            stream.esc.key_up(now)
+                        };
+                        self.apply_esc(step);
+                    }
+                    return true;
                 }
                 if down && let Some(hotkey) = input::hotkey(*code, self.modifiers) {
                     self.hotkey(hotkey);
@@ -980,10 +1039,12 @@ impl App {
                 true
             }
             WindowEvent::Focused(false) => {
-                self.set_locked(None, false);
-                if let Some(stream) = &self.stream {
+                if let Some(stream) = &mut self.stream {
+                    // A held Esc is let go with the rest below; its real key-up is dropped.
+                    stream.esc.blur();
                     stream.running.control.release_all();
                 }
+                self.set_locked(None, false);
                 false
             }
             _ => false,
@@ -993,6 +1054,7 @@ impl App {
     // ---- drawing ----------------------------------------------------------
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        self.poll_esc();
         if let Some(retry) = self.surface_retry {
             if Instant::now() < retry {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(retry));
@@ -1337,6 +1399,11 @@ impl App {
             self.input_access = (pads::input_access(), Instant::now());
         }
         let open_pads = pads::open_pads();
+        // Esc held with the pointer captured: the hint and how far the hold is.
+        let esc_now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let esc_hint = stream.esc.hint(esc_now);
+        let esc_wake = esc_wake(&stream.esc, esc_now);
+        let esc_opacity = self.panel.prefs.opacity;
         let toolbar_view = ui::ToolbarView {
             title: &stream.title,
             transport: &stream.transport,
@@ -1363,6 +1430,9 @@ impl App {
             if let Some(text) = &reconnecting {
                 ui::show_reconnecting(ui.ctx(), text, inset);
             }
+            if let Some(progress) = esc_hint {
+                ui::show_release_hint(ui.ctx(), release_hint_text(), progress, esc_opacity, inset);
+            }
         });
         gfx.egui.paint(&gfx.gpu, &mut encoder, &view, &frame, None);
         // Hover feedback, a tooltip or the settings strip timing out: wake
@@ -1373,6 +1443,13 @@ impl App {
             let due = Instant::now() + frame.repaint_after;
             self.launcher_due = Some(due);
             event_loop.set_control_flow(ControlFlow::WaitUntil(due));
+        }
+        // A held Esc has to wake the loop: to show the hint, to fill its bar, to release.
+        if let Some(wake) = esc_wake
+            && self.launcher_due.is_none_or(|d| d > wake)
+        {
+            self.launcher_due = Some(wake);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
         }
         gfx.gpu.queue.submit([encoder.finish()]);
         if let Some(pyro) = &mut gfx.pyro {
@@ -1484,6 +1561,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         if let StartCause::ResumeTimeReached { .. } = cause {
+            self.poll_esc();
             if self.options.frames.is_some() {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(
                     Instant::now() + Duration::from_secs(1),
@@ -1647,6 +1725,25 @@ impl ApplicationHandler<UserEvent> for App {
                 });
         }
     }
+}
+
+/// When a held Esc needs the loop awake again: at the hint's delay, then every frame of the bar's
+/// progress, until the release.
+fn esc_wake(esc: &cha_ui_spec::esc_hold::EscHold, now_ms: u64) -> Option<Instant> {
+    let due = esc.due()?;
+    let wake_ms = match esc.hint_due() {
+        Some(hint) if now_ms < hint => hint,
+        _ => (now_ms + 16).min(due),
+    };
+    Some(Instant::now() + Duration::from_millis(wake_ms.saturating_sub(now_ms)))
+}
+
+/// The hold-Esc hint's words, from the spec.
+fn release_hint_text() -> &'static str {
+    cha_ui_spec::toolbar::spec()
+        .release_hint
+        .get(cha_ui_spec::health::Platform::Native)
+        .unwrap_or_default()
 }
 
 /// The window's clear colour for `canvas`: an sRGB surface wants linear

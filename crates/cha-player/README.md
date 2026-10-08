@@ -64,10 +64,11 @@ A stream that drops (a Wi-Fi blip, the node's network, nothing heard for 4 secon
 | Ctrl+Alt+Shift+X | leave and quit the app on the host |
 | Ctrl+Alt+Shift+S | show or hide the stats panel |
 | Ctrl+Alt+Shift+T | show the toolbar, and release the pointer if it is captured |
-| Esc | closes an open toolbar menu or cancels a power-off countdown; otherwise it goes to the app |
+| Esc | closes an open toolbar menu or cancels a power-off countdown; otherwise it goes to the app, at once, as a tap |
+| hold Esc (1 s) | with the pointer captured: release the pointer (after 0.3 s a bar shows the hold filling); Esc's key-up goes to the host and your real key-up is dropped. Click the picture to capture again |
 | Cmd+Ctrl+F | full screen (also in the launcher) |
 
-Losing focus releases the pointer and every held key and button. Relative motion is sent 1:1 in the units macOS reports (not scaled to the picture). Cmd+Q still quits the player.
+The hold is `cha_ui_spec::esc_hold::EscHold` (pure state, shared cases in `capture-cases.json`); the lengths and the hint's words are `toolbar.json`'s. winit's key repeats for a held Esc are dropped like every key's (the host repeats keys itself) and neither restart nor break the hold; losing focus cancels it. Losing focus releases the pointer and every held key and button. Relative motion is sent 1:1 in the units macOS reports (not scaled to the picture). Cmd+Q still quits the player.
 
 While the pointer is free, the toolbar and the stats panel are clickable: a click, drag or scroll on either belongs to it, so it captures no pointer and nothing is sent to the host. Everywhere else the pointer behaves as above. While the pointer is captured every event goes to the stream. The keyboard always goes to the stream; the panel needs no typing.
 

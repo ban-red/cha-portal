@@ -118,7 +118,9 @@ export interface ToolbarStateSpec {
 
 export interface ToolbarSpec {
   notes: string;
-  timing: { fold_after_ms: number; near_top_px: number };
+  timing: { fold_after_ms: number; near_top_px: number; release_hold_ms: number; release_hint_ms: number };
+  /** The hold-Esc hint's words. */
+  release_hint: PlatformText;
   power_off: {
     seconds: number;
     default_name: string;

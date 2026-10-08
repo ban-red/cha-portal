@@ -1,0 +1,435 @@
+{
+  "notes": "Shared cases for the hold-Esc release (EscHold in web/packages/player/src/escHold.ts and crates/cha-ui-spec/src/esc_hold.rs). A case is a list of timed steps. ev is down, repeat (auto-repeat of a held key), up, blur (focus lost; the player's own release-all sends Esc's key-up), tick (time passes; the timer fired) or uncapture (the pointer was released some other way). captured (default true) says whether the pointer is captured and Esc reaches the page, for down and repeat. After each step: host is the Esc key event sent to the host by that step (down, up or none), release is true when that step let go of the pointer, and hint is the progress bar (0..1) shown after the step, or absent when hidden. The hold and hint lengths are toolbar.json's timing; timing here pins them so a change fails these cases.",
+  "timing": {
+    "release_hold_ms": 1000,
+    "release_hint_ms": 300
+  },
+  "cases": [
+    {
+      "name": "a tap goes to the host as it is",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 150,
+          "ev": "up",
+          "host": "up"
+        }
+      ]
+    },
+    {
+      "name": "holding releases at the threshold and swallows the real key-up",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 299,
+          "ev": "tick"
+        },
+        {
+          "t": 300,
+          "ev": "tick",
+          "hint": 0.3
+        },
+        {
+          "t": 500,
+          "ev": "tick",
+          "hint": 0.5
+        },
+        {
+          "t": 999,
+          "ev": "tick",
+          "hint": 0.999
+        },
+        {
+          "t": 1000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        },
+        {
+          "t": 1400,
+          "ev": "up"
+        }
+      ]
+    },
+    {
+      "name": "the hint appears at its delay and not before",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 299,
+          "ev": "tick"
+        },
+        {
+          "t": 300,
+          "ev": "tick",
+          "hint": 0.3
+        }
+      ]
+    },
+    {
+      "name": "letting go before the threshold sends a normal key-up and hides the hint",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 600,
+          "ev": "tick",
+          "hint": 0.6
+        },
+        {
+          "t": 700,
+          "ev": "up",
+          "host": "up"
+        }
+      ]
+    },
+    {
+      "name": "blur during the hold cancels it, and the real key-up is dropped",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 500,
+          "ev": "tick",
+          "hint": 0.5
+        },
+        {
+          "t": 600,
+          "ev": "blur",
+          "host": "up"
+        },
+        {
+          "t": 1500,
+          "ev": "tick"
+        },
+        {
+          "t": 2000,
+          "ev": "up"
+        }
+      ]
+    },
+    {
+      "name": "blur after the release changes nothing",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 1000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        },
+        {
+          "t": 1100,
+          "ev": "blur"
+        },
+        {
+          "t": 2000,
+          "ev": "up"
+        }
+      ]
+    },
+    {
+      "name": "repeats are dropped and do not move the hint",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 500,
+          "ev": "repeat",
+          "hint": 0.5
+        },
+        {
+          "t": 550,
+          "ev": "repeat",
+          "hint": 0.55
+        },
+        {
+          "t": 1000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        },
+        {
+          "t": 1100,
+          "ev": "repeat"
+        },
+        {
+          "t": 1200,
+          "ev": "repeat"
+        },
+        {
+          "t": 1300,
+          "ev": "up"
+        }
+      ]
+    },
+    {
+      "name": "a repeat does not restart the hold",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 900,
+          "ev": "repeat",
+          "hint": 0.9
+        },
+        {
+          "t": 1000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        }
+      ]
+    },
+    {
+      "name": "a second hold after recapturing releases again",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 1000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        },
+        {
+          "t": 1100,
+          "ev": "up"
+        },
+        {
+          "t": 2000,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 2300,
+          "ev": "tick",
+          "hint": 0.3
+        },
+        {
+          "t": 3000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        },
+        {
+          "t": 3100,
+          "ev": "up"
+        }
+      ]
+    },
+    {
+      "name": "recapturing while Esc is still held: the repeats and the key-up stay ours",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 1000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        },
+        {
+          "t": 1500,
+          "ev": "repeat"
+        },
+        {
+          "t": 1600,
+          "ev": "up"
+        },
+        {
+          "t": 1700,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 1800,
+          "ev": "up",
+          "host": "up"
+        }
+      ]
+    },
+    {
+      "name": "not captured: Esc goes to the host as usual, with no hold",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "captured": false,
+          "host": "down"
+        },
+        {
+          "t": 2000,
+          "ev": "tick"
+        },
+        {
+          "t": 2100,
+          "ev": "up",
+          "host": "up"
+        }
+      ]
+    },
+    {
+      "name": "not captured: repeats are dropped too",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "captured": false,
+          "host": "down"
+        },
+        {
+          "t": 500,
+          "ev": "repeat",
+          "captured": false
+        },
+        {
+          "t": 900,
+          "ev": "up",
+          "host": "up"
+        }
+      ]
+    },
+    {
+      "name": "losing the capture mid-hold cancels the hold; the key-up goes to the host",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 400,
+          "ev": "uncapture"
+        },
+        {
+          "t": 1500,
+          "ev": "tick"
+        },
+        {
+          "t": 1600,
+          "ev": "up",
+          "host": "up"
+        }
+      ]
+    },
+    {
+      "name": "a key-up that arrives after the timer should have fired still releases, once",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 1200,
+          "ev": "up",
+          "host": "up",
+          "release": true
+        }
+      ]
+    },
+    {
+      "name": "a new press after a lost key-up starts a new hold",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 1000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        },
+        {
+          "t": 1500,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 1600,
+          "ev": "up",
+          "host": "up"
+        }
+      ]
+    },
+    {
+      "name": "a repeat with no press before it is dropped",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "repeat"
+        },
+        {
+          "t": 100,
+          "ev": "up",
+          "host": "up"
+        }
+      ]
+    },
+    {
+      "name": "a long stall between events does not fire early or twice",
+      "steps": [
+        {
+          "t": 0,
+          "ev": "down",
+          "host": "down"
+        },
+        {
+          "t": 5000,
+          "ev": "tick",
+          "host": "up",
+          "release": true
+        },
+        {
+          "t": 5001,
+          "ev": "tick"
+        },
+        {
+          "t": 6000,
+          "ev": "tick"
+        },
+        {
+          "t": 6100,
+          "ev": "up"
+        }
+      ]
+    }
+  ]
+}

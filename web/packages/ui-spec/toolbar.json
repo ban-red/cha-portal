@@ -2,7 +2,13 @@
   "notes": "The in-stream toolbar: the controls in order, the menus they open, and what each says. buildToolbar (toolbar.ts) and build_toolbar (cha-ui-spec's toolbar.rs) turn this, the session's state and the capabilities it reports into the controls to draw. A condition is a state key that must be present (not null, false, empty or an empty list; a number, even 0, is present), '!key' (absent), 'key=value', 'key!=value' or 'key>number'. A text is a template ({name} for a string, {name:int} for a number; a missing value reads the dash) or { web, native } where the words differ; a platform left out has none. A variant ({ when, platforms, ...fields }) overrides fields of its control, row or option while its conditions hold; every matching variant applies, in order, so a later one wins. A row or control shows when its platform is listed, its needs are all reported, none of its lacks is, and its when conditions hold.",
   "timing": {
     "fold_after_ms": 1200,
-    "near_top_px": 72
+    "near_top_px": 72,
+    "release_hold_ms": 1000,
+    "release_hint_ms": 300
+  },
+  "release_hint": {
+    "web": "Keep holding Esc to release the mouse and keyboard",
+    "native": "Keep holding Esc to release the mouse"
   },
   "power_off": {
     "seconds": 5,
@@ -326,8 +332,8 @@
       "icon": "exclusive-input",
       "aria_label": "Exclusive input",
       "tooltip": {
-        "web": "Exclusive input: the mouse is captured for games; Esc releases it (hold Esc in full screen on Chrome)",
-        "native": "Exclusive input: capture the mouse for games. Ctrl+Alt+Shift+T lets it go"
+        "web": "Exclusive input: the mouse is captured for games. Hold Esc to release it",
+        "native": "Exclusive input: capture the mouse for games. Hold Esc (or press Ctrl+Alt+Shift+T) to let it go"
       },
       "pressed": ["recapture"],
       "states": [

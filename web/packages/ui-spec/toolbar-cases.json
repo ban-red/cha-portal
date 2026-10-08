@@ -116,7 +116,7 @@
           "capture": {
             "icon": "exclusive-input",
             "aria_label": "Exclusive input",
-            "tooltip": "Exclusive input: the mouse is captured for games; Esc releases it (hold Esc in full screen on Chrome)",
+            "tooltip": "Exclusive input: the mouse is captured for games. Hold Esc to release it",
             "pressed": false,
             "disabled": false
           },
@@ -175,7 +175,7 @@
           "stream": { "icon": "stream-settings", "tooltip": "Stream settings: codec, frame rate, transport" },
           "capture": {
             "icon": "exclusive-input",
-            "tooltip": "Exclusive input: capture the mouse for games. Ctrl+Alt+Shift+T lets it go"
+            "tooltip": "Exclusive input: capture the mouse for games. Hold Esc (or press Ctrl+Alt+Shift+T) to let it go"
           },
           "mouse": {
             "icon": "mouse-on",

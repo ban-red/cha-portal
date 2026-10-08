@@ -8,7 +8,10 @@
 // event (no permission prompt) supplies the local clipboard, which goes up
 // first, so the app pastes what was copied here.
 
+import { TOOLBAR } from "@cha/ui-spec";
+
 import { CaptureMode, type CaptureView } from "./captureMode";
+import { EscHold, type EscStep } from "./escHold";
 
 type Send = (msg: Record<string, unknown>) => void;
 
@@ -19,6 +22,12 @@ export interface InputOptions {
   commandAsControl?: boolean;
   /** Mouse capture changed: captured, released by the browser (recapture mode), or off. */
   onCapture?: (view: CaptureView) => void;
+  /**
+   * Esc is being held with the mouse captured and Esc reaching the page (Keyboard Lock, full screen):
+   * the hold's progress, 0..1, once the hint is due, and null when it is not shown. Holding Esc to the
+   * end lets go of the mouse.
+   */
+  onEscHold?: (progress: number | null) => void;
 }
 
 /** How long a paste shortcut waits for the browser's paste event. */
@@ -38,6 +47,11 @@ export class InputCapture {
   private readonly capture = new CaptureMode();
   private hintTimer: ReturnType<typeof setTimeout> | null = null;
   private keyboardLock = false;
+  /** Hold Esc to let go of the mouse (timing from toolbar.json). */
+  private readonly esc = new EscHold(TOOLBAR.timing.release_hold_ms, TOOLBAR.timing.release_hint_ms);
+  private escTimer: ReturnType<typeof setTimeout> | null = null;
+  private escFrame: number | null = null;
+  private escShown: number | null = null;
   /** Off: the mouse (moves, buttons, wheel) is not sent; the keyboard still is. */
   private mouseOn = true;
   private heldPaste: { code: string; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -145,6 +159,54 @@ export class InputCapture {
     this.syncKeyboardLock();
   }
 
+  /** Esc reaches the page and the mouse is captured: holding it lets go of the mouse. */
+  private get escCaptured(): boolean {
+    return this.locked && this.keyboardLock;
+  }
+
+  /** Carry out what an Esc event decided, and (re)arm the timers that follow the hold. */
+  private applyEsc(step: EscStep): void {
+    if (step.host === "down") {
+      this.keys.add("Escape");
+      this.send({ k: "key", code: "Escape", down: true });
+    } else if (step.host === "up") {
+      this.keys.delete("Escape");
+      this.send({ k: "key", code: "Escape", down: false });
+    }
+    if (step.release && this.locked) document.exitPointerLock();
+    this.armEsc();
+  }
+
+  /** While Esc is held: fire the release on time, and report the hint's progress each frame. */
+  private armEsc(): void {
+    if (this.escTimer) clearTimeout(this.escTimer);
+    if (this.escFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.escFrame);
+    this.escTimer = null;
+    this.escFrame = null;
+    const due = this.esc.due();
+    if (due === null) {
+      this.showEsc(null);
+      return;
+    }
+    this.escTimer = setTimeout(() => {
+      this.escTimer = null;
+      this.applyEsc(this.esc.tick(performance.now()));
+    }, Math.max(0, due - performance.now()));
+    const frame = () => {
+      this.escFrame = null;
+      if (!this.esc.holding) return;
+      this.showEsc(this.esc.hint(performance.now()));
+      if (typeof requestAnimationFrame === "function") this.escFrame = requestAnimationFrame(frame);
+    };
+    frame();
+  }
+
+  private showEsc(progress: number | null): void {
+    if (progress === this.escShown) return;
+    this.escShown = progress;
+    this.options.onEscHold?.(progress);
+  }
+
   /** Keyboard Lock needs full screen, and we want it only while the mouse is captured too. */
   private syncKeyboardLock(): void {
     const kb = (navigator as Navigator & { keyboard?: { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void } })
@@ -154,11 +216,15 @@ export class InputCapture {
     if (want === this.keyboardLock) return;
     this.keyboardLock = want;
     if (want) {
+      // Every key, not just Escape: Chrome only lets Esc through when it is in the list, and the
+      // browser's own shortcuts (Ctrl+W, Ctrl+T, F11...) should reach the game while the mouse is captured.
       kb.lock().catch(() => {
         this.keyboardLock = false;
       });
     } else {
       kb.unlock?.();
+      // Esc no longer reaches us: a hold in progress is over.
+      this.applyEsc(this.esc.blur());
     }
   }
 
@@ -199,6 +265,11 @@ export class InputCapture {
 
   dispose(): void {
     this.clearHintTimer();
+    if (this.escTimer) clearTimeout(this.escTimer);
+    if (this.escFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.escFrame);
+    this.escTimer = null;
+    this.escFrame = null;
+    this.showEsc(null);
     if (this.keyboardLock) {
       this.keyboardLock = false;
       (navigator as Navigator & { keyboard?: { unlock?: () => void } }).keyboard?.unlock?.();
@@ -290,6 +361,12 @@ export class InputCapture {
     const pasting = down && code === "KeyV" && (e.ctrlKey || e.metaKey) && !e.altKey && this.options.onPaste;
     // Let the browser fire its paste event; everything else stays ours.
     if (!pasting) e.preventDefault();
+    if (code === "Escape") {
+      // Down goes to the host at once; held long enough with the mouse captured, it also lets go
+      // of the mouse. Repeats are dropped, like every key's.
+      this.applyEsc(down ? this.esc.keyDown(performance.now(), e.repeat, this.escCaptured) : this.esc.keyUp(performance.now()));
+      return;
+    }
     if (e.repeat) return; // the app repeats held keys itself
     if (pasting) {
       if (this.heldPaste) return;
@@ -330,6 +407,8 @@ export class InputCapture {
   }
 
   private releaseAll(): void {
+    // A held Esc is let go of here (its real key-up is dropped), and its hint goes.
+    this.applyEsc(this.esc.blur());
     this.releasePaste();
     this.commandChord.clear();
     for (const code of this.keys) this.send({ k: "key", code, down: false });

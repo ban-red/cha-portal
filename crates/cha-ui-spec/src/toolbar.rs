@@ -222,6 +222,10 @@ pub struct ControlSpec {
 pub struct Timing {
     pub fold_after_ms: u64,
     pub near_top_px: f32,
+    /// How long Esc is held, with the pointer captured, to let go of it.
+    pub release_hold_ms: u64,
+    /// How long into that hold the hint and its progress bar appear.
+    pub release_hint_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -319,6 +323,7 @@ pub struct StateSpec {
 pub struct ToolbarSpec {
     pub notes: String,
     pub timing: Timing,
+    pub release_hint: PlatformText,
     pub power_off: PowerOffSpec,
     pub folded: FoldedSpec,
     pub visibility: VisibilitySpec,

@@ -8,6 +8,8 @@
   "exports": {
     ".": "./index.ts",
     "./icons.json": "./icons.json",
+    "./capture-cases": "./capture-cases.ts",
+    "./capture-cases.json": "./capture-cases.json",
     "./health.json": "./health.json",
     "./health-cases": "./health-cases.ts",
     "./health-cases.json": "./health-cases.json",

@@ -20,6 +20,7 @@ The in-stream UI's spec, shared by the browser player (`web/apps/portal`) and Ch
 | `toolbar.json` | The toolbar: the controls in order and their groups, the menus and their rows, the capability vocabulary and what each side can report, the neutral state, the power-off countdown, the folded bar and the timing. |
 | `toolbar-cases.json` | Shared cases for the toolbar model: capabilities and state in, which controls show and their words out, per platform. |
 | `toolbar.ts`, `toolbar-cases.ts` | `buildToolbar` and the spec's and the model's types; and the cases' types and helpers (`@cha/ui-spec/toolbar-cases`). |
+| `capture-cases.json`, `capture-cases.ts` | Shared cases for the hold-Esc release (`EscHold` in `player/src/escHold.ts` and `cha-ui-spec`'s `esc_hold.rs`): timed key events in, what goes to the host, the release and the hint's progress out. The hold's lengths and words are `toolbar.json`'s `timing.release_hold_ms`, `release_hint_ms` and `release_hint`. |
 | `brand/logo-64.rgba` | The logo as 64 x 64 raw RGBA (straight alpha), for the native launcher; written by `scripts/export-brand.sh`. |
 | `index.ts` | Types for the JSON, `ICONS`, `HEALTH`, `fill` and the formatters. |
 

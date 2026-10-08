@@ -8,6 +8,7 @@
 #![cfg_attr(not(feature = "portal"), allow(dead_code))]
 
 mod chrome;
+mod release_hint;
 mod settings;
 mod stats;
 mod toolbar;
@@ -42,6 +43,7 @@ pub fn open_input_monitoring_settings() {
         .spawn();
 }
 
+pub use release_hint::show_release_hint;
 pub use stats::{StatsPanel, StatsSnapshot, show_reconnecting};
 pub use toolbar::{Toolbar, ToolbarAction, ToolbarView};
 

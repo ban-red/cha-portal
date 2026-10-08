@@ -25,7 +25,7 @@ import {
   type Watcher,
   watcherLabel,
 } from "@cha/player";
-import { buildToolbar, TOOLBAR, type ToolbarState } from "@cha/ui-spec";
+import { buildToolbar, pickText, TOOLBAR, type ToolbarState } from "@cha/ui-spec";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -229,6 +229,9 @@ async function setOverlay(level: OverlayLevel, select: HTMLSelectElement) {
 const controllers = ref<ManagedController[]>([]);
 /** Mouse capture after the browser let go (Esc): clicks recapture, and a hint says so. */
 const capture = ref<CaptureView>({ state: "idle", recapture: false, hint: false });
+/** Esc held with the mouse captured: the progress towards letting go, or null while no hint shows. */
+const escProgress = ref<number | null>(null);
+const releaseHint = pickText(TOOLBAR.release_hint, "web") ?? "";
 function onCaptureButton() {
   if (capture.value.recapture) player?.turnOffMouseCapture();
   else void player?.lockPointer();
@@ -545,6 +548,9 @@ async function connect() {
     },
     onMouseCapture: (view) => {
       if (player === p) capture.value = view;
+    },
+    onEscHold: (progress) => {
+      if (player === p) escProgress.value = progress;
     },
     signal: async (offer, c) => (await api.connect(id.value, { codec: c, offer })).answer!,
     onState: (s, detail) => {
@@ -921,6 +927,18 @@ const STATUS: Record<PlayerState, string> = {
       role="status"
     >
       Click for exclusive input
+    </div>
+
+    <!-- Esc held while the mouse is captured: keep holding to let go (the words and timing are toolbar.json's) -->
+    <div
+      v-if="escProgress !== null"
+      class="pointer-events-none absolute top-20 left-1/2 z-20 w-72 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-xl border border-line bg-panel/90 px-4 py-2.5 text-center text-sm shadow-lg backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none"
+      role="status"
+    >
+      {{ releaseHint }}
+      <div class="mt-2 h-1 overflow-hidden rounded-full bg-line" role="progressbar" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(escProgress * 100)">
+        <div class="h-full rounded-full bg-accent" :style="{ width: `${Math.round(escProgress * 100)}%` }" />
+      </div>
     </div>
 
     <!-- The toolbar (and its folded bar): what it shows is toolbar.json's, built into `toolbarModel` -->

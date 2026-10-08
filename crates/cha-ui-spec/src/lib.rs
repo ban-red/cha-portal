@@ -13,11 +13,16 @@
 //!   [`panel_cases`], its shared cases (feature `cases`).
 //! - [`prefs`]: the saved settings' schema and the validator the native player's config runs through;
 //!   and [`prefs_cases`], its shared cases (feature `cases`).
+//! - [`esc_hold`]: hold Esc to let go of exclusive input, as pure state; and [`esc_hold_cases`], its
+//!   shared cases (feature `cases`).
 //! - [`toolbar`]: the toolbar's spec and `build_toolbar`, the model both players draw; and
 //!   [`toolbar_cases`], its shared cases (feature `cases`).
 //! - [`LOGO_RGBA`]: the brand logo as raw pixels, for the launcher's header.
 //! - [`THEMES`]: the generated built-in themes, as text.
 
+pub mod esc_hold;
+#[cfg(any(test, feature = "cases"))]
+pub mod esc_hold_cases;
 pub mod fill;
 pub mod health;
 #[cfg(any(test, feature = "cases"))]

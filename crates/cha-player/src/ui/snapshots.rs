@@ -806,6 +806,41 @@ fn snapshot_toolbar() {
     std::fs::remove_dir_all(data).ok();
 }
 
+/// The hold-Esc hint half way through the hold, over the video stand-in, driven by the real
+/// `EscHold` (down at 0, looked at 500 ms later).
+#[test]
+#[ignore = "renders on the GPU into CHA_SNAPSHOT_DIR"]
+fn snapshot_release_hint() {
+    use cha_ui_spec::esc_hold::EscHold;
+
+    let dir = out_dir();
+    let data = std::env::temp_dir().join(format!("cha-player-snap-hint-{}", std::process::id()));
+    let mut themes = ThemeController::new(data.clone(), None);
+    let ctx = egui::Context::default();
+    let mut gpu = Offscreen::new();
+    let mut esc = EscHold::from_spec();
+    esc.key_down(0, false, true);
+    let progress = esc.hint(500).expect("the hint shows 500 ms in");
+    for theme in ["cha-magenta", "cha-jade"] {
+        let mut config = Config::default();
+        config.theme.theme = theme.into();
+        config.theme.appearance = Appearance::Dark;
+        themes.sync(&ctx, &config.theme);
+        let image = gpu.render(&ctx, egui::Color32::BLACK, |ui| {
+            paint_video(ui.ctx());
+            let text = cha_ui_spec::toolbar::spec()
+                .release_hint
+                .get(cha_ui_spec::health::Platform::Native)
+                .unwrap();
+            show_release_hint(ui.ctx(), text, progress, 90, 0.0);
+        });
+        let path = dir.join(format!("release-hint-{theme}-50.png"));
+        write_png(&path, image.0, image.1, &image.2);
+        println!("{}", path.display());
+    }
+    std::fs::remove_dir_all(data).ok();
+}
+
 /// Every spec icon at 12, 16, 24 and 48 points, ink on the panel colour, in
 /// magenta dark. The 48 is there to see the shapes; the others are how they ship.
 #[test]

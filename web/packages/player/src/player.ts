@@ -145,6 +145,11 @@ export interface PlayerOptions {
    * the picture captures it again; `hint` asks for "Click to capture the mouse" to be shown.
    */
   onMouseCapture?: (view: CaptureView) => void;
+  /**
+   * Esc is held with the mouse captured (Keyboard Lock, full screen): the progress, 0..1, towards
+   * letting go of the mouse once the hint is due, and null when no hint should show.
+   */
+  onEscHold?: (progress: number | null) => void;
 }
 
 /**
@@ -587,6 +592,7 @@ export class Player {
     this.pads = null;
     this.options.onControllers?.([]);
     this.options.onMouseCapture?.({ state: "idle", recapture: false, hint: false });
+    this.options.onEscHold?.(null);
     this.nodeStats = null;
     this.sentCounts = [];
     this.presented = [];
@@ -639,7 +645,7 @@ export class Player {
     }
   }
 
-  /** Raw relative mouse (games). Esc releases it (hold Esc in Chromium full screen, which locks the keyboard). */
+  /** Raw relative mouse (games). Holding Esc lets go of it (Chromium full screen, which locks the keyboard); a tap does elsewhere. */
   lockPointer(): Promise<void> {
     this.input?.hideHint();
     return this.input?.lockPointer() ?? Promise.resolve();
@@ -860,6 +866,7 @@ export class Player {
       this.input = new InputCapture(video, (m) => this.sendInput(m), {
         onPaste: (text) => this.send({ t: "clipboard", text }),
         onCapture: (view) => this.options.onMouseCapture?.(view),
+        onEscHold: (progress) => this.options.onEscHold?.(progress),
       });
       this.input.setMouseEnabled(this.mouseEnabled);
     }
