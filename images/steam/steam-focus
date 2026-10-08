@@ -1,5 +1,6 @@
 #!/usr/bin/python3
-"""Gives a Proton game its input back after Steam's in-game menu closes.
+"""Gives a Proton game its input when it gets the focus: at launch, and after
+Steam's in-game menu closes.
 
 Steam's menu (the Steam button) takes the X focus in gamescope's X server, and
 Wine, losing it, makes its desktop the foreground window. When the menu closes,
@@ -11,8 +12,16 @@ events without keyboard focus), until a click activates the window. Wine's
 windows ask for WM_TAKE_FOCUS, which window managers send on focus and gamescope
 never does; sent by hand at that moment, it brought the game back.
 
-This watches the X focus and, when it moves from one of Steam's own windows to
-a window that isn't Steam's and asks for WM_TAKE_FOCUS, sends it that message.
+The same happened when a game launched (2026-10-07, Cyberpunk 2077): the
+controller did nothing until a click. There the focus can reach the game's
+window before Steam has tagged it (STEAM_GAME) or Wine has set its
+WM_PROTOCOLS, or pass through no window on the way from Big Picture.
+
+So this does what an ICCCM window manager does and gamescope doesn't: once a
+window that isn't Steam's has the focus and asks for WM_TAKE_FOCUS, it sends
+that window the message, once for each time it gains the focus, reading the
+window's properties on every poll so late ones count. At most once a second
+per window, so Wine moving the focus itself can't make a loop.
 
 Run it with gamescope's X server in $DISPLAY; it ends when that goes away.
 """
@@ -40,13 +49,24 @@ def kind(app_id, overlay):
     return OTHER
 
 
-def should_take_focus(before, now, changed, wants_take_focus):
+# Never send to the same window more often than this.
+RESEND_AFTER = 1.0
+
+
+def should_take_focus(now, wants_take_focus, sent_this_focus, since_last_send):
     """Whether to send WM_TAKE_FOCUS to the window that has the focus now.
 
-    Only when the focus moved (`changed`) from Steam's window to another that
-    asks for the message: that is the menu closing over a game.
+    To a game's window (`now` is OTHER) that asks for the message, once while
+    it keeps the focus (`sent_this_focus`), and not again within
+    RESEND_AFTER seconds of the last time it was sent one (`since_last_send`,
+    None if never).
     """
-    return changed and before == STEAM and now == OTHER and wants_take_focus
+    return (
+        now == OTHER
+        and wants_take_focus
+        and not sent_this_focus
+        and (since_last_send is None or since_last_send >= RESEND_AFTER)
+    )
 
 
 class Atoms:
@@ -142,20 +162,28 @@ def main():
         event.xclient.data[1] = CURRENT_TIME
         x11.XSendEvent(display, window, 0, 0, ctypes.byref(event))
         x11.XFlush(display)
-        print(f"steam-focus: WM_TAKE_FOCUS to {window:#x}, back from Steam's menu", flush=True)
+        print(f"steam-focus: WM_TAKE_FOCUS to {window:#x}", flush=True)
 
     focus, revert = ctypes.c_ulong(), ctypes.c_int()
-    last_window, last_kind = None, NONE
+    last_window, sent_this_focus = None, False
+    # When each window was last sent the message (monotonic seconds).
+    last_sent = {}
     while True:
         # Fails (and the default I/O error handler exits) once X is gone.
         x11.XGetInputFocus(display, ctypes.byref(focus), ctypes.byref(revert))
         window = focus.value
-        changed = window != last_window
-        if changed:
-            now, wants = describe(window)
-            if should_take_focus(last_kind, now, changed, wants):
-                take_focus(window)
-            last_window, last_kind = window, now
+        if window != last_window:
+            last_window, sent_this_focus = window, False
+        # Every poll, not only on a change: a new game's tags come late.
+        now, wants = describe(window)
+        clock = time.monotonic()
+        since = clock - last_sent[window] if window in last_sent else None
+        if should_take_focus(now, wants, sent_this_focus, since):
+            take_focus(window)
+            sent_this_focus = True
+            last_sent[window] = clock
+            if len(last_sent) > 256:
+                last_sent = {window: clock}
         time.sleep(POLL)
 
 

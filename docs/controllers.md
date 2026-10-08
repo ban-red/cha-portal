@@ -129,6 +129,13 @@ report 1 (settings, attributes, the serial), and output reports `0x80`
     Steam image sends the game `WM_TAKE_FOCUS` when the focus moves from
     Steam's window back to it, which gamescope never does: input comes back
     without a click (Balatro, 2026-10-06).
+  - **At a game's launch:** the same, with the controller doing nothing in
+    Cyberpunk 2077 until a click (2026-10-07). The focus can reach the new
+    window before Steam tags it (`STEAM_GAME`) or Wine sets its
+    `WM_PROTOCOLS`, or come via no window, which the first `steam-focus`
+    missed. It now sends `WM_TAKE_FOCUS` whenever a game's window has the
+    focus and asks for it, once per focus and at most once a second per
+    window, reading the window's properties on every poll.
   - **Workaround without the shim:** the launch option
     `SDL_GAMECONTROLLER_IGNORE_DEVICES= PROTON_DISABLE_HIDRAW=1 %command%` lets
     Proton's SDL read the controller itself, bypassing Steam Input.

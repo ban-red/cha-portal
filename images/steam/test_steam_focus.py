@@ -34,22 +34,25 @@ class Kind(unittest.TestCase):
 
 
 class Decision(unittest.TestCase):
-    def test_the_menu_closing_over_a_game(self):
-        self.assertTrue(should(STEAM, OTHER, True, True))
+    def test_a_game_that_gains_the_focus(self):
+        # At launch, after Steam's menu, or after no window at all.
+        self.assertTrue(should(OTHER, True, False, None))
 
-    def test_only_on_a_change(self):
-        self.assertFalse(should(STEAM, OTHER, False, True))
+    def test_once_while_it_keeps_the_focus(self):
+        self.assertFalse(should(OTHER, True, True, None))
 
-    def test_only_from_steam(self):
-        self.assertFalse(should(OTHER, OTHER, True, True))
-        self.assertFalse(should(NONE, OTHER, True, True))
+    def test_not_again_within_a_second(self):
+        # Wine moving the focus itself can't make a loop.
+        self.assertFalse(should(OTHER, True, False, 0.3))
+        self.assertTrue(should(OTHER, True, False, 1.0))
 
-    def test_only_to_a_game(self):
-        self.assertFalse(should(OTHER, STEAM, True, True))
-        self.assertFalse(should(STEAM, NONE, True, True))
+    def test_never_steams_own_windows_or_none(self):
+        self.assertFalse(should(STEAM, True, False, None))
+        self.assertFalse(should(NONE, True, False, None))
 
     def test_only_a_window_that_asks_for_it(self):
-        self.assertFalse(should(STEAM, OTHER, True, False))
+        # Until its WM_PROTOCOLS arrive, then on a later poll.
+        self.assertFalse(should(OTHER, False, False, None))
 
 
 if __name__ == "__main__":
