@@ -235,8 +235,15 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                 ));
             }
             let has_image = !needs.images.is_empty() && node.has_image(&needs.images);
-            // Only worth a word when it is the one thing to know.
-            if reason.is_none() && allowed && !needs.images.is_empty() && !has_image {
+            // Only worth a word when it is the one thing to know, and only
+            // from a node that says what it holds (an older agent lists
+            // nothing, which isn't "has nothing").
+            if reason.is_none()
+                && allowed
+                && !needs.images.is_empty()
+                && !node.images.is_empty()
+                && !has_image
+            {
                 reason_note = Some("downloads the image first".to_string());
             }
             options.push(PlacementOption {
@@ -621,12 +628,21 @@ mod tests {
     }
 
     #[test]
+    fn a_node_that_lists_no_images_isnt_said_to_download() {
+        // An older agent reports no images: no bonus, and no note either.
+        let needs = wants(&["ghcr.io/ban-red/cha-env-chrome:{version}"]);
+        let o = options(&needs, &[node("old", vec![rtx()])]);
+        assert_eq!(o[0].note, None);
+    }
+
+    #[test]
     fn holding_the_image_beats_an_otherwise_equal_node() {
         let needs = wants(&[
             "cha/env-chrome:dev",
             "ghcr.io/ban-red/cha-env-chrome:{version}",
         ]);
-        let a = node("a", vec![rtx()]);
+        let mut a = node("a", vec![rtx()]);
+        a.images = vec!["cha/streamer:dev".into()];
         let mut b = node("b", vec![rtx()]);
         b.images = vec!["cha/env-chrome:dev".into()];
         // "a" sorts first by name, so only the bonus can put "b" ahead.
