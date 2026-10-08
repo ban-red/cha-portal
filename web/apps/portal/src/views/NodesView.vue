@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { Check, Copy, Plus, TriangleAlert, X } from "lucide-vue-next";
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 
 import { ApiError, api, type NodeInfo } from "../api";
 import FormError from "../components/FormError.vue";
+import LaunchProgress from "../components/LaunchProgress.vue";
 import MoonlightHostsCard from "../components/MoonlightHostsCard.vue";
 import NodeUsage from "../components/NodeUsage.vue";
 import { diskView, platformLine } from "../nodeInfo";
+import { expectedVersion, updateLine, updateRunning } from "../nodeUpdate";
 import { normalizePairingCode } from "../pairingCode";
 import { ago, clockTime, dateTime, megabytes } from "../format";
 
@@ -20,7 +22,7 @@ const issued = ref<{ token: string; expiresAt: number } | null>(null);
 const nodes = useQuery({
   queryKey: ["nodes"],
   queryFn: api.nodes,
-  refetchInterval: () => (issued.value ? 2000 : 3000),
+  refetchInterval: (query) => (issued.value || query.state.data?.some(updateRunning) ? 2000 : 3000),
   refetchIntervalInBackground: false,
 });
 
@@ -184,6 +186,46 @@ function confirmRemove(node: NodeInfo) {
   if (ok) remove.mutate(node);
 }
 
+// ---- Updating agents ----
+
+const TOAST_MS = 10_000;
+// What each updating node is moving to, and which ones just arrived (for a
+// few seconds: "Updated to v…").
+const expected = new Map<string, string>();
+const arrived = ref<Record<string, string>>({});
+
+watch(
+  () => nodes.data.value,
+  (list) => {
+    for (const node of list ?? []) {
+      const want = expectedVersion(node);
+      if (want) expected.set(node.id, want);
+      const target = expected.get(node.id);
+      if (target && node.agentVersion === target) {
+        expected.delete(node.id);
+        arrived.value[node.id] = target;
+        setTimeout(() => delete arrived.value[node.id], TOAST_MS);
+      }
+    }
+  },
+);
+
+const update = useMutation({
+  mutationFn: (node: NodeInfo) => api.updateNode(node.id),
+  onSuccess: () => queryClient.invalidateQueries({ queryKey: ["nodes"] }),
+  onError: (err) => {
+    actionError.value = err instanceof ApiError ? err.message : "Couldn't start the update.";
+    queryClient.invalidateQueries({ queryKey: ["nodes"] });
+  },
+});
+
+function startUpdate(node: NodeInfo) {
+  actionError.value = null;
+  update.mutate(node);
+}
+
+const tones = { info: "text-ink-2", muted: "text-ink-3", warn: "text-warn", ok: "text-ok" } as const;
+
 function status(node: NodeInfo): { text: string; dot: string } {
   if (node.online) return { text: `Online since ${clockTime(node.connectedAt ?? 0)}`, dot: "bg-ok" };
   if (node.lastSeenAt) return { text: `Offline · seen ${ago(node.lastSeenAt)}`, dot: "bg-ink-3" };
@@ -338,6 +380,25 @@ function status(node: NodeInfo): { text: string; dot: string } {
             v{{ node.agentVersion }}
           </span>
         </header>
+
+        <div v-if="updateLine(node, arrived[node.id] ?? null)" class="mt-3 space-y-1.5" role="status">
+          <template v-for="line in [updateLine(node, arrived[node.id] ?? null)!]" :key="line.text">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <p class="min-w-0 flex-1 text-xs" :class="tones[line.tone]">{{ line.text }}</p>
+              <button
+                v-if="line.action"
+                type="button"
+                class="shrink-0 px-3 py-1 text-xs"
+                :class="line.action === 'update' ? 'btn-primary' : 'btn-ghost'"
+                :disabled="update.isPending.value"
+                @click="startUpdate(node)"
+              >
+                {{ line.action === "update" ? "Update" : "Try again" }}
+              </button>
+            </div>
+            <LaunchProgress v-if="line.progress" :env="{ detail: line.text, progress: line.progress }" compact />
+          </template>
+        </div>
 
         <dl v-if="node.inventory" class="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
           <dt class="text-ink-3">Host</dt>

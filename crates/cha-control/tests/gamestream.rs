@@ -1278,3 +1278,149 @@ async fn a_node_that_cannot_run_the_app_or_fails_to_start_it_says_why() {
         "{why}"
     );
 }
+
+async fn node_update(
+    p: &Portal,
+    node: &mut FakeNode,
+    version: &str,
+    update: Option<cha_wire::AgentUpdatability>,
+) {
+    sqlx::query("UPDATE nodes SET agent_version = ? WHERE id = ?")
+        .bind(version)
+        .bind(&node.id)
+        .execute(&p.state.db)
+        .await
+        .unwrap();
+    node.send(ToPortal::Inventory {
+        inventory: Inventory {
+            agent_version: Some(version.into()),
+            update,
+            ..inventory(false)
+        },
+    })
+    .await;
+    let id = node.id.clone();
+    wait_for(p, "/api/nodes", &p.admin, |b| {
+        b.as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["id"] == id.as_str() && n["inventory"]["agentVersion"] == version)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_older_updatable_agent_is_sent_the_portals_release_and_its_progress_is_shown() {
+    let p = Portal::start().await;
+    let portal = env!("CARGO_PKG_VERSION");
+    let updatable = || cha_wire::AgentUpdatability {
+        image: "ghcr.io/ban-red/cha-node:0.0.1".into(),
+        updatable: true,
+        reason: None,
+    };
+    let url = |id: &str| format!("/api/nodes/{id}/update");
+
+    // Offline.
+    let mut node = FakeNode::connect(&p, "box", false).await;
+    let id = node.id.clone();
+    let (bob, _) = p.account("bob", "user").await;
+    let denied = p.call("POST", &url(&id), &bob, None).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{:?}", denied.body);
+    let missing = p.call("POST", &url("nope"), &p.admin, None).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    // Up to date.
+    node_update(&p, &mut node, portal, Some(updatable())).await;
+    let nodes = p.call("GET", "/api/nodes", &p.admin, None).await.body;
+    assert!(nodes[0]["updateTo"].is_null() && nodes[0]["updateBlocked"].is_null());
+    let reply = p.call("POST", &url(&id), &p.admin, None).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.body["error"], "up_to_date", "{:?}", reply.body);
+
+    // Older, but not updatable.
+    let local = cha_wire::AgentUpdatability {
+        image: "cha-node:dev".into(),
+        updatable: false,
+        reason: Some("a local build: update it by hand".into()),
+    };
+    node_update(&p, &mut node, "0.0.1", Some(local)).await;
+    let nodes = p.call("GET", "/api/nodes", &p.admin, None).await.body;
+    assert_eq!(
+        nodes[0]["updateBlocked"],
+        "a local build: update it by hand"
+    );
+    let reply = p.call("POST", &url(&id), &p.admin, None).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.body["error"], "not_updatable");
+
+    // Older and updatable.
+    node_update(&p, &mut node, "0.0.1", Some(updatable())).await;
+    let nodes = p.call("GET", "/api/nodes", &p.admin, None).await.body;
+    assert_eq!(nodes[0]["updateTo"], portal);
+    assert!(nodes[0]["updateProgress"].is_null());
+    let reply = p.call("POST", &url(&id), &p.admin, None).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{:?}", reply.body);
+    let ToNode::UpdateAgent { version } = next_text(&mut node.ws).await else {
+        panic!("expected an update");
+    };
+    assert_eq!(version, portal);
+    let nodes = p.call("GET", "/api/nodes", &p.admin, None).await.body;
+    assert_eq!(nodes[0]["updateProgress"]["state"], "pulling");
+
+    // Not twice at once.
+    let reply = p.call("POST", &url(&id), &p.admin, None).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.body["error"], "in_progress");
+
+    node.send(ToPortal::AgentUpdate {
+        state: cha_wire::AgentUpdateState::Pulling,
+        detail: Some("Downloading the agent (1 of 2 MB)".into()),
+        done: Some(1),
+        total: Some(2),
+    })
+    .await;
+    let nodes = wait_for(&p, "/api/nodes", &p.admin, |b| {
+        b[0]["updateProgress"]["done"] == 1
+    })
+    .await;
+    assert_eq!(nodes[0]["updateProgress"]["total"], 2);
+
+    node.send(ToPortal::AgentUpdate {
+        state: cha_wire::AgentUpdateState::Failed,
+        detail: Some("the registry said no".into()),
+        done: None,
+        total: None,
+    })
+    .await;
+    let nodes = wait_for(&p, "/api/nodes", &p.admin, |b| {
+        b[0]["updateProgress"]["state"] == "failed"
+    })
+    .await;
+    assert_eq!(nodes[0]["updateProgress"]["detail"], "the registry said no");
+
+    // Asking again is allowed after a failure; the node then arrives at the
+    // new version, which ends it.
+    let reply = p.call("POST", &url(&id), &p.admin, None).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED);
+    node_update(&p, &mut node, portal, Some(updatable())).await;
+    let nodes = wait_for(&p, "/api/nodes", &p.admin, |b| {
+        b[0]["updateProgress"].is_null()
+    })
+    .await;
+    assert!(nodes[0]["updateTo"].is_null());
+    for want in [
+        "node.update_requested",
+        "node.update_failed",
+        "node.updated",
+    ] {
+        let mut actions = p.audit_actions().await;
+        for _ in 0..50 {
+            if actions.iter().any(|a| a == want) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            actions = p.audit_actions().await;
+        }
+        assert!(actions.iter().any(|a| a == want), "{want} in {actions:?}");
+    }
+}

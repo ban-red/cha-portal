@@ -67,6 +67,16 @@ export interface Inventory {
     detail?: string | null;
     kernel?: string | null;
   } | null;
+  /** The agent's image and whether the portal can update it; absent from agents that predate updates. */
+  update?: { image: string; updatable: boolean; reason?: string | null } | null;
+}
+
+/** How an update of a node's agent is going (the node's own words in `detail`; bytes while pulling). */
+export interface AgentUpdateProgress {
+  state: "pulling" | "swapping" | "failed" | "rolled-back";
+  detail?: string | null;
+  done?: number | null;
+  total?: number | null;
 }
 
 /** A machine that runs environments (named to stay clear of the DOM's `Node`). */
@@ -81,6 +91,11 @@ export interface NodeInfo {
   inventory: Inventory | null;
   /** What it uses now; null while offline or when it hasn't reported lately. */
   usage: NodeUsage | null;
+  /** The portal's release, when this node's agent is older and can be updated to it. */
+  updateTo?: string | null;
+  /** Why an older agent can't be updated from here. */
+  updateBlocked?: string | null;
+  updateProgress?: AgentUpdateProgress | null;
 }
 
 /** A node's CPU, RAM and GPU use (percent 0..100, bytes, watts, °C), refreshed every few seconds. */
@@ -532,6 +547,8 @@ export const api = {
     request<{ token: string; expiresAt: number }>("POST", "/nodes/join-tokens", body),
   renameNode: (id: string, name: string) =>
     request<{ id: string; name: string }>("PATCH", `/nodes/${encodeURIComponent(id)}`, { name }),
+  updateNode: (id: string) =>
+    request<{ id: string; updateTo: string }>("POST", `/nodes/${encodeURIComponent(id)}/update`, {}),
   removeNode: (id: string) => request<{ removed: string }>("DELETE", `/nodes/${encodeURIComponent(id)}`),
   gamestreamPairing: () => request<{ requests: GamestreamPairingRequest[] }>("GET", "/gamestream/pairing"),
   gamestreamPair: (id: string, pin: string) =>

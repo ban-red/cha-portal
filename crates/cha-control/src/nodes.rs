@@ -16,8 +16,9 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::{delete, get, post};
 use cha_wire::{
-    EnrollRequest, EnrollResponse, Inventory, NodeRequest, NodeResponse, NodeUsage,
-    PROTOCOL_VERSION, PortalRequest, PortalResponse, ToNode, ToPortal, close,
+    AgentUpdatability, AgentUpdateState, EnrollRequest, EnrollResponse, Inventory, NodeRequest,
+    NodeResponse, NodeUsage, PROTOCOL_VERSION, PortalRequest, PortalResponse, ToNode, ToPortal,
+    close,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -54,6 +55,7 @@ pub fn routes() -> axum::Router<AppState> {
         .route("/nodes/discovered/claim", post(crate::claim::claim))
         .route("/nodes/{id}", delete(remove).patch(rename))
         .route("/nodes/{id}/ping", post(ping))
+        .route("/nodes/{id}/update", post(update))
 }
 
 type Reply = Result<NodeResponse, String>;
@@ -84,6 +86,8 @@ pub struct NodeHub {
     /// How far each starting environment's download is. In memory only: it
     /// is a live view, gone when the environment runs or ends.
     progress: std::sync::Mutex<HashMap<String, Progress>>,
+    /// Each node's agent update (ADR 0018). In memory only: a live view.
+    updates: std::sync::Mutex<HashMap<String, UpdateRun>>,
     next_id: AtomicU64,
 }
 
@@ -114,6 +118,38 @@ impl Progress {
     }
 }
 
+/// An agent update asked of a node, and how it is going.
+#[derive(Clone, Debug)]
+pub struct UpdateRun {
+    /// The release the node was asked to move to.
+    pub target: String,
+    pub progress: UpdateProgress,
+    started: Instant,
+}
+
+/// What a node last said about its update.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    pub state: AgentUpdateState,
+    pub detail: Option<String>,
+    pub done: Option<u64>,
+    pub total: Option<u64>,
+}
+
+impl UpdateProgress {
+    fn running(&self) -> bool {
+        matches!(
+            self.state,
+            AgentUpdateState::Pulling | AgentUpdateState::Swapping
+        )
+    }
+}
+
+/// An update that has been going this long is taken as lost (the node went
+/// away mid-way), so it doesn't block asking again.
+const UPDATE_STALE: Duration = Duration::from_secs(15 * 60);
+
 /// More environments than this starting at once isn't real; the map stays
 /// bounded whatever a node sends.
 const PROGRESS_KEPT: usize = 256;
@@ -142,6 +178,69 @@ impl NodeHub {
 
     pub fn clear_progress(&self, id: &str) {
         self.set_progress(id, None);
+    }
+
+    /// Records that `node_id` was asked to move to `target`.
+    fn begin_update(&self, node_id: &str, target: &str) {
+        self.updates.lock().expect("updates lock").insert(
+            node_id.to_string(),
+            UpdateRun {
+                target: target.to_string(),
+                progress: UpdateProgress {
+                    state: AgentUpdateState::Pulling,
+                    detail: None,
+                    done: None,
+                    total: None,
+                },
+                started: Instant::now(),
+            },
+        );
+    }
+
+    /// What the node said of its update; nothing for a node never asked.
+    /// Returns the target when it is a failure, for the audit log.
+    fn record_update(&self, node_id: &str, progress: UpdateProgress) -> Option<String> {
+        let mut map = self.updates.lock().expect("updates lock");
+        let run = map.get_mut(node_id)?;
+        let target = (!progress.running()).then(|| run.target.clone());
+        run.progress = progress;
+        target
+    }
+
+    pub fn update_run(&self, node_id: &str) -> Option<UpdateRun> {
+        self.updates
+            .lock()
+            .expect("updates lock")
+            .get(node_id)
+            .cloned()
+    }
+
+    /// An update is going on now (and isn't long lost).
+    fn update_running(&self, node_id: &str) -> bool {
+        self.update_run(node_id)
+            .is_some_and(|r| r.progress.running() && r.started.elapsed() < UPDATE_STALE)
+    }
+
+    /// The node is running `version`: if that is where it was sent, the
+    /// update is done and forgotten.
+    fn finish_update(&self, node_id: &str, version: &str) -> bool {
+        let mut map = self.updates.lock().expect("updates lock");
+        if map.get(node_id).is_some_and(|r| r.target == version) {
+            map.remove(node_id);
+            return true;
+        }
+        false
+    }
+
+    /// Sends a message that expects no reply to a connected node.
+    async fn push(&self, node_id: &str, msg: ToNode) -> ApiResult<()> {
+        let conns = self.connections.lock().await;
+        let conn = conns
+            .get(node_id)
+            .ok_or_else(|| ApiError::conflict("offline", "the node isn't connected"))?;
+        conn.tx
+            .send(Outgoing::Message(Box::new(msg)))
+            .map_err(|_| ApiError::conflict("offline", "the node isn't connected"))
     }
 
     pub async fn connected_since(&self, node_id: &str) -> Option<i64> {
@@ -397,9 +496,11 @@ async fn serve_node(state: AppState, mut socket: WebSocket) -> anyhow::Result<()
         moonlight: true,
         gamestream: true,
         gamestream_launch: true,
+        agent_updates: true,
     };
     send(&mut socket, &welcome).await?;
     info!(%node_id, name = %node.name, %agent_version, "node connected");
+    updated(&state, &node_id, &agent_version).await;
 
     let result = pump(&state, &node_id, &mut socket, &mut rx, &pending).await;
     state.nodes.unregister(&node_id, serial).await;
@@ -464,6 +565,9 @@ async fn pump(
                     ToPortal::Inventory { inventory } => {
                         let json = serde_json::to_string(&inventory)?;
                         db::set_node_inventory(&state.db, node_id, &json).await?;
+                        if let Some(version) = &inventory.agent_version {
+                            updated(state, node_id, version).await;
+                        }
                         tokio::spawn(crate::gamestream::inventory_changed(
                             state.clone(),
                             node_id.to_string(),
@@ -534,6 +638,31 @@ async fn pump(
                             .then(|| Progress::from_report(done, total, unit))
                             .flatten();
                         state.nodes.set_progress(&id, progress);
+                    }
+                    ToPortal::AgentUpdate { state: step, detail, done, total } => {
+                        let detail: Option<String> =
+                            detail.map(|d| d.chars().take(200).collect());
+                        let progress = UpdateProgress {
+                            state: step,
+                            detail: detail.clone(),
+                            done,
+                            total,
+                        };
+                        if let Some(target) = state.nodes.record_update(node_id, progress) {
+                            db::audit(
+                                &state.db,
+                                None,
+                                "node.update_failed",
+                                Some(node_id),
+                                Some(json!({
+                                    "to": target,
+                                    "state": step,
+                                    "detail": detail,
+                                })),
+                                None,
+                            )
+                            .await?;
+                        }
                     }
                     ToPortal::EnvironmentWarning { id, warning } => {
                         let warning = warning.map(|w| w.chars().take(300).collect::<String>());
@@ -607,6 +736,12 @@ struct NodeView {
     inventory: Option<Inventory>,
     /// What it uses now; null while offline or when it hasn't reported lately.
     usage: Option<UsageView>,
+    /// The portal's release, when this online node's agent can be moved to it.
+    update_to: Option<String>,
+    /// Why an older online agent can't be.
+    update_blocked: Option<String>,
+    /// How an update asked of it is going.
+    update_progress: Option<UpdateProgress>,
 }
 
 #[derive(Serialize)]
@@ -634,7 +769,26 @@ async fn list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<Vec
         } else {
             None
         };
+        let offer = if connected_at.is_some() {
+            update_offer(
+                env!("CARGO_PKG_VERSION"),
+                node.agent_version.as_deref(),
+                inventory
+                    .as_ref()
+                    .and_then(|i: &Inventory| i.update.as_ref()),
+            )
+        } else {
+            UpdateOffer::None
+        };
+        let (update_to, update_blocked) = match offer {
+            UpdateOffer::To(v) => (Some(v), None),
+            UpdateOffer::Blocked(r) => (None, Some(r)),
+            UpdateOffer::None => (None, None),
+        };
         out.push(NodeView {
+            update_to,
+            update_blocked,
+            update_progress: state.nodes.update_run(&node.id).map(|r| r.progress),
             online: connected_at.is_some(),
             usage,
             connected_at,
@@ -745,6 +899,139 @@ async fn rename(
     Ok(Json(json!({ "id": id, "name": name })))
 }
 
+/// `MAJOR.MINOR.PATCH`, digits only (a pre-release or build suffix isn't one).
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v.trim().split('.');
+    let mut next = || {
+        let p = parts.next()?;
+        (!p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse().ok())?
+    };
+    let version = (next()?, next()?, next()?);
+    parts.next().is_none().then_some(version)
+}
+
+/// Whether `agent` is a release older than `portal`. Anything that isn't a
+/// plain version (a dev build) is not.
+fn is_older(agent: &str, portal: &str) -> bool {
+    matches!((parse_version(agent), parse_version(portal)), (Some(a), Some(p)) if a < p)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateOffer {
+    /// Older and updatable: the release to offer.
+    To(String),
+    /// Older, but it can't be updated from here: why.
+    Blocked(String),
+    None,
+}
+
+fn update_offer(
+    portal: &str,
+    agent: Option<&str>,
+    update: Option<&AgentUpdatability>,
+) -> UpdateOffer {
+    if !agent.is_some_and(|a| is_older(a, portal)) {
+        return UpdateOffer::None;
+    }
+    match update {
+        Some(u) if u.updatable => UpdateOffer::To(portal.to_string()),
+        Some(u) => UpdateOffer::Blocked(
+            u.reason
+                .clone()
+                .unwrap_or_else(|| "this agent can't be updated from the portal".to_string()),
+        ),
+        None => UpdateOffer::Blocked("its agent predates updates from the portal".to_string()),
+    }
+}
+
+/// The node runs `version` now: an update that was sent there is done.
+async fn updated(state: &AppState, node_id: &str, version: &str) {
+    if state.nodes.finish_update(node_id, version)
+        && let Err(err) = db::audit(
+            &state.db,
+            None,
+            "node.updated",
+            Some(node_id),
+            Some(json!({ "to": version })),
+            None,
+        )
+        .await
+    {
+        warn!(%node_id, "auditing an update: {err}");
+    }
+}
+
+async fn update(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    client: ClientInfo,
+    Path(id): Path<String>,
+) -> ApiResult<(axum::http::StatusCode, Json<serde_json::Value>)> {
+    let node = db::node_by_id(&state.db, &id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("no such node".into()))?;
+    if state.nodes.connected_since(&id).await.is_none() {
+        return Err(ApiError::conflict("offline", "the node isn't connected"));
+    }
+    if state.nodes.update_running(&id) {
+        return Err(ApiError::conflict(
+            "in_progress",
+            "an update is already running on this node",
+        ));
+    }
+    let inventory: Option<Inventory> = node
+        .inventory
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok());
+    let portal = env!("CARGO_PKG_VERSION");
+    match update_offer(
+        portal,
+        node.agent_version.as_deref(),
+        inventory.as_ref().and_then(|i| i.update.as_ref()),
+    ) {
+        UpdateOffer::To(_) => {}
+        UpdateOffer::Blocked(reason) => return Err(ApiError::conflict("not_updatable", reason)),
+        UpdateOffer::None => {
+            return Err(ApiError::conflict(
+                "up_to_date",
+                "the node already runs the portal's release",
+            ));
+        }
+    }
+    state.nodes.begin_update(&id, portal);
+    if let Err(err) = state
+        .nodes
+        .push(
+            &id,
+            ToNode::UpdateAgent {
+                version: portal.to_string(),
+            },
+        )
+        .await
+    {
+        state
+            .nodes
+            .updates
+            .lock()
+            .expect("updates lock")
+            .remove(&id);
+        return Err(err);
+    }
+    db::audit(
+        &state.db,
+        Some(&admin.id),
+        "node.update_requested",
+        Some(&id),
+        Some(json!({ "from": node.agent_version, "to": portal })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "id": id, "updateTo": portal })),
+    ))
+}
+
 async fn ping(
     State(state): State<AppState>,
     _: AdminUser,
@@ -766,6 +1053,75 @@ async fn ping(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions_compare_numerically_and_only_plain_ones() {
+        assert!(is_older("0.2.0", "0.2.1"));
+        assert!(is_older("0.9.9", "0.10.0"));
+        assert!(is_older("1.2.3", "10.0.0"));
+        assert!(!is_older("0.2.1", "0.2.1"));
+        assert!(!is_older("0.3.0", "0.2.9"));
+        assert!(!is_older("dev", "0.2.1"));
+        assert!(!is_older("0.2", "0.2.1"));
+        assert!(!is_older("0.2.0-rc1", "0.2.1"));
+        assert!(!is_older("0.2.0.1", "0.2.1"));
+        assert!(!is_older("0.2.-1", "0.2.1"));
+    }
+
+    #[test]
+    fn an_update_is_offered_only_to_older_updatable_agents() {
+        let u = |updatable, reason: Option<&str>| AgentUpdatability {
+            image: "ghcr.io/ban-red/cha-node:0.2.0".into(),
+            updatable,
+            reason: reason.map(String::from),
+        };
+        let (ok, local) = (u(true, None), u(false, Some("a local build")));
+        let offer =
+            |agent, update: Option<&AgentUpdatability>| update_offer("0.2.1", agent, update);
+        assert_eq!(
+            offer(Some("0.2.0"), Some(&ok)),
+            UpdateOffer::To("0.2.1".into())
+        );
+        assert_eq!(
+            offer(Some("0.2.0"), Some(&local)),
+            UpdateOffer::Blocked("a local build".into())
+        );
+        assert_eq!(
+            offer(Some("0.2.0"), None),
+            UpdateOffer::Blocked("its agent predates updates from the portal".into())
+        );
+        assert_eq!(offer(Some("0.2.1"), Some(&ok)), UpdateOffer::None);
+        assert_eq!(offer(Some("dev"), None), UpdateOffer::None);
+        assert_eq!(offer(None, None), UpdateOffer::None);
+    }
+
+    #[test]
+    fn an_update_is_remembered_until_the_node_runs_the_new_version() {
+        let hub = NodeHub::default();
+        let step = |state| UpdateProgress {
+            state,
+            detail: None,
+            done: None,
+            total: None,
+        };
+        assert_eq!(hub.record_update("n", step(AgentUpdateState::Failed)), None);
+        hub.begin_update("n", "0.2.1");
+        assert!(hub.update_running("n"));
+        assert_eq!(
+            hub.record_update("n", step(AgentUpdateState::Swapping)),
+            None
+        );
+        assert!(hub.update_running("n"));
+        assert_eq!(
+            hub.record_update("n", step(AgentUpdateState::RolledBack)),
+            Some("0.2.1".into())
+        );
+        assert!(!hub.update_running("n"));
+        assert!(hub.update_run("n").is_some());
+        assert!(!hub.finish_update("n", "0.2.0"));
+        assert!(hub.finish_update("n", "0.2.1"));
+        assert!(hub.update_run("n").is_none());
+    }
 
     #[test]
     fn progress_counts_only_when_the_node_gives_both_numbers() {
