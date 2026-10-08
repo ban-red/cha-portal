@@ -7,12 +7,14 @@
 //! report, the silence watchdog) and 1 s ticks (ping). Writes to the control
 //! stream go through a writer task so a slow stream never holds up datagrams.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use cha_client::{
-    AudioPacket, BoxFuture, Codec, Ended, Feedback, Input, Session, SessionControl, VideoFrame,
+    AudioPacket, BoxFuture, Codec, Ended, Feedback, Input, NodeStats, Session, SessionControl,
+    TransportStats, VideoFrame,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -73,10 +75,88 @@ struct Ready {
     height: u32,
 }
 
+/// A node report older than this isn't shown (the browser's `NODE_STATS_FRESH_MS`).
+const NODE_FRESH: Duration = Duration::from_secs(3);
+/// The streamer's frame counts are averaged over this long (`SENT_WINDOW_MS`).
+const SENT_WINDOW: Duration = Duration::from_secs(4);
+
+/// What the task has learned for the player's stats overlay. It lives across
+/// reconnects, except for what describes one streamer session.
+#[derive(Default)]
+struct Live {
+    /// Frames given up on and rebuilt, since the player began.
+    lost: u64,
+    recovered: u64,
+    target_fps: Option<u32>,
+    /// The streamer's cumulative `frames_sent` at its recent reports.
+    sent: VecDeque<(Instant, u64)>,
+    encode_p99_ms: Option<f32>,
+    node: Option<(Instant, NodeStats)>,
+    rtt: Option<Duration>,
+}
+
+impl Live {
+    /// A new streamer session: its counters and reports start over.
+    fn restart(&mut self) {
+        self.target_fps = None;
+        self.sent.clear();
+        self.encode_p99_ms = None;
+        self.node = None;
+    }
+
+    fn on_stats(&mut self, now: Instant, fps: Option<u32>, sent: Option<u64>, p99: Option<f32>) {
+        if fps.is_some() {
+            self.target_fps = fps;
+        }
+        self.encode_p99_ms = p99;
+        if let Some(frames) = sent {
+            self.sent.push_back((now, frames));
+            while self.sent.len() > 8 {
+                self.sent.pop_front();
+            }
+        }
+    }
+
+    fn read(&self, now: Instant) -> TransportStats {
+        let recent: Vec<(Instant, u64)> = self
+            .sent
+            .iter()
+            .copied()
+            .filter(|(at, _)| now.saturating_duration_since(*at) <= SENT_WINDOW)
+            .collect();
+        let sent = match (recent.first(), recent.last()) {
+            (Some(&(t0, f0)), Some(&(t1, f1))) if recent.len() >= 2 && t1 > t0 && f1 >= f0 => {
+                let span = t1.duration_since(t0);
+                Some((
+                    (f1 - f0) as f32 / span.as_secs_f32(),
+                    span.as_millis() as u32,
+                ))
+            }
+            _ => None,
+        };
+        TransportStats {
+            tag: "WT",
+            rtt_ms: self.rtt.map(|r| r.as_secs_f32() * 1000.0),
+            lost: self.lost,
+            recovered: self.recovered,
+            target_fps: self.target_fps,
+            sent_fps: sent.map(|s| s.0),
+            sent_span_ms: sent.map(|s| s.1),
+            encode_p99_ms: self.encode_p99_ms,
+            node: self
+                .node
+                .as_ref()
+                .filter(|(at, _)| now.saturating_duration_since(*at) <= NODE_FRESH)
+                .map(|(_, n)| n.clone()),
+        }
+    }
+}
+
 struct Control {
     out: mpsc::UnboundedSender<Out>,
     input: Arc<Mutex<InputMapper>>,
     commands: mpsc::UnboundedSender<Command>,
+    live: Arc<Mutex<Live>>,
 }
 
 impl Control {
@@ -107,6 +187,10 @@ impl SessionControl for Control {
         // ends the stream.
         self.release_all();
         let _ = self.commands.send(Command::Stop);
+    }
+
+    fn transport_stats(&self) -> Option<TransportStats> {
+        Some(self.live.lock().expect("live lock").read(Instant::now()))
     }
 }
 
@@ -245,10 +329,12 @@ async fn start(
     let (ready_tx, ready_rx) = oneshot::channel();
     let input = Arc::new(Mutex::new(InputMapper::new()));
     // Dropping this (a failed connect) stops the task.
+    let live = Arc::new(Mutex::new(Live::default()));
     let control = Control {
         out: out_tx.clone(),
         input: input.clone(),
         commands: commands_tx,
+        live: live.clone(),
     };
     // We don't draw the cursor: the picture has it.
     control.say([control::cursor(false)]);
@@ -278,6 +364,7 @@ async fn start(
         size: (0, 0),
         rumble_until: [None; PADS],
         stats: Stats::default(),
+        live,
     };
     tokio::spawn(task.supervise(Wire { link, recv, writer }, commands_rx, ended_tx, refresh));
 
@@ -470,6 +557,7 @@ struct Task {
     size: (u32, u32),
     rumble_until: [Option<Instant>; PADS],
     stats: Stats,
+    live: Arc<Mutex<Live>>,
 }
 
 impl Task {
@@ -617,6 +705,7 @@ impl Task {
         self.last_resize = None;
         self.size = (0, 0);
         self.stats = Stats::default();
+        self.live.lock().expect("live lock").restart();
         self.fatal = None;
         self.resuming = Some(Instant::now() + READY_TIMEOUT);
         // Nobody awaits this; `finish_ready` announces the return instead.
@@ -693,6 +782,7 @@ impl Task {
                 _ = t1000.tick() => {
                     let c = self.rx.ping_value(Instant::now());
                     self.say(control::ping(c));
+                    self.live.lock().expect("live lock").rtt = Some(conn.rtt());
                 }
                 command = commands.recv() => match command {
                     Some(Command::Stop) | None => break End::over(Ended::Stopped),
@@ -719,6 +809,11 @@ impl Task {
         self.stats.lost += u64::from(out.lost);
         self.stats.recovered += u64::from(out.recovered);
         self.stats.partial += u64::from(out.partial);
+        if out.lost > 0 || out.recovered > 0 {
+            let mut live = self.live.lock().expect("live lock");
+            live.lost += u64::from(out.lost);
+            live.recovered += u64::from(out.recovered);
+        }
         if out.lost > 0 {
             debug!(frames = out.lost, "frames given up on");
         }
@@ -795,6 +890,19 @@ impl Task {
                 fps,
                 error: Some(error),
             } => warn!(fps, %error, "the streamer kept its frame rate"),
+            ServerMsg::Stats {
+                fps,
+                frames_sent,
+                encode_p99_ms,
+            } => {
+                self.live
+                    .lock()
+                    .expect("live lock")
+                    .on_stats(now, fps, frames_sent, encode_p99_ms)
+            }
+            ServerMsg::System(node) => {
+                self.live.lock().expect("live lock").node = Some((now, node));
+            }
             ServerMsg::Clipboard | ServerMsg::Cursor | ServerMsg::Other(_) => {}
         }
     }
@@ -814,6 +922,9 @@ impl Task {
         self.size = (h.width, h.height);
         debug!(?h, "hello");
         self.hello_at = Some(now);
+        if h.fps > 0 {
+            self.live.lock().expect("live lock").target_fps = Some(h.fps);
+        }
         self.hello = Some(h);
     }
 
@@ -994,5 +1105,49 @@ fn ended_by(e: &ConnectionError) -> End {
         other => End::drop(Ended::Failed(format!(
             "the connection to the streamer failed: {other}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_turns_reports_into_rates_and_drops_stale_ones() {
+        let t0 = Instant::now();
+        let mut live = Live {
+            lost: 3,
+            ..Live::default()
+        };
+        live.on_stats(t0, Some(120), Some(100), Some(2.5));
+        assert!(live.read(t0).sent_fps.is_none(), "one report is no rate");
+        live.on_stats(t0 + Duration::from_secs(1), Some(120), Some(220), Some(3.0));
+        live.on_stats(t0 + Duration::from_secs(2), None, Some(340), Some(3.0));
+        let now = t0 + Duration::from_secs(2);
+        live.node = Some((
+            t0 + Duration::from_secs(1),
+            NodeStats {
+                cpu: 12.0,
+                ..NodeStats::default()
+            },
+        ));
+        let r = live.read(now);
+        assert_eq!(r.sent_fps, Some(120.0));
+        assert_eq!(r.sent_span_ms, Some(2000));
+        assert_eq!(
+            (r.target_fps, r.lost, r.encode_p99_ms),
+            (Some(120), 3, Some(3.0))
+        );
+        assert_eq!(r.tag, "WT");
+        assert_eq!(r.node.map(|n| n.cpu), Some(12.0));
+
+        // Seconds later with nothing new: no rate, no node.
+        let late = live.read(t0 + Duration::from_secs(10));
+        assert!(late.sent_fps.is_none() && late.node.is_none());
+
+        // A new streamer session keeps the totals, not the reports.
+        live.restart();
+        let r = live.read(now);
+        assert_eq!((r.lost, r.target_fps, r.sent_fps), (3, None, None));
     }
 }

@@ -2,7 +2,7 @@
 
 The native game-streaming client, macOS first ([ADR 0010](../../docs/adr/0010-native-client-macos-first.md), milestone C1). It plays anything a `cha_client::Transport` can reach: Sunshine and Apollo PCs and our own nodes, through `cha-client-gamestream` (Moonlight), and your portal's apps over `cha-stream/1`, through `cha-client-portal` and `cha-client-stream`.
 
-`winit` window with pointer lock and raw keys, `wgpu` on Metal for everything drawn, VideoToolbox decode (H.264, HEVC) shown without a copy, Opus to CoreAudio through `cpal`, SDL3 for gamepads and rumble only, `egui` for the launcher, pairing, settings and the stats overlay. On other systems the crate builds as a stub that says "macOS only for now", so the workspace still builds on Linux CI.
+`winit` window with pointer lock and raw keys, `wgpu` on Metal for everything drawn, VideoToolbox decode (H.264, HEVC) shown without a copy, Opus to CoreAudio through `cpal`, SDL3 for gamepads and rumble only, `egui` for the launcher, pairing, settings and the stats panel. On other systems the crate builds as a stub that says "macOS only for now", so the workspace still builds on Linux CI.
 
 ## Run
 
@@ -62,10 +62,26 @@ A stream that drops (a Wi-Fi blip, the node's network, nothing heard for 4 secon
 | click in the picture | capture the pointer (relative motion); the click is not sent |
 | Ctrl+Alt+Shift+Q | leave: release the pointer, stop the stream, back to the launcher (the app keeps running on the host) |
 | Ctrl+Alt+Shift+X | leave and quit the app on the host |
-| Ctrl+Alt+Shift+S | stats overlay |
+| Ctrl+Alt+Shift+S | show or hide the stats panel |
 | Cmd+Ctrl+F | full screen (also in the launcher) |
 
 Losing focus releases the pointer and every held key and button. Relative motion is sent 1:1 in the units macOS reports (not scaled to the picture). Cmd+Q still quits the player.
+
+While the pointer is free, the stats panel is clickable: a click, drag or scroll on it belongs to the panel, so it captures no pointer and nothing is sent to the host. Everywhere else the pointer behaves as above. While the pointer is captured every event goes to the stream. The keyboard always goes to the stream; the panel needs no typing.
+
+## Stats panel
+
+The panel over the picture is the native twin of the portal's stats panel, and grades the stream the same way (`src/health.rs` is `web/packages/player/src/health.ts` in Rust).
+
+- **Header.** A health grade, A to F (green for A and B, amber for C and D, red for F, a dash while it measures), then a word for the worst problem ("Smooth", "Dropped frames", "Slow network"). The buttons switch between the compact and the full view, collapse the panel to its header, open the settings strip and hide it. The grade is judged over the last 8 seconds; one bad second never gives an F.
+- **Compact view.** One line, `60 fps · 12 ms · 58 Mbit/s · HEVC/WT · 1 reconnect`, and the top problem with a copy button.
+- **Full view.** The problems (what was measured, what it means, what to try, a copy button each, "Copy all" when there are several), the 0 to 100 score, then Stream, Latency, Network and Node. Click a heading to fold its section: the heading then shows that section's summary. A number is coloured only when the grade found it bad, amber or red as the problem's severity; node numbers turn amber at 90% (85 °C). Hover a label for what it means. Copying puts the problems with the numbers around them on the clipboard, ending with a "Player:" line (player and macOS versions).
+- **What each transport gives.** The portal's `cha-stream/1` streams fill everything: round trip (QUIC's), frames lost and rebuilt from parity, the node's CPU, memory, GPU, temperature and power (the streamer's `system` messages), and the frame rate the node encodes at. A Moonlight (GameStream) stream has none of those yet, so the round trip, Lost, Recovered and Node rows are left out, never shown as zeros. The frame rate, bitrate, decode time, "received to shown" latency, dropped frames, decode errors, partial PyroWave frames and audio rows come from the player and are always there.
+- **What is not graded.** The player cannot measure send-to-shown time, the jitter-buffer wait, a Web Audio restart or the sound that reached the speakers, and its audio buffer sits at 30 ms by design, so those checks of the browser's panel are left out (`src/health.rs` lists them). "Wi-Fi latency spikes" (AWDL, see below) is a problem like the others.
+- **Moving it.** Drag the header. With "Snap to corners" on (the default) it jumps to the nearest corner on release; with it off it stays where you drop it, and is pulled back inside when the window shrinks. It starts top left, 12 points in.
+- **Settings strip** (the three dots): the background opacity, 30% to 100%, and "Snap to corners". The lower the opacity, the lighter the dimmer text and the darker its halo, so it stays readable over the video. The strip closes by itself after a minute, and when the panel is collapsed or hidden.
+- **Hidden.** A faint grade chip stays in the corner (full strength under the pointer); click it, or press Ctrl+Alt+Shift+S, to bring the panel back.
+- **Where the choices live.** `config.json`, under `overlay`: `open`, `compact`, `collapsed`, `folded` (the folded sections), `corner`, `pos` (the free position), `snap` and `opacity`. They are saved a moment after the last change and when you leave the stream. A config without `overlay` gets the defaults: open, full, top left, snapping, 90%. The panel is always dark so it reads over video: it takes the theme's `dark` palette (`dark-more` with Increase contrast), with `panel` as the background.
 
 ## Gamepads
 
@@ -75,7 +91,7 @@ macOS gates those drivers behind **Input Monitoring** (System Settings → Priva
 
 ## Wi-Fi: AWDL latency spikes
 
-On Wi-Fi, macOS periodically leaves your channel for AWDL (AirDrop, Handoff, Continuity, Sidecar), roughly once a second, for 80 to 200 ms. In a stream that is a small freeze that repeats about every second while everything between is smooth. When the stats overlay sees video arrive with that rhythm for a few seconds it shows "Wi-Fi latency spikes: likely AWDL (AirDrop/Continuity)".
+On Wi-Fi, macOS periodically leaves your channel for AWDL (AirDrop, Handoff, Continuity, Sidecar), roughly once a second, for 80 to 200 ms. In a stream that is a small freeze that repeats about every second while everything between is smooth. When the stats panel sees video arrive with that rhythm for a few seconds it lists "Wi-Fi latency spikes" with the other problems.
 
 Fixes: use Ethernet (best), turn off AirDrop and Handoff (System Settings, General), or take the interface down until the next reboot:
 
@@ -94,9 +110,9 @@ Settings, Appearance picks the theme, Light or dark, Contrast and the UI size (e
 - **System light or dark** follows macOS: the window's appearance at start and whenever it changes (`WindowEvent::ThemeChanged`).
 - **System contrast** follows System Settings, Accessibility, Display, Increase contrast, read from `NSWorkspace` about every two seconds while the launcher is shown. More contrast uses the `-more` palettes and draws borders 1.5 times as thick.
 
-To look at every theme and variant without a window, run `CHA_SNAPSHOT_DIR=/some/dir cargo test -p cha-player --release snapshot -- --ignored --nocapture`: it draws the launcher, Settings, status lines and stats overlay offscreen and writes `<theme>-<variant>-<screen>.png` (`src/ui/snapshots.rs`).
+To look at every theme and variant without a window, run `CHA_SNAPSHOT_DIR=/some/dir cargo test -p cha-player --release snapshot -- --ignored --nocapture`: it draws the launcher, Settings and status lines offscreen and writes `<theme>-<variant>-<screen>.png` (`src/ui/snapshots.rs`). `... snapshot_stats_panel ...` does the same for the stats panel over a colour-bar stand-in for video (full, a section folded, compact, collapsed, hidden, 40% opacity, settings, bottom right).
 
-The stats overlay is on top of the video, so it is not themed like the launcher: black at 75% opacity, with the text and warning colours of the theme's `dark-more` palette.
+The stats panel is on top of the video, so it stays dark whatever the launcher shows: see Stats panel.
 
 ### Your own themes
 
@@ -131,7 +147,9 @@ All of it lives in `src/theme/`: `palette.rs` (roles), `metrics.rs`, `fonts.rs`,
 |---|---|
 | `src/main.rs` | args, logging, the tokio runtime, building the transports (GameStream behind the default `gamestream` feature, the portal behind `portal`, `--demo`) |
 | `src/app.rs` | the `winit` handler: Launcher and Streaming states, pointer lock, hotkeys, drawing |
-| `src/ui/` | egui launcher, settings, stats overlay |
+| `src/ui/` | egui launcher, settings, the stats panel (`overlay.rs`) |
+| `src/health.rs` | the stream's health grade, ported from the browser player |
+| `src/overlay_prefs.rs` | the stats panel's saved choices |
 | `src/theme/` | themes: palettes, user themes, fonts, the egui style (see Themes) |
 | `themes/` | built-in palettes, generated from the portal's CSS |
 | `src/render/` | `wgpu` device and surface, the YCbCr video pipeline (aspect-fit, WGSL), egui layer |
@@ -157,7 +175,7 @@ PyroWave (`PyroWave420`/`PyroWave444` from a node over `cha-stream/1`) is intra-
 
 - **Needs GPU subgroups.** The player's `wgpu` device requests `Features::SUBGROUP` (and `TIMESTAMP_QUERY` for decode timing) when the adapter has them; Apple silicon does. Without subgroups starting a PyroWave stream fails with a message saying so, and H.264/HEVC are unaffected.
 - **Decoded on the render thread.** The decode shares the window's device and queue, so the video thread only keeps the newest raw frame (a newer one replaces an unshown older one, counted as dropped). `draw_stream` decodes it into the same command encoder and submit as the frame's render pass, then draws it aspect-fit like any other picture. The pipelines compile at the first PyroWave stream; the decoder is made from the first frame's sequence header and remade if the size or chroma changes.
-- **No keyframes.** Every frame stands alone; a frame that fails to decode is counted under "decode errors" and the next one is decoded. A frame the transport delivered at the 60 ms deadline with only its whole packets decodes as a partial frame (softer where blocks are missing) and is counted under "partial" in the stats overlay.
+- **No keyframes.** Every frame stands alone; a frame that fails to decode is counted under "decode errors" and the next one is decoded. A frame the transport delivered at the 60 ms deadline with only its whole packets decodes as a partial frame (softer where blocks are missing) and is counted under "Partial frames" in the stats panel.
 - **Decode time in the overlay** is the GPU time for dequant plus inverse transform when timestamps are available (measured on about one frame in a few, the latest reading is shown), else the CPU time to parse and record.
 
 ## Versions

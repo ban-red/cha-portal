@@ -139,7 +139,10 @@ struct App {
     stream: Option<Stream>,
     generation: u64,
     modifiers: ModifiersState,
-    show_stats: bool,
+    /// The stats panel over the picture: its prefs and what is dragged.
+    panel: ui::StatsPanel,
+    /// Whether the last pointer event was the panel's.
+    panel_hover: bool,
     /// When the launcher wants to draw again without any event.
     launcher_due: Option<Instant>,
     /// While the surface has no drawable (the window is occluded, or macOS
@@ -158,6 +161,7 @@ impl App {
         #[cfg_attr(not(feature = "portal"), allow(unused_mut))] mut options: Options,
     ) -> Self {
         let config = Config::load(&data_dir);
+        let panel = ui::StatsPanel::new(config.overlay.clone());
         let theme = ThemeController::new(data_dir.clone(), None);
         #[cfg_attr(not(feature = "portal"), allow(unused_mut))]
         let mut launcher = Launcher::new(config);
@@ -182,7 +186,8 @@ impl App {
             stream: None,
             generation: 0,
             modifiers: ModifiersState::empty(),
-            show_stats: false,
+            panel,
+            panel_hover: false,
             launcher_due: None,
             surface_retry: None,
             exit_code: 0,
@@ -472,7 +477,8 @@ impl App {
         match running {
             Ok(running) => {
                 self.launcher.set_busy(None);
-                let rates = Rates::new(&running);
+                let rates = Rates::new(&running, self.launcher.config().fps);
+                self.launcher_due = None;
                 self.stream = Some(Stream {
                     generation,
                     running,
@@ -526,6 +532,12 @@ impl App {
         let Some(stream) = self.stream.take() else {
             return;
         };
+        if let Some(prefs) = self.panel.take_save(true) {
+            let config = self.launcher.set_overlay_prefs(prefs);
+            if let Err(e) = config.save(&self.data_dir) {
+                tracing::warn!("saving the stats panel's place: {e:#}");
+            }
+        }
         self.set_locked(None, false);
         stream.running.control.release_all();
         stream.running.control.stop(quit_app);
@@ -582,7 +594,7 @@ impl App {
             Hotkey::Leave => self.leave(false),
             Hotkey::QuitApp => self.leave(true),
             Hotkey::Stats => {
-                self.show_stats = !self.show_stats;
+                self.panel.toggle_open();
                 self.request_redraw();
             }
             Hotkey::FullScreen => self.toggle_full_screen(),
@@ -601,8 +613,51 @@ impl App {
         Some(aspect_fit((w, h), gfx.gpu.size()))
     }
 
+    /// The stats panel's share of the pointer. While the pointer is free,
+    /// egui sees the pointer events first; those over the panel (or part of a
+    /// press that began on it) are the panel's: they capture no pointer and
+    /// reach no host. Locked, every event goes to the stream.
+    fn panel_event(&mut self, event: &WindowEvent) -> bool {
+        let is_pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        );
+        let Some(window) = self.window().cloned() else {
+            return false;
+        };
+        let (Some(gfx), Some(stream)) = (self.gfx.as_mut(), self.stream.as_mut()) else {
+            return false;
+        };
+        if !is_pointer || stream.locked {
+            return false;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            stream.cursor = Some((position.x, position.y));
+        }
+        gfx.egui.on_event(&window, event);
+        let ppp = gfx.egui.ctx().pixels_per_point();
+        let at = stream
+            .cursor
+            .map(|(x, y)| egui::pos2(x as f32 / ppp, y as f32 / ppp));
+        let consumed = self.panel.consumes(at, event);
+        // Redraw while the pointer is on the panel, and once more as it
+        // leaves, so hover feedback works between video frames.
+        if consumed || self.panel_hover {
+            window.request_redraw();
+        }
+        self.panel_hover = consumed;
+        consumed
+    }
+
     /// Window events while streaming; true when handled here.
     fn stream_event(&mut self, event: &WindowEvent) -> bool {
+        if self.panel_event(event) {
+            return true;
+        }
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -780,8 +835,25 @@ impl App {
         }
     }
 
+    /// Writes the stats panel's preferences once they have settled (or now,
+    /// with `force`), and arranges to be woken when a save is still pending.
+    fn save_overlay(&mut self, force: bool, event_loop: &ActiveEventLoop) {
+        if let Some(prefs) = self.panel.take_save(force) {
+            let config = self.launcher.set_overlay_prefs(prefs);
+            if let Err(e) = config.save(&self.data_dir) {
+                tracing::warn!("saving the stats panel's place: {e:#}");
+            }
+        }
+        if let Some(wait) = self.panel.save_due() {
+            let due = Instant::now() + wait;
+            if self.launcher_due.is_none_or(|d| d > due) {
+                self.launcher_due = Some(due);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(due));
+            }
+        }
+    }
+
     fn draw_stream(&mut self, event_loop: &ActiveEventLoop) {
-        let show_stats = self.show_stats;
         let (Some(gfx), Some(stream)) = (self.gfx.as_mut(), self.stream.as_mut()) else {
             return;
         };
@@ -916,19 +988,29 @@ impl App {
             }
         }
         let reconnecting = shared.reconnecting.lock().unwrap().clone();
-        if show_stats || reconnecting.is_some() {
-            let snapshot = show_stats.then(|| stream.rates.snapshot(&shared).clone());
-            self.theme
-                .sync(gfx.egui.ctx(), &self.launcher.config().theme);
-            let frame = gfx.egui.run(&window, |ui| {
-                if let Some(snapshot) = &snapshot {
-                    ui::show_stats(ui.ctx(), snapshot);
-                }
-                if let Some(text) = &reconnecting {
-                    ui::show_reconnecting(ui.ctx(), text);
-                }
-            });
-            gfx.egui.paint(&gfx.gpu, &mut encoder, &view, &frame, None);
+        let snapshot = stream
+            .rates
+            .snapshot(&shared, &*stream.running.control)
+            .clone();
+        let health = stream.rates.health().clone();
+        self.theme
+            .sync(gfx.egui.ctx(), &self.launcher.config().theme);
+        let panel = &mut self.panel;
+        let frame = gfx.egui.run(&window, |ui| {
+            panel.show(ui.ctx(), &snapshot, &health);
+            if let Some(text) = &reconnecting {
+                ui::show_reconnecting(ui.ctx(), text);
+            }
+        });
+        gfx.egui.paint(&gfx.gpu, &mut encoder, &view, &frame, None);
+        // Hover feedback, a tooltip or the settings strip timing out: wake
+        // the window for what egui still wants to draw.
+        if frame.repaint_after.is_zero() {
+            window.request_redraw();
+        } else if frame.repaint_after < Duration::from_secs(3600) {
+            let due = Instant::now() + frame.repaint_after;
+            self.launcher_due = Some(due);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(due));
         }
         gfx.gpu.queue.submit([encoder.finish()]);
         if let Some(pyro) = &mut gfx.pyro {
@@ -947,6 +1029,8 @@ impl App {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
+
+        self.save_overlay(false, event_loop);
 
         if let Some(received) = received {
             shared.presented(received);
@@ -1040,8 +1124,13 @@ impl ApplicationHandler<UserEvent> for App {
                     Instant::now() + Duration::from_secs(1),
                 ));
             }
-            if self.stream.is_none() && self.launcher_due.is_some_and(|d| Instant::now() >= d) {
+            if self.launcher_due.is_some_and(|d| Instant::now() >= d) {
+                self.launcher_due = None;
                 self.request_redraw();
+                if self.stream.is_some() && self.options.frames.is_none() {
+                    // The stream wakes the window by itself; don't spin on a due time that passed.
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                }
             }
             if self.surface_retry.is_some_and(|d| Instant::now() >= d) {
                 self.request_redraw();

@@ -223,6 +223,62 @@ pub trait SessionControl: Send + Sync {
     fn request_keyframe(&self);
     /// End the stream; `quit_app` also quits the app on the host.
     fn stop(&self, quit_app: bool);
+    /// What the transport knows about the link and the host, for the stats
+    /// overlay; `None` when it can't say anything (the default).
+    fn transport_stats(&self) -> Option<TransportStats> {
+        None
+    }
+}
+
+/// What a transport can say about the link and the host right now. Every
+/// reading a transport doesn't have is `None`; the overlay hides it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TransportStats {
+    /// How the stream travels, in a few letters for the codec text ("WT" for
+    /// WebTransport).
+    pub tag: &'static str,
+    /// Round trip to the host, ms.
+    pub rtt_ms: Option<f32>,
+    /// Frames the transport gave up on, since the session began (it survives
+    /// reconnects). PyroWave frames lost are skipped frames.
+    pub lost: u64,
+    /// Frames rebuilt from parity instead of lost, since the session began.
+    pub recovered: u64,
+    /// The frame rate the host encodes at.
+    pub target_fps: Option<u32>,
+    /// Frames per second the host sent over its last few reports, and the
+    /// span those reports cover, ms. The host sends only when the picture
+    /// changes, so a still screen sends almost none.
+    pub sent_fps: Option<f32>,
+    pub sent_span_ms: Option<u32>,
+    /// The host's composited to encoded p99 over its last report, ms.
+    pub encode_p99_ms: Option<f32>,
+    /// The host's resource use, if it reported lately.
+    pub node: Option<NodeStats>,
+}
+
+/// The node's CPU, RAM and GPU, as the streamer's `system` message gives
+/// them. Percent is 0..100, memory is in bytes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeStats {
+    pub cpu: f32,
+    pub cores: u32,
+    pub load1: f32,
+    pub mem_used: u64,
+    pub mem_total: u64,
+    pub gpu: Option<f32>,
+    pub vram_used: Option<u64>,
+    pub vram_total: Option<u64>,
+    /// NVENC and NVDEC utilisation.
+    pub enc: Option<f32>,
+    pub dec: Option<f32>,
+    /// °C, watts and MHz.
+    pub temp: Option<f32>,
+    pub power: Option<f32>,
+    pub power_limit: Option<f32>,
+    pub clock: Option<f32>,
+    /// The streamer's own CPU, in percent of one core (it may pass 100).
+    pub streamer_cpu: f32,
 }
 
 /// A way to find and play hosts.

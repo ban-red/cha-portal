@@ -16,8 +16,8 @@
 //!    `egui::Style`. UI code reads roles through [`ThemeExt::palette`], and
 //!    [`widgets`] has the portal's buttons and cards.
 //!
-//! The stats overlay sits on the video and keeps its own dark look
-//! ([`overlay`]).
+//! The stats overlay sits on the video and stays dark: it takes the theme's
+//! dark palette whatever the launcher shows ([`overlay`]).
 
 mod apply;
 mod fonts;
@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use apply::ThemeExt;
+pub use overlay::OverlayStyle;
 pub use palette::Palette;
 pub use registry::Theme;
 pub use resolve::{Appearance, Contrast, SCALE_RANGE, ThemePrefs, Variant};

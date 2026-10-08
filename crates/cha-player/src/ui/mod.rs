@@ -33,7 +33,7 @@ const PORTAL_APPS_REFRESH_CHANGING: Duration = Duration::from_secs(1);
 const INPUT_MONITORING_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
 
-pub use overlay::{StatsSnapshot, show_reconnecting, show_stats};
+pub use overlay::{StatsPanel, StatsSnapshot, show_reconnecting};
 
 /// What the user asked for; the app does it.
 #[derive(Debug)]
@@ -186,6 +186,12 @@ impl Launcher {
             settings_open: false,
             input_access: (input_access(), Instant::now()),
         }
+    }
+
+    /// Remember the stats panel's preferences; the config to save.
+    pub fn set_overlay_prefs(&mut self, prefs: crate::overlay_prefs::OverlayPrefs) -> Config {
+        self.config.overlay = prefs;
+        self.config.clone()
     }
 
     pub fn config(&self) -> &Config {

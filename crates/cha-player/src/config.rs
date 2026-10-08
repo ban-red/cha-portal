@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use cha_client::{Codec, StreamConfig};
 use serde::{Deserialize, Serialize};
 
+use crate::overlay_prefs::OverlayPrefs;
 use crate::theme::ThemePrefs;
 
 /// `~/Library/Application Support/Cha Player`: settings, and whatever a
@@ -44,6 +45,8 @@ pub struct Config {
     pub command_as_control: bool,
     /// Colours, appearance and UI scale.
     pub theme: ThemePrefs,
+    /// The stats panel: shown or hidden, folded, where it sits, how opaque.
+    pub overlay: OverlayPrefs,
 }
 
 impl Default for Config {
@@ -56,6 +59,7 @@ impl Default for Config {
             codecs: vec![Codec::Hevc, Codec::H264],
             command_as_control: true,
             theme: ThemePrefs::default(),
+            overlay: OverlayPrefs::default(),
         }
     }
 }
@@ -95,6 +99,7 @@ impl Config {
         }
         self.bitrate_kbps = self.bitrate_kbps.clamp(1_000, 500_000);
         self.theme = self.theme.sanitized();
+        self.overlay = self.overlay.sanitized();
         self.codecs.retain(|c| *c != Codec::Av1);
         if self.codecs.is_empty() {
             self.codecs = defaults.codecs;
@@ -146,6 +151,7 @@ mod tests {
                       "codecs": ["h264"], "command_as_control": false}"#;
         let config: Config = serde_json::from_str(old).unwrap();
         assert_eq!(config.theme, ThemePrefs::default());
+        assert_eq!(config.overlay, OverlayPrefs::default());
         assert_eq!(config.theme.theme, "cha-magenta");
         assert_eq!(config.theme.scale, 1.0);
         assert!(!config.command_as_control);

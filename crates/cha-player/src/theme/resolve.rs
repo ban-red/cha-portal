@@ -172,7 +172,11 @@ pub fn resolve(registry: &Registry, prefs: &ThemePrefs, env: &SystemEnv) -> Reso
         palette: Arc::new(theme.palette(variant).clone()),
         metrics,
         fonts: theme.fonts.clone(),
-        overlay: OverlayStyle::from_palette(theme.palette(Variant::DarkMore)),
+        overlay: OverlayStyle::from_palette(theme.palette(if variant.is_more() {
+            Variant::DarkMore
+        } else {
+            Variant::Dark
+        })),
         scale: prefs.scale,
         fallback_from,
     }
@@ -235,6 +239,21 @@ mod tests {
 
         let more = resolve(&registry, &ThemePrefs::default(), &env(true, true));
         assert!(more.metrics.stroke_width > dark.metrics.stroke_width);
+    }
+
+    #[test]
+    fn the_overlay_stays_dark_whatever_the_launcher_shows() {
+        let registry = Registry::builtin();
+        let theme = registry.default_theme();
+        let light = resolve(&registry, &ThemePrefs::default(), &env(false, false));
+        let dark = resolve(&registry, &ThemePrefs::default(), &env(true, false));
+        assert_eq!(*light.overlay.palette, *theme.palette(Variant::Dark));
+        assert_eq!(light.overlay, dark.overlay);
+        // More contrast brings the dark-more palette, light launcher or not.
+        let more = resolve(&registry, &ThemePrefs::default(), &env(false, true));
+        assert_eq!(*more.overlay.palette, *theme.palette(Variant::DarkMore));
+        assert_eq!(more.overlay.fill(100), more.overlay.palette.panel);
+        assert_eq!(more.overlay.fill(0), egui::Color32::TRANSPARENT);
     }
 
     #[test]

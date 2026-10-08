@@ -11,7 +11,11 @@ mod config;
 #[cfg(target_os = "macos")]
 mod demo;
 #[cfg(target_os = "macos")]
+mod health;
+#[cfg(target_os = "macos")]
 mod input;
+#[cfg(target_os = "macos")]
+mod overlay_prefs;
 #[cfg(target_os = "macos")]
 mod present;
 #[cfg(target_os = "macos")]

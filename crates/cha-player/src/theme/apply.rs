@@ -31,7 +31,7 @@ pub fn apply(ctx: &egui::Context, resolved: &Resolved) {
     ctx.set_zoom_factor(resolved.scale);
     ctx.data_mut(|d| {
         d.insert_temp(Id::new(PALETTE_ID), resolved.palette.clone());
-        d.insert_temp(Id::new(OVERLAY_ID), resolved.overlay);
+        d.insert_temp(Id::new(OVERLAY_ID), resolved.overlay.clone());
     });
 }
 

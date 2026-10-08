@@ -7,10 +7,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cha_client::{Codec, Ended, Feedback, Session, SessionControl, VideoFrame};
+use cha_client::{Codec, Ended, Feedback, Session, SessionControl, TransportStats, VideoFrame};
 use tokio::runtime::Handle;
 
 use crate::audio::AudioOut;
+use crate::health::{self, Assessment, HEALTH_WINDOW};
 use crate::input::pads::PadService;
 use crate::ui::StatsSnapshot;
 use crate::video::{self, DecodedFrame};
@@ -35,6 +36,14 @@ pub struct Stats {
     pub partial: AtomicU64,
     pub audio_underruns: AtomicU64,
     pub audio_dropped_frames: AtomicU64,
+    /// Encoded video bytes received, for the bitrate.
+    pub video_bytes: AtomicU64,
+    /// Audio waiting to be played now, in milliseconds.
+    pub audio_buffer_ms: AtomicU64,
+    /// Times the stream came back after dropping.
+    pub reconnects: AtomicU64,
+    /// The longest wait between two frames' arrivals since last read.
+    gap_max_ms: AtomicU64,
 }
 
 /// What the video thread and the window share.
@@ -87,13 +96,33 @@ impl Shared {
         }
     }
 
-    fn note_arrival(&self, at: Instant) {
-        let ms = at.saturating_duration_since(self.began).as_millis() as u64;
+    fn note_arrival(&self, frame: &VideoFrame) {
+        let ms = frame
+            .received
+            .saturating_duration_since(self.began)
+            .as_millis() as u64;
+        self.stats
+            .video_bytes
+            .fetch_add(frame.data.len() as u64, Ordering::Relaxed);
         let mut log = self.arrivals.lock().unwrap();
+        if let Some(&last) = log.back() {
+            self.stats
+                .gap_max_ms
+                .fetch_max(ms.saturating_sub(last), Ordering::Relaxed);
+        }
         log.push_back(ms);
         while log.front().is_some_and(|first| ms - first > 10_000) {
             log.pop_front();
         }
+    }
+
+    /// The longest wait between frames since the last call, counting the wait
+    /// that is still going on (None before any frame came).
+    fn take_frame_gap_ms(&self) -> Option<f32> {
+        let last = *self.arrivals.lock().unwrap().back()?;
+        let now = self.began.elapsed().as_millis() as u64;
+        let longest = self.stats.gap_max_ms.swap(0, Ordering::Relaxed);
+        Some(longest.max(now.saturating_sub(last)) as f32)
     }
 
     fn awdl_suspected(&self) -> bool {
@@ -180,7 +209,10 @@ pub fn start(
                             "Reconnecting…".to_string()
                         }));
                     }
-                    Feedback::Reconnected => shared.set_reconnecting(None),
+                    Feedback::Reconnected => {
+                        shared.stats.reconnects.fetch_add(1, Ordering::Relaxed);
+                        shared.set_reconnecting(None);
+                    }
                     f => pads.feedback(f),
                 }
             }
@@ -217,7 +249,7 @@ fn video_loop(
 ) {
     let mut last_request: Option<Instant> = None;
     while let Some(frame) = video.blocking_recv() {
-        shared.note_arrival(frame.received);
+        shared.note_arrival(&frame);
         match decoder.decode(frame) {
             Ok(Some(decoded)) => {
                 let s = &shared.stats;
@@ -247,7 +279,7 @@ fn video_loop(
 /// replaced before it was taken is dropped, as for the other codecs.
 fn pyrowave_loop(mut video: tokio::sync::mpsc::Receiver<VideoFrame>, shared: &Shared) {
     while let Some(frame) = video.blocking_recv() {
-        shared.note_arrival(frame.received);
+        shared.note_arrival(&frame);
         let replaced = shared.latest_pyro.lock().unwrap().replace(frame);
         if replaced.is_some() {
             shared.stats.dropped.fetch_add(1, Ordering::Relaxed);
@@ -287,14 +319,25 @@ fn audio_loop(mut audio: tokio::sync::mpsc::Receiver<cha_client::AudioPacket>, s
         s.audio_dropped_frames
             .fetch_add(stats.dropped_frames - seen_dropped, Ordering::Relaxed);
         (seen_underruns, seen_dropped) = (stats.underruns, stats.dropped_frames);
+        s.audio_buffer_ms.store(o.buffered_ms(), Ordering::Relaxed);
     }
 }
 
-/// Turns the monotonic counters into per-second readings for the overlay.
+/// Turns the monotonic counters into per-second readings for the overlay,
+/// keeps the last few for the health grade, and asks the transport what it
+/// knows.
 pub struct Rates {
     since: Instant,
     last: Totals,
     shown: StatsSnapshot,
+    /// The last few seconds' snapshots, oldest first.
+    history: VecDeque<StatsSnapshot>,
+    health: Assessment,
+    /// Presented-frame totals by time, to count frames shown over the span
+    /// the host's send rate covers.
+    presented: VecDeque<(Instant, u64)>,
+    /// The frame rate asked for, until the transport says what runs.
+    asked_fps: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -303,10 +346,11 @@ struct Totals {
     decode_us: u64,
     presented: u64,
     latency_us: u64,
+    video_bytes: u64,
 }
 
 impl Rates {
-    pub fn new(running: &Running) -> Self {
+    pub fn new(running: &Running, asked_fps: u32) -> Self {
         Self {
             since: Instant::now(),
             last: Totals::default(),
@@ -316,11 +360,15 @@ impl Rates {
                 codec: format!("{:?}", running.codec),
                 ..Default::default()
             },
+            history: VecDeque::new(),
+            health: Assessment::default(),
+            presented: VecDeque::new(),
+            asked_fps,
         }
     }
 
     /// The latest reading, refreshed about once a second.
-    pub fn snapshot(&mut self, shared: &Shared) -> &StatsSnapshot {
+    pub fn snapshot(&mut self, shared: &Shared, control: &dyn SessionControl) -> &StatsSnapshot {
         let stats = &shared.stats;
         let elapsed = self.since.elapsed();
         if elapsed >= Duration::from_secs(1) {
@@ -329,25 +377,31 @@ impl Rates {
                 decode_us: stats.decode_us.load(Ordering::Relaxed),
                 presented: stats.presented.load(Ordering::Relaxed),
                 latency_us: stats.latency_us.load(Ordering::Relaxed),
+                video_bytes: stats.video_bytes.load(Ordering::Relaxed),
             };
             let secs = elapsed.as_secs_f32();
             let decoded = now.decoded - self.last.decoded;
             let presented = now.presented - self.last.presented;
             self.shown.decode_fps = decoded as f32 / secs;
             self.shown.present_fps = presented as f32 / secs;
-            self.shown.decode_ms = if decoded > 0 {
-                (now.decode_us - self.last.decode_us) as f32 / decoded as f32 / 1000.0
-            } else {
-                0.0
-            };
-            self.shown.latency_ms = if presented > 0 {
+            self.shown.decode_ms = (decoded > 0)
+                .then(|| (now.decode_us - self.last.decode_us) as f32 / decoded as f32 / 1000.0);
+            self.shown.latency_ms = (presented > 0).then(|| {
                 (now.latency_us - self.last.latency_us) as f32 / presented as f32 / 1000.0
-            } else {
-                0.0
-            };
+            });
+            self.shown.mbps =
+                Some((now.video_bytes - self.last.video_bytes) as f32 * 8.0 / secs / 1e6);
+            self.shown.frame_gap_ms = shared.take_frame_gap_ms();
             self.last = now;
             self.shown.awdl_suspected = shared.awdl_suspected();
             self.since = Instant::now();
+            self.apply_transport(control.transport_stats(), now.presented);
+            self.history.push_back(self.shown.clone());
+            while self.history.len() > HEALTH_WINDOW {
+                self.history.pop_front();
+            }
+            let history: Vec<StatsSnapshot> = self.history.iter().cloned().collect();
+            self.health = health::assess(&history);
         }
         self.shown.dropped = stats.dropped.load(Ordering::Relaxed);
         self.shown.decode_errors = stats.decode_errors.load(Ordering::Relaxed);
@@ -355,7 +409,46 @@ impl Rates {
         self.shown.audio_underruns = stats.audio_underruns.load(Ordering::Relaxed);
         self.shown.audio_dropped_ms =
             stats.audio_dropped_frames.load(Ordering::Relaxed) * 1000 / 48_000;
+        self.shown.audio_buffer_ms = Some(stats.audio_buffer_ms.load(Ordering::Relaxed) as f32);
+        self.shown.reconnects = stats.reconnects.load(Ordering::Relaxed) as u32;
         &self.shown
+    }
+
+    /// The health grade of the last few seconds.
+    pub fn health(&self) -> &Assessment {
+        &self.health
+    }
+
+    fn apply_transport(&mut self, t: Option<TransportStats>, presented_total: u64) {
+        let now = Instant::now();
+        self.presented.push_back((now, presented_total));
+        while self.presented.len() > 10 {
+            self.presented.pop_front();
+        }
+        let s = &mut self.shown;
+        let Some(t) = t else {
+            s.transport_tag = "";
+            s.target_fps = Some(self.asked_fps);
+            (s.sent_fps, s.shown_sent_fps, s.encode_p99_ms) = (None, None, None);
+            (s.rtt_ms, s.lost, s.recovered, s.node) = (None, None, None, None);
+            return;
+        };
+        s.transport_tag = t.tag;
+        s.target_fps = t.target_fps.or(Some(self.asked_fps));
+        s.sent_fps = t.sent_fps;
+        s.encode_p99_ms = t.encode_p99_ms;
+        s.rtt_ms = t.rtt_ms;
+        s.lost = Some(t.lost);
+        s.recovered = Some(t.recovered);
+        s.node = t.node;
+        // Frames shown over the span the send rate covers, so a burst of
+        // sends then a still screen compares like with like.
+        s.shown_sent_fps = t.sent_span_ms.and_then(|span| {
+            let from = now.checked_sub(Duration::from_millis(u64::from(span)))?;
+            let &(at, count) = self.presented.iter().find(|(at, _)| *at >= from)?;
+            let dt = now.duration_since(at).as_secs_f32();
+            (dt >= 0.5).then(|| (presented_total - count) as f32 / dt)
+        });
     }
 }
 

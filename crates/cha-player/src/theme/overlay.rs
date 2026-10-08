@@ -1,35 +1,41 @@
-//! The stats overlay sits on the video, so it is not themed like the
-//! launcher: always dark and high contrast. It borrows the theme's
-//! `dark-more` palette for text and status colours, so a theme still tints it.
+//! The stats overlay sits on the video, so it stays dark whatever the
+//! launcher's light or dark choice: it uses the theme's `dark` palette (the
+//! `dark-more` one when contrast is More), with `panel` as its background at
+//! the user's opacity, and `line`, `ink`, `ink-2`, the status colours and
+//! `chart-1..3` for the rest. A theme still tints it, through its palette.
+
+use std::sync::Arc;
 
 use egui::Color32;
 
 use super::palette::Palette;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OverlayStyle {
-    /// Behind the text: near-black whatever the video shows.
-    pub fill: Color32,
-    pub text: Color32,
-    pub warn: Color32,
+    /// The colour roles to draw with: a dark palette.
+    pub palette: Arc<Palette>,
     pub radius: f32,
-    pub margin: f32,
     pub font_size: f32,
+    /// A text line's height, and the panel's width when full.
+    pub line_height: f32,
+    pub width: f32,
 }
 
 impl OverlayStyle {
-    pub const FILL: Color32 = Color32::from_black_alpha(190);
-
-    /// Text and status colours from `dark_more`, which every theme defines
-    /// for a dark background.
-    pub fn from_palette(dark_more: &Palette) -> Self {
+    pub fn from_palette(dark: &Palette) -> Self {
         Self {
-            fill: Self::FILL,
-            text: dark_more.ink,
-            warn: dark_more.warn,
-            radius: 6.0,
-            margin: 8.0,
-            font_size: 13.0,
+            palette: Arc::new(dark.clone()),
+            radius: 8.0,
+            font_size: 11.0,
+            line_height: 20.0,
+            width: 256.0,
         }
+    }
+
+    /// The panel's background at `opacity` percent.
+    pub fn fill(&self, opacity: u8) -> Color32 {
+        self.palette
+            .panel
+            .gamma_multiply(f32::from(opacity.min(100)) / 100.0)
     }
 }

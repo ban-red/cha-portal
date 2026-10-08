@@ -83,6 +83,12 @@ impl AudioOut {
         Ok(())
     }
 
+    /// Audio waiting to be played, in milliseconds.
+    pub fn buffered_ms(&self) -> u64 {
+        let frames = self.buffer.lock().unwrap().buffered_frames() as u64;
+        frames * 1000 / u64::from(self.sample_rate)
+    }
+
     pub fn stats(&self) -> JitterStats {
         self.buffer.lock().unwrap().stats
     }

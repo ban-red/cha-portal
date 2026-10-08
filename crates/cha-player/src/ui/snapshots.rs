@@ -6,7 +6,7 @@
 //!
 //! Every built-in theme in every variant gets `<theme>-<variant>-launcher.png`
 //! (hosts and apps), `-settings.png` (the same with Settings open), `-status.png` (error, info and busy lines)
-//! and `-stats.png` (the stats overlay on a stand-in for the video). egui is
+//! and the stats panel has its own test, `snapshot_stats_panel`. egui is
 //! drawn by `egui-wgpu` as in the app: a non-sRGB `Rgba8Unorm` target cleared
 //! with the canvas colour as written, at 1280x800 points and 2x.
 
@@ -367,21 +367,6 @@ fn snapshot_themes() {
         ("dark-more", Appearance::Dark, Contrast::More),
         ("light-more", Appearance::Light, Contrast::More),
     ];
-    let stats = StatsSnapshot {
-        width: 2560,
-        height: 1440,
-        codec: "HEVC".into(),
-        present_fps: 59.8,
-        decode_fps: 60.0,
-        decode_ms: 2.4,
-        latency_ms: 11.6,
-        dropped: 3,
-        decode_errors: 1,
-        partial: 12,
-        audio_underruns: 2,
-        audio_dropped_ms: 40,
-        awdl_suspected: true,
-    };
     for id in ids {
         for (name, appearance, contrast) in variants {
             let mut config = Config::default();
@@ -420,14 +405,190 @@ fn snapshot_themes() {
                     l.show(ui, &transports, &themes);
                 }),
             );
+        }
+    }
+    std::fs::remove_dir_all(data).ok();
+}
 
-            // The overlay is drawn over video: stand in with mid-grey.
-            save(
-                "stats",
-                gpu.render(&ctx, egui::Color32::from_gray(90), |ui| {
-                    show_stats(ui.ctx(), &stats);
-                }),
-            );
+/// Eight seconds of a stream that has two things wrong: frames dropped on
+/// this Mac, and AWDL. The node is a bit hot.
+fn stats_history() -> Vec<StatsSnapshot> {
+    (0..8)
+        .map(|i| StatsSnapshot {
+            width: 2560,
+            height: 1440,
+            codec: "Hevc".into(),
+            transport_tag: "WT",
+            present_fps: 57.4,
+            decode_fps: 60.0,
+            target_fps: Some(60),
+            sent_fps: Some(60.0),
+            mbps: Some(62.4),
+            decode_ms: Some(3.18),
+            latency_ms: Some(14.2),
+            frame_gap_ms: Some(31.0),
+            rtt_ms: Some(2.4),
+            lost: Some(3),
+            recovered: Some(11),
+            dropped: 40 + i * 5,
+            decode_errors: 1,
+            audio_buffer_ms: Some(31.0),
+            audio_underruns: 2,
+            audio_dropped_ms: 40,
+            reconnects: 1,
+            awdl_suspected: i > 3,
+            node: Some(cha_client::NodeStats {
+                cpu: 34.0,
+                cores: 16,
+                load1: 2.4,
+                mem_used: 9_800_000_000,
+                mem_total: 34_359_738_368,
+                gpu: Some(92.0),
+                vram_used: Some(6_700_000_000),
+                vram_total: Some(12_884_901_888),
+                enc: Some(31.0),
+                dec: Some(0.0),
+                temp: Some(87.0),
+                power: Some(188.0),
+                power_limit: Some(320.0),
+                clock: Some(1980.0),
+                streamer_cpu: 46.0,
+            }),
+            ..StatsSnapshot::default()
+        })
+        .collect()
+}
+
+/// A stand-in for video: colour bars over a ramp, so the panel's opacity shows.
+fn paint_video(ctx: &egui::Context) {
+    let painter = egui::Painter::new(
+        ctx.clone(),
+        egui::LayerId::background(),
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH_PT, HEIGHT_PT)),
+    );
+    let bars = [
+        egui::Color32::from_rgb(200, 200, 200),
+        egui::Color32::from_rgb(200, 200, 40),
+        egui::Color32::from_rgb(40, 200, 200),
+        egui::Color32::from_rgb(40, 200, 40),
+        egui::Color32::from_rgb(200, 40, 200),
+        egui::Color32::from_rgb(200, 40, 40),
+        egui::Color32::from_rgb(40, 40, 200),
+        egui::Color32::from_gray(30),
+    ];
+    let w = WIDTH_PT / bars.len() as f32;
+    for (i, c) in bars.iter().enumerate() {
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(i as f32 * w, 0.0), egui::vec2(w, HEIGHT_PT)),
+            0.0,
+            *c,
+        );
+    }
+}
+
+#[test]
+#[ignore = "renders on the GPU into CHA_SNAPSHOT_DIR"]
+fn snapshot_stats_panel() {
+    use crate::overlay_prefs::{OverlayPrefs, Section};
+
+    let dir = out_dir();
+    let data = std::env::temp_dir().join(format!("cha-player-snap-stats-{}", std::process::id()));
+    let mut themes = ThemeController::new(data.clone(), None);
+    let ctx = egui::Context::default();
+    let mut gpu = Offscreen::new();
+    let history = stats_history();
+    let stats = history.last().unwrap().clone();
+    let health = crate::health::assess(&history);
+    println!(
+        "health: {:?} {:?} {:?}",
+        health.grade,
+        health.score,
+        health.issues.iter().map(|i| i.id).collect::<Vec<_>>()
+    );
+    assert!(health.issues.len() >= 2, "two issues to draw");
+
+    let cases: [(&str, OverlayPrefs, bool); 8] = [
+        ("full", OverlayPrefs::default(), false),
+        (
+            "full-node-folded",
+            OverlayPrefs {
+                folded: vec![Section::Node],
+                ..OverlayPrefs::default()
+            },
+            false,
+        ),
+        (
+            "compact",
+            OverlayPrefs {
+                compact: true,
+                ..OverlayPrefs::default()
+            },
+            false,
+        ),
+        (
+            "collapsed",
+            OverlayPrefs {
+                collapsed: true,
+                ..OverlayPrefs::default()
+            },
+            false,
+        ),
+        (
+            "hidden",
+            OverlayPrefs {
+                open: false,
+                ..OverlayPrefs::default()
+            },
+            false,
+        ),
+        (
+            "opacity-40",
+            OverlayPrefs {
+                opacity: 40,
+                ..OverlayPrefs::default()
+            },
+            false,
+        ),
+        ("settings", OverlayPrefs::default(), true),
+        (
+            "bottom-right",
+            OverlayPrefs {
+                corner: crate::overlay_prefs::Corner::BottomRight,
+                folded: vec![Section::Stream, Section::Latency],
+                ..OverlayPrefs::default()
+            },
+            false,
+        ),
+    ];
+    for (theme, appearance) in [
+        ("cha-magenta", Appearance::Dark),
+        ("cha-jade", Appearance::Dark),
+        ("cha-magenta", Appearance::Light),
+    ] {
+        let mut config = Config::default();
+        config.theme.theme = theme.into();
+        config.theme.appearance = appearance;
+        themes.sync(&ctx, &config.theme);
+        let tag = format!(
+            "{theme}-{}",
+            if appearance == Appearance::Light {
+                "light"
+            } else {
+                "dark"
+            }
+        );
+        for (name, prefs, menu) in &cases {
+            let mut panel = StatsPanel::new(prefs.clone());
+            if *menu {
+                panel.open_menu();
+            }
+            let image = gpu.render(&ctx, egui::Color32::BLACK, |ui| {
+                paint_video(ui.ctx());
+                panel.show(ui.ctx(), &stats, &health);
+            });
+            let path = dir.join(format!("stats-{tag}-{name}.png"));
+            write_png(&path, image.0, image.1, &image.2);
+            println!("{}", path.display());
         }
     }
     std::fs::remove_dir_all(data).ok();

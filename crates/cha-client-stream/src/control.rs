@@ -2,7 +2,7 @@
 //! (`docs/plans/c2-transport.md` §5). Parsing what the streamer says and
 //! building what we say, with no I/O.
 
-use cha_client::Codec;
+use cha_client::{Codec, NodeStats};
 use serde_json::{Value, json};
 
 /// A line longer than this is not the streamer talking.
@@ -94,8 +94,17 @@ pub enum ServerMsg {
     },
     Clipboard,
     Cursor,
-    /// `stats`, `system`, `status`, `overlay`, `pointer`, `haptic`,
-    /// `players`, `trigger`, and anything newer: not used.
+    /// The streamer's report, about once a second: the rate it encodes at,
+    /// how many frames it has sent in all, and how late it makes them.
+    Stats {
+        fps: Option<u32>,
+        frames_sent: Option<u64>,
+        encode_p99_ms: Option<f32>,
+    },
+    /// The node's CPU, RAM and GPU use, about once a second.
+    System(NodeStats),
+    /// `status`, `overlay`, `pointer`, `haptic`, `players`, `trigger`, and
+    /// anything newer: not used.
     Other(String),
 }
 
@@ -107,6 +116,35 @@ fn u32_of(v: &Value, key: &str) -> u32 {
 
 fn f32_of(v: &Value, key: &str) -> f32 {
     v.get(key).and_then(Value::as_f64).unwrap_or(0.0) as f32
+}
+
+fn number(v: &Value, key: &str) -> Option<f64> {
+    v.get(key).and_then(Value::as_f64).filter(|n| n.is_finite())
+}
+
+/// A `system` message as node stats, as `toNodeStats` in the browser's
+/// `stats.ts` reads it: `None` without `cpu` and `mem_total`; the GPU's
+/// readings only if the node sent them.
+fn node_stats(v: &Value) -> Option<NodeStats> {
+    let cpu = number(v, "cpu")?;
+    let mem_total = number(v, "mem_total")?;
+    Some(NodeStats {
+        cpu: cpu as f32,
+        cores: number(v, "cores").unwrap_or(0.0) as u32,
+        load1: number(v, "load1").unwrap_or(0.0) as f32,
+        mem_used: number(v, "mem_used").unwrap_or(0.0) as u64,
+        mem_total: mem_total as u64,
+        gpu: number(v, "gpu").map(|n| n as f32),
+        vram_used: number(v, "vram_used").map(|n| n as u64),
+        vram_total: number(v, "vram_total").map(|n| n as u64),
+        enc: number(v, "enc").map(|n| n as f32),
+        dec: number(v, "dec").map(|n| n as f32),
+        temp: number(v, "temp").map(|n| n as f32),
+        power: number(v, "power").map(|n| n as f32),
+        power_limit: number(v, "power_limit").map(|n| n as f32),
+        clock: number(v, "clock").map(|n| n as f32),
+        streamer_cpu: number(v, "streamer_cpu").unwrap_or(0.0) as f32,
+    })
 }
 
 /// One line, or `None` if it isn't a JSON object with a `t`.
@@ -161,6 +199,18 @@ pub fn parse(line: &str) -> Option<ServerMsg> {
         },
         "clipboard" => ServerMsg::Clipboard,
         "cursor" => ServerMsg::Cursor,
+        "stats" => ServerMsg::Stats {
+            fps: v
+                .get("fps")
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok()),
+            frames_sent: v.get("frames_sent").and_then(Value::as_u64),
+            encode_p99_ms: v
+                .get("composite_to_encoded_ms_p99")
+                .and_then(Value::as_f64)
+                .map(|n| n as f32),
+        },
+        "system" => ServerMsg::System(node_stats(&v)?),
         other => ServerMsg::Other(other.to_string()),
     })
 }
@@ -323,17 +373,65 @@ mod tests {
         assert_eq!(parse(r#"{"x":1}"#), None);
         assert_eq!(parse(r#"[1,2]"#), None);
         assert_eq!(
-            parse(r#"{"t":"stats","frames_sent":3}"#),
-            Some(ServerMsg::Other("stats".into()))
-        );
-        assert_eq!(
             parse(r#"{"t":"something_new"}"#),
             Some(ServerMsg::Other("something_new".into()))
         );
+        // A `system` line without the basics is dropped, as in the browser.
+        assert_eq!(parse(r#"{"t":"system","cpu":3}"#), None);
         assert!(matches!(
             parse(r#"{"t":"cursor","kind":"named","name":"text"}"#),
             Some(ServerMsg::Cursor)
         ));
+    }
+
+    #[test]
+    fn stats_line() {
+        assert_eq!(
+            parse(
+                r#"{"t":"stats","elapsed_ms":5000,"fps":120,"frames_sent":300,"composite_to_encoded_ms_p99":2.5}"#
+            ),
+            Some(ServerMsg::Stats {
+                fps: Some(120),
+                frames_sent: Some(300),
+                encode_p99_ms: Some(2.5)
+            })
+        );
+        assert_eq!(
+            parse(r#"{"t":"stats"}"#),
+            Some(ServerMsg::Stats {
+                fps: None,
+                frames_sent: None,
+                encode_p99_ms: None
+            })
+        );
+    }
+
+    #[test]
+    fn system_line_with_and_without_a_gpu() {
+        let Some(ServerMsg::System(n)) = parse(
+            r#"{"t":"system","cpu":23.5,"cores":16,"load1":2.1,"mem_used":10,"mem_total":20,"streamer_cpu":4.0}"#,
+        ) else {
+            panic!()
+        };
+        assert_eq!(
+            (n.cpu, n.cores, n.mem_used, n.mem_total),
+            (23.5, 16, 10, 20)
+        );
+        assert_eq!(n.streamer_cpu, 4.0);
+        assert!(n.gpu.is_none() && n.vram_total.is_none() && n.temp.is_none());
+
+        let Some(ServerMsg::System(n)) = parse(
+            r#"{"t":"system","cpu":50,"cores":8,"load1":1,"mem_used":8589934592,"mem_total":34359738368,"gpu":42,"vram_used":4294967296,"vram_total":12884901888,"enc":20,"dec":0,"temp":61,"power":180.5,"power_limit":320,"clock":1950,"streamer_cpu":40}"#,
+        ) else {
+            panic!()
+        };
+        assert_eq!(n.gpu, Some(42.0));
+        assert_eq!(n.vram_used, Some(4_294_967_296));
+        assert_eq!(
+            (n.temp, n.power, n.power_limit, n.clock),
+            (Some(61.0), Some(180.5), Some(320.0), Some(1950.0))
+        );
+        assert_eq!((n.enc, n.dec), (Some(20.0), Some(0.0)));
     }
 
     #[test]
