@@ -8,7 +8,7 @@ There are two ways to run a Cha Node on a Proxmox VE host. Which one fits depend
 | Apps | Chrome, Firefox, XFCE, KDE, the test pattern | Everything, Steam included |
 | Encoding | VA-API H.264 (HEVC/AV1 where the GPU has them), or CPU H.264 | NVENC: H.264, HEVC, AV1, PyroWave |
 | Setup | One script on the host | Passthrough set up on the host, then the [Quick start](../../SETUP.md#quick-start) in the VM |
-| Tested | Intel UHD 630 (Proxmox 9.1, Debian 13): the test pattern streams; apps and gamepads not yet | RTX 4090: everything |
+| Tested | Intel UHD 630 on Proxmox 9.1: the script run end to end, `--doctor` clean but for Steam's profile; Chrome and the test pattern stream from a container set up the same way. Gamepads not yet | RTX 4090: everything |
 
 Either can run the whole quick start (the portal and a node) or just a node for a portal you already have.
 
@@ -32,7 +32,7 @@ Or make a node for a portal that is already running elsewhere:
 sh create-node.sh --version 0.2.0 --portal-url https://portal-host.your-tailnet.ts.net
 ```
 
-`--dry-run` prints the container's settings and changes nothing. `--help` lists every option: ID, cores, memory and disk (64 GB by default; the images live there), a static `--ip`, the `--gpu` to pass in, `--data-dir` to keep app data in a host directory such as a ZFS dataset, `--join-token`, `--no-pull`, `--ssh-key`.
+`--dry-run` prints the container's settings and changes nothing. `--help` lists every option: ID, cores, memory and disk (64 GB by default; the images live there), a static `--ip`, the `--gpu` to pass in, `--data-dir` to keep app data in a host directory such as a ZFS dataset, `--join-token`, `--no-pull`, `--ssh-key`, and `--source DIR`, which copies a checkout already on the host instead of cloning the release (offline, or to try a change).
 
 **What it does:**
 

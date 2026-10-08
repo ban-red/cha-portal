@@ -436,6 +436,8 @@ for t in json.load(open(sys.argv[1]))["templates"]:
     else:
         name = image.removeprefix("cha/").split(":")[0]
         print(f"{sys.argv[2]}/cha-{name}:{sys.argv[3]}")' "$repo/images/catalog.json" "$registry" "$version")
+        # The streamer, which runs beside each of them.
+        images="$registry/cha-streamer:$version $images"
         for image in $images; do
             if docker image inspect "$image" >/dev/null 2>&1; then
                 ok "$image"
@@ -488,6 +490,9 @@ if [ "$failed" = 1 ]; then
     exit 1
 fi
 compose="docker compose -f $repo/deploy/quickstart/compose.yaml"
+# In a container made by create-node.sh, from the directory: compose then
+# reads the compose.override.yaml beside it.
+[ "$in_lxc" = 1 ] && compose="cd $repo/deploy/quickstart && docker compose"
 cat <<NEXT
 Done. Next (SETUP.md, "Quick start"):
 

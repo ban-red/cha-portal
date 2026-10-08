@@ -59,6 +59,9 @@ Creates an LXC container on this Proxmox host running Cha Portal's quick start
   --no-pull            don't pull the environment images now; each downloads
                        on its first launch
   --ssh-key FILE       a public key for root's SSH login in the container
+  --source DIR         copy this checkout on the host into the container
+                       instead of cloning the release (offline, or to try a
+                       change); --version still picks the published images
   --dry-run            print the container's settings and stop
   --help               this text
 USAGE
@@ -66,7 +69,7 @@ USAGE
 
 version= id= hostname=cha-node cores=4 memory=8192 disk=64 storage=local-lvm
 template_storage=local bridge=vmbr0 ip= gateway= data_dir= gpu=auto
-portal_url= join_token= insecure=0 tailscale=0 plain_http=0 pull=1 ssh_key= dry_run=0
+portal_url= join_token= insecure=0 tailscale=0 plain_http=0 pull=1 ssh_key= source= dry_run=0
 need() { [ $# -ge 2 ] && [ -n "$2" ] || { echo "create-node.sh: $1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
     case $1 in
@@ -91,6 +94,7 @@ while [ $# -gt 0 ]; do
         --plain-http) plain_http=1 ;;
         --no-pull) pull=0 ;;
         --ssh-key) need "$@"; ssh_key=$2; shift ;;
+        --source) need "$@"; source=$2; shift ;;
         --dry-run) dry_run=1 ;;
         --help | -h) usage; exit 0 ;;
         *) echo "create-node.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -122,6 +126,7 @@ esac
 [ -z "$gateway" ] || [ -n "$ip" ] || die "--gateway goes with --ip"
 [ -z "$data_dir" ] || [ -d "$data_dir" ] || die "--data-dir $data_dir isn't a directory on this host"
 [ -z "$ssh_key" ] || [ -r "$ssh_key" ] || die "can't read $ssh_key"
+[ -z "$source" ] || [ -f "$source/deploy/quickstart/setup.sh" ] || die "--source $source isn't a Cha Portal checkout"
 [ -n "$id" ] || id=$(pvesh get /cluster/nextid)
 if pct status "$id" >/dev/null 2>&1; then
     die "container $id already exists: pick another with --id"
@@ -229,9 +234,15 @@ until in_ct 'getent hosts github.com >/dev/null 2>&1'; do
 done
 
 # 3. The release and setup.sh.
-say "the release, in $checkout"
 in_ct "export DEBIAN_FRONTEND=noninteractive; apt-get update -q >/dev/null && apt-get install -y -q --no-install-recommends ca-certificates git >/dev/null"
-in_ct "[ -d $checkout/.git ] || git clone -q --branch v$version --depth 1 $repo_url $checkout"
+if [ -n "$source" ]; then
+    say "$source, copied to $checkout"
+    tar -C "$source" --exclude=./target --exclude=./node_modules --exclude=./data -cf - . |
+        pct exec "$id" -- sh -c "mkdir -p $checkout && tar -C $checkout -xf -"
+else
+    say "the release, in $checkout"
+    in_ct "[ -d $checkout/.git ] || git clone -q --branch v$version --depth 1 $repo_url $checkout"
+fi
 
 say "setup.sh in the container"
 opts="--version $version --no-nvidia"
@@ -249,6 +260,9 @@ for rules in 72-cha-virtual-pads.rules; do
 done
 udevadm control --reload && udevadm trigger --subsystem-match=input --subsystem-match=hidraw ||
     warn "couldn't reload udev; the rules apply after a reboot"
+# The same files in the container, where the agent looks for them (they do
+# nothing there; they say what the host has).
+in_ct "install -d /etc/udev/rules.d /etc/modules-load.d && cp $checkout/deploy/node/host/72-cha-virtual-pads.rules /etc/udev/rules.d/ && cp $checkout/deploy/node/host/modules-load.d/cha.conf /etc/modules-load.d/"
 
 # 5. Start it. No NVIDIA here, so the agent gets no CDI devices: a
 # compose.override.yaml, which compose reads beside compose.yaml.
