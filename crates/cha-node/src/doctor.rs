@@ -76,11 +76,26 @@ pub async fn run(
         Err(err) => check(Level::Fail, "Docker engine", format!("{err:#}"))
             .fix("mount the engine's socket into the agent (/var/run/docker.sock), or pass --docker-socket"),
     });
+    // Intel, AMD and CPU-only machines have no NVIDIA GPU to check: their
+    // devices are probed below.
+    let nvidia = crate::inventory::has_nvidia_render_node();
     if engine.is_ok() {
         checks.push(images(docker, config).await);
-        checks.push(gpu(docker, config).await);
+        checks.push(if nvidia {
+            gpu(docker, config).await
+        } else {
+            no_nvidia("GPU (CDI)")
+        });
         checks.extend(devices(docker, config).await);
-        checks.push(pyrowave(docker, config).await);
+        checks.push(if nvidia {
+            pyrowave(docker, config).await
+        } else {
+            check(
+                Level::Info,
+                "PyroWave",
+                "needs an NVIDIA GPU; there's none here".to_string(),
+            )
+        });
         checks.push(gamepads(docker, config).await);
         checks.push(uhid_pads(docker, config).await);
         checks.push(sandboxes(docker, config).await);
@@ -94,7 +109,11 @@ pub async fn run(
         checks.push(legacy_homes(docker, config).await);
     }
     checks.push(moonlight_hosts(docker, config, engine.is_ok(), moonlight).await);
-    checks.push(render_node(&config.render_node));
+    checks.push(if nvidia {
+        render_node(&config.render_node)
+    } else {
+        no_nvidia("Render node")
+    });
     checks.push(pad_modules(&PAD_MODULES));
     checks.push(user_namespaces());
     checks.push(match identity {
@@ -945,6 +964,15 @@ async fn legacy_homes(docker: &Docker, config: &DockerConfig) -> Check {
         ),
     )
     .fix(fix)
+}
+
+/// An NVIDIA check on a machine without an NVIDIA GPU.
+fn no_nvidia(name: &'static str) -> Check {
+    check(
+        Level::Info,
+        name,
+        "no NVIDIA GPU here: environments run on the devices above".to_string(),
+    )
 }
 
 fn render_node(path: &str) -> Check {

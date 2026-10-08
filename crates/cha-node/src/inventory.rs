@@ -105,6 +105,14 @@ pub fn vaapi_candidates() -> Vec<String> {
         .collect()
 }
 
+/// Whether this machine has an NVIDIA GPU with a render node, as
+/// `/sys/class/drm` (which every container sees) says.
+pub fn has_nvidia_render_node() -> bool {
+    render_nodes()
+        .iter()
+        .any(|n| n.vendor_id == 0x10de || n.driver.as_deref() == Some("nvidia"))
+}
+
 fn command(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program).args(args).output().ok()?;
     output
