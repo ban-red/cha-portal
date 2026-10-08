@@ -155,9 +155,6 @@ pub fn score(kind: DeviceKind, cpu: Option<f64>, gpu: Option<&GpuUsage>, running
     (base - load - f64::from(running) * PER_ENVIRONMENT).round() as i64
 }
 
-/// The streamer finds and probes VA-API devices but can't encode on them yet
-/// (docs/devices.md): they're listed, not launchable, until this is true.
-const VAAPI_LAUNCHABLE: bool = false;
 
 /// Every device of `nodes` as an option for an app with `needs`.
 pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
@@ -172,9 +169,6 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
             if device.kind == DeviceKind::Cpu && needs.gpu {
                 allowed = false;
                 reason = Some("it needs a GPU".to_string());
-            } else if device.kind == DeviceKind::Vaapi && !VAAPI_LAUNCHABLE {
-                allowed = false;
-                reason = Some("VA-API encoding isn't built yet".to_string());
             } else if !device
                 .codecs
                 .iter()
@@ -418,7 +412,6 @@ mod tests {
     };
 
     #[test]
-    #[ignore = "VA-API isn't launchable until the streamer encodes on it"]
     fn kinds_rank_nvidia_then_vaapi_then_cpu_when_idle() {
         let nodes = [node(
             "a",
@@ -460,7 +453,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "VA-API isn't launchable until the streamer encodes on it"]
     fn a_busy_nvidia_node_can_lose_to_an_idle_vaapi_one() {
         let mut a = node("a", vec![rtx()]);
         a.running.insert("nvidia:0".into(), 5);
