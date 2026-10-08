@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { capturesDevices, inputAllowed, sendsControls } from "./inputMode";
+import { capturesDevices, inputAllowed, readsPads, sendsControls } from "./inputMode";
 import { goneMessage, padMessage } from "./controllers/manager";
 
 describe("input mode", () => {
@@ -23,5 +23,17 @@ describe("input mode", () => {
     expect(capturesDevices("pads")).toBe(false);
     expect(sendsControls("pads")).toBe(false);
     expect(typeof padMessage).toBe("function");
+  });
+
+  test("none sends nothing at all, with the controls or without", () => {
+    for (const hasControl of [false, true]) {
+      for (const msg of [goneMessage(0), { k: "pad", i: 0, b: [], a: [] }, { k: "key" }, { k: "move" }, {}]) {
+        expect(inputAllowed("none", hasControl, msg)).toBe(false);
+      }
+    }
+    expect(capturesDevices("none")).toBe(false);
+    expect(sendsControls("none")).toBe(false);
+    expect(readsPads("none")).toBe(false);
+    expect(readsPads("pads") && readsPads("all")).toBe(true);
   });
 });

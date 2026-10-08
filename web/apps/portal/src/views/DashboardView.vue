@@ -334,7 +334,7 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             v-if="e.state === 'running'"
             class="btn-ghost min-h-9 shrink-0 px-3 pointer-coarse:min-h-11"
             :aria-label="`Share ${e.templateName}`"
-            title="Invite a friend to play on a second gamepad"
+            title="Invite a friend to watch, play or use the controls"
             @click="sharing = e"
           >
             <Share2 class="size-4" aria-hidden="true" />

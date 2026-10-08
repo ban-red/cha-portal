@@ -20,7 +20,8 @@ import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
 import { PyroPresenter } from "./pyro";
 import type { FromWorker, ToWorker } from "./wt-worker";
-import { capturesDevices, inputAllowed, sendsControls, type InputMode } from "./inputMode";
+import { capturesDevices, inputAllowed, readsPads, sendsControls, type InputMode } from "./inputMode";
+import { parseWatchers, type Watcher } from "./watchers";
 
 /** Hardware codecs (every transport) and PyroWave (WebTransport only). */
 export type Codec = "hevc" | "h264" | "av1" | "pyrowave420" | "pyrowave444";
@@ -107,11 +108,18 @@ export interface PlayerOptions {
    * environment does), and how many sessions watch. Without the controls the
    * picture is view-only; `takeControl()` asks for them.
    */
-  onFloor?: (control: boolean, viewers: number, player?: number) => void;
+  onFloor?: (control: boolean, viewers: number, player?: number, canTake?: boolean) => void;
+  /**
+   * The other sessions on the environment, heard only while this page has the controls (an owner
+   * or admin): to list who's watching and hand the controls to a guest controller (`giveControl`).
+   * Sent when someone joins or leaves or the controls move.
+   */
+  onViewers?: (list: Watcher[]) => void;
   /**
    * What the page sends up. `"all"` (the default): keyboard, mouse, controllers and the rest, as
    * far as it has the controls. `"pads"` (a share link's guest, ADR 0014): only controllers, with
-   * their feedback; no keyboard, mouse, wheel, pointer lock, clipboard or resize.
+   * their feedback; no keyboard, mouse, wheel, pointer lock, clipboard or resize. `"none"` (a viewer
+   * link's guest, ADR 0015): nothing at all, not even controllers.
    */
   input?: InputMode;
   /**
@@ -164,6 +172,10 @@ interface ServerMessage {
   kind?: "hidden" | "named" | "image";
   control?: boolean;
   viewers?: number;
+  /** Floor: this session could take the controls now (a guest controller's "Take control"). */
+  can_take?: boolean;
+  /** Viewers: the other sessions, `{id, role, slot?}`. */
+  list?: unknown;
   /** A share link's player: the pad index it plays on (1 is "player 2"). */
   player?: number;
   drawn?: boolean;
@@ -832,9 +844,14 @@ export class Player {
     return this.pads.connectHid();
   }
 
-  /** Asks for the controls (owners and admins get them). */
+  /** Asks for the controls (owners and admins get them; a guest controller, when nobody or a guest holds them). */
   takeControl(): void {
     this.send({ t: "take_control" });
+  }
+
+  /** Hands the controls to a guest controller's session (a `Watcher.id`); only the holder, an owner or admin, can. */
+  giveControl(to: number): void {
+    this.send({ t: "give_control", to });
   }
 
   private onControlOpen(): void {
@@ -847,10 +864,12 @@ export class Player {
       this.input.setMouseEnabled(this.mouseEnabled);
     }
     this.pads?.stop();
-    const pads = new ControllerManager({ send: (m) => this.sendInput(m) });
-    pads.onChange((list) => this.options.onControllers?.(list));
-    pads.start();
-    this.pads = pads;
+    if (readsPads(this.inputMode)) {
+      const pads = new ControllerManager({ send: (m) => this.sendInput(m) });
+      pads.onChange((list) => this.options.onControllers?.(list));
+      pads.start();
+      this.pads = pads;
+    }
     video.focus();
     // Desktop mode draws the cursor here, with no stream delay; a locked
     // pointer (games) leaves it to the picture.
@@ -1047,9 +1066,18 @@ export class Player {
         }
         this.applyCursor();
         this.placePointer();
-        this.options.onFloor?.(this.hasControl, msg.viewers ?? 1, typeof msg.player === "number" ? msg.player : undefined);
+        this.options.onFloor?.(
+          this.hasControl,
+          msg.viewers ?? 1,
+          typeof msg.player === "number" ? msg.player : undefined,
+          msg.can_take === true,
+        );
+        if (!this.hasControl) this.options.onViewers?.([]);
         break;
       }
+      case "viewers":
+        if (this.hasControl) this.options.onViewers?.(parseWatchers(msg.list));
+        break;
       case "system": {
         const stats = toNodeStats(msg as unknown as Record<string, unknown>);
         this.nodeStats = stats ? { stats, at: performance.now() } : null;

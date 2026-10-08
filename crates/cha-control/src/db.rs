@@ -735,15 +735,18 @@ pub struct ShareRow {
     pub id: String,
     pub environment_id: String,
     pub created_by: String,
+    /// `player`, `viewer` or `controller` (0015).
     pub role: String,
-    pub slot: i64,
+    /// A player's pad index (1 to 3); `None` for the other roles.
+    pub slot: Option<i64>,
     pub created_at: i64,
     pub expires_at: i64,
 }
 
 const SHARE_COLUMNS: &str = "id, environment_id, created_by, role, slot, created_at, expires_at";
 
-/// Makes a share on a slot of an environment, revoking the live one there.
+/// Makes a share, revoking the live one it replaces: a player's on the same
+/// slot, a controller's on the same environment; viewer links replace nothing.
 /// Returns the revoked share's id, if there was one.
 pub async fn replace_share(
     db: &SqlitePool,
@@ -751,13 +754,28 @@ pub async fn replace_share(
     token_hash: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let mut tx = db.begin().await?;
-    let old: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM shares WHERE environment_id = ? AND slot = ? AND revoked_at IS NULL",
-    )
-    .bind(&share.environment_id)
-    .bind(share.slot)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let old: Option<String> = match share.role.as_str() {
+        "viewer" => None,
+        "controller" => {
+            sqlx::query_scalar(
+                "SELECT id FROM shares \
+                 WHERE environment_id = ? AND role = 'controller' AND revoked_at IS NULL",
+            )
+            .bind(&share.environment_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+        _ => {
+            sqlx::query_scalar(
+                "SELECT id FROM shares \
+                 WHERE environment_id = ? AND role = 'player' AND slot = ? AND revoked_at IS NULL",
+            )
+            .bind(&share.environment_id)
+            .bind(share.slot)
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+    };
     if let Some(old) = &old {
         sqlx::query("UPDATE shares SET revoked_at = ? WHERE id = ?")
             .bind(now())
@@ -790,7 +808,8 @@ pub async fn live_shares(
 ) -> Result<Vec<ShareRow>, sqlx::Error> {
     sqlx::query_as(&format!(
         "SELECT {SHARE_COLUMNS} FROM shares \
-         WHERE environment_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY slot"
+         WHERE environment_id = ? AND revoked_at IS NULL AND expires_at > ? \
+         ORDER BY CASE role WHEN 'player' THEN 0 WHEN 'controller' THEN 1 ELSE 2 END, slot, created_at"
     ))
     .bind(environment_id)
     .bind(now())

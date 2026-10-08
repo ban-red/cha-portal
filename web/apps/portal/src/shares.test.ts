@@ -1,6 +1,19 @@
 import { describe, expect, test } from "bun:test";
 
-import { freeSlots, guestCanRetry, guestCodec, guestProblem, playerLabel, shareLink, timeLeft } from "./shares";
+import {
+  controlPrompt,
+  freeSlots,
+  guestCanRetry,
+  guestCodec,
+  guestProblem,
+  invitation,
+  joinLabel,
+  playerLabel,
+  seatLine,
+  shareLink,
+  shareWarning,
+  timeLeft,
+} from "./shares";
 
 const api = (status: number, code: string) => Object.assign(new Error("x"), { status, code });
 
@@ -28,6 +41,43 @@ describe("shares", () => {
     expect(freeSlots([])).toEqual([1, 2, 3]);
     expect(freeSlots([{ slot: 2 }])).toEqual([1, 3]);
     expect(freeSlots([{ slot: 1 }, { slot: 2 }, { slot: 3 }])).toEqual([]);
+  });
+
+  test("viewer and controller links take no slot", () => {
+    const live = [
+      { role: "viewer", slot: null },
+      { role: "controller", slot: null },
+      { role: "player", slot: 2 },
+    ];
+    expect(freeSlots(live)).toEqual([1, 3]);
+  });
+
+  test("each role's wording", () => {
+    expect(invitation("viewer", "Alex", null)).toBe("Alex invited you to watch.");
+    expect(invitation("player", "Alex", 1)).toBe("Alex invited you to play as player 2.");
+    expect(invitation("controller", "Alex", null)).toContain("when they hand you the controls");
+    expect(joinLabel("viewer", null)).toBe("Watch");
+    expect(joinLabel("controller", null)).toBe("Join");
+    expect(joinLabel("player", 2)).toBe("Join as player 3");
+    expect(seatLine("viewer", 1)).toBe("You are watching.");
+    expect(seatLine("player", 3)).toBe("You are player 3. Press a button on your gamepad.");
+    expect(seatLine("controller", 1)).toBe("");
+  });
+
+  test("the controller warning names the app and the hand-off", () => {
+    const w = shareWarning("controller", "Firefox");
+    expect(w).toContain("Anyone with this link can use your keyboard and mouse in Firefox when you hand them the controls");
+    expect(w).toContain("whenever you aren't holding them");
+    expect(shareWarning("viewer", "Firefox")).toContain("can't use the keyboard, mouse or gamepads");
+  });
+
+  test("a guest controller holds, takes or waits", () => {
+    expect(controlPrompt(true, false, "Alex")).toEqual({ kind: "holding", text: "You have the controls." });
+    expect(controlPrompt(false, true, "Alex")).toEqual({ kind: "take", text: "Take control" });
+    expect(controlPrompt(false, false, "Alex")).toEqual({
+      kind: "wait",
+      text: "Waiting for Alex to hand you the controls",
+    });
   });
 
   test("the guest page's two plain answers", () => {

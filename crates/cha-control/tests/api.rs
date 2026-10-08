@@ -2763,15 +2763,34 @@ async fn only_the_owner_or_an_admin_makes_a_share_of_a_running_environment() {
         assert_eq!(bad.status, StatusCode::BAD_REQUEST, "slot {slot}");
         assert_eq!(bad.body["error"], "bad_slot");
     }
-    let viewer = p
+    let unknown = p
         .call(
             "POST",
             &format!("/api/environments/{env}/shares"),
             Some(&alice),
-            Some(json!({ "role": "viewer", "slot": 1 })),
+            Some(json!({ "role": "owner", "slot": 1 })),
         )
         .await;
-    assert_eq!(viewer.body["error"], "bad_role");
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+    assert_eq!(unknown.body["error"], "bad_role");
+    // A player link needs its slot; the other roles take none.
+    for body in [
+        json!({ "role": "player" }),
+        json!({ "role": "player", "slot": null }),
+        json!({ "role": "viewer", "slot": 1 }),
+        json!({ "role": "controller", "slot": 2 }),
+    ] {
+        let bad = p
+            .call(
+                "POST",
+                &format!("/api/environments/{env}/shares"),
+                Some(&alice),
+                Some(body.clone()),
+            )
+            .await;
+        assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(bad.body["error"], "bad_slot", "{body}");
+    }
 
     // The list shows the live ones and never a token.
     let listed = p
@@ -2783,7 +2802,7 @@ async fn only_the_owner_or_an_admin_makes_a_share_of_a_running_environment() {
         )
         .await;
     let listed = listed.body.as_array().unwrap();
-    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.len(), 2, "the refused ones made nothing");
     assert_eq!(listed[0]["slot"], 1);
     assert_eq!(listed[1]["slot"], 2);
     for share in listed {
@@ -3409,4 +3428,403 @@ async fn a_guest_connects_with_a_player_token_that_carries_the_slot() {
     )
     .await;
     assert!(silent.is_err());
+}
+
+// ---- Viewer and controller links (ADR 0015) ----
+
+impl TestPortal {
+    /// Makes a viewer or controller share (no slot) of `env` as `cookie`.
+    async fn share_role(&self, cookie: &str, env: &str, role: &str) -> Reply {
+        self.call(
+            "POST",
+            &format!("/api/environments/{env}/shares"),
+            Some(cookie),
+            Some(json!({ "role": role })),
+        )
+        .await
+    }
+
+    async fn live_shares(&self, cookie: &str, env: &str) -> Vec<Value> {
+        self.call(
+            "GET",
+            &format!("/api/environments/{env}/shares"),
+            Some(cookie),
+            None,
+        )
+        .await
+        .body
+        .as_array()
+        .unwrap()
+        .clone()
+    }
+}
+
+#[tokio::test]
+async fn viewer_and_controller_links_have_no_slot_and_their_own_limits() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+    let (_, env) = p.live_environment(&alice_id, "chrome").await;
+
+    let v1 = p.share_role(&alice, &env, "viewer").await;
+    assert_eq!(v1.status, StatusCode::OK, "{}", v1.body);
+    assert_eq!(v1.body["role"], "viewer");
+    assert!(v1.body["slot"].is_null());
+    assert_eq!(token_of(&v1).len(), 43);
+    // Any number of viewer links, an admin's too; they replace nothing.
+    let v2 = p.share_role(&alice, &env, "viewer").await;
+    let v3 = p.share_role(&admin, &env, "viewer").await;
+    assert_eq!(v2.status, StatusCode::OK);
+    assert_eq!(v3.status, StatusCode::OK);
+    assert_eq!(
+        p.share_role(&bob, &env, "viewer").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(p.live_shares(&alice, &env).await.len(), 3);
+
+    // One controller link at a time: the new one revokes the old.
+    let c1 = p.share_role(&alice, &env, "controller").await;
+    assert_eq!(c1.status, StatusCode::OK, "{}", c1.body);
+    assert_eq!(c1.body["role"], "controller");
+    assert!(c1.body["slot"].is_null());
+    let c2 = p.share_role(&alice, &env, "controller").await;
+    assert_eq!(c2.status, StatusCode::OK);
+    let dead = p
+        .call("GET", &format!("/api/shares/{}", token_of(&c1)), None, None)
+        .await;
+    assert_eq!(dead.status, StatusCode::NOT_FOUND);
+    assert_eq!(dead.body["error"], "unknown_share");
+    let live = p
+        .call("GET", &format!("/api/shares/{}", token_of(&c2)), None, None)
+        .await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    assert_eq!(live.body["role"], "controller");
+    assert!(live.body["slot"].is_null());
+
+    // Players keep one per slot, beside the others.
+    let p1 = p.share(&alice, &env, 1).await;
+    let p1b = p.share(&alice, &env, 1).await;
+    let p2 = p.share(&alice, &env, 2).await;
+    assert_eq!(p1b.status, StatusCode::OK);
+    assert_eq!(p2.status, StatusCode::OK);
+    assert_eq!(
+        p.call("GET", &format!("/api/shares/{}", token_of(&p1)), None, None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let listed = p.live_shares(&alice, &env).await;
+    let roles: Vec<_> = listed.iter().map(|s| s["role"].as_str().unwrap()).collect();
+    assert_eq!(
+        roles,
+        [
+            "player",
+            "player",
+            "controller",
+            "viewer",
+            "viewer",
+            "viewer"
+        ],
+        "players by slot, the controller, then viewers"
+    );
+    assert_eq!(listed[0]["slot"], 1);
+    assert_eq!(listed[1]["slot"], 2);
+    assert!(listed[2]["slot"].is_null());
+    for share in &listed {
+        assert!(share.get("url").is_none() && share.get("token").is_none());
+    }
+    // The three viewers are still live.
+    for v in [&v1, &v2, &v3] {
+        let info = p
+            .call("GET", &format!("/api/shares/{}", token_of(v)), None, None)
+            .await;
+        assert_eq!(info.body["role"], "viewer");
+    }
+
+    // A revoked controller link frees the place; revoking a viewer touches no other.
+    let path = format!(
+        "/api/environments/{env}/shares/{}",
+        c2.body["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        p.call("DELETE", &path, Some(&alice), None).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        p.share_role(&alice, &env, "controller").await.status,
+        StatusCode::OK
+    );
+
+    // The table itself refuses a slot on a viewer or none on a player.
+    for (role, slot) in [
+        ("viewer", Some(1)),
+        ("controller", Some(2)),
+        ("player", None),
+        ("wat", None),
+    ] {
+        let made = sqlx::query(
+            "INSERT INTO shares (id, environment_id, created_by, role, slot, token_hash, created_at, expires_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, 0)",
+        )
+        .bind(db::new_id())
+        .bind(&env)
+        .bind(&alice_id)
+        .bind(role)
+        .bind(slot)
+        .bind(db::new_id())
+        .execute(&p.db)
+        .await;
+        assert!(made.is_err(), "{role} {slot:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_share_roles_migration_keeps_the_players_it_finds() {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    let dir = tempfile::tempdir().unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(dir.path().join("old.db"))
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .unwrap();
+    // The schema as it was before: through 0014.
+    let mut old = sqlx::migrate!("./migrations");
+    old.migrations = old
+        .migrations
+        .iter()
+        .filter(|m| m.version <= 14)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    old.run(&pool).await.unwrap();
+
+    sqlx::query("INSERT INTO users (id, username, display_name, role, created_at) VALUES ('u', 'u', 'U', 'user', 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO nodes (id, name, public_key, enrolled_at) VALUES ('n', 'n', 'k', 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    db::insert_environment(&pool, "e", "u", "chrome", "n", None, "running")
+        .await
+        .unwrap();
+    for (id, slot, revoked) in [("a", 1, None), ("b", 2, None), ("c", 1, Some(5))] {
+        sqlx::query(
+            "INSERT INTO shares (id, environment_id, created_by, role, slot, token_hash, created_at, expires_at, revoked_at) \
+             VALUES (?, 'e', 'u', 'player', ?, ?, 10, 20, ?)",
+        )
+        .bind(id)
+        .bind(slot)
+        .bind(format!("hash-{id}"))
+        .bind(revoked)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    // The old table refuses a viewer.
+    assert!(
+        sqlx::query(
+            "INSERT INTO shares (id, environment_id, created_by, role, slot, token_hash, created_at, expires_at) \
+             VALUES ('x', 'e', 'u', 'viewer', NULL, 'hx', 0, 0)"
+        )
+        .execute(&pool)
+        .await
+        .is_err()
+    );
+
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+    type Row = (String, String, Option<i64>, String, i64, i64, Option<i64>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, role, slot, token_hash, created_at, expires_at, revoked_at FROM shares ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (
+                "a".into(),
+                "player".into(),
+                Some(1),
+                "hash-a".into(),
+                10,
+                20,
+                None
+            ),
+            (
+                "b".into(),
+                "player".into(),
+                Some(2),
+                "hash-b".into(),
+                10,
+                20,
+                None
+            ),
+            (
+                "c".into(),
+                "player".into(),
+                Some(1),
+                "hash-c".into(),
+                10,
+                20,
+                Some(5)
+            ),
+        ]
+    );
+    // The new roles insert, and the one-live-link rules hold.
+    let insert = |id: &'static str, role: &'static str, slot: Option<i64>| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO shares (id, environment_id, created_by, role, slot, token_hash, created_at, expires_at) \
+                 VALUES (?, 'e', 'u', ?, ?, ?, 0, 0)",
+            )
+            .bind(id)
+            .bind(role)
+            .bind(slot)
+            .bind(format!("hash-{id}"))
+            .execute(&pool)
+            .await
+        }
+    };
+    assert!(insert("v1", "viewer", None).await.is_ok());
+    assert!(
+        insert("v2", "viewer", None).await.is_ok(),
+        "any number of viewers"
+    );
+    assert!(insert("c1", "controller", None).await.is_ok());
+    assert!(
+        insert("c2", "controller", None).await.is_err(),
+        "one live controller"
+    );
+    assert!(
+        insert("p1", "player", Some(1)).await.is_err(),
+        "slot 1 is live"
+    );
+    assert!(insert("p3", "player", Some(3)).await.is_ok());
+    assert!(insert("v3", "viewer", Some(1)).await.is_err());
+    // The environment still cascades.
+    sqlx::query("DELETE FROM environments WHERE id = 'e'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM shares")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[tokio::test]
+async fn viewer_and_controller_guests_get_tokens_without_a_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        database: dir.path().join("cha.db"),
+        web_dir: None,
+        secure_cookies: false,
+        session_days: 14,
+        ice: Default::default(),
+        dev_login: false,
+        discover_nodes: false,
+        public_url: None,
+    };
+    let pool = db::open(&config.database).await.unwrap();
+    let state = AppState::new(config, pool.clone()).await.unwrap();
+    let portal_key = state.media_key.public_b64();
+    let router = app(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = router.clone();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            served.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let p = TestPortal {
+        app: router,
+        db: pool.clone(),
+        discovered: Default::default(),
+        _dir: dir,
+    };
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).unwrap();
+    let key = cha_wire::NodeKey::from_secret(secret);
+    let node_id = db::new_id();
+    sqlx::query("INSERT INTO nodes (id, name, public_key, enrolled_at) VALUES (?, 'box', ?, 0)")
+        .bind(&node_id)
+        .bind(key.public_b64())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let env = db::new_id();
+    db::insert_environment(&pool, &env, &alice_id, "chrome", &node_id, None, "running")
+        .await
+        .unwrap();
+    let mut ws = node::join(addr, &node_id, &key).await;
+
+    for role in ["viewer", "controller"] {
+        let made = p.share_role(&alice, &env, role).await;
+        let share_id = made.body["id"].as_str().unwrap().to_string();
+        let path = format!("/api/shares/{}/connect", token_of(&made));
+        let guest = {
+            let app = p.app.clone();
+            tokio::spawn(async move {
+                let req = Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "codec": "h264", "transport": "webtransport" }).to_string(),
+                    ))
+                    .unwrap();
+                let res = app.oneshot(req).await.unwrap();
+                let bytes = res.into_body().collect().await.unwrap().to_bytes();
+                serde_json::from_slice::<Value>(&bytes).unwrap()
+            })
+        };
+        let (id, request) = node::request(&mut ws).await;
+        assert!(matches!(
+            request,
+            cha_wire::NodeRequest::StreamerInfo { .. }
+        ));
+        node::respond(
+            &mut ws,
+            id,
+            Ok(cha_wire::NodeResponse::StreamerInfo {
+                info: json!({ "wt_port": 7602, "cert_hash_hex": "ab", "addresses": ["192.168.1.20"] }),
+            }),
+        )
+        .await;
+        let body = guest.await.unwrap();
+        let url = body["urls"][0].as_str().unwrap();
+        let token = url.split("token=").nth(1).unwrap();
+        let claims = cha_wire::verify_media_token(&portal_key, token, &env, db::now()).unwrap();
+        assert_eq!((claims.role.as_str(), claims.slot), (role, None));
+        assert_eq!(claims.sub, format!("share:{share_id}"));
+        let json = serde_json::to_string(&claims).unwrap();
+        assert!(!json.contains("slot"), "no slot in the token: {json}");
+    }
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let roles: Vec<_> = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "share.joined")
+        .map(|e| e["detail"]["role"].clone())
+        .collect();
+    assert_eq!(roles.len(), 2, "{}", audit.body);
 }

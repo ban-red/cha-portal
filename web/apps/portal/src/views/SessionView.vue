@@ -23,6 +23,8 @@ import {
   type SetupStatus,
   type StatsSnapshot,
   type Transport,
+  type Watcher,
+  watcherLabel,
 } from "@cha/player";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, useTemplateRef, watch } from "vue";
@@ -157,6 +159,8 @@ const audioBlocked = ref(false);
 /** Whether this page has the controls, and how many sessions watch (P2.6). */
 const hasControl = ref(true);
 const viewers = ref(1);
+/** The other sessions, while this page has the controls (ADR 0015): who's watching, and who can be handed them. */
+const watchers = ref<Watcher[]>([]);
 /** A short note when an app's copy reaches (or waits for) this device's clipboard. */
 const clipboardNote = ref<string | null>(null);
 let clipboardNoteTimer: ReturnType<typeof setTimeout> | undefined;
@@ -530,6 +534,9 @@ async function connect() {
       hasControl.value = control;
       viewers.value = count;
     },
+    onViewers: (list) => {
+      if (player === p) watchers.value = list;
+    },
     onStatus: (status) => {
       if (player === p) setup.value = status;
     },
@@ -862,7 +869,7 @@ const STATUS: Record<PlayerState, string> = {
       <button
         :class="ICON_BTN"
         aria-label="Share"
-        title="Invite a friend to play on a second gamepad"
+        title="Invite a friend to watch, play or use the controls"
         @click="sharing = true"
       >
         <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -878,11 +885,25 @@ const STATUS: Record<PlayerState, string> = {
       <button
         v-if="!hasControl"
         class="btn-ghost border-0 px-3 py-1.5 text-xs text-accent"
-        title="Someone else has the keyboard and mouse; take them"
+        title="Someone else has the keyboard and mouse; take them back"
         @click="player?.takeControl()"
       >
-        Viewing · Take control
+        Viewing · Take back
       </button>
+      <ul v-if="hasControl && watchers.length" class="flex flex-wrap items-center gap-x-1" aria-label="Who is watching">
+        <li v-for="w in watchers" :key="w.id" class="flex items-center gap-1 px-2 text-xs text-ink-2">
+          {{ watcherLabel(w) }}
+          <button
+            v-if="w.role === 'controller'"
+            type="button"
+            class="btn-ghost min-h-7 border-0 px-2 py-0.5 text-xs text-accent"
+            title="Hand this guest the keyboard and mouse. You can take them back."
+            @click="player?.giveControl(w.id)"
+          >
+            Hand controls
+          </button>
+        </li>
+      </ul>
 
       <!-- Stream settings -->
       <div class="relative" data-menu @keydown.esc="closeMenu">

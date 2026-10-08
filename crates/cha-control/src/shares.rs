@@ -1,10 +1,12 @@
-//! Share links for players (ADR 0014; the contract is `docs/plans/share-links.md`).
+//! Share links (ADRs 0014 and 0015; the contract is `docs/plans/share-links.md`).
 //!
 //! The owner (or an admin) of a running environment makes a link,
-//! `/s/<token>`, for one gamepad slot (1 to 3 is player 2 to 4). Whoever holds
+//! `/s/<token>`, for a player (one gamepad slot, 1 to 3 is player 2 to 4), a
+//! viewer (watch and listen) or a controller (keyboard, mouse and pads when
+//! handed the controls). Whoever holds
 //! the token can join with no account: they see what the link is for and
 //! connect through the same brokering as the owner, with a media token whose
-//! role is `player` and which carries the slot. The token is 256 random bits,
+//! role is the link's (`player` also carries the slot). The token is 256 random bits,
 //! shown once; only its SHA-256 is kept, and it is never logged or put in the
 //! audit log. A link ends at its expiry (24 hours), when revoked, or when its
 //! environment leaves `running` (`db::end_environment_shares`).
@@ -94,7 +96,9 @@ fn unknown_share() -> ApiError {
 #[derive(Deserialize)]
 struct CreateRequest {
     role: String,
-    slot: i64,
+    /// A player's slot; left out (or null) for the other roles.
+    #[serde(default)]
+    slot: Option<i64>,
 }
 
 async fn create(
@@ -105,17 +109,27 @@ async fn create(
     Json(req): Json<CreateRequest>,
 ) -> ApiResult<Json<Value>> {
     let row = environments::visible(&state, &user, &env_id).await?;
-    if req.role != "player" {
-        return Err(ApiError::bad_request(
-            "bad_role",
-            "the only role a link can give is player",
-        ));
-    }
-    if !(1..=3).contains(&req.slot) {
-        return Err(ApiError::bad_request(
-            "bad_slot",
-            "the slot is 1 to 3 (player 2 to 4)",
-        ));
+    match (req.role.as_str(), req.slot) {
+        ("player", Some(1..=3)) => {}
+        ("player", _) => {
+            return Err(ApiError::bad_request(
+                "bad_slot",
+                "the slot is 1 to 3 (player 2 to 4)",
+            ));
+        }
+        ("viewer" | "controller", None) => {}
+        ("viewer" | "controller", Some(_)) => {
+            return Err(ApiError::bad_request(
+                "bad_slot",
+                "only a player link has a slot",
+            ));
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "bad_role",
+                "the role is player, viewer or controller",
+            ));
+        }
     }
     if row.state != "running" {
         return Err(ApiError::conflict(
@@ -168,7 +182,7 @@ async fn create(
 struct ShareView {
     id: String,
     role: String,
-    slot: i64,
+    slot: Option<i64>,
     created_at: i64,
     expires_at: i64,
 }
@@ -263,10 +277,18 @@ async fn connect(
     let row = db::environment_by_id(&state.db, &access.share.environment_id)
         .await?
         .ok_or_else(unknown_share)?;
+    let (role, slot) = match access.share.role.as_str() {
+        "controller" => ("controller", None),
+        "viewer" => ("viewer", None),
+        _ => (
+            "player",
+            access.share.slot.and_then(|s| u8::try_from(s).ok()),
+        ),
+    };
     let guest = Guest {
         sub: format!("share:{}", access.share.id),
-        role: "player",
-        slot: u8::try_from(access.share.slot).ok(),
+        role,
+        slot,
     };
     let (codec, response) = environments::broker(&state, &row, req, guest).await?;
     db::audit(
@@ -276,6 +298,7 @@ async fn connect(
         Some(&row.id),
         Some(json!({
             "share": access.share.id,
+            "role": access.share.role,
             "slot": access.share.slot,
             "codec": codec,
             "transport": response.transport,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Player, supportedCodecs, supportsWebTransport, type PlayerState } from "@cha/player";
-import { Gamepad2 } from "lucide-vue-next";
+import { Eye, Gamepad2, Keyboard } from "lucide-vue-next";
 import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef } from "vue";
 import { useRoute } from "vue-router";
 
@@ -8,11 +8,22 @@ import { api, type ShareInfo } from "../api";
 import BrandMark from "../components/BrandMark.vue";
 import FormError from "../components/FormError.vue";
 import { backoffDelay } from "../reconnect";
-import { guestCanRetry, guestCodec, guestProblem, playerLabel } from "../shares";
+import {
+  controlPrompt,
+  guestCanRetry,
+  guestCodec,
+  guestProblem,
+  invitation,
+  joinLabel,
+  joinNote,
+  seatLine,
+} from "../shares";
 
-// A share link's page (ADR 0014, /s/:token): no sign-in. It names the app and who invited
-// the guest, and "Join" plays through @cha/player with only the gamepads sent (no keyboard,
-// mouse, pointer lock, clipboard or resize). A dropped stream reconnects on its own.
+// A share link's page (ADRs 0014 and 0015, /s/:token): no sign-in. It names the app, who invited
+// the guest and in what role, and "Join" plays through @cha/player. A player sends only gamepads
+// (no keyboard, mouse, pointer lock, clipboard or resize); a viewer sends nothing; a controller
+// sends everything while it holds the controls, which it takes (when allowed) or is handed by the
+// owner. A dropped stream reconnects on its own.
 const route = useRoute();
 const token = computed(() => String(route.params.token));
 const video = useTemplateRef<HTMLVideoElement>("video");
@@ -26,6 +37,9 @@ const state = ref<PlayerState>("idle");
 const problem = ref<string | null>(null);
 /** "You are player 2", once the streamer says which pad is ours. */
 const seat = ref<number | null>(null);
+/** A controller: whether it holds the controls, and whether it could take them now. */
+const hasControl = ref(false);
+const canTake = ref(false);
 
 let player: Player | null = null;
 let attempt = 0;
@@ -43,7 +57,9 @@ onMounted(async () => {
   }
 });
 
+const role = computed(() => info.value?.role ?? "player");
 const playerNumber = computed(() => (seat.value ?? info.value?.slot ?? 0) + 1);
+const prompt = computed(() => controlPrompt(hasControl.value, canTake.value, info.value?.owner ?? "the owner"));
 
 function stopForGood(err: unknown) {
   clearTimeout(retryTimer);
@@ -69,15 +85,20 @@ async function connect() {
   const p = new Player({
     video: el,
     codec: guestCodec(supportedCodecs(), info.value?.codecs ?? null),
-    input: "pads",
+    input: role.value === "viewer" ? "none" : role.value === "controller" ? "all" : "pads",
+    // A guest never resizes the owner's screen.
+    fixedSize: true,
     transport: supportsWebTransport() ? "auto" : "webrtc",
     webTransport: async (codec) => {
       const r = await api.shareConnect(token.value, { codec, transport: "webtransport" });
       return { urls: r.urls ?? [], certHash: r.certHash ?? "" };
     },
     signal: async (offer, codec) => (await api.shareConnect(token.value, { codec, offer })).answer!,
-    onFloor: (_control, _viewers, who) => {
-      if (player === p && who !== undefined) seat.value = who;
+    onFloor: (control, _viewers, who, take) => {
+      if (player !== p) return;
+      if (who !== undefined) seat.value = who;
+      hasControl.value = control;
+      canTake.value = take === true;
     },
     onState: (s, detail) => {
       if (player !== p) return;
@@ -133,14 +154,16 @@ const STATUS: Record<PlayerState, string> = {
       <p v-if="loading" class="text-sm text-ink-2" role="status">Checking the link…</p>
       <template v-else-if="info">
         <div class="mx-auto grid size-12 place-items-center rounded-xl bg-accent-soft text-accent">
-          <Gamepad2 class="size-6" aria-hidden="true" />
+          <Eye v-if="info.role === 'viewer'" class="size-6" aria-hidden="true" />
+          <Keyboard v-else-if="info.role === 'controller'" class="size-6" aria-hidden="true" />
+          <Gamepad2 v-else class="size-6" aria-hidden="true" />
         </div>
         <div class="space-y-1">
           <h1 class="text-lg font-semibold tracking-tight">{{ info.app }}</h1>
-          <p class="text-sm text-ink-2">{{ info.owner }} invited you to play as {{ playerLabel(info.slot) }}.</p>
+          <p class="text-sm text-ink-2">{{ invitation(info.role, info.owner, info.slot) }}</p>
         </div>
-        <button type="button" class="btn-primary w-full" @click="join">Join as {{ playerLabel(info.slot) }}</button>
-        <p class="text-xs text-ink-3">Connect a gamepad, then press a button on it. Only the gamepad is shared.</p>
+        <button type="button" class="btn-primary w-full" @click="join">{{ joinLabel(info.role, info.slot) }}</button>
+        <p class="text-xs text-ink-3">{{ joinNote(info.role) }}</p>
       </template>
       <template v-else>
         <h1 class="text-lg font-semibold tracking-tight">Can't join</h1>
@@ -157,12 +180,28 @@ const STATUS: Record<PlayerState, string> = {
         <p v-if="problem" class="mt-2 text-sm text-danger" role="status">{{ problem }}</p>
       </div>
     </div>
+    <div v-else-if="role === 'controller'" class="absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-2" role="status">
+      <button
+        v-if="prompt.kind === 'take'"
+        type="button"
+        class="btn-primary min-h-9 px-4"
+        @click="player?.takeControl()"
+      >
+        {{ prompt.text }}
+      </button>
+      <p
+        v-else
+        class="pointer-events-none rounded-full border border-line bg-panel/80 px-3 py-1 text-xs text-ink backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none"
+      >
+        {{ prompt.text }}
+      </p>
+    </div>
     <p
       v-else
       class="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-full border border-line bg-panel/80 px-3 py-1 text-xs text-ink backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none"
       role="status"
     >
-      You are player {{ playerNumber }}. Press a button on your gamepad.
+      {{ seatLine(role, playerNumber) }}
     </p>
   </div>
 </template>

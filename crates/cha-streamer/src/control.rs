@@ -23,7 +23,7 @@ use crate::media::Media;
 use crate::overlay::Level;
 use crate::status::{Status, StatusWatch};
 use crate::system::SystemSample;
-use crate::viewers::{Role, Seat};
+use crate::viewers::{Role, Seat, Watcher};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -131,6 +131,18 @@ pub enum ServerMsg {
         /// A share link's player: the pad index (1 to 3) its pad is put on.
         #[serde(skip_serializing_if = "Option::is_none")]
         player: Option<u8>,
+        /// This session could take the controls now (`take_control`): left
+        /// out when it can't, or has them. A guest controller's page offers
+        /// "Take control" on it, else waits to be handed the controls.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        can_take: bool,
+    },
+    /// The other sessions (`id`, `role`, a player's `slot`), sent to the
+    /// session with the controls whenever someone joins or leaves or the
+    /// controls move. The owner's page lists them and hands the controls to
+    /// a controller with `{"t":"give_control","to":<id>}`.
+    Viewers {
+        list: Vec<Watcher>,
     },
     /// Where the pointer is (0..1), for a viewer's page to draw it when the
     /// picture doesn't show it (`drawn` false).
@@ -291,6 +303,14 @@ impl Control {
             Some("take_control") => {
                 self.seat.take_control();
             }
+            // The owner or admin with the controls hands them to a guest
+            // controller's session (a `viewers` entry's `id`); anyone else's
+            // is ignored.
+            Some("give_control") => {
+                if let Some(to) = give_target(&msg) {
+                    self.seat.give_control(to);
+                }
+            }
             Some("presence") => {
                 // A page in front or heard is active; one hidden and silent isn't.
                 if let Some(active) = msg.get("active").and_then(|a| a.as_bool()) {
@@ -378,6 +398,11 @@ impl Control {
     pub fn now_us(&self) -> u64 {
         self.epoch.elapsed().as_micros() as u64
     }
+}
+
+/// The session id a `{"t":"give_control","to":<id>}` names.
+fn give_target(msg: &serde_json::Value) -> Option<u64> {
+    msg.get("to")?.as_u64()
 }
 
 /// A player session's pad message as the state to apply: its pad index 0
@@ -759,7 +784,19 @@ pub fn floor_msg(seat: &Seat) -> ServerMsg {
             Role::Player(slot) => Some(slot),
             _ => None,
         },
+        can_take: seat.can_take(),
     }
+}
+
+/// `floor`, and for the session with the controls the `viewers` list too.
+pub fn floor_msgs(seat: &Seat) -> Vec<ServerMsg> {
+    let mut msgs = vec![floor_msg(seat)];
+    if seat.has_control() {
+        msgs.push(ServerMsg::Viewers {
+            list: seat.watchers(),
+        });
+    }
+    msgs
 }
 
 /// Where the pointer moved; never resolves once the compositor is gone.
@@ -1311,6 +1348,7 @@ mod tests {
                 control: false,
                 viewers: 2,
                 player,
+                can_take: false,
             })
         };
         assert_eq!(
@@ -1318,5 +1356,94 @@ mod tests {
             r#"{"t":"floor","control":false,"viewers":2,"player":1}"#
         );
         assert_eq!(floor(None), r#"{"t":"floor","control":false,"viewers":2}"#);
+    }
+
+    #[test]
+    fn the_floor_message_says_when_a_guest_could_take_it() {
+        let msg = line(&ServerMsg::Floor {
+            control: false,
+            viewers: 2,
+            player: None,
+            can_take: true,
+        });
+        assert_eq!(
+            msg,
+            r#"{"t":"floor","control":false,"viewers":2,"can_take":true}"#
+        );
+    }
+
+    #[test]
+    fn the_viewers_message_lists_the_others() {
+        let msg = line(&ServerMsg::Viewers {
+            list: vec![
+                Watcher {
+                    id: 3,
+                    role: "controller",
+                    slot: None,
+                },
+                Watcher {
+                    id: 5,
+                    role: "player",
+                    slot: Some(2),
+                },
+            ],
+        });
+        assert_eq!(
+            msg,
+            r#"{"t":"viewers","list":[{"id":3,"role":"controller"},{"id":5,"role":"player","slot":2}]}"#
+        );
+    }
+
+    #[test]
+    fn give_control_names_a_session_by_its_id() {
+        let to = |s: &str| give_target(&serde_json::from_str(s).unwrap());
+        assert_eq!(to(r#"{"t":"give_control","to":7}"#), Some(7));
+        for bad in [
+            r#"{"t":"give_control"}"#,
+            r#"{"t":"give_control","to":"7"}"#,
+            r#"{"t":"give_control","to":-1}"#,
+            r#"{"t":"give_control","to":1.5}"#,
+        ] {
+            assert_eq!(to(bad), None, "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_holder_gets_the_viewers_list() {
+        use crate::viewers::{Viewer, Viewers};
+        let viewers = Viewers::new(Box::new(|| ()));
+        let join = |user: &str, role| {
+            let viewers = Arc::clone(&viewers);
+            let viewer = Viewer {
+                user: user.into(),
+                role,
+            };
+            async move { viewers.join(viewer, false).await.unwrap() }
+        };
+        let owner = join("o", Role::Owner).await;
+        let guest = join("share:c", Role::Controller).await;
+        let lines = |seat: &Seat| floor_msgs(seat).iter().map(line).collect::<Vec<_>>();
+        assert_eq!(
+            lines(&owner),
+            [
+                r#"{"t":"floor","control":true,"viewers":2}"#.to_string(),
+                format!(
+                    r#"{{"t":"viewers","list":[{{"id":{},"role":"controller"}}]}}"#,
+                    guest.id
+                ),
+            ]
+        );
+        assert_eq!(
+            lines(&guest),
+            [r#"{"t":"floor","control":false,"viewers":2}"#],
+            "a guest controller may not take it from the owner"
+        );
+        assert!(owner.give_control(guest.id));
+        let handed = lines(&guest);
+        assert_eq!(handed.len(), 2, "{handed:?}");
+        assert_eq!(
+            lines(&owner),
+            [r#"{"t":"floor","control":false,"viewers":2,"can_take":true}"#]
+        );
     }
 }

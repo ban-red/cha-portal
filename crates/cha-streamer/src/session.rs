@@ -29,8 +29,8 @@ use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorWatch, PointerWatch};
 use crate::control::{
-    Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
-    next_pointer, next_status, pad_audience, percentile,
+    Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msgs, next_clipboard,
+    next_cursor, next_pointer, next_status, pad_audience, percentile,
 };
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace};
@@ -344,8 +344,9 @@ impl Session {
                     }
                 }
                 () = self.handler.seat.changed() => {
-                    let msg = floor_msg(&self.handler.seat);
-                    self.send_control(&msg);
+                    for msg in floor_msgs(&self.handler.seat) {
+                        self.send_control(&msg);
+                    }
                     self.replay_pads();
                 }
                 // What the apps do to the pads (rumble, lightbar, ...) is the
@@ -588,8 +589,9 @@ impl Session {
                     "overlay": media.overlay(),
                 });
                 self.send_control(&ServerMsg::Hello { stream });
-                let floor = floor_msg(&self.handler.seat);
-                self.send_control(&floor);
+                for msg in floor_msgs(&self.handler.seat) {
+                    self.send_control(&msg);
+                }
                 self.replay_pads();
             }
             Event::ChannelData(data) if Some(data.id) == self.control => {

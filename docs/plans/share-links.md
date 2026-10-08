@@ -1,6 +1,6 @@
 # Share links for players: the contract
 
-For [ADR 0014](../adr/0014-share-links-for-players.md). The portal, streamer and browser are built against this; change it here first.
+For [ADR 0014](../adr/0014-share-links-for-players.md) and, for the viewer and controller roles, [ADR 0015](../adr/0015-share-links-for-viewers-and-controllers.md) (last section). The portal, streamer and browser are built against this; change it here first.
 
 ## Media token claims (`cha-wire`)
 
@@ -34,3 +34,32 @@ For [ADR 0014](../adr/0014-share-links-for-players.md). The portal, streamer and
 
 - Owner: on the environment's session page (and the dashboard card's menu), a **Share** dialog: "Invite player 2/3/4", **Create link** (shows the full URL once, Copy), the live links with their slot and expiry, **Revoke**. Text: "Anyone with this link can play as player N until the environment stops (at most 24 hours)."
 - Guest page `/s/:token`, outside the signed-in shell: app name, "<owner> invited you to play as player N", **Join** → plays with `@cha/player` using `POST /api/shares/{token}/connect`, sending only gamepads (a player option such as `input: "pads"`: no keyboard, mouse, pointer lock, clipboard or resize). Errors: unknown/expired → "This link has expired or was revoked"; not running → "The game isn't running right now".
+
+## Viewer and controller roles (ADR 0015)
+
+### Media token
+
+`role: "viewer"` or `"controller"`, `slot` absent, `sub` = `share:<share id>`. A streamer that doesn't know `controller` reads it as a viewer.
+
+### Portal
+
+- Migration `0015_share_roles.sql` rebuilds `shares`: `role IN ('player', 'viewer', 'controller')`, `slot` nullable and set only for a player (`CHECK`), the rows kept. Live-link limits are unique indexes over live rows: one per (environment, slot) for players, one per environment for a controller; viewers have none.
+- `POST /api/environments/{id}/shares` takes `{ "role": "player", "slot": 1 }`, `{ "role": "viewer" }` or `{ "role": "controller" }`. A slot with a viewer or controller, or none with a player, is 400 `bad_slot`; any other role 400 `bad_role`. A new player link replaces the live one on its slot, a new controller link the live controller link; a viewer link replaces nothing. Replies and `GET .../shares` carry `slot: null` for the new roles; the list is players by slot, the controller, then viewers by age.
+- `GET /api/shares/{token}` returns `role` and `slot` (null) accordingly; `connect` signs the token with the link's role. `share.created`, `share.joined` (now with `role`) and `share.revoked` as before.
+
+### Streamer: the floor
+
+`Role` ranks `Player(n) < Viewer < Controller < Admin < Owner`.
+
+- **Viewer:** never has the floor, `take_control` is refused, all its `input`, `resize`, `clipboard`, `cursor`, `fps` and `overlay` are ignored, and it gets no pad feedback (`rumble`, `haptic`, `led`, `players`, `trigger`).
+- **Controller:** may hold the floor. `take_control` works when nobody holds it or a controller does; not when an owner or admin does. On joining it takes the floor only if nobody holds it. It is never given the floor when the holder leaves (only the newest owner or admin is).
+- **Owner and admin:** `take_control` always works. An owner joining takes the floor from anyone; an admin joining takes it when it is empty or held by a controller.
+- **Hand-off:** `{"t":"give_control","to":<session id>}` from the session holding the floor, if it is an owner or admin and `to` is a controller session, moves the floor. Anything else is ignored.
+- **Messages to the page.** `floor` gains `"can_take": true` (left out when false): this session could take the floor now. A new `{"t":"viewers","list":[{"id":3,"role":"controller"},{"id":5,"role":"player","slot":2}]}` goes to the session holding the floor, right after each `floor`, listing every other session (`role`: `owner`, `admin`, `controller`, `viewer`, `player`; `slot` only for a player). The ids are what `give_control` names. Defined in `crates/cha-streamer/src/control.rs`.
+
+### Browser
+
+- **Share dialog:** three groups: *Play on a gamepad* (Invite player 2/3/4), *Watch* (Invite to watch; any number of links) and *Control* (Invite to control; one). The controller text: "Anyone with this link can use your keyboard and mouse in <app> when you hand them the controls, or whenever you aren't holding them."
+- **Guest page:** a viewer is invited "to watch" and plays with `@cha/player` option `input: "none"` (no input of any kind, no gamepads read). A controller uses `input: "all"` with `fixedSize` (it never resizes the owner's screen); with the controls it shows "You have the controls.", when `floor.can_take` it shows **Take control**, otherwise "Waiting for <owner> to hand you the controls".
+- **Owner's toolbar:** while it holds the floor it lists the other sessions from `viewers` and shows **Hand controls** by a controller; without the floor the button reads **Take back**.
+- `@cha/player`: `onViewers(list)`, `giveControl(id)`, and `onFloor`'s fourth argument `canTake`.

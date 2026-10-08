@@ -36,8 +36,8 @@ use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
 use crate::congestion::MediaWindowFactory;
 use crate::control::{
-    Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
-    next_pointer, next_status, pad_audience, percentile,
+    Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msgs, next_clipboard,
+    next_cursor, next_pointer, next_status, pad_audience, percentile,
 };
 use crate::framerate;
 use crate::gamepad::Gamepads;
@@ -288,7 +288,9 @@ async fn run(
     let mut pointer = Some(sessions.media.pointer());
     let mut status = Some(sessions.media.status());
     let mut rumble = PadFeed::new(sessions.gamepads.as_deref());
-    let _ = out.send(floor_msg(&handler.seat));
+    for msg in floor_msgs(&handler.seat) {
+        let _ = out.send(msg);
+    }
     for msg in rumble.replay_for(&pad_audience(&handler.seat)) {
         let _ = out.send(msg);
     }
@@ -349,7 +351,9 @@ async fn run(
                 }
             }
             () = handler.seat.changed() => {
-                let _ = out.send(floor_msg(&handler.seat));
+                for msg in floor_msgs(&handler.seat) {
+                    let _ = out.send(msg);
+                }
                 for msg in rumble.replay_for(&pad_audience(&handler.seat)) {
                     let _ = out.send(msg);
                 }

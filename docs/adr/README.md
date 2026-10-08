@@ -18,3 +18,4 @@ One file per decision, numbered, never rewritten: a later ADR supersedes an earl
 | [0012](0012-cla-for-app-store-builds.md) | A contributor licence agreement, so Cha Player can ship in app stores; no public App Store exception | Accepted; settles the open question in 0010 |
 | [0013](0013-native-player-on-cha-stream.md) | Cha Player on `cha-stream/1`: per-install device tokens (a `cha://` link first, a device code too) and WebTransport to the existing endpoint | Accepted; shapes C2 of 0010 |
 | [0014](0014-share-links-for-players.md) | Share links, first for players: anyone with the link joins one gamepad slot, until the environment stops (24 h cap), revocable | Accepted |
+| [0015](0015-share-links-for-viewers-and-controllers.md) | Share links for viewers and controllers: watch only, or the keyboard and mouse with one-at-a-time hand-off (take, give, take back) | Accepted; extends 0014 |

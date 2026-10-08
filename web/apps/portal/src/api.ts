@@ -1,6 +1,7 @@
 // Typed calls to cha-control's `/api`. Same-origin cookies carry the session;
 // every mutating call sends JSON (the server's CSRF defence relies on it).
 
+import type { ShareSpec } from "./shares";
 import type { UserPrefs } from "./themes";
 
 export type Role = "admin" | "user" | "guest";
@@ -395,17 +396,17 @@ export interface ConnectResult {
 /** A live share link of an environment (never its token). */
 export interface Share {
   id: string;
-  role: "player";
-  /** 1 to 3: player 2 to 4. */
-  slot: number;
+  role: "player" | "viewer" | "controller";
+  /** A player's pad, 1 to 3: player 2 to 4; null for the other roles. */
+  slot: number | null;
   createdAt: number;
   expiresAt: number;
 }
 
 interface RawShare {
   id: string;
-  role: "player";
-  slot: number;
+  role: "player" | "viewer" | "controller";
+  slot: number | null;
   created_at?: number;
   expires_at: number;
 }
@@ -413,7 +414,7 @@ interface RawShare {
 const toShare = (r: RawShare): Share => ({
   id: r.id,
   role: r.role,
-  slot: r.slot,
+  slot: r.slot ?? null,
   createdAt: r.created_at ?? 0,
   expiresAt: r.expires_at,
 });
@@ -422,8 +423,9 @@ const toShare = (r: RawShare): Share => ({
 export interface ShareInfo {
   app: string;
   owner: string;
-  role: "player";
-  slot: number;
+  role: "player" | "viewer" | "controller";
+  /** A player's pad, 1 to 3; null for the other roles. */
+  slot: number | null;
   state: string;
   /** What the environment's device encodes (null: unknown). */
   codecs: string[] | null;
@@ -567,17 +569,14 @@ export const api = {
   connect: (id: string, body: ConnectBody) =>
     request<ConnectResult>("POST", `/environments/${encodeURIComponent(id)}/connect`, body),
 
-  // Share links for players (ADR 0014).
+  // Share links (ADRs 0014 and 0015).
   shares: async (environmentId: string): Promise<Share[]> => {
     const rows = await request<RawShare[]>("GET", `/environments/${encodeURIComponent(environmentId)}/shares`);
     return rows.map(toShare);
   },
-  /** Makes a link for a slot (1 to 3); the full `url` comes back only now. */
-  createShare: async (environmentId: string, slot: number): Promise<Share & { url: string }> => {
-    const r = await request<RawShare & { url: string }>("POST", `/environments/${encodeURIComponent(environmentId)}/shares`, {
-      role: "player",
-      slot,
-    });
+  /** Makes a player link (with a slot, 1 to 3), a viewer link or a controller link; the full `url` comes back only now. */
+  createShare: async (environmentId: string, spec: ShareSpec): Promise<Share & { url: string }> => {
+    const r = await request<RawShare & { url: string }>("POST", `/environments/${encodeURIComponent(environmentId)}/shares`, spec);
     return { ...toShare(r), url: r.url };
   },
   revokeShare: (environmentId: string, shareId: string) =>

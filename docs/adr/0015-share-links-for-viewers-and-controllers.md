@@ -1,0 +1,12 @@
+# 0015: Share links for viewers and controllers
+
+- **Status:** accepted (2026-10-07). Follows [ADR 0014](0014-share-links-for-players.md), which said viewer and controller links would come later.
+- **Context:** a friend should be able to watch a session, or take part with the keyboard and mouse, without an account. The floor (who has the controls) was owners' and admins' only; it now has a guest on it.
+- **Decision:**
+  - **Two more roles on a share link.** `viewer` watches and listens: it sends nothing, never holds the floor and hears no pad feedback. `controller` may hold the floor, one session at a time, with the keyboard, mouse and pads, resizing excepted on the guest page (a guest's page doesn't resize the owner's screen). Neither has a pad slot.
+  - **The ranking is player < viewer < controller < admin < owner.** A controller takes the floor (`take_control`) when nobody holds it, or when another controller holds it; never from an owner or admin. An owner or admin always takes it back. An owner or admin holding the floor can hand it to a guest controller (`give_control`).
+  - **Joining.** A controller who joins takes the floor only when it is empty. An owner takes it from anyone, as before; an admin takes it when it is empty or a guest holds it. When the holder leaves, the floor goes to the newest owner or admin (owners first); it is never given to a guest on a leave, so a guest holds it only by taking or being handed it.
+  - **The owner's page learns who is watching.** The session with the floor is sent a `viewers` message (`id`, `role`, `slot`) whenever someone joins or leaves or the floor moves; `floor` gains `can_take` so a guest controller's page can offer "Take control" or say it waits to be handed the controls.
+  - **Links.** Players: one live link per slot, as before. Viewers: any number. Controller: one live link per environment; a new one revokes the old. All end with the environment, within 24 hours, and can be revoked. The media token's role is `viewer` or `controller`, with no slot.
+  - **An older streamer reads an unknown role as a viewer**, so a controller link there only watches.
+- **Consequences:** a controller link is the strongest credential the portal hands out: whoever holds it can use the keyboard and mouse in the environment whenever its owner isn't holding the controls, or has handed them over. The Share dialog says so. The table `shares` was rebuilt (migration 0015) to allow the roles.
