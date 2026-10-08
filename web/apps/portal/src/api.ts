@@ -59,6 +59,14 @@ export interface Inventory {
   addresses: string[];
   /** Absent from nodes that predate devices. */
   devices?: Device[];
+  /** Absent from agents that predate disk reporting. */
+  disks?: { uses: ("images" | "appData")[]; path: string; totalBytes: number; freeBytes: number }[];
+  /** What the node runs on; absent from older agents. */
+  platform?: {
+    kind: "bare-metal" | "vm" | "lxc" | "wsl" | "docker-desktop" | "unknown";
+    detail?: string | null;
+    kernel?: string | null;
+  } | null;
 }
 
 /** A machine that runs environments (named to stay clear of the DOM's `Node`). */

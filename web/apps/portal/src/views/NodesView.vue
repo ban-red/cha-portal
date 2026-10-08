@@ -7,6 +7,7 @@ import { ApiError, api, type NodeInfo } from "../api";
 import FormError from "../components/FormError.vue";
 import MoonlightHostsCard from "../components/MoonlightHostsCard.vue";
 import NodeUsage from "../components/NodeUsage.vue";
+import { diskView, platformLine } from "../nodeInfo";
 import { normalizePairingCode } from "../pairingCode";
 import { ago, clockTime, dateTime, megabytes } from "../format";
 
@@ -340,7 +341,13 @@ function status(node: NodeInfo): { text: string; dot: string } {
 
         <dl v-if="node.inventory" class="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
           <dt class="text-ink-3">Host</dt>
-          <dd class="truncate">{{ node.inventory.hostname }} · {{ node.inventory.os }} · {{ node.inventory.arch }}</dd>
+          <dd class="truncate">
+            {{ node.inventory.hostname }}<template v-if="!node.inventory.platform"> · {{ node.inventory.os }}</template> · {{ node.inventory.arch }}
+          </dd>
+          <template v-if="node.inventory.platform">
+            <dt class="text-ink-3">Platform</dt>
+            <dd :title="node.inventory.platform.kernel ?? undefined">{{ platformLine(node.inventory.os, node.inventory.platform) }}</dd>
+          </template>
           <dt class="text-ink-3">CPU / RAM</dt>
           <dd>{{ node.inventory.cpus }} threads · {{ megabytes(node.inventory.memoryMb) }}</dd>
           <dt class="text-ink-3">GPUs</dt>
@@ -361,6 +368,15 @@ function status(node: NodeInfo): { text: string; dot: string } {
               </p>
             </div>
           </dd>
+          <template v-for="d in (node.inventory.disks ?? []).map(diskView)" :key="d.path + d.label">
+            <dt class="text-ink-3">{{ d.label }}</dt>
+            <dd :title="d.path">
+              <span :class="d.low ? 'text-warn' : ''">{{ d.text }}<template v-if="d.low"> · low</template></span>
+              <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-line" aria-hidden="true">
+                <div class="h-full rounded-full" :class="d.low ? 'bg-warn' : 'bg-info'" :style="{ width: d.usedPct + '%' }" />
+              </div>
+            </dd>
+          </template>
           <dt class="text-ink-3">Addresses</dt>
           <dd class="font-mono text-xs leading-5 break-all text-ink-2">{{ node.inventory.addresses.join(", ") || "—" }}</dd>
         </dl>
