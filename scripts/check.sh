@@ -3,7 +3,7 @@
 # lints and tests across the workspace, the Steam image's scripts' tests (the
 # status watcher, the library registration), the node's host installer's
 # tests, and the portal's colour guard, theme contrast tests, the player
-# themes' freshness, typecheck and production build.
+# themes' freshness, the UI spec's check, typecheck and production build.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -37,8 +37,10 @@ python3 scripts/image-inputs.py >/dev/null
 echo "==> portal: raw-colour guard + theme contrast tests"
 sh scripts/check-portal-colors.sh
 bun run --cwd web/apps/portal test
-echo "==> player themes (crates/cha-player/themes up to date)"
+echo "==> player themes (web/packages/ui-spec/themes up to date)"
 bun scripts/export-player-themes.ts --check
+echo "==> ui spec (icons valid, every <Icon> exists)"
+bun scripts/check-ui-spec.ts
 echo "==> portal: typecheck + build"
 bun run --cwd web/apps/portal build >/dev/null
 echo "All checks passed."

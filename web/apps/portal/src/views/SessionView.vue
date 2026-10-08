@@ -42,6 +42,7 @@ import { useSession } from "../stores/session";
 import { setForcedDark } from "../themes/runtime";
 import { loadToolbarPrefs, saveToolbarPrefs, toolbarKey, type ToolbarPrefs } from "../toolbarPrefs";
 import { PREFS_KEY, parsePrefs, type OverlayPrefs } from "../statsOverlay";
+import Icon from "../components/Icon.vue";
 import WarningNote from "../components/WarningNote.vue";
 
 // The environment, full screen. The portal brokers the connection; the picture
@@ -861,10 +862,7 @@ const STATUS: Record<PlayerState, string> = {
         title="Power off this app (a 5 second countdown, which you can cancel)"
         @click="askPowerOff"
       >
-        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M8 1.5v6" />
-          <path d="M4.6 3.9a5.5 5.5 0 1 0 6.8 0" />
-        </svg>
+        <Icon name="power" class="size-4" />
       </button>
       <button
         :class="ICON_BTN"
@@ -872,10 +870,7 @@ const STATUS: Record<PlayerState, string> = {
         title="Invite a friend to watch, play or use the controls"
         @click="sharing = true"
       >
-        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="4" cy="8" r="1.8" /><circle cx="12" cy="3.8" r="1.8" /><circle cx="12" cy="12.2" r="1.8" />
-          <path d="M5.6 7.1l4.8-2.4M5.6 8.9l4.8 2.4" />
-        </svg>
+        <Icon name="share" class="size-4" />
       </button>
       <span class="max-w-48 truncate px-2 text-sm font-medium">{{ env.data.value?.templateName ?? "…" }}</span>
       <GpuBadge v-if="env.data.value?.device" :kind="env.data.value.device.kind" :name="env.data.value.device.name" tense="is" />
@@ -916,7 +911,7 @@ const STATUS: Record<PlayerState, string> = {
           title="Stream settings: codec, frame rate, transport"
           @click="toggleMenu('stream')"
         >
-          <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" /><circle cx="5" cy="4" r="1.6" fill="var(--color-panel)" /><circle cx="10.5" cy="8" r="1.6" fill="var(--color-panel)" /><circle cx="6.5" cy="12" r="1.6" fill="var(--color-panel)" /></svg>
+          <Icon name="stream-settings" class="size-4" />
         </button>
         <div v-if="menu === 'stream'" id="stream-menu" :class="[MENU_BOX, 'left-0 space-y-2']">
           <label class="block">
@@ -991,11 +986,7 @@ const STATUS: Record<PlayerState, string> = {
         "
         @click="onCaptureButton"
       >
-        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="8" cy="8" r="3.5" />
-          <path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3" />
-          <circle v-if="capture.recapture" cx="8" cy="8" r="0.8" fill="currentColor" />
-        </svg>
+        <Icon :name="capture.recapture ? 'exclusive-input-on' : 'exclusive-input'" class="size-4" />
       </button>
       <button
         :class="[ICON_BTN, !mouseOn && 'text-warn']"
@@ -1004,11 +995,7 @@ const STATUS: Record<PlayerState, string> = {
         :title="mouseOn ? 'Mouse on: click to stop sending the mouse (the keyboard still works)' : 'Mouse off: click to send the mouse again'"
         @click="toggleMouse"
       >
-        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="4.5" y="1.5" width="7" height="13" rx="3.5" />
-          <path d="M8 4.5v2.5" />
-          <path v-if="!mouseOn" d="M2 2l12 12" />
-        </svg>
+        <Icon :name="mouseOn ? 'mouse-on' : 'mouse-off'" class="size-4" />
       </button>
 
       <!-- Sound -->
@@ -1022,11 +1009,7 @@ const STATUS: Record<PlayerState, string> = {
           :title="audioBlocked && !muted ? 'The browser is blocking sound: open this and click Enable sound' : muted ? 'Sound off' : `Sound on, volume ${volume}%`"
           @click="toggleMenu('sound')"
         >
-          <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2.5 6h2.5l3-2.5v9L5 10H2.5z" />
-            <path v-if="muted" d="M11 6l3 4M14 6l-3 4" />
-            <path v-else d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.3 3.8a6 6 0 0 1 0 8.4" />
-          </svg>
+          <Icon :name="muted ? 'sound-muted' : 'sound-on'" class="size-4" />
         </button>
         <div v-if="menu === 'sound'" id="sound-menu" :class="[MENU_BOX, 'left-0 space-y-2']">
           <button
@@ -1073,11 +1056,7 @@ const STATUS: Record<PlayerState, string> = {
           :title="controllers.length ? `${controllers.length} controller(s) sending input` : 'No controller yet'"
           @click="toggleMenu('controllers')"
         >
-          <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="1.5" y="4.5" width="13" height="7.5" rx="3.5" />
-            <path d="M5 6.7v3M3.5 8.2h3" />
-            <circle cx="10.5" cy="7.3" r=".6" fill="currentColor" /><circle cx="12" cy="9.1" r=".6" fill="currentColor" />
-          </svg>
+          <Icon name="controllers" class="size-4" />
           <span v-if="controllers.length" class="absolute -top-0.5 -right-0.5 grid min-w-3.5 place-items-center rounded-full bg-accent px-1 text-[9px] leading-3.5 font-semibold text-accent-ink">{{ controllers.length }}</span>
         </button>
         <div v-if="menu === 'controllers'" id="controller-menu" :class="[MENU_BOX, 'right-0 p-3']">
@@ -1111,10 +1090,7 @@ const STATUS: Record<PlayerState, string> = {
         :title="fullscreen ? 'Exit full screen' : 'Full screen'"
         @click="toggleFullscreen"
       >
-        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path v-if="fullscreen" d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4" />
-          <path v-else d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" />
-        </svg>
+        <Icon :name="fullscreen ? 'fullscreen-exit' : 'fullscreen-enter'" class="size-4" />
       </button>
       <button
         :class="[ICON_BTN, 'w-auto gap-1 px-2', overlay.open && 'text-accent']"
@@ -1123,9 +1099,7 @@ const STATUS: Record<PlayerState, string> = {
         :title="overlay.open ? 'Hide the stats panel' : 'Show the stats panel'"
         @click="overlay = { ...overlay, open: !overlay.open }"
       >
-        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-          <path d="M3 13V8M8 13V3M13 13V6" />
-        </svg>
+        <Icon name="stats" class="size-4" />
         <span v-if="health.grade" class="font-mono text-xs font-semibold" :class="gradeText(health.grade)" :title="`Stream health: ${health.summary}`">{{ health.grade }}</span>
       </button>
       <!-- Floats on the toolbar's lower edge, in the middle -->
@@ -1137,9 +1111,7 @@ const STATUS: Record<PlayerState, string> = {
         title="Hide the toolbar (hover the thin bar at the top to bring it back)"
         @click="hideToolbar"
       >
-        <svg viewBox="0 0 16 16" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M4 10l4-4 4 4" />
-        </svg>
+        <Icon name="toolbar-fold" class="size-3.5" />
       </button>
     </div>
 

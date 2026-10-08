@@ -14,11 +14,9 @@ use super::resolve::Variant;
 
 pub const DEFAULT_THEME: &str = "cha-magenta";
 
-/// Generated from the portal's CSS by `scripts/export-player-themes.ts`.
-const BUILTIN: [(&str, &str); 2] = [
-    ("cha-magenta", include_str!("../../themes/cha-magenta.json")),
-    ("cha-jade", include_str!("../../themes/cha-jade.json")),
-];
+/// Generated from the portal's CSS by `scripts/export-player-themes.ts`; compiled in
+/// by `cha-ui-spec` from `web/packages/ui-spec/themes/`.
+const BUILTIN: [(&str, &str); 2] = cha_ui_spec::THEMES;
 
 /// A theme fully resolved: all four palettes, metrics, fonts.
 #[derive(Clone, Debug)]

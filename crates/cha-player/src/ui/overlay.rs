@@ -14,12 +14,13 @@ use cha_client::NodeStats;
 use egui::epaint::text::{LayoutJob, TextFormat};
 use egui::{
     Align, Align2, Area, Color32, Context, FontId, Frame, Galley, Id, Order, Painter, Pos2, Rect,
-    Sense, Shape, Stroke, Ui, Vec2, pos2, vec2,
+    Sense, Stroke, Ui, Vec2, pos2, vec2,
 };
 use winit::event::{ElementState, WindowEvent};
 
 use crate::health::{Assessment, Grade, Issue, Severity};
 use crate::overlay_prefs::{Corner, OPACITY_MIN, OverlayPrefs, Pos, Section};
+use crate::theme::icons::{self, Icon};
 use crate::theme::{OverlayStyle, Palette, ThemeExt};
 
 /// One reading of the running stream, for the overlay and the health grade.
@@ -845,9 +846,10 @@ impl View<'_> {
                 painter.rect_filled(b, 4.0, look.p.line.gamma_multiply(0.6));
             }
             let color = if hot { look.p.ink } else { look.ink2 };
-            icon.draw(
+            icons::paint(
                 &painter,
                 Rect::from_center_size(b.center(), Vec2::splat(12.0)),
+                icon,
                 color,
             );
             if resp.on_hover_text(tip).clicked() {
@@ -863,9 +865,9 @@ impl View<'_> {
                 "Compact view"
             },
             if self.prefs.compact {
-                Icon::Expand
+                Icon::StatsFull
             } else {
-                Icon::Shrink
+                Icon::StatsCompact
             },
             false,
             Cmd::Compact,
@@ -879,9 +881,9 @@ impl View<'_> {
                 "Collapse to the header"
             },
             if self.prefs.collapsed {
-                Icon::ChevronDown
+                Icon::PanelExpand
             } else {
-                Icon::ChevronUp
+                Icon::PanelCollapse
             },
             false,
             Cmd::Collapse,
@@ -890,7 +892,7 @@ impl View<'_> {
             ui,
             "menu",
             "Panel settings",
-            Icon::Dots,
+            Icon::SettingsDots,
             self.menu,
             Cmd::Menu,
         );
@@ -1027,9 +1029,10 @@ impl View<'_> {
             look.ink2
         };
         let icon = if done { Icon::Check } else { Icon::Copy };
-        icon.draw(
+        icons::paint(
             ui.painter(),
             Rect::from_center_size(b.center(), Vec2::splat(12.0)),
+            icon,
             color,
         );
         let tip = if done {
@@ -1393,9 +1396,9 @@ impl View<'_> {
         let c = pos2(rect.left() + 5.0, rect.center().y);
         let chevron = Rect::from_center_size(c, Vec2::splat(10.0));
         if folded {
-            Icon::ChevronRightSmall.draw(&painter, chevron, shown);
+            icons::paint(&painter, chevron, Icon::SectionChevronRight, shown);
         } else {
-            Icon::ChevronDownSmall.draw(&painter, chevron, shown);
+            icons::paint(&painter, chevron, Icon::SectionChevron, shown);
         }
         let label = look.text(
             &painter,
@@ -1486,116 +1489,6 @@ fn chip(ui: &mut Ui, look: &Look, health: &Assessment, cmds: &mut Vec<Cmd>) {
     painter.galley(rect.center() - g.size() / 2.0, g, color);
     if resp.on_hover_text("Show stats").clicked() {
         cmds.push(Cmd::Show);
-    }
-}
-
-// ---- icons, drawn with strokes like the portal's SVGs -------------------
-
-#[derive(Clone, Copy)]
-enum Icon {
-    Expand,
-    Shrink,
-    ChevronUp,
-    ChevronDown,
-    Dots,
-    EyeOff,
-    Copy,
-    Check,
-    ChevronDownSmall,
-    ChevronRightSmall,
-}
-
-impl Icon {
-    /// Draw into `r`, a square standing for the SVGs' 16 x 16 box.
-    fn draw(self, painter: &Painter, r: Rect, color: Color32) {
-        let k = r.width() / 16.0;
-        let at = |x: f32, y: f32| pos2(r.left() + x * k, r.top() + y * k);
-        let stroke = Stroke::new((1.5 * k).max(1.0), color);
-        let line = |pts: &[(f32, f32)]| {
-            painter.add(Shape::line(
-                pts.iter().map(|&(x, y)| at(x, y)).collect(),
-                stroke,
-            ));
-        };
-        match self {
-            Icon::Expand => {
-                line(&[(3.0, 6.0), (3.0, 3.0), (6.0, 3.0)]);
-                line(&[(13.0, 6.0), (13.0, 3.0), (10.0, 3.0)]);
-                line(&[(3.0, 10.0), (3.0, 13.0), (6.0, 13.0)]);
-                line(&[(13.0, 10.0), (13.0, 13.0), (10.0, 13.0)]);
-            }
-            Icon::Shrink => {
-                line(&[(6.0, 3.0), (6.0, 6.0), (3.0, 6.0)]);
-                line(&[(10.0, 3.0), (10.0, 6.0), (13.0, 6.0)]);
-                line(&[(6.0, 13.0), (6.0, 10.0), (3.0, 10.0)]);
-                line(&[(10.0, 13.0), (10.0, 10.0), (13.0, 10.0)]);
-            }
-            Icon::ChevronUp => line(&[(4.0, 10.0), (8.0, 6.0), (12.0, 10.0)]),
-            Icon::ChevronDown => line(&[(4.0, 6.0), (8.0, 10.0), (12.0, 6.0)]),
-            Icon::Dots => {
-                for y in [3.0, 8.0, 13.0] {
-                    painter.circle_filled(at(8.0, y), 1.3 * k, color);
-                }
-            }
-            Icon::EyeOff => {
-                let cubic = |p: [(f32, f32); 4]| {
-                    let pts: Vec<Pos2> = (0..=12)
-                        .map(|i| {
-                            let t = i as f32 / 12.0;
-                            let u = 1.0 - t;
-                            let mix = |a: f32, b: f32, c: f32, d: f32| {
-                                u * u * u * a
-                                    + 3.0 * u * u * t * b
-                                    + 3.0 * u * t * t * c
-                                    + t * t * t * d
-                            };
-                            at(
-                                mix(p[0].0, p[1].0, p[2].0, p[3].0),
-                                mix(p[0].1, p[1].1, p[2].1, p[3].1),
-                            )
-                        })
-                        .collect();
-                    painter.add(Shape::line(pts, stroke));
-                };
-                cubic([(2.0, 8.0), (2.0, 8.0), (4.2, 4.0), (8.0, 4.0)]);
-                cubic([(8.0, 4.0), (11.8, 4.0), (14.0, 8.0), (14.0, 8.0)]);
-                cubic([(14.0, 8.0), (14.0, 8.0), (11.8, 12.0), (8.0, 12.0)]);
-                cubic([(8.0, 12.0), (4.2, 12.0), (2.0, 8.0), (2.0, 8.0)]);
-                painter.circle_stroke(at(8.0, 8.0), 1.6 * k, stroke);
-                line(&[(3.0, 13.0), (13.0, 3.0)]);
-            }
-            Icon::Copy => {
-                painter.rect_stroke(
-                    Rect::from_min_max(at(5.5, 5.5), at(12.5, 13.5)),
-                    1.2 * k,
-                    stroke,
-                    egui::StrokeKind::Middle,
-                );
-                line(&[
-                    (10.5, 3.5),
-                    (10.5, 3.2),
-                    (9.8, 2.5),
-                    (4.2, 2.5),
-                    (3.5, 3.2),
-                    (3.5, 10.3),
-                    (4.2, 11.0),
-                    (4.5, 11.0),
-                ]);
-            }
-            Icon::Check => line(&[(3.0, 8.5), (6.2, 11.5), (13.0, 4.5)]),
-            Icon::ChevronDownSmall | Icon::ChevronRightSmall => {
-                let stroke = Stroke::new((2.0 * k).max(1.0), color);
-                let pts = if matches!(self, Icon::ChevronDownSmall) {
-                    [(4.0, 6.0), (8.0, 10.0), (12.0, 6.0)]
-                } else {
-                    [(6.0, 4.0), (10.0, 8.0), (6.0, 12.0)]
-                };
-                painter.add(Shape::line(
-                    pts.iter().map(|&(x, y)| at(x, y)).collect(),
-                    stroke,
-                ));
-            }
-        }
     }
 }
 

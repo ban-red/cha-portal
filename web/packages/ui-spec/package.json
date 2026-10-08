@@ -1,0 +1,14 @@
+{
+  "name": "@cha/ui-spec",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "The in-stream UI's spec, shared by the browser player and Cha Player: icons, themes (ADR 0016)",
+  "exports": {
+    ".": "./index.ts",
+    "./icons.json": "./icons.json",
+    "./themes/cha-magenta.json": "./themes/cha-magenta.json",
+    "./themes/cha-jade.json": "./themes/cha-jade.json"
+  }
+}

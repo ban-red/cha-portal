@@ -4,7 +4,7 @@ The browser player (`web/apps/portal`, `@cha/player`) and the native player (`cr
 
 | Piece | Browser | Native | Shared |
 |---|---|---|---|
-| Theme colours | `src/themes/*.css` | `crates/cha-player/themes/*.json` | generated, checked |
+| Theme colours | `src/themes/*.css` | `web/packages/ui-spec/themes/*.json` | generated, checked |
 | Health grade: thresholds, weights, issue texts | `health.ts` (545 lines) | `health.rs` (1,188 lines) | no |
 | Stats panel: sections, rows, labels, tooltips, formatting | `StatsOverlay.vue` (515) | `ui/overlay.rs` (1,721) | no |
 | Panel and toolbar prefs: fields, defaults, limits | `statsOverlay.ts`, `toolbarPrefs.ts` | `overlay_prefs.rs`, toolbar prefs | no |
@@ -61,7 +61,7 @@ Files:
 Each phase lands both sides together, with its cases, and leaves both players working.
 
 0. **Decision.** [ADR 0016](../adr/0016-one-ui-spec-for-both-players.md): the rule, the layout and the drift guards above. Done.
-1. **Package, crate and icons.**
+1. **Package, crate and icons.** Done: `@cha/ui-spec` and `cha-ui-spec` exist, the themes moved, 24 icons are in `icons.json` and drawn by `Icon.vue` (StatsOverlay and SessionView) and `theme/icons.rs` (an SVG path parser with a build-time `Icon` enum), with `scripts/check-ui-spec.ts` and an icon-sheet snapshot.
    - Create `@cha/ui-spec` and `cha-ui-spec` (`cargo hakari generate && cargo hakari manage-deps`).
    - Move the themes there, and point the exporter and `cha-player` at the new path.
    - `icons.json` from the SVGs in `StatsOverlay.vue` and `SessionView.vue`.

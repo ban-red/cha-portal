@@ -1,0 +1,16 @@
+[package]
+name = "cha-ui-spec"
+version = "0.1.0"
+description = "The in-stream UI's spec (ADR 0016), compiled in from web/packages/ui-spec: icons, themes, and the SVG path parser the native player draws them with"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+
+[build-dependencies]
+serde_json = "1"

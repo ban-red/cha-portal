@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cha/player": "workspace:*",
+    "@cha/ui-spec": "workspace:*",
     "@tanstack/vue-query": "^5.104.1",
     "lucide-vue-next": "^1.0.0",
     "pinia": "^4.0.3",

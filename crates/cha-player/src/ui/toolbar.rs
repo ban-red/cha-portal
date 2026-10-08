@@ -25,6 +25,7 @@ use super::overlay::{Look, StatsSnapshot};
 use crate::health::Assessment;
 use crate::input::pads::{InputAccess, PadInfo};
 use crate::stream_prefs::{FRAME_RATES, OVERLAY_MAX};
+use crate::theme::icons::{self, Icon};
 use crate::theme::{Palette, ThemeExt};
 
 /// The bar's top edge (`top-3`).
@@ -520,13 +521,17 @@ impl Toolbar {
                             let open = menu == Some(*kind);
                             let (icon, id, tip, style) = match kind {
                                 Menu::Stream => (
-                                    Icon::Sliders,
+                                    Icon::StreamSettings,
                                     "stream",
                                     "Stream settings: frame rate, overlay, codec and transport",
                                     Style { active: open, color: open.then_some(look.p.accent), ..Style::default() },
                                 ),
                                 Menu::Sound => (
-                                    Icon::Sound { muted: v.muted },
+                                    if v.muted {
+                                        Icon::SoundMuted
+                                    } else {
+                                        Icon::SoundOn
+                                    },
                                     "sound",
                                     if v.muted {
                                         "Sound off"
@@ -540,7 +545,7 @@ impl Toolbar {
                                     },
                                 ),
                                 Menu::Controllers => (
-                                    Icon::Gamepad,
+                                    Icon::Controllers,
                                     "controllers",
                                     if v.pads.is_empty() {
                                         "No controller yet"
@@ -571,7 +576,7 @@ impl Toolbar {
                             if b.icon_button(
                                 *r,
                                 "capture",
-                                Icon::Capture,
+                                Icon::ExclusiveInput,
                                 tip,
                                 Style { enabled: v.mouse, ..Style::default() },
                             ) {
@@ -583,7 +588,7 @@ impl Toolbar {
                             if b.icon_button(
                                 *r,
                                 "mouse",
-                                Icon::Mouse { off: !on },
+                                if on { Icon::MouseOn } else { Icon::MouseOff },
                                 if on {
                                     "Mouse on: click to stop sending the mouse (the keyboard and controllers still work)"
                                 } else {
@@ -603,7 +608,11 @@ impl Toolbar {
                             if b.icon_button(
                                 *r,
                                 "fullscreen",
-                                Icon::Fullscreen { exit: v.fullscreen },
+                                if v.fullscreen {
+                                    Icon::FullscreenExit
+                                } else {
+                                    Icon::FullscreenEnter
+                                },
                                 tip,
                                 Style::default(),
                             ) {
@@ -630,9 +639,10 @@ impl Toolbar {
                     Stroke::new(1.0, look.p.line),
                     StrokeKind::Inside,
                 );
-                Icon::ChevronUp.draw(
+                icons::paint(
                     &painter,
                     Rect::from_center_size(tab.center(), Vec2::splat(14.0)),
+                    Icon::ToolbarFold,
                     if !live {
                         look.p.ink_3
                     } else if hot {
@@ -640,8 +650,6 @@ impl Toolbar {
                     } else {
                         look.ink2
                     },
-                    1.75,
-                    look.p.panel,
                 );
                 let tip = "Hide the toolbar (hover the thin bar at the top to bring it back)";
                 if resp.on_hover_text(tip).clicked() && live {
@@ -957,12 +965,11 @@ impl Buttons<'_, '_> {
         } else {
             style.color.unwrap_or(look.ink2)
         };
-        icon.draw(
+        icons::paint(
             self.painter,
             Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+            icon,
             color,
-            1.4,
-            look.p.panel,
         );
         if let Some(n) = style.badge {
             let g = self.painter.layout_no_wrap(
@@ -1056,12 +1063,11 @@ impl Buttons<'_, '_> {
             },
             rect.center().y,
         );
-        Icon::Bars.draw(
+        icons::paint(
             self.painter,
             Rect::from_center_size(icon_at, Vec2::splat(16.0)),
+            Icon::Stats,
             ink,
-            1.6,
-            look.p.panel,
         );
         if let Some(grade) = v.health.grade {
             let g = self.painter.layout_no_wrap(
@@ -1506,136 +1512,6 @@ fn controllers_menu(ui: &mut Ui, look: &Look, v: &ToolbarView, actions: &mut Vec
             "Open System Settings at Input Monitoring",
         ) {
             b.actions.push(ToolbarAction::OpenInputSettings);
-        }
-    }
-}
-
-// ---- icons, drawn with strokes like the portal's SVGs ------------------------
-
-#[derive(Clone, Copy)]
-enum Icon {
-    Power,
-    Sliders,
-    Capture,
-    Mouse { off: bool },
-    Sound { muted: bool },
-    Gamepad,
-    Fullscreen { exit: bool },
-    Bars,
-    ChevronUp,
-}
-
-impl Icon {
-    /// Draw into `r`, a square standing for the SVGs' 16 x 16 box, with a
-    /// stroke `width` in SVG units; `bg` fills what the bar shows through.
-    fn draw(self, painter: &Painter, r: Rect, color: Color32, width: f32, bg: Color32) {
-        let k = r.width() / 16.0;
-        let at = |x: f32, y: f32| pos2(r.left() + x * k, r.top() + y * k);
-        let stroke = Stroke::new((width * k).max(1.0), color);
-        let line = |pts: &[(f32, f32)]| {
-            painter.add(Shape::line(
-                pts.iter().map(|&(x, y)| at(x, y)).collect(),
-                stroke,
-            ));
-        };
-        // An arc about (cx, cy), from angle `a0` to `a1` (degrees, y down).
-        let arc = |cx: f32, cy: f32, rad: f32, a0: f32, a1: f32| {
-            let n = 24;
-            let pts: Vec<Pos2> = (0..=n)
-                .map(|i| {
-                    let a = (a0 + (a1 - a0) * i as f32 / n as f32).to_radians();
-                    at(cx + rad * a.cos(), cy + rad * a.sin())
-                })
-                .collect();
-            painter.add(Shape::line(pts, stroke));
-        };
-        match self {
-            Icon::Power => {
-                line(&[(8.0, 1.5), (8.0, 7.5)]);
-                // From the upper left, round the bottom, to the upper right.
-                arc(8.0, 8.22, 5.5, 231.8, -51.8);
-            }
-            Icon::Sliders => {
-                for y in [4.0, 8.0, 12.0] {
-                    line(&[(2.0, y), (14.0, y)]);
-                }
-                for (x, y) in [(5.0, 4.0), (10.5, 8.0), (6.5, 12.0)] {
-                    painter.circle(at(x, y), 1.6 * k, bg, stroke);
-                }
-            }
-            Icon::Capture => {
-                painter.circle_stroke(at(8.0, 8.0), 3.5 * k, stroke);
-                line(&[(8.0, 1.5), (8.0, 4.5)]);
-                line(&[(8.0, 11.5), (8.0, 14.5)]);
-                line(&[(1.5, 8.0), (4.5, 8.0)]);
-                line(&[(11.5, 8.0), (14.5, 8.0)]);
-            }
-            Icon::Mouse { off } => {
-                painter.rect_stroke(
-                    Rect::from_min_max(at(4.5, 1.5), at(11.5, 14.5)),
-                    3.5 * k,
-                    stroke,
-                    StrokeKind::Middle,
-                );
-                line(&[(8.0, 4.5), (8.0, 7.0)]);
-                if off {
-                    line(&[(2.0, 2.0), (14.0, 14.0)]);
-                }
-            }
-            Icon::Sound { muted } => {
-                painter.add(Shape::closed_line(
-                    [
-                        (2.5, 6.0),
-                        (5.0, 6.0),
-                        (8.0, 3.5),
-                        (8.0, 12.5),
-                        (5.0, 10.0),
-                        (2.5, 10.0),
-                    ]
-                    .iter()
-                    .map(|&(x, y)| at(x, y))
-                    .collect(),
-                    stroke,
-                ));
-                if muted {
-                    line(&[(11.0, 6.0), (14.0, 10.0)]);
-                    line(&[(14.0, 6.0), (11.0, 10.0)]);
-                } else {
-                    arc(8.05, 8.0, 3.5, -45.6, 45.6);
-                    arc(8.02, 8.0, 6.0, -44.4, 44.4);
-                }
-            }
-            Icon::Gamepad => {
-                painter.rect_stroke(
-                    Rect::from_min_max(at(1.5, 4.5), at(14.5, 12.0)),
-                    3.5 * k,
-                    stroke,
-                    StrokeKind::Middle,
-                );
-                line(&[(5.0, 6.7), (5.0, 9.7)]);
-                line(&[(3.5, 8.2), (6.5, 8.2)]);
-                painter.circle_filled(at(10.5, 7.3), 0.7 * k, color);
-                painter.circle_filled(at(12.0, 9.1), 0.7 * k, color);
-            }
-            Icon::Fullscreen { exit } => {
-                if exit {
-                    line(&[(6.0, 2.0), (6.0, 6.0), (2.0, 6.0)]);
-                    line(&[(14.0, 6.0), (10.0, 6.0), (10.0, 2.0)]);
-                    line(&[(10.0, 14.0), (10.0, 10.0), (14.0, 10.0)]);
-                    line(&[(2.0, 10.0), (6.0, 10.0), (6.0, 14.0)]);
-                } else {
-                    line(&[(2.0, 6.0), (2.0, 2.0), (6.0, 2.0)]);
-                    line(&[(10.0, 2.0), (14.0, 2.0), (14.0, 6.0)]);
-                    line(&[(14.0, 10.0), (14.0, 14.0), (10.0, 14.0)]);
-                    line(&[(6.0, 14.0), (2.0, 14.0), (2.0, 10.0)]);
-                }
-            }
-            Icon::Bars => {
-                line(&[(3.0, 13.0), (3.0, 8.0)]);
-                line(&[(8.0, 13.0), (8.0, 3.0)]);
-                line(&[(13.0, 13.0), (13.0, 6.0)]);
-            }
-            Icon::ChevronUp => line(&[(4.0, 10.0), (8.0, 6.0), (12.0, 10.0)]),
         }
     }
 }

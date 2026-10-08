@@ -54,6 +54,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@cha/player": "workspace:*",
+        "@cha/ui-spec": "workspace:*",
         "@tanstack/vue-query": "^5.104.1",
         "lucide-vue-next": "^1.0.0",
         "pinia": "^4.0.3",
@@ -92,6 +93,10 @@
         "vite": "^8.3.2",
       },
     },
+    "web/packages/ui-spec": {
+      "name": "@cha/ui-spec",
+      "version": "0.0.0",
+    },
   },
   "packages": {
     "@babel/helper-string-parser": ["@babel/helper-string-parser@7.29.7", "", {}, "sha512-Pb5ijPrZ89GDH8223L4UP8i6QApWxs04RbPQJTeWDV0/keR2E36MeKnyr6LYmUUvqRRI+Iv87SuF1W6ErINzYw=="],
@@ -107,6 +112,8 @@
     "@cha/portal": ["@cha/portal@workspace:web/apps/portal"],
 
     "@cha/pyrowave-webgpu": ["@cha/pyrowave-webgpu@workspace:web/packages/pyrowave-webgpu"],
+
+    "@cha/ui-spec": ["@cha/ui-spec@workspace:web/packages/ui-spec"],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

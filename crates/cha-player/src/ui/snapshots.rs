@@ -6,7 +6,8 @@
 //!
 //! Every built-in theme in every variant gets `<theme>-<variant>-launcher.png`
 //! (hosts and apps), `-settings.png` (the same with Settings open), `-status.png` (error, info and busy lines)
-//! and the stats panel has its own test, `snapshot_stats_panel`. egui is
+//! and the stats panel has its own test, `snapshot_stats_panel`, the toolbar
+//! `snapshot_toolbar` and the spec's icons `snapshot_icons`. egui is
 //! drawn by `egui-wgpu` as in the app: a non-sRGB `Rgba8Unorm` target cleared
 //! with the canvas colour as written, at 1280x800 points and 2x.
 
@@ -802,5 +803,55 @@ fn snapshot_toolbar() {
             println!("{}", path.display());
         }
     }
+    std::fs::remove_dir_all(data).ok();
+}
+
+/// Every spec icon at 12, 16, 24 and 48 points, ink on the panel colour, in
+/// magenta dark. The 48 is there to see the shapes; the others are how they ship.
+#[test]
+#[ignore = "renders on the GPU into CHA_SNAPSHOT_DIR"]
+fn snapshot_icons() {
+    use crate::theme::icons::{self, Icon};
+    use egui::{Align2, FontId, Rect, Sense, pos2, vec2};
+
+    let dir = out_dir();
+    let data = std::env::temp_dir().join(format!("cha-player-snap-icons-{}", std::process::id()));
+    let mut themes = ThemeController::new(data.clone(), None);
+    let ctx = egui::Context::default();
+    let mut gpu = Offscreen::new();
+    let mut config = Config::default();
+    config.theme.theme = "cha-magenta".into();
+    config.theme.appearance = Appearance::Dark;
+    themes.sync(&ctx, &config.theme);
+
+    let rows = Icon::ALL.len().div_ceil(2);
+    let image = gpu.render(&ctx, themes.canvas(), |ui| {
+        let p = ui.palette();
+        let painter = ui.painter().clone();
+        for (n, icon) in Icon::ALL.iter().enumerate() {
+            let (col, row) = (n / rows, n % rows);
+            let origin = pos2(20.0 + col as f32 * 620.0, 16.0 + row as f32 * 52.0);
+            let cell = Rect::from_min_size(origin, vec2(600.0, 48.0));
+            painter.rect_filled(cell, 6.0, p.panel);
+            painter.text(
+                pos2(cell.left() + 10.0, cell.center().y),
+                Align2::LEFT_CENTER,
+                icon.id(),
+                FontId::monospace(12.0),
+                p.ink_3,
+            );
+            let mut x = cell.left() + 200.0;
+            for size in [12.0, 16.0, 24.0, 48.0] {
+                let r =
+                    Rect::from_min_size(pos2(x, cell.center().y - size / 2.0), vec2(size, size));
+                icons::paint(&painter, r, *icon, p.ink);
+                x += size + 28.0;
+            }
+        }
+        let _ = ui.allocate_exact_size(vec2(1.0, 1.0), Sense::hover());
+    });
+    let path = dir.join("icons-cha-magenta-dark.png");
+    write_png(&path, image.0, image.1, &image.2);
+    println!("{}", path.display());
     std::fs::remove_dir_all(data).ok();
 }

@@ -942,6 +942,7 @@ dependencies = [
  "cha-client-gamestream",
  "cha-client-portal",
  "cha-pyrowave-wgpu",
+ "cha-ui-spec",
  "cha-workspace-hack",
  "clap",
  "cpal",
@@ -1039,6 +1040,15 @@ dependencies = [
  "rustix 1.1.5",
  "wayland-client",
  "wayland-protocols",
+]
+
+[[package]]
+name = "cha-ui-spec"
+version = "0.1.0"
+dependencies = [
+ "cha-workspace-hack",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

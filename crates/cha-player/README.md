@@ -119,7 +119,7 @@ The player never runs this itself. The detector (`src/awdl.rs`) looks only at vi
 
 ## Themes
 
-The launcher, pairing and settings look like the portal. The colours are the portal's own: `themes/cha-magenta.json` (the default) and `themes/cha-jade.json` are generated from `web/apps/portal/src/themes/*.css` by `scripts/export-player-themes.ts` and compiled into the binary. After changing a portal theme, run `bun scripts/export-player-themes.ts` and commit the JSON; do not edit it by hand. Each file has the portal's colour roles (`canvas`, `panel`, `ink`, `accent`, `danger`, ...) in four variants: `dark`, `light`, and `dark-more` and `light-more` for more contrast.
+The launcher, pairing and settings look like the portal. The colours are the portal's own: `web/packages/ui-spec/themes/cha-magenta.json` (the default) and `cha-jade.json` are generated from `web/apps/portal/src/themes/*.css` by `scripts/export-player-themes.ts` and compiled into the binary by `crates/cha-ui-spec`. After changing a portal theme, run `bun scripts/export-player-themes.ts` and commit the JSON; do not edit it by hand. Each file has the portal's colour roles (`canvas`, `panel`, `ink`, `accent`, `danger`, ...) in four variants: `dark`, `light`, and `dark-more` and `light-more` for more contrast.
 
 Settings, Appearance picks the theme, Light or dark, Contrast and the UI size (egui's zoom factor, 75% to 200%, applied when you let go of the slider). The choices are saved in `config.json` under `theme`; a config without it uses Cha Magenta, System, System, 100%.
 
@@ -148,7 +148,7 @@ Put `*.json` files in `~/Library/Application Support/Cha Player/themes` (Setting
 }
 ```
 
-- Only `id` is required. Colours are `#rgb`, `#rrggbb` or `#rrggbbaa`. The roles are the ones in `themes/cha-magenta.json`; a misspelt role is an error.
+- Only `id` is required. Colours are `#rgb`, `#rrggbb` or `#rrggbbaa`. The roles are the ones in `web/packages/ui-spec/themes/cha-magenta.json`; a misspelt role is an error.
 - Changes to `dark` also apply to `dark-more` (and `light` to `light-more`) unless that variant sets the role itself.
 - `metrics` keys: `radius_small`, `radius_medium`, `radius_large`, `item_spacing_x`, `item_spacing_y`, `button_padding_x`, `button_padding_y`, `window_margin`, `control_height`, `stroke_width`, `stroke_width_strong`, `font_heading`, `font_body`, `font_button`, `font_small`, `font_monospace` (points).
 - Fonts are SF Pro and SF Mono from `/System/Library/Fonts` unless a theme names a `.ttf`/`.otf` file, absolute or relative to the theme file. Font files are not bundled. A file that is missing or cannot be read is skipped with a message in Settings and egui's built-in font is used instead.
@@ -168,7 +168,7 @@ All of it lives in `src/theme/`: `palette.rs` (roles), `metrics.rs`, `fonts.rs`,
 | `src/health.rs` | the stream's health grade, ported from the browser player |
 | `src/overlay_prefs.rs` | the stats panel's saved choices |
 | `src/theme/` | themes: palettes, user themes, fonts, the egui style (see Themes) |
-| `themes/` | built-in palettes, generated from the portal's CSS |
+| `web/packages/ui-spec/themes/` | built-in palettes, generated from the portal's CSS (compiled in by `crates/cha-ui-spec`) |
 | `src/render/` | `wgpu` device and surface, the YCbCr video pipeline (aspect-fit, WGSL), egui layer |
 | `src/video/` | `VideoDecoder` trait; Annex-B to AVCC; the VideoToolbox decoder; `pyrowave.rs`, the PyroWave presenter (decode on the window's `wgpu` device, via `cha-pyrowave-wgpu`) |
 | `src/present/` | `FrameImporter` trait; Metal zero-copy import |

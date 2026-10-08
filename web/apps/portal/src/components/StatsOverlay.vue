@@ -2,6 +2,7 @@
 import type { HealthAssessment, HealthIssue, ProbeResult, StatsSnapshot } from "@cha/player";
 import { computed, onBeforeUnmount, ref, useId, useTemplateRef, watch } from "vue";
 
+import Icon from "./Icon.vue";
 import { clampPos, codecTag, cornerByArrow, nearestCorner, num, OPACITY_MIN, type Corner, type OverlayPrefs, type SectionId } from "../statsOverlay";
 
 // The session's stats panel: a header (grade, move, fold, close) over either one compact line or
@@ -303,10 +304,7 @@ const BTN =
         :title="prefs.compact ? 'Full view' : 'Compact view'"
         @click="patch({ compact: !prefs.compact })"
       >
-        <svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path v-if="prefs.compact" d="M3 6V3h3M13 6V3h-3M3 10v3h3M13 10v3h-3" />
-          <path v-else d="M6 3v3H3M10 3v3h3M6 13v-3H3M10 13v-3h3" />
-        </svg>
+        <Icon :name="prefs.compact ? 'stats-full' : 'stats-compact'" class="size-3" />
       </button>
       <button
         type="button"
@@ -317,9 +315,7 @@ const BTN =
         :title="prefs.collapsed ? 'Expand' : 'Collapse to the header'"
         @click="patch({ collapsed: !prefs.collapsed })"
       >
-        <svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path :d="prefs.collapsed ? 'M4 6l4 4 4-4' : 'M4 10l4-4 4 4'" />
-        </svg>
+        <Icon :name="prefs.collapsed ? 'panel-expand' : 'panel-collapse'" class="size-3" />
       </button>
       <button
         type="button"
@@ -331,16 +327,10 @@ const BTN =
         title="Panel settings"
         @click="menuOpen = !menuOpen"
       >
-        <svg viewBox="0 0 16 16" class="size-3" fill="currentColor" aria-hidden="true">
-          <circle cx="8" cy="3" r="1.3" /><circle cx="8" cy="8" r="1.3" /><circle cx="8" cy="13" r="1.3" />
-        </svg>
+        <Icon name="settings-dots" class="size-3" />
       </button>
       <button type="button" :class="BTN" aria-label="Hide the stats panel" title="Hide (click the grade chip or the toolbar's Stats button to bring it back)" @click="patch({ open: false })">
-        <svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
-          <path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z" />
-          <circle cx="8" cy="8" r="1.6" />
-          <path d="M3 13L13 3" />
-        </svg>
+        <Icon name="eye-off" class="size-3" />
       </button>
     </div>
 
@@ -380,10 +370,7 @@ const BTN =
             :title="copiedId === topIssue.id ? 'Copied' : 'Copy this warning and the stream numbers'"
             @click="copyIssue(topIssue)"
           >
-            <svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path v-if="copiedId === topIssue.id" d="M3 8.5l3.2 3L13 4.5" />
-              <template v-else><rect x="5.5" y="5.5" width="7" height="8" rx="1.2" /><path d="M10.5 3.5v-.3a.7.7 0 0 0-.7-.7H4.2a.7.7 0 0 0-.7.7v7.1c0 .4.3.7.7.7h.3" /></template>
-            </svg>
+            <Icon :name="copiedId === topIssue.id ? 'check' : 'copy'" class="size-3" />
           </button>
         </div>
       </template>
@@ -410,10 +397,7 @@ const BTN =
             :title="copiedId === issue.id ? 'Copied' : 'Copy this warning and the stream numbers'"
             @click="copyIssue(issue)"
           >
-            <svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path v-if="copiedId === issue.id" d="M3 8.5l3.2 3L13 4.5" />
-              <template v-else><rect x="5.5" y="5.5" width="7" height="8" rx="1.2" /><path d="M10.5 3.5v-.3a.7.7 0 0 0-.7-.7H4.2a.7.7 0 0 0-.7.7v7.1c0 .4.3.7.7.7h.3" /></template>
-            </svg>
+            <Icon :name="copiedId === issue.id ? 'check' : 'copy'" class="size-3" />
           </button></div>
             <div class="text-ink-2">{{ issue.hint }}</div>
           </div>
@@ -422,7 +406,7 @@ const BTN =
 
         <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-accent uppercase">
           <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('stream')" @click="toggleSection('stream')">
-            <svg viewBox="0 0 16 16" class="size-2.5 transition-transform" :class="isFolded('stream') && '-rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+            <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded('stream') && '-rotate-90'" />
             Stream
             <span v-if="isFolded('stream')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.stream.cls || 'text-ink'">{{ summary.stream.text }}</span>
           </button>
@@ -436,7 +420,7 @@ const BTN =
 
         <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-1 uppercase">
           <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('latency')" @click="toggleSection('latency')">
-            <svg viewBox="0 0 16 16" class="size-2.5 transition-transform" :class="isFolded('latency') && '-rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+            <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded('latency') && '-rotate-90'" />
             Latency
             <span v-if="isFolded('latency')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.latency.cls || 'text-ink'">{{ summary.latency.text }}</span>
           </button>
@@ -450,7 +434,7 @@ const BTN =
 
         <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-2 uppercase">
           <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('network')" @click="toggleSection('network')">
-            <svg viewBox="0 0 16 16" class="size-2.5 transition-transform" :class="isFolded('network') && '-rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+            <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded('network') && '-rotate-90'" />
             Network
             <span v-if="isFolded('network')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.network.cls || 'text-ink'">{{ summary.network.text }}</span>
           </button>
@@ -464,7 +448,7 @@ const BTN =
         <template v-if="node">
           <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-3 uppercase">
           <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('node')" @click="toggleSection('node')">
-            <svg viewBox="0 0 16 16" class="size-2.5 transition-transform" :class="isFolded('node') && '-rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+            <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded('node') && '-rotate-90'" />
             Node
             <span v-if="isFolded('node')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.node.cls || 'text-ink'">{{ summary.node.text }}</span>
           </button>

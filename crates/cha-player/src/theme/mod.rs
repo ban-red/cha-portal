@@ -2,7 +2,7 @@
 //!
 //! Four layers, each in its own file:
 //!
-//! 1. **Generated palettes** (`themes/*.json`, from the portal's CSS by
+//! 1. **Generated palettes** (`web/packages/ui-spec/themes/*.json`, from the portal's CSS by
 //!    `scripts/export-player-themes.ts`) hold the portal's colour roles in
 //!    four variants: dark, light, and both again with more contrast. They are
 //!    compiled in by [`registry`].
@@ -21,6 +21,7 @@
 
 mod apply;
 mod fonts;
+pub mod icons;
 mod metrics;
 mod overlay;
 mod palette;

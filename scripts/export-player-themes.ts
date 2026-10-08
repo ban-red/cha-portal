@@ -1,6 +1,6 @@
 // Turns the portal's theme CSS (web/apps/portal/src/themes/<id>.css) into the JSON the native
-// player embeds (crates/cha-player/themes/<id>.json): every role, fully resolved, as sRGB hex
-// for each of dark, light, dark-more and light-more.
+// player embeds, through crates/cha-ui-spec (web/packages/ui-spec/themes/<id>.json): every role,
+// fully resolved, as sRGB hex for each of dark, light, dark-more and light-more.
 //
 //   bun scripts/export-player-themes.ts           write the files
 //   bun scripts/export-player-themes.ts --check   exit 1 if any file would change; writes nothing
@@ -11,7 +11,7 @@ import { ROLES, THEMES } from "../web/apps/portal/src/themes/index";
 
 const ROOT = join(import.meta.dir, "..");
 const SRC = "web/apps/portal/src/themes";
-const OUT = join(ROOT, "crates/cha-player/themes");
+const OUT = join(ROOT, "web/packages/ui-spec/themes");
 const check = process.argv.includes("--check");
 
 const hex2 = (x: number) =>
@@ -62,11 +62,11 @@ for (const theme of THEMES) {
   const file = join(OUT, `${theme.id}.json`);
   const current = existsSync(file) ? readFileSync(file, "utf8") : null;
   if (current === json) continue;
-  if (check) stale.push(`crates/cha-player/themes/${theme.id}.json`);
+  if (check) stale.push(`web/packages/ui-spec/themes/${theme.id}.json`);
   else {
     mkdirSync(OUT, { recursive: true });
     writeFileSync(file, json);
-    console.log(`wrote crates/cha-player/themes/${theme.id}.json`);
+    console.log(`wrote web/packages/ui-spec/themes/${theme.id}.json`);
   }
 }
 
