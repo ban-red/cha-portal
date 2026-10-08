@@ -135,6 +135,22 @@ A node pulls the images a launch needs when it needs them; there is nothing to i
 
 The streamer works the same way: `CHA_STREAMER_IMAGE` first, then `ghcr.io/ban-red/cha-streamer:<version>` (unless `CHA_STREAMER_IMAGE` already names a registry), settled when the agent starts. The agent reports the images it holds to the portal, which prefers a node that already has the one a launch needs. Pulls are logged with the image used, how long they took and their size. `CHA_PLACEMENT=manual` takes a node out of that automatic choice.
 
+### Checking an image
+
+Before adding an image to a catalog, or after building one, ask the node whether it will run as an environment:
+
+```bash
+docker compose -f deploy/node/compose.yaml run --rm agent --check-image cha/env-chrome:dev --profile browser
+```
+
+`--profile` is the security profile the app would run under (`standard`, the default, `browser` or `steam`; [Node settings](#node-settings)). An image that isn't on the node is pulled if its name includes a registry; a bare name is never pulled. The check prints one line per test (`ok`, `warn` or `FAIL`, the test, why) and exits 0 when nothing failed, 1 when something did:
+
+- From the image's configuration: it is `linux/amd64` and has an `ENTRYPOINT` or `CMD` (both `FAIL`); `HOME=/home/cha`, `PULSE_SERVER=unix:/run/cha/pulse/native` (no sound without it) and `SDL_JOYSTICK_DISABLE_UDEV=1` (hot-plugged gamepads unseen without it) are set (`warn`); and, as `info`, whether it starts through `cha-run` and how big it is.
+- By running it as a launch does (the same user `1000:1000`, capabilities dropped, no privilege gain, seccomp, AppArmor, shared memory and init for the profile, but no GPU): `sh` as that user finds a writable `$HOME` (the one check that replaces the image's entrypoint); the real entrypoint is still running after 3 seconds with no compositor, which is how an app that waits for one behaves; and, beside a real `cha-streamer` on its CPU device, the app connects to the compositor within 30 seconds. An app that needs a GPU (Steam's gamescope) can't be judged that way and gets a `warn` there instead.
+- With `--profile steam`, a node without the `cha-sandbox` AppArmor profile loaded gets a `warn` (`--doctor` says how to load it), and the rest runs as `browser`.
+
+The containers it starts are labelled `sh.cha.image-check`, kept apart from the agent's, and removed when it ends, also on an error or Ctrl-C. Needs the Docker socket, like the agent, and the streamer image.
+
 ## Updating nodes from the portal
 
 On Admin → Nodes, a node whose agent is older than the portal shows "Update available: vX → vY" and an Update button. The button needs an agent from 0.3 or later, running a published agent image (`ghcr.io/ban-red/cha-node:<version>`). A node built from source (`cha-node:dev`) can't be updated this way, and an older agent shows "its agent predates updates from the portal". See [ADR 0018](../docs/adr/0018-node-agents-updated-from-the-portal.md).

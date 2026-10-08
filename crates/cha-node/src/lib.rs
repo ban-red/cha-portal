@@ -18,6 +18,7 @@ pub mod envusage;
 #[cfg(feature = "gamestream")]
 pub mod gamestream;
 pub mod hostfiles;
+pub mod image_check;
 pub mod inventory;
 pub mod moonlight;
 pub mod storage;

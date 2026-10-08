@@ -56,6 +56,15 @@ struct Args {
     /// can't, and exit (non-zero if something must be fixed).
     #[arg(long)]
     doctor: bool,
+    /// Check that an image will run as a Cha environment on this node, say
+    /// what is wrong with it, and exit (non-zero if a required check fails).
+    /// A registry-named image that isn't here is pulled; a bare name never is.
+    #[arg(long, value_name = "IMAGE")]
+    check_image: Option<String>,
+    /// The security profile `--check-image` runs the image under.
+    #[arg(long, requires = "check_image", default_value = "standard",
+          value_parser = ["standard", "browser", "steam"])]
+    profile: String,
     /// Update this agent to a release (`0.2.1`) as the portal's Update button
     /// does, and exit: run it in the agent's container (`docker exec
     /// cha-node-agent-1 cha-node --update-to 0.2.1`). Pulls the images
@@ -208,6 +217,11 @@ async fn main() -> Result<()> {
     }
     init_tls();
     let docker = Docker::new(&args.docker_socket);
+    if let Some(image) = &args.check_image {
+        let profile = cha_node::image_check::parse_profile(&args.profile)?;
+        let ok = cha_node::image_check::run(&docker, &args.streamer_image, image, profile).await?;
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     if let (Some(id), Some(image)) = (&args.replace_agent, &args.image) {
         let timeout = std::time::Duration::from_secs(args.health_timeout.max(1));
         let result =

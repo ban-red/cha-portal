@@ -93,14 +93,14 @@ const LABEL_GATEWAY: &str = "sh.cha.gateway";
 pub const APP_UID: u32 = 1000;
 /// Where a gateway container sees the node's Moonlight identity.
 const GATEWAY_IDENTITY_DIR: &str = "/identity";
-const RUNTIME_DIR: &str = "/run/cha";
+pub(crate) const RUNTIME_DIR: &str = "/run/cha";
 /// Where the streamer puts gamepad nodes (`dev/`) and udev entries (`udev/`).
 const INPUT_DIR: &str = "/run/cha-input";
 const BROWSER_SECCOMP: &str = include_str!("../profiles/seccomp-browser.json");
 /// The AppArmor profile for the `steam` security profile, which the owner
 /// loads on the node (`deploy/node/host/apparmor/cha-sandbox`).
 pub const SANDBOX_APPARMOR: &str = "cha-sandbox";
-const APP_HOME: &str = "/home/cha";
+pub(crate) const APP_HOME: &str = "/home/cha";
 /// Copying a home from its old volume is as long as the home is big.
 const COPY_TIMEOUT: Duration = Duration::from_secs(3600);
 /// Looking at a shared directory on a NAS: a hard NFS mount makes a system
@@ -337,8 +337,52 @@ pub fn streamer_candidates(configured: &str, version: &str) -> Vec<String> {
 /// (`.github/workflows/publish.yml`).
 const PUBLISHED_STREAMER: &str = "ghcr.io/ban-red/cha-streamer";
 
+/// Who every app runs as (`uid:gid`).
+pub(crate) fn app_user() -> String {
+    format!("{APP_UID}:{APP_UID}")
+}
+
+/// The environment variables every app gets from the agent, before the ones
+/// its storage adds.
+pub(crate) fn app_env(width: u32, height: u32, fps: u32) -> Vec<String> {
+    vec![
+        format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"),
+        "WAYLAND_DISPLAY=wayland-0".to_string(),
+        format!("CHA_WIDTH={width}"),
+        format!("CHA_HEIGHT={height}"),
+        format!("CHA_REFRESH={fps}"),
+    ]
+}
+
+/// The app container's confinement and limits for `security`: capabilities,
+/// privilege gain, seccomp, AppArmor, descriptors, shared memory, init. What
+/// the launch and `--check-image` both run an app under.
+pub(crate) fn app_host_config(security: SecurityProfile, shm_mb: u32) -> Value {
+    let mut options = vec!["no-new-privileges".to_string()];
+    if matches!(security, SecurityProfile::Browser | SecurityProfile::Steam) {
+        options.push(format!("seccomp={}", compact(BROWSER_SECCOMP)));
+    }
+    if security == SecurityProfile::Steam {
+        options.push(format!("apparmor={SANDBOX_APPARMOR}"));
+    }
+    // Proton's esync wants many descriptors.
+    let ulimits = if security == SecurityProfile::Steam {
+        json!([{ "Name": "nofile", "Soft": 524288, "Hard": 524288 }])
+    } else {
+        json!([])
+    };
+    json!({
+        "Ulimits": ulimits,
+        "CapDrop": ["ALL"],
+        "SecurityOpt": options,
+        "ShmSize": u64::from(shm_mb) * 1024 * 1024,
+        "RestartPolicy": { "Name": "no" },
+        "Init": true,
+    })
+}
+
 /// The release this agent is, for the `{version}` in image names.
-const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The first of `candidates` the engine has, else the first that names a
 /// registry, pulled (`on_progress` hears how it goes, starting with nothing
@@ -2019,16 +2063,6 @@ impl DockerRuntime {
     /// ([`Self::streamer_hidraw`]): each is mounted from the input volume and
     /// allowed in the app's device cgroup.
     fn app_config(&self, spec: &EnvironmentSpec, port: u16, hidraw: &[Hidraw]) -> Value {
-        let mut security = vec!["no-new-privileges".to_string()];
-        if matches!(
-            spec.security,
-            SecurityProfile::Browser | SecurityProfile::Steam
-        ) {
-            security.push(format!("seccomp={}", compact(BROWSER_SECCOMP)));
-        }
-        if spec.security == SecurityProfile::Steam {
-            security.push(format!("apparmor={SANDBOX_APPARMOR}"));
-        }
         let card_gid = steam_primary_node(spec)
             .and_then(|card| render_gid(&card).or_else(|| self.probes.known_gid(&card)));
         let mut groups: Vec<String> = Vec::new();
@@ -2059,19 +2093,7 @@ impl DockerRuntime {
                 "BindOptions": { "CreateMountpoint": false },
             }));
         }
-        // Proton's esync wants many descriptors.
-        let ulimits = if spec.security == SecurityProfile::Steam {
-            json!([{ "Name": "nofile", "Soft": 524288, "Hard": 524288 }])
-        } else {
-            json!([])
-        };
-        let mut env = vec![
-            format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"),
-            "WAYLAND_DISPLAY=wayland-0".to_string(),
-            format!("CHA_WIDTH={}", spec.width),
-            format!("CHA_HEIGHT={}", spec.height),
-            format!("CHA_REFRESH={}", spec.fps),
-        ];
+        let mut env = app_env(spec.width, spec.height, spec.fps);
         // Where the app finds what its template shares, when it has any.
         if spec.storage.as_ref().is_some_and(|s| s.shared.is_some()) {
             env.push(format!(
@@ -2085,24 +2107,18 @@ impl DockerRuntime {
             let targets: Vec<&str> = overlays.iter().map(|o| o.target.as_str()).collect();
             env.push(format!("CHA_PER_USER_DIRS={}", targets.join(":")));
         }
+        let mut host = app_host_config(spec.security, spec.shm_mb);
+        host["Mounts"] = mounts;
+        // Input devices: the gamepads' nodes, the only ones it has.
+        host["DeviceCgroupRules"] = self.device_cgroup_rules(hidraw);
+        host["DeviceRequests"] = self.gpu(spec);
+        host["GroupAdd"] = json!(groups);
         let mut config = json!({
             "Image": spec.image,
-            "User": format!("{APP_UID}:{APP_UID}"),
+            "User": app_user(),
             "Env": env,
             "Labels": self.app_labels(spec, port),
-            "HostConfig": {
-                "Mounts": mounts,
-                "Ulimits": ulimits,
-                // Input devices: the gamepads' nodes, the only ones it has.
-                "DeviceCgroupRules": self.device_cgroup_rules(hidraw),
-                "DeviceRequests": self.gpu(spec),
-                "GroupAdd": groups,
-                "CapDrop": ["ALL"],
-                "SecurityOpt": security,
-                "ShmSize": u64::from(spec.shm_mb) * 1024 * 1024,
-                "RestartPolicy": { "Name": "no" },
-                "Init": true,
-            },
+            "HostConfig": host,
         });
         // A render node, and for Steam its primary node too; the app's input
         // devices come through the cgroup rules and the volumes.

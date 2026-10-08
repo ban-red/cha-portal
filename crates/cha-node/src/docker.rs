@@ -371,6 +371,23 @@ impl Docker {
         }
     }
 
+    /// The image's configuration (`GET /images/{name}/json`), `None` when the
+    /// engine doesn't have it.
+    pub async fn inspect_image(&self, image: &str) -> Result<Option<Value>> {
+        let (status, bytes) = self
+            .send(
+                Method::GET,
+                &format!("/images/{}/json", encode(image)),
+                None,
+            )
+            .await?;
+        match status {
+            s if s.is_success() => Ok(Some(serde_json::from_slice(&bytes)?)),
+            StatusCode::NOT_FOUND => Ok(None),
+            s => bail!("inspecting image {image}: {s}: {}", engine_message(&bytes)),
+        }
+    }
+
     /// The `repo:tag` names the engine holds (`GET /images/json`), sorted,
     /// at most [`IMAGE_LIST_LIMIT`]; untagged images have no name to list.
     pub async fn images(&self) -> Result<Vec<String>> {
