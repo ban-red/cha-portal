@@ -7,10 +7,23 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
-use egui::{FontData, FontDefinitions, FontFamily};
+use egui::epaint::text::VariationCoords;
+use egui::{FontData, FontDefinitions, FontFamily, FontTweak};
 
 pub const SYSTEM_SANS: &str = "/System/Library/Fonts/SFNS.ttf";
 pub const SYSTEM_MONO: &str = "/System/Library/Fonts/SFNSMono.ttf";
+
+/// A static bold face to use when SFNS has no weight axis: Helvetica Neue
+/// Bold, the second face of the collection.
+pub const FALLBACK_BOLD: (&str, u32) = ("/System/Library/Fonts/HelveticaNeue.ttc", 1);
+/// Semibold, the weight the system UI gives headings and strong text.
+pub const BOLD_WEIGHT: f32 = 600.0;
+
+/// The family headings and strong text use. Always defined, so asking for it
+/// never panics; it holds the regular face when no bold one could be found.
+pub fn bold_family() -> FontFamily {
+    FontFamily::Name("bold".into())
+}
 
 /// Largest font file read (a CJK family is far less than this).
 const MAX_FONT_BYTES: u64 = 64 << 20;
@@ -20,6 +33,10 @@ const MAX_FONT_BYTES: u64 = 64 << 20;
 pub struct FontChoice {
     pub proportional: Option<PathBuf>,
     pub monospace: Option<PathBuf>,
+    /// Headings and strong text. `None`: the system's semibold (or, when the
+    /// theme names its own regular font, that font, in semibold if it is a
+    /// variable font).
+    pub bold: Option<PathBuf>,
 }
 
 /// Font definitions to give egui, and what went wrong on the way.
@@ -70,10 +87,81 @@ pub fn setup(choice: &FontChoice) -> FontSetup {
             }
         }
     }
+    setup_bold(choice, &mut definitions, &mut warnings);
     FontSetup {
         definitions,
         warnings,
     }
+}
+
+/// Defines [`bold_family`]: the bold face (when there is one) in front of
+/// everything the proportional family has.
+fn setup_bold(choice: &FontChoice, definitions: &mut FontDefinitions, warnings: &mut Vec<String>) {
+    let mut bold = None;
+    if let Some(path) = &choice.bold {
+        match load(path) {
+            Ok(data) => bold = Some(semibold(data)),
+            Err(e) => {
+                let message = format!("font {}: {e}; using the regular font", path.display());
+                tracing::warn!("{message}");
+                warnings.push(message);
+            }
+        }
+    }
+    if bold.is_none() && choice.bold.is_none() {
+        bold = match &choice.proportional {
+            // The theme's own font, in semibold if it can be.
+            Some(path) => load(path).ok().map(semibold),
+            None => system_bold(),
+        };
+    }
+    let mut family = Vec::new();
+    if let Some(data) = bold {
+        definitions
+            .font_data
+            .insert("theme-bold".to_owned(), std::sync::Arc::new(data));
+        family.push("theme-bold".to_owned());
+    }
+    family.extend(
+        definitions
+            .families
+            .get(&FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    definitions.families.insert(bold_family(), family);
+}
+
+/// SF Pro at semibold: SFNS's weight axis, else a static bold face.
+fn system_bold() -> Option<FontData> {
+    if let Ok(data) = load(Path::new(SYSTEM_SANS)) {
+        let weight = has_weight(&data);
+        if weight {
+            return Some(semibold(data));
+        }
+    }
+    let (path, index) = FALLBACK_BOLD;
+    let mut data = load(Path::new(path)).ok()?;
+    data.index = index;
+    check_parses(&data).ok()?;
+    Some(data)
+}
+
+fn has_weight(data: &FontData) -> bool {
+    data.variation_axes()
+        .iter()
+        .any(|a| a.tag.as_ref() == b"wght" && a.range.contains(BOLD_WEIGHT))
+}
+
+/// `data` at the semibold weight if it has a weight axis; as it is otherwise.
+fn semibold(data: FontData) -> FontData {
+    if !has_weight(&data) {
+        return data;
+    }
+    data.tweak(FontTweak {
+        coords: VariationCoords::new([(b"wght", BOLD_WEIGHT)]),
+        ..FontTweak::default()
+    })
 }
 
 fn load(path: &Path) -> Result<FontData, String> {
@@ -145,12 +233,67 @@ mod tests {
             setup.definitions.families[&FontFamily::Proportional][0],
             "theme-proportional"
         );
+        assert_eq!(
+            setup.definitions.families[&bold_family()][0],
+            "theme-bold",
+            "a bold face from the system"
+        );
         // And egui can lay text out with them.
         let ctx = egui::Context::default();
         ctx.set_fonts(setup.definitions);
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.label("Cha Player 0123");
             ui.monospace("0123");
+            ui.label(egui::RichText::new("Heading").family(bold_family()));
+        });
+    }
+
+    #[test]
+    fn sf_pro_bold_is_the_variable_font_at_semibold() {
+        if !Path::new(SYSTEM_SANS).exists() {
+            return;
+        }
+        let setup = setup(&FontChoice::default());
+        let bold = &setup.definitions.font_data["theme-bold"];
+        let axes = bold.variation_axes();
+        let wght = axes.iter().find(|a| a.tag.as_ref() == b"wght");
+        println!("SFNS wght axis: {:?}", wght.map(|a| (a.range, a.default)));
+        match wght {
+            Some(axis) => {
+                assert!(axis.range.contains(BOLD_WEIGHT));
+                assert_eq!(
+                    bold.tweak.coords.as_ref().first().map(|(_, v)| *v),
+                    Some(BOLD_WEIGHT)
+                );
+            }
+            // No weight axis: the static bold face stands in.
+            None => assert_eq!(bold.index, FALLBACK_BOLD.1),
+        }
+    }
+
+    #[test]
+    fn the_static_bold_fallback_loads() {
+        let (path, index) = FALLBACK_BOLD;
+        if !Path::new(path).exists() {
+            return;
+        }
+        let mut data = load(Path::new(path)).unwrap();
+        data.index = index;
+        check_parses(&data).unwrap();
+    }
+
+    #[test]
+    fn the_bold_family_exists_even_when_every_font_is_missing() {
+        let setup = setup(&FontChoice {
+            proportional: Some(PathBuf::from("/nonexistent/a.ttf")),
+            monospace: None,
+            bold: Some(PathBuf::from("/nonexistent/b.ttf")),
+        });
+        assert!(setup.warnings.iter().any(|w| w.contains("b.ttf")));
+        let ctx = egui::Context::default();
+        ctx.set_fonts(setup.definitions);
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.label(egui::RichText::new("Heading").family(bold_family()));
         });
     }
 
@@ -165,6 +308,7 @@ mod tests {
             let setup = setup(&FontChoice {
                 proportional: Some(file.clone()),
                 monospace: None,
+                bold: None,
             });
             assert!(
                 setup

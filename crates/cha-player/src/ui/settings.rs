@@ -3,8 +3,9 @@
 use cha_client::Codec;
 
 use crate::config::Config;
+use crate::theme::follow::{describe, origin_label};
 use crate::theme::widgets::{Status, section_heading, status_text};
-use crate::theme::{Appearance, Contrast, Theme, ThemeController, ThemeExt, Variant};
+use crate::theme::{Appearance, Contrast, Theme, ThemeController, ThemeExt, ThemeSource, Variant};
 
 const RESOLUTIONS: [(u32, u32, &str); 5] = [
     (1280, 720, "1280 × 720"),
@@ -42,8 +43,14 @@ pub struct Outcome {
     pub open_themes_folder: bool,
 }
 
-/// Draws the settings.
-pub fn show(ui: &mut egui::Ui, config: &mut Config, themes: &ThemeController) -> Outcome {
+/// Draws the settings. `portals` are the origins of the portals this player
+/// is signed in to, any of which can be followed for the look.
+pub fn show(
+    ui: &mut egui::Ui,
+    config: &mut Config,
+    themes: &ThemeController,
+    portals: &[String],
+) -> Outcome {
     let before = config.clone();
     let mut outcome = Outcome::default();
 
@@ -124,7 +131,7 @@ pub fn show(ui: &mut egui::Ui, config: &mut Config, themes: &ThemeController) ->
     ui.add_space(10.0);
     ui.separator();
     section_heading(ui, "Appearance");
-    appearance(ui, config, themes, &mut outcome);
+    appearance(ui, config, themes, portals, &mut outcome);
 
     outcome.changed = *config != before;
     outcome
@@ -147,32 +154,91 @@ fn swatches(ui: &mut egui::Ui, theme: &Theme, variant: Variant) {
     }
 }
 
+/// The theme's display name, or its id when this player doesn't have it.
+fn theme_name(themes: &ThemeController, id: &str) -> String {
+    themes
+        .themes()
+        .iter()
+        .find(|t| t.id == id)
+        .map_or_else(|| id.to_string(), |t| t.name.clone())
+}
+
 fn appearance(
     ui: &mut egui::Ui,
     config: &mut Config,
     themes: &ThemeController,
+    portals: &[String],
     outcome: &mut Outcome,
 ) {
     let prefs = &mut config.theme;
     let variant = themes.variant();
+    let following = prefs.following().map(str::to_string);
+    // A followed portal stays listed while it is signed in.
+    let mut choices: Vec<&str> = portals.iter().map(String::as_str).collect();
+    if let Some(origin) = following.as_deref()
+        && !choices.contains(&origin)
+    {
+        choices.push(origin);
+    }
+    if !choices.is_empty() {
+        egui::Grid::new("appearance-source")
+            .num_columns(2)
+            .spacing([16.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Look");
+                ui.vertical(|ui| {
+                    for origin in &choices {
+                        let selected = following.as_deref() == Some(*origin);
+                        ui.horizontal(|ui| {
+                            let label = format!("Follow {}", origin_label(origin));
+                            if ui.radio(selected, label).clicked() && !selected {
+                                prefs.follow(origin);
+                            }
+                            // What that portal has chosen, when we know.
+                            let pick = match &prefs.portal_look {
+                                Some(c) if c.origin == *origin => {
+                                    describe(&c.look, &theme_name(themes, &c.look.theme))
+                                }
+                                _ if selected => "waiting for the portal".to_string(),
+                                _ => String::new(),
+                            };
+                            if !pick.is_empty() {
+                                ui.weak(pick);
+                            }
+                        });
+                    }
+                    let local = !matches!(prefs.source, Some(ThemeSource::Portal { .. }));
+                    if ui.radio(local, "This Mac only").clicked() && !local {
+                        let look = prefs.look();
+                        prefs.set_local(look);
+                    }
+                });
+                ui.end_row();
+            });
+        ui.add_space(4.0);
+    }
+
+    // What the controls show, and edit: the followed portal's look, or ours.
+    let shown = prefs.look();
+    let mut look = shown.clone();
     egui::Grid::new("appearance")
         .num_columns(2)
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
             ui.label("Theme");
             ui.horizontal(|ui| {
-                let current = themes.themes().iter().find(|t| t.id == prefs.theme);
+                let current = themes.themes().iter().find(|t| t.id == look.theme);
                 egui::ComboBox::from_id_salt("theme")
-                    .selected_text(current.map_or(prefs.theme.as_str(), |t| t.name.as_str()))
+                    .selected_text(current.map_or(look.theme.as_str(), |t| t.name.as_str()))
                     .show_ui(ui, |ui| {
                         for theme in themes.themes() {
                             ui.horizontal(|ui| {
                                 swatches(ui, theme, variant);
                                 if ui
-                                    .selectable_label(prefs.theme == theme.id, &theme.name)
+                                    .selectable_label(look.theme == theme.id, &theme.name)
                                     .clicked()
                                 {
-                                    prefs.theme = theme.id.clone();
+                                    look.theme = theme.id.clone();
                                 }
                                 if !theme.builtin {
                                     ui.weak("yours");
@@ -188,17 +254,17 @@ fn appearance(
 
             ui.label("Light or dark");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut prefs.appearance, Appearance::System, "System");
-                ui.selectable_value(&mut prefs.appearance, Appearance::Dark, "Dark");
-                ui.selectable_value(&mut prefs.appearance, Appearance::Light, "Light");
+                ui.selectable_value(&mut look.appearance, Appearance::System, "System");
+                ui.selectable_value(&mut look.appearance, Appearance::Dark, "Dark");
+                ui.selectable_value(&mut look.appearance, Appearance::Light, "Light");
             });
             ui.end_row();
 
             ui.label("Contrast");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut prefs.contrast, Contrast::System, "System");
-                ui.selectable_value(&mut prefs.contrast, Contrast::Standard, "Standard");
-                ui.selectable_value(&mut prefs.contrast, Contrast::More, "More");
+                ui.selectable_value(&mut look.contrast, Contrast::System, "System");
+                ui.selectable_value(&mut look.contrast, Contrast::Standard, "Standard");
+                ui.selectable_value(&mut look.contrast, Contrast::More, "More");
             });
             ui.end_row();
 
@@ -221,6 +287,20 @@ fn appearance(
             }
             ui.end_row();
         });
+    // Changing any of the three leaves the portal: the look is this Mac's now.
+    if look != shown {
+        prefs.set_local(look);
+    }
+    if let Some(origin) = prefs.following() {
+        let note = format!(
+            "Following {}. Changing the theme, light or dark or contrast switches to This Mac only.",
+            origin_label(origin)
+        );
+        ui.add_space(2.0);
+        ui.add(
+            egui::Label::new(egui::RichText::new(note).small().color(ui.palette().ink_3)).wrap(),
+        );
+    }
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {

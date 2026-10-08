@@ -2457,7 +2457,8 @@ async fn a_device_token_opens_the_players_routes_and_nothing_else() {
             "/api/devices/codes/BCDF-GHJK/approve",
             Some(json!({})),
         ),
-        ("GET", "/api/me/prefs", None),
+        // (`GET /api/me/prefs` takes a device token; only `PUT` is refused.)
+        ("PUT", "/api/me/prefs", Some(json!({ "prefs": {} }))),
         (
             "PUT",
             "/api/apps/settings/chrome",
@@ -3869,4 +3870,49 @@ async fn viewer_and_controller_guests_get_tokens_without_a_slot() {
         .map(|e| e["detail"]["role"].clone())
         .collect();
     assert_eq!(roles.len(), 2, "{}", audit.body);
+}
+
+#[tokio::test]
+async fn a_device_token_reads_prefs_but_cannot_write_them() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let prefs = json!({ "theme": "cha-jade", "appearance": "dark" });
+    let put = p
+        .call(
+            "PUT",
+            "/api/me/prefs",
+            Some(&admin),
+            Some(json!({ "prefs": prefs })),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.body);
+
+    let (token, device) = p.device_token(&admin, "install-prefs").await;
+    let got = p.call_bearer("GET", "/api/me/prefs", &token, None).await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    assert_eq!(got.body, json!({ "prefs": prefs }));
+
+    let write = p
+        .call_bearer(
+            "PUT",
+            "/api/me/prefs",
+            &token,
+            Some(json!({ "prefs": { "theme": "cha-plain" } })),
+        )
+        .await;
+    assert_eq!(write.status, StatusCode::UNAUTHORIZED);
+    let still = p.call("GET", "/api/me/prefs", Some(&admin), None).await;
+    assert_eq!(still.body, json!({ "prefs": prefs }));
+
+    let revoked = p
+        .call(
+            "DELETE",
+            &format!("/api/devices/{device}"),
+            Some(&admin),
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    let after = p.call_bearer("GET", "/api/me/prefs", &token, None).await;
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED);
 }

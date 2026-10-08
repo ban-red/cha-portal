@@ -37,6 +37,9 @@
 //!   and [`Transport::quit_app`] stops it without streaming.
 //!   A dropped connection ends the session; there is no reconnect yet.
 //!
+//! - **Theme:** [`Portal::prefs`] reads the user's theme keys from
+//!   `GET /api/me/prefs` so the player can follow the portal's look.
+//!
 //! Needs a tokio runtime.
 
 mod client;
@@ -58,8 +61,8 @@ use cha_client_stream::{Refresh, Target};
 use tracing::{info, warn};
 
 pub use client::{
-    DeviceCode, Environment, Grant, GrantUser, Me, PortalClient, PortalError, StreamerConnection,
-    TokenPoll,
+    DeviceCode, Environment, Grant, GrantUser, Me, PortalAppearance, PortalClient, PortalContrast,
+    PortalError, PortalTheme, StreamerConnection, TokenPoll,
 };
 pub use link::{ConnectLink, parse_connect_link, parse_connect_link_with};
 pub use origin::{ALLOW_INSECURE_ENV, host_label, normalize_origin, normalize_origin_with};
@@ -191,6 +194,18 @@ impl Portal {
         let templates = self.inner.templates.lock().expect("templates lock");
         let index = usize::try_from(app_id.checked_sub(1)?).ok()?;
         templates.get(portal)?.get(index).cloned()
+    }
+
+    /// The theme the user chose in `portal` (an origin), read from
+    /// `GET /api/me/prefs`: `None` when they haven't chosen one. Only the
+    /// theme keys are read. A `401` signs this install out, as for apps.
+    pub async fn prefs(&self, portal: &str) -> Result<Option<PortalTheme>> {
+        let client = self.inner.authed(portal)?;
+        let prefs = client
+            .prefs()
+            .await
+            .map_err(|e| self.inner.on_error(portal, e))?;
+        Ok(PortalTheme::from_prefs(&prefs))
     }
 
     /// Makes `portal` (an origin) known without signing in, as `add_host` does.

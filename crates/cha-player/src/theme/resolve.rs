@@ -40,6 +40,13 @@ pub struct ThemePrefs {
     pub contrast: Contrast,
     /// UI scale (egui's zoom factor); 1.0 is the default size.
     pub scale: f32,
+    /// Where the look comes from. `None` until the user chooses (here, or by
+    /// signing in to a portal, which is then followed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<super::follow::ThemeSource>,
+    /// The followed portal's last look, kept for starting offline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portal_look: Option<super::follow::PortalLook>,
 }
 
 impl Default for ThemePrefs {
@@ -49,6 +56,8 @@ impl Default for ThemePrefs {
             appearance: Appearance::System,
             contrast: Contrast::System,
             scale: 1.0,
+            source: None,
+            portal_look: None,
         }
     }
 }
@@ -65,6 +74,11 @@ impl ThemePrefs {
         };
         if self.theme.trim().is_empty() {
             self.theme = DEFAULT_THEME.into();
+        }
+        // A config from before portals could be followed: a look that isn't
+        // the default was chosen here.
+        if self.source.is_none() && self.local_look() != super::follow::ThemeLook::default() {
+            self.source = Some(super::follow::ThemeSource::Local);
         }
         self
     }

@@ -117,6 +117,69 @@ pub struct Me {
     pub role: String,
 }
 
+/// The portal's `appearance` pref.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortalAppearance {
+    System,
+    Dark,
+    Light,
+}
+
+/// The portal's `contrast` pref.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortalContrast {
+    System,
+    Standard,
+    More,
+}
+
+/// The theme keys of `GET /api/me/prefs`; the other keys (pins, views,
+/// motion, transparency) are ignored. A field is `None` when the user hasn't
+/// chosen or the value is one this player doesn't know, as the browser's
+/// `parsePrefs` falls back to its default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PortalTheme {
+    /// A theme id, e.g. `cha-jade`.
+    pub theme: Option<String>,
+    pub appearance: Option<PortalAppearance>,
+    pub contrast: Option<PortalContrast>,
+}
+
+impl PortalTheme {
+    /// Reads the theme keys out of the portal's `{ "prefs": {...} }` answer.
+    /// `None` when none of them is set to something usable.
+    pub fn from_prefs(prefs: &serde_json::Value) -> Option<Self> {
+        let obj = prefs.get("prefs")?.as_object()?;
+        let text = |k: &str| obj.get(k).and_then(|v| v.as_str());
+        let theme = text("theme")
+            .filter(|t| {
+                !t.is_empty()
+                    && t.len() <= 40
+                    && t.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            })
+            .map(str::to_string);
+        let appearance = match text("appearance") {
+            Some("system") => Some(PortalAppearance::System),
+            Some("dark") => Some(PortalAppearance::Dark),
+            Some("light") => Some(PortalAppearance::Light),
+            _ => None,
+        };
+        let contrast = match text("contrast") {
+            Some("system") => Some(PortalContrast::System),
+            Some("standard") => Some(PortalContrast::Standard),
+            Some("more") => Some(PortalContrast::More),
+            _ => None,
+        };
+        let found = Self {
+            theme,
+            appearance,
+            contrast,
+        };
+        (found != Self::default()).then_some(found)
+    }
+}
+
 /// A catalog entry (the fields we use; the portal sends more).
 #[derive(Clone, Debug, Deserialize)]
 pub struct Template {
@@ -327,6 +390,11 @@ impl PortalClient {
         self.call::<(), _>(Method::GET, "/api/me", None).await
     }
 
+    /// The signed-in user's interface preferences, as the portal stores them.
+    pub async fn prefs(&self) -> Result<serde_json::Value, PortalError> {
+        self.call::<(), _>(Method::GET, "/api/me/prefs", None).await
+    }
+
     pub async fn catalog(&self) -> Result<Vec<Template>, PortalError> {
         self.call::<(), _>(Method::GET, "/api/catalog", None).await
     }
@@ -385,5 +453,45 @@ impl PortalClient {
     pub async fn stop_environment(&self, id: &str) -> Result<Environment, PortalError> {
         self.call::<(), _>(Method::DELETE, &format!("/api/environments/{id}"), None)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn theme_keys_are_read_and_the_rest_ignored() {
+        let got = PortalTheme::from_prefs(&json!({ "prefs": {
+            "theme": "cha-jade", "appearance": "light", "contrast": "more",
+            "motion": "reduced", "pinned": ["chrome"], "envView": "list"
+        }}))
+        .unwrap();
+        assert_eq!(got.theme.as_deref(), Some("cha-jade"));
+        assert_eq!(got.appearance, Some(PortalAppearance::Light));
+        assert_eq!(got.contrast, Some(PortalContrast::More));
+    }
+
+    #[test]
+    fn unknown_values_fall_back_per_field() {
+        let got = PortalTheme::from_prefs(&json!({ "prefs": {
+            "theme": "Not Valid", "appearance": "sepia", "contrast": "standard"
+        }}))
+        .unwrap();
+        assert_eq!(got.theme, None);
+        assert_eq!(got.appearance, None);
+        assert_eq!(got.contrast, Some(PortalContrast::Standard));
+    }
+
+    #[test]
+    fn no_theme_keys_is_none() {
+        assert_eq!(PortalTheme::from_prefs(&json!({ "prefs": {} })), None);
+        assert_eq!(
+            PortalTheme::from_prefs(&json!({ "prefs": { "pinned": [] } })),
+            None
+        );
+        assert_eq!(PortalTheme::from_prefs(&json!({ "prefs": 3 })), None);
+        assert_eq!(PortalTheme::from_prefs(&json!([])), None);
     }
 }

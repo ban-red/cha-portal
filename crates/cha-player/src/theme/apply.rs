@@ -145,7 +145,7 @@ pub fn style(r: &Resolved) -> Style {
     style.text_styles = [
         (
             TextStyle::Heading,
-            FontId::new(m.font_heading, FontFamily::Proportional),
+            FontId::new(m.font_heading, super::fonts::bold_family()),
         ),
         (
             TextStyle::Body,

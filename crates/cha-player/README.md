@@ -125,6 +125,11 @@ The launcher, pairing and settings look like the portal. The colours are the por
 
 Settings, Appearance picks the theme, Light or dark, Contrast and the UI size (egui's zoom factor, 75% to 200%, applied when you let go of the slider). The choices are saved in `config.json` under `theme`; a config without it uses Cha Magenta, System, System, 100%.
 
+**Following the portal.** The portal saves a theme, light or dark and contrast per user, and Cha Player reads them from `GET /api/me/prefs` with its device token (the token goes only to that portal's origin; the player never writes the prefs). A player that has never chosen a look in Settings and is signed in to a portal follows the first portal it is signed in to. Settings, Appearance then shows "Follow <portal host>" (with the portal's current pick beside it) and "This Mac only". Changing the theme, Light or dark or Contrast while following switches to This Mac only, and a note under the controls says so; the size is always this Mac's own. Signing out of the followed portal also switches to This Mac only, keeping the look it had. The portal's `appearance` maps to System, Dark or Light and its `contrast` to System, Standard or More; its `motion` and `transparency` are ignored, and so are values the player doesn't know (that field falls back to the default, as in the browser).
+
+- The theme is fetched on start, right after a sign-in, about every 5 minutes while the launcher is shown, and when the window regains focus (at most once per 20 s). A change applies at once. After a failed fetch the next try is 60 s later.
+- Offline, or on any fetch error, the last look the portal sent stays: it is kept in `config.json` (`theme.source`, `theme.portal_look`), so an offline start shows it too. The failure is logged once until a fetch succeeds. Older configs load as they were (a look that isn't the default counts as chosen here, so it stays This Mac only).
+
 - **System light or dark** follows macOS: the window's appearance at start and whenever it changes (`WindowEvent::ThemeChanged`).
 - **System contrast** follows System Settings, Accessibility, Display, Increase contrast, read from `NSWorkspace` about every two seconds while the launcher is shown. More contrast uses the `-more` palettes and draws borders 1.5 times as thick.
 
@@ -146,7 +151,7 @@ Put `*.json` files in `~/Library/Application Support/Cha Player/themes` (Setting
     "light": { "accent": "#007a3d" }
   },
   "metrics": { "radius_medium": 2.0, "font_body": 15.0 },
-  "fonts": { "proportional": "Inter.ttf", "monospace": "/Users/me/Fonts/JetBrainsMono.ttf" }
+  "fonts": { "proportional": "Inter.ttf", "bold": "Inter-SemiBold.ttf", "monospace": "/Users/me/Fonts/JetBrainsMono.ttf" }
 }
 ```
 
@@ -154,6 +159,8 @@ Put `*.json` files in `~/Library/Application Support/Cha Player/themes` (Setting
 - Changes to `dark` also apply to `dark-more` (and `light` to `light-more`) unless that variant sets the role itself.
 - `metrics` keys: `radius_small`, `radius_medium`, `radius_large`, `item_spacing_x`, `item_spacing_y`, `button_padding_x`, `button_padding_y`, `window_margin`, `control_height`, `stroke_width`, `stroke_width_strong`, `font_heading`, `font_body`, `font_button`, `font_small`, `font_monospace` (points).
 - Fonts are SF Pro and SF Mono from `/System/Library/Fonts` unless a theme names a `.ttf`/`.otf` file, absolute or relative to the theme file. Font files are not bundled. A file that is missing or cannot be read is skipped with a message in Settings and egui's built-in font is used instead.
+- Headings and strong text use a bold face. By default that is SF Pro at weight 600: `SFNS.ttf` is a variable font and the player sets its `wght` axis (if it had none, Helvetica Neue Bold from `HelveticaNeue.ttc` stands in). A theme that names its own `proportional` font gets that font at weight 600 if it is variable, as it is otherwise; `fonts.bold` names a file for the bold face (first face of the file). A bold file that can't be read is skipped with a message in Settings and the regular font is used.
+- Disabled accent and danger buttons keep a muted fill with text at least 3:1 against it, in every theme variant (a test checks the palettes).
 - A theme with the id of a built-in replaces it. Themes can extend each other.
 - A file that does not parse, extends a theme that does not exist, loops, or repeats another file's `id` is skipped, and Settings lists the file and the reason under the buttons. The rest still load.
 

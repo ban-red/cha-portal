@@ -20,6 +20,7 @@
 //! dark palette whatever the launcher shows ([`overlay`]).
 
 mod apply;
+pub mod follow;
 mod fonts;
 pub mod icons;
 mod metrics;
@@ -35,6 +36,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use apply::ThemeExt;
+pub use follow::{ThemeLook, ThemeSource};
 pub use overlay::OverlayStyle;
 pub use palette::Palette;
 pub use registry::Theme;
@@ -112,7 +114,8 @@ impl ThemeController {
     /// Style `ctx` for `prefs` if anything changed since the last call.
     /// True when it did (the caller should redraw).
     pub fn sync(&mut self, ctx: &egui::Context, prefs: &ThemePrefs) -> bool {
-        let prefs = prefs.clone().sanitized();
+        // What a followed portal chose, or this Mac's own: the same to style.
+        let prefs = prefs.clone().sanitized().effective();
         let key = (prefs.clone(), self.env, self.generation);
         if self.applied.as_ref() == Some(&key) {
             return false;

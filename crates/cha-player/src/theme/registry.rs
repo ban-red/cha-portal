@@ -86,6 +86,8 @@ impl VariantsFile {
 struct FontsFile {
     proportional: Option<String>,
     monospace: Option<String>,
+    /// Headings and strong text.
+    bold: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +183,9 @@ fn build(
     }
     if let Some(name) = &file.fonts.monospace {
         fonts.monospace = Some(resolve_path(name));
+    }
+    if let Some(name) = &file.fonts.bold {
+        fonts.bold = Some(resolve_path(name));
     }
 
     let id = file.id().to_string();
@@ -631,13 +636,14 @@ mod tests {
         let dir = tmp("fonts");
         std::fs::write(
             dir.join("f.json"),
-            r#"{ "id": "f", "fonts": { "proportional": "Inter.ttf", "monospace": "/abs/Mono.ttf" } }"#,
+            r#"{ "id": "f", "fonts": { "proportional": "Inter.ttf", "monospace": "/abs/Mono.ttf", "bold": "Inter-Bold.ttf" } }"#,
         )
         .unwrap();
         let registry = Registry::from_dir(&dir);
         let f = registry.get("f").unwrap();
         assert_eq!(f.fonts.proportional, Some(dir.join("Inter.ttf")));
         assert_eq!(f.fonts.monospace, Some(PathBuf::from("/abs/Mono.ttf")));
+        assert_eq!(f.fonts.bold, Some(dir.join("Inter-Bold.ttf")));
         std::fs::remove_dir_all(dir).ok();
     }
 

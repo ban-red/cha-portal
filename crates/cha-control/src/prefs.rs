@@ -5,6 +5,9 @@
 //! user may use them, guests included. They are cosmetic, so no audit entry.
 //! Keys and values are checked here; the list of theme ids lives only in the
 //! client, which falls back to its default on an id it doesn't know.
+//! `GET` also takes a Cha Player device token (`Authorization: Bearer
+//! chadev_...`), so the player can follow the user's theme; `PUT` stays
+//! cookie-only, because the player only reads.
 //! Besides the theme keys: `pinned` (the app templates the user pinned),
 //! `envView` (grid or list) and `envSort` (name or recent) for the Environments page.
 
@@ -14,7 +17,7 @@ use axum::{Json, Router};
 use serde_json::{Map, Value, json};
 
 use crate::AppState;
-use crate::auth::CurrentUser;
+use crate::auth::{CurrentUser, PlayerUser};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 
@@ -34,7 +37,7 @@ pub fn routes() -> Router<AppState> {
 
 async fn read(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    PlayerUser(user): PlayerUser,
 ) -> ApiResult<Json<Value>> {
     let prefs = db::user_prefs(&state.db, &user.id)
         .await?

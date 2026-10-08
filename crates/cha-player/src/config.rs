@@ -232,6 +232,37 @@ mod tests {
     }
 
     #[test]
+    fn a_followed_portals_look_is_cached_in_the_config() {
+        let dir =
+            std::env::temp_dir().join(format!("cha-player-follow-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = Config::default();
+        config.theme.follow("https://portal.example");
+        config.theme.store_portal_look(
+            "https://portal.example",
+            crate::theme::ThemeLook {
+                theme: "cha-jade".into(),
+                appearance: crate::theme::Appearance::Dark,
+                contrast: crate::theme::Contrast::More,
+            },
+        );
+        config.save(&dir).unwrap();
+        let back = Config::load(&dir);
+        assert_eq!(back, config);
+        assert_eq!(back.theme.look().theme, "cha-jade");
+        // A config written before portals can be followed still loads.
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"theme": {"theme": "cha-jade"}}"#,
+        )
+        .unwrap();
+        let old = Config::load(&dir);
+        assert_eq!(old.theme.source, Some(crate::theme::ThemeSource::Local));
+        assert_eq!(old.theme.portal_look, None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn pyrowave_orders_survive_and_are_spelled_as_the_portal_does() {
         let config = Config {
             codecs: vec![Codec::PyroWave444, Codec::Hevc, Codec::H264],

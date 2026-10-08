@@ -21,7 +21,7 @@ use egui::RichText;
 use crate::config::Config;
 use crate::input::pads::{InputAccess, input_access};
 use crate::theme::widgets::{
-    Status, callout, danger_button, primary_button_enabled, selectable_card, status_label,
+    Status, bold, callout, danger_button, primary_button_enabled, selectable_card, status_label,
 };
 use crate::theme::{ThemeController, ThemeExt};
 
@@ -218,6 +218,12 @@ impl Launcher {
 
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// The theme choices, to change what a portal sent or where the look
+    /// comes from. The caller saves the config if it changed.
+    pub fn theme_prefs_mut(&mut self) -> &mut crate::theme::ThemePrefs {
+        &mut self.config.theme
     }
 
     pub fn set_portal_transport(&mut self, transport: Option<usize>) {
@@ -450,7 +456,7 @@ impl Launcher {
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (t, transport) in transports.iter().enumerate() {
-                        ui.label(RichText::new(transport.name()).strong());
+                        ui.label(bold(transport.name()).strong());
                         if hosts[t].is_empty() {
                             ui.weak("No hosts yet. Add one below, or wait for one on the network.");
                         }
@@ -472,7 +478,7 @@ impl Launcher {
                                 }
                             };
                             let card = selectable_card(ui, selected, |ui| {
-                                ui.label(RichText::new(&host.name).strong());
+                                ui.label(bold(&host.name).strong());
                                 ui.label(
                                     RichText::new(format!("{}  ·  {}", host.address, state))
                                         .small()
@@ -512,12 +518,39 @@ impl Launcher {
         if self.settings_open {
             let mut open = true;
             let mut outcome = settings::Outcome::default();
+            // The portals this player is signed in to, to follow one's theme.
+            let portals: Vec<String> = hosts
+                .iter()
+                .enumerate()
+                .filter(|(t, _)| self.portal_transport == Some(*t))
+                .flat_map(|(_, hs)| hs.iter().filter(|h| h.paired).map(|h| h.id.clone()))
+                .collect();
+            // Centred under the header, never taller than the window: a short window
+            // scrolls the settings.
+            let screen = ui.ctx().content_rect();
+            // Room for the title bar below the header and a margin under it.
+            let body_max = (screen.height() - 56.0 - 64.0).max(120.0);
             egui::Window::new("Settings")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 56.0))
+                .max_width((screen.width() - 32.0).max(240.0))
+                .default_height(body_max + 40.0)
                 .show(ui.ctx(), |ui| {
-                    outcome = settings::show(ui, &mut self.config, themes);
+                    // The scroll area takes the height the content had last
+                    // frame (at most the room there is), so the window fits
+                    // its settings and scrolls only when they don't fit.
+                    let id = ui.id().with("settings-height");
+                    let last = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(body_max);
+                    let out = egui::ScrollArea::vertical()
+                        .max_height(last.min(body_max))
+                        .auto_shrink([true, false])
+                        .show(ui, |ui| {
+                            settings::show(ui, &mut self.config, themes, &portals)
+                        });
+                    outcome = out.inner;
+                    ui.data_mut(|d| d.insert_temp(id, out.content_size.y.max(1.0)));
                 });
             self.settings_open = open;
             if outcome.changed {
@@ -548,7 +581,7 @@ impl Launcher {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(RichText::new(format!("Sign in to {}?", prompt.portal)).strong());
+                ui.label(bold(format!("Sign in to {}?", prompt.portal)).strong());
                 ui.add_space(4.0);
                 ui.label(
                     "A link from a web page asked this player to sign in to that portal as you.",
@@ -680,7 +713,10 @@ impl Launcher {
 
     fn host_panel(&mut self, ui: &mut egui::Ui, t: usize, host: &Host, actions: &mut Vec<Action>) {
         ui.heading(&host.name);
-        ui.weak(&host.address);
+        // A portal or a PC often is its own address: say it once.
+        if host.address != host.name {
+            ui.weak(&host.address);
+        }
         ui.add_space(8.0);
 
         if !host.paired {
@@ -724,7 +760,7 @@ impl Launcher {
         }
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Apps").strong());
+            ui.label(bold("Apps").strong());
             if ui.small_button("Refresh").clicked() {
                 self.apps.insert(key.clone(), AppsState::Loading);
                 actions.push(Action::LoadApps {
@@ -780,7 +816,7 @@ impl Launcher {
                                         app: app.id,
                                     });
                                 }
-                                ui.label(RichText::new(&app.name).strong());
+                                ui.label(bold(&app.name).strong());
                                 match state {
                                     AppState::Running => {
                                         status_label(ui, Status::Ok, "(running)");

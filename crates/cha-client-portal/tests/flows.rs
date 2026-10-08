@@ -26,6 +26,8 @@ struct Fake {
     /// `/api/catalog` redirects here when set.
     redirect_to: Option<String>,
     ticket_ok: bool,
+    /// What `/api/me/prefs` answers to a valid token.
+    prefs: Value,
     expires_in: u64,
     poll_times: Vec<std::time::Instant>,
 }
@@ -94,7 +96,21 @@ async fn serve(fake: Shared) -> String {
             _ => err(StatusCode::UNAUTHORIZED, "unauthorized"),
         }
     }
+    async fn prefs(State(f): State<Shared>, headers: HeaderMap) -> Response {
+        let f = f.lock().unwrap();
+        let bearer = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        match bearer.strip_prefix("Bearer ") {
+            Some(t) if f.valid_tokens.iter().any(|v| v == t) => {
+                Json(f.prefs.clone()).into_response()
+            }
+            _ => err(StatusCode::UNAUTHORIZED, "unauthorized"),
+        }
+    }
     let app = Router::new()
+        .route("/api/me/prefs", get(prefs))
         .route("/api/device/ticket", post(ticket))
         .route("/api/device/code", post(code))
         .route("/api/device/token", post(token))
@@ -340,4 +356,39 @@ async fn transport_basics() {
         format!("{e}").contains("isn't a portal this player knows"),
         "{e}"
     );
+}
+
+#[tokio::test]
+async fn prefs_reads_the_theme_keys_and_a_revoked_token_signs_out() {
+    use cha_client_portal::{PortalAppearance, PortalContrast};
+    let fake: Shared = Arc::default();
+    {
+        let mut f = fake.lock().unwrap();
+        f.ticket_ok = true;
+        f.valid_tokens.push("chadev_ticket".into());
+        f.prefs = json!({ "prefs": {
+            "theme": "cha-jade", "appearance": "dark", "contrast": "sepia",
+            "pinned": ["chrome"], "motion": "reduced"
+        }});
+    }
+    let origin = serve(fake.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let portal = player(dir.path());
+    portal
+        .sign_in_with_ticket(&link(&origin, "t"))
+        .await
+        .unwrap();
+
+    let theme = portal.prefs(&origin).await.unwrap().unwrap();
+    assert_eq!(theme.theme.as_deref(), Some("cha-jade"));
+    assert_eq!(theme.appearance, Some(PortalAppearance::Dark));
+    assert_eq!(theme.contrast, None::<PortalContrast>);
+
+    fake.lock().unwrap().prefs = json!({ "prefs": {} });
+    assert_eq!(portal.prefs(&origin).await.unwrap(), None);
+
+    fake.lock().unwrap().valid_tokens.clear();
+    let e = portal.prefs(&origin).await.unwrap_err();
+    assert!(format!("{e}").starts_with("signed out"), "{e}");
+    assert!(!portal.is_signed_in(&origin));
 }

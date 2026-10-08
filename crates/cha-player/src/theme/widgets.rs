@@ -4,6 +4,14 @@
 use egui::{Color32, Frame, Margin, Response, RichText, Sense, Stroke, UiBuilder, WidgetText};
 
 use super::apply::ThemeExt;
+use super::fonts::bold_family;
+use super::palette::Palette;
+
+/// Text in the bold face (semibold SF Pro, or the theme's bold font), for
+/// headings and strong text. egui's own `strong()` only changes the colour.
+pub fn bold(text: impl Into<String>) -> RichText {
+    RichText::new(text).family(bold_family())
+}
 
 /// A status colour, as the portal's `text-ok`, `text-warn`, ...
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +43,55 @@ pub fn status_label(ui: &mut egui::Ui, status: Status, text: impl Into<String>) 
     ui.label(text)
 }
 
+/// WCAG relative luminance of an opaque colour.
+fn luminance(c: Color32) -> f32 {
+    let lin = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// WCAG contrast ratio between two opaque colours (1 to 21).
+pub fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// The least contrast a disabled button's text keeps against its fill.
+pub const DISABLED_MIN_CONTRAST: f32 = 3.0;
+
+/// A disabled filled button: the fill pulled toward `panel-2` so it reads as
+/// switched off, and text that still reads. Returns `(fill, text)`.
+///
+/// egui's own disabled look halves the alpha of both, which on a light theme
+/// leaves white text on a pale fill.
+pub fn disabled_colors(p: &Palette, fill: Color32, fg: Color32) -> (Color32, Color32) {
+    let bg = fill.lerp_to_gamma(p.panel_2, 0.6);
+    // The text colour with the most contrast against the muted fill, drawn
+    // back toward the fill as far as the contrast allows.
+    let base = if contrast_ratio(fg, bg) >= contrast_ratio(p.ink, bg) {
+        fg
+    } else {
+        p.ink
+    };
+    let mut text = base;
+    // Margin over the bound, since the colour is rounded to 8 bits.
+    for step in (0..=20).rev() {
+        let candidate = bg.lerp_to_gamma(base, 0.5 + step as f32 * 0.025);
+        if contrast_ratio(candidate, bg) >= DISABLED_MIN_CONTRAST + 0.15 {
+            text = candidate;
+        } else {
+            break;
+        }
+    }
+    (bg, text)
+}
+
 fn filled_button(
     ui: &mut egui::Ui,
     enabled: bool,
@@ -44,9 +101,21 @@ fn filled_button(
     fg: Color32,
 ) -> Response {
     let text = text.into();
+    let (off_fill, off_text) = disabled_colors(&ui.palette(), fill, fg);
+    // Disabled: the muted colours, in every state, and no fade (egui's own
+    // halves the alpha of fill and text).
+    let (fill, hover, fg) = if enabled {
+        (fill, hover, fg)
+    } else {
+        (off_fill, off_fill, off_text)
+    };
     ui.scope(|ui| {
+        if !enabled {
+            ui.visuals_mut().disabled_alpha = 1.0;
+        }
         let w = &mut ui.visuals_mut().widgets;
         for (state, bg) in [
+            (&mut w.noninteractive, fill),
             (&mut w.inactive, fill),
             (&mut w.hovered, hover),
             (&mut w.active, hover),
@@ -138,7 +207,7 @@ pub fn section_heading(ui: &mut egui::Ui, text: &str) {
     let p = ui.palette();
     let size = ui.style().text_styles[&egui::TextStyle::Body].size * 1.15;
     ui.add_space(6.0);
-    ui.label(RichText::new(text).strong().size(size).color(p.ink));
+    ui.label(bold(text).size(size).color(p.ink));
     ui.add_space(4.0);
 }
 
@@ -192,4 +261,38 @@ pub fn selectable_card<R>(
             })
             .inner
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::registry::Registry;
+    use crate::theme::resolve::Variant;
+
+    #[test]
+    fn disabled_buttons_keep_their_text_readable_in_every_variant() {
+        let registry = Registry::builtin();
+        let mut worst = f32::MAX;
+        for theme in registry.themes() {
+            for variant in Variant::ALL {
+                let p = theme.palette(variant);
+                for (kind, fill, fg) in [
+                    ("primary", p.accent_fill, p.on_accent),
+                    ("danger", p.danger_fill, p.on_danger),
+                ] {
+                    let (bg, text) = disabled_colors(p, fill, fg);
+                    let ratio = contrast_ratio(text, bg);
+                    println!("{} {variant:?} {kind}: {ratio:.2}:1", theme.id);
+                    assert!(
+                        ratio >= DISABLED_MIN_CONTRAST,
+                        "{} {variant:?} {kind}: {ratio:.2}",
+                        theme.id
+                    );
+                    assert_ne!(bg, fill, "muted");
+                    worst = worst.min(ratio);
+                }
+            }
+        }
+        println!("lowest: {worst:.2}:1");
+    }
 }

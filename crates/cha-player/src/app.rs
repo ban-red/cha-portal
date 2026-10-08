@@ -65,6 +65,12 @@ pub enum UserEvent {
     /// A `cha://` link was opened (macOS delivers it as an Apple Event).
     #[cfg(feature = "portal")]
     OpenUrl(String),
+    /// A followed portal answered a theme fetch (or didn't).
+    #[cfg(feature = "portal")]
+    PortalTheme {
+        portal: String,
+        result: Result<crate::theme::ThemeLook, String>,
+    },
 }
 
 /// A started session and whose it is, for the toolbar's per-app memory.
@@ -165,6 +171,9 @@ struct App {
     launcher: Launcher,
     /// Themes, and what the system says about appearance.
     theme: ThemeController,
+    /// When to ask the followed portal for its theme.
+    #[cfg(feature = "portal")]
+    follow: crate::theme::follow::FollowClock,
     stream: Option<Stream>,
     generation: u64,
     modifiers: ModifiersState,
@@ -217,6 +226,8 @@ impl App {
             gfx: None,
             launcher,
             theme,
+            #[cfg(feature = "portal")]
+            follow: Default::default(),
             stream: None,
             generation: 0,
             modifiers: ModifiersState::empty(),
@@ -372,9 +383,16 @@ impl App {
             Action::SignOut { host } => {
                 if let Some((_, handle)) = &self.portal {
                     match handle.sign_out(&host) {
-                        Ok(()) => self.launcher.handle(ui::Event::Info(format!(
-                            "Signed out of {host} here; revoke the device in the portal's Settings to be sure"
-                        ))),
+                        Ok(()) => {
+                            // A followed portal's look stays, as this Mac's own.
+                            let left = self.launcher.theme_prefs_mut().leave_portal(&host);
+                            if left {
+                                self.save_config();
+                            }
+                            self.launcher.handle(ui::Event::Info(format!(
+                                "Signed out of {host} here; revoke the device in the portal's Settings to be sure"
+                            )));
+                        }
                         Err(e) => self
                             .launcher
                             .handle(ui::Event::Failed(format!("Could not sign out: {e:#}"))),
@@ -401,6 +419,84 @@ impl App {
                         .handle(ui::Event::Failed(format!("Could not save settings: {e:#}")));
                 }
             }
+        }
+    }
+
+    /// Writes the config as it is in memory.
+    fn save_config(&mut self) {
+        if let Err(e) = self.launcher.config().save(&self.data_dir) {
+            tracing::warn!("saving the settings: {e:#}");
+        }
+    }
+
+    /// Keeps the look in step with the portal it follows: adopts the first
+    /// portal signed in to when the user never chose, lets go of one that is
+    /// no longer signed in, and asks for its theme when it is time (on start,
+    /// every few minutes, after sign-in and when the window regains focus).
+    #[cfg(feature = "portal")]
+    fn follow_tick(&mut self) {
+        use cha_client::Transport as _;
+        let Some((_, handle)) = self.portal.clone() else {
+            return;
+        };
+        let prefs = self.launcher.theme_prefs_mut();
+        let mut changed = false;
+        if let Some(origin) = prefs.following().map(str::to_string)
+            && !handle.is_signed_in(&origin)
+        {
+            tracing::info!("signed out of {origin}: keeping its theme as this Mac's own");
+            changed |= prefs.leave_portal(&origin);
+        }
+        if prefs.source.is_none()
+            && let Some(first) = handle.hosts().into_iter().find(|h| h.paired)
+        {
+            changed |= prefs.follow_by_default(&first.id);
+        }
+        let following = prefs.following().map(str::to_string);
+        if changed {
+            self.save_config();
+        }
+        if self.follow.poll(following.as_deref(), Instant::now())
+            && let Some(origin) = following
+        {
+            self.spawn(async move {
+                let result = handle
+                    .prefs(&origin)
+                    .await
+                    .map(|theme| crate::theme::ThemeLook::from(theme.as_ref()))
+                    .map_err(|e| format!("{e:#}"));
+                UserEvent::PortalTheme {
+                    portal: origin,
+                    result,
+                }
+            });
+        }
+    }
+
+    /// A followed portal's theme arrived. On failure the last one stays.
+    #[cfg(feature = "portal")]
+    fn portal_theme(&mut self, portal: String, result: Result<crate::theme::ThemeLook, String>) {
+        if self.follow.finished(result.is_ok(), Instant::now())
+            && let Err(e) = &result
+        {
+            tracing::warn!("following the theme of {portal}: {e}; keeping the last one");
+        }
+        let signed_in = self
+            .portal
+            .as_ref()
+            .is_some_and(|(_, handle)| handle.is_signed_in(&portal));
+        let prefs = self.launcher.theme_prefs_mut();
+        let changed = match result {
+            Ok(look) if prefs.following() == Some(portal.as_str()) => {
+                prefs.store_portal_look(&portal, look)
+            }
+            // A refused token signed us out: the look stays, as our own.
+            Err(_) if !signed_in => prefs.leave_portal(&portal),
+            _ => false,
+        };
+        if changed {
+            self.save_config();
+            self.request_redraw();
         }
     }
 
@@ -912,6 +1008,8 @@ impl App {
     }
 
     fn draw_launcher(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(feature = "portal")]
+        self.follow_tick();
         let transports = self.transports.clone();
         let Some(gfx) = self.gfx.as_mut() else {
             return;
@@ -1434,6 +1532,11 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Ui(event) => {
                 #[cfg(feature = "portal")]
                 let launch = self.launch_for_link(&event);
+                // A new sign-in: take its theme now.
+                #[cfg(feature = "portal")]
+                if matches!(&event, ui::Event::SignedIn { result: Ok(_), .. }) {
+                    self.follow.ask_now();
+                }
                 self.launcher.handle(event);
                 #[cfg(feature = "portal")]
                 if let Some(action) = launch {
@@ -1443,6 +1546,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             #[cfg(feature = "portal")]
             UserEvent::OpenUrl(url) => self.open_url(&url),
+            #[cfg(feature = "portal")]
+            UserEvent::PortalTheme { portal, result } => self.portal_theme(portal, result),
             UserEvent::Launched(Ok(launched)) => {
                 if self.stream.is_some() {
                     // A second launch finished while one is running: drop it.
@@ -1469,6 +1574,11 @@ impl ApplicationHandler<UserEvent> for App {
         let Some(window) = self.window().cloned() else {
             return;
         };
+        // Back in front: the portal's theme may have changed meanwhile.
+        #[cfg(feature = "portal")]
+        if matches!(event, WindowEvent::Focused(true)) {
+            self.follow.focused();
+        }
         if self.stream.is_some() {
             if self.stream_event(&event) {
                 return;

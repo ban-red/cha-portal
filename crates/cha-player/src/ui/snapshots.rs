@@ -855,3 +855,43 @@ fn snapshot_icons() {
     println!("{}", path.display());
     std::fs::remove_dir_all(data).ok();
 }
+
+/// Settings while following a portal: `<variant>-follow.png`.
+#[test]
+#[ignore = "renders on the GPU into CHA_SNAPSHOT_DIR"]
+fn snapshot_follow() {
+    use crate::theme::ThemeLook;
+    let dir = out_dir();
+    let data = std::env::temp_dir().join(format!("cha-player-snap-follow-{}", std::process::id()));
+    let mut themes = ThemeController::new(data.clone(), None);
+    let ctx = egui::Context::default();
+    let mut gpu = Offscreen::new();
+    let transports = transports();
+    for (name, own, picked) in [
+        ("dark", Appearance::Dark, Appearance::Dark),
+        ("light", Appearance::Light, Appearance::Light),
+    ] {
+        let mut config = Config::default();
+        config.theme.appearance = own;
+        config.theme.follow("portal.home.lan");
+        config.theme.store_portal_look(
+            "portal.home.lan",
+            ThemeLook {
+                theme: "cha-jade".into(),
+                appearance: picked,
+                contrast: Contrast::Standard,
+            },
+        );
+        themes.sync(&ctx, &config.theme);
+        let mut l = launcher(config);
+        l.settings_open = true;
+        l.busy = Some("Starting Firefox…".into());
+        let (w, h, px) = gpu.render(&ctx, themes.canvas(), |ui| {
+            l.show(ui, &transports, &themes);
+        });
+        let path = dir.join(format!("{name}-follow.png"));
+        write_png(&path, w, h, &px);
+        println!("{}", path.display());
+    }
+    std::fs::remove_dir_all(data).ok();
+}
