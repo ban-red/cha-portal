@@ -153,6 +153,9 @@ pub enum ToNode {
 }
 
 /// Node → portal.
+// The inventory is sent a few times an hour; boxing it would touch every
+// sender and test for nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToPortal {
@@ -732,6 +735,62 @@ pub struct Inventory {
     /// for test beds. Absent means automatic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementMode>,
+    /// Free and total space on the node's disks that matter: Docker's
+    /// (images) and the data root's (app data); one entry when they are the
+    /// same filesystem. Empty from agents that predate it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disks: Vec<Disk>,
+    /// What the node runs on, as best the agent can tell. Absent from agents
+    /// that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<Platform>,
+}
+
+/// What a disk holds for the node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiskUse {
+    /// Docker's images and containers.
+    Images,
+    /// Environments' app data (the data root).
+    AppData,
+}
+
+/// A filesystem on the node and how full it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Disk {
+    pub uses: Vec<DiskUse>,
+    /// A path to show the admin: Docker's root directory (or "Docker's disk"
+    /// when the engine didn't say) or the data root.
+    pub path: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+}
+
+/// What kind of machine a node is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlatformKind {
+    BareMetal,
+    Vm,
+    Lxc,
+    Wsl,
+    DockerDesktop,
+    Unknown,
+}
+
+/// What a node runs on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Platform {
+    pub kind: PlatformKind,
+    /// A short phrase: "KVM (QEMU)", "LXC container", "WSL 2".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The kernel release (`6.14.11-4-pve`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<String>,
 }
 
 /// Whether placement may pick a node by itself.
@@ -1733,6 +1792,50 @@ mod tests {
         assert_eq!(json["devices"][0]["cores"], 8);
         assert!(json["devices"][0].get("renderNode").is_none());
         assert_eq!(reported.devices_or_derived(), [cpu]);
+    }
+
+    #[test]
+    fn disks_and_platform_round_trip_and_are_optional() {
+        let old = serde_json::json!({
+            "hostname": "h", "os": "o", "arch": "a", "cpus": 1, "memoryMb": 2,
+            "gpus": [], "addresses": [],
+        });
+        let inv: Inventory = serde_json::from_value(old).unwrap();
+        assert!(inv.disks.is_empty());
+        assert_eq!(inv.platform, None);
+        let json = serde_json::to_value(&inv).unwrap();
+        assert!(json.get("disks").is_none());
+        assert!(json.get("platform").is_none());
+
+        let new = serde_json::json!({
+            "hostname": "h", "os": "o", "arch": "a", "cpus": 1, "memoryMb": 2,
+            "gpus": [], "addresses": [],
+            "disks": [{ "uses": ["images", "appData"], "path": "/srv/cha-portal",
+                        "totalBytes": 34359738368u64, "freeBytes": 18253611008u64 }],
+            "platform": { "kind": "lxc", "detail": "LXC container", "kernel": "6.14.11-4-pve" },
+        });
+        let inv: Inventory = serde_json::from_value(new.clone()).unwrap();
+        assert_eq!(inv.disks[0].uses, [DiskUse::Images, DiskUse::AppData]);
+        assert_eq!(inv.disks[0].free_bytes, 18253611008);
+        assert_eq!(inv.platform.as_ref().unwrap().kind, PlatformKind::Lxc);
+        assert_eq!(serde_json::to_value(&inv).unwrap(), new);
+
+        for (kind, name) in [
+            (PlatformKind::BareMetal, "bare-metal"),
+            (PlatformKind::Vm, "vm"),
+            (PlatformKind::Wsl, "wsl"),
+            (PlatformKind::DockerDesktop, "docker-desktop"),
+            (PlatformKind::Unknown, "unknown"),
+        ] {
+            let platform = Platform {
+                kind,
+                detail: None,
+                kernel: None,
+            };
+            let json = serde_json::to_value(&platform).unwrap();
+            assert_eq!(json, serde_json::json!({ "kind": name }));
+            assert_eq!(serde_json::from_value::<Platform>(json).unwrap(), platform);
+        }
     }
 
     #[test]

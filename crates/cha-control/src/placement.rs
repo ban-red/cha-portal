@@ -7,8 +7,9 @@
 //! [`crate::nodes::NodeHub::usage`]) and with each environment already
 //! running on the device. Not allowed: the CPU for an app that needs a GPU, a
 //! device that encodes nothing a browser plays, and a node whose agent can't
-//! keep the app's data. A GPU with little VRAM free stays allowed (the user
-//! may know better) but is never the automatic choice.
+//! keep the app's data. A GPU with little VRAM free, or a node whose image
+//! disk is nearly full, stays allowed (the user may know better) but is never
+//! the automatic choice.
 
 use std::collections::HashMap;
 
@@ -29,6 +30,9 @@ use crate::storage;
 const BROWSER_CODECS: [&str; 3] = ["h264", "hevc", "av1"];
 /// Below this much free VRAM a GPU isn't chosen automatically.
 const LOW_VRAM_BYTES: u64 = 2 << 30;
+/// Below this much free space on the disk holding a node's images, an
+/// option is never the automatic choice: pulling an image may fill it.
+const LOW_DISK_BYTES: u64 = 5 << 30;
 /// What each environment already on a device costs it.
 const PER_ENVIRONMENT: f64 = 10.0;
 /// What already holding the image is worth: more than any one load step, so
@@ -111,6 +115,9 @@ pub struct NodeView {
     pub agent_version: Option<String>,
     /// `manual`: never the automatic choice.
     pub manual: bool,
+    /// Free bytes on the disk that holds its images (the only disk it
+    /// reports, or the one used for `images`); `None` when it reports none.
+    pub images_disk_free: Option<u64>,
 }
 
 impl NodeView {
@@ -231,6 +238,11 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                     "only {:.1} GB of VRAM free",
                     free as f64 / f64::from(1u32 << 30)
                 ));
+            } else if let Some(free) = node.images_disk_free.filter(|f| *f < LOW_DISK_BYTES) {
+                reason = Some(format!(
+                    "only {:.1} GB of disk free",
+                    free as f64 / f64::from(1u32 << 30)
+                ));
             }
             if node.manual && allowed {
                 notes.push("picked by hand only");
@@ -323,6 +335,19 @@ pub fn nothing_allowed(options: &[PlacementOption]) -> String {
     why.join("; ")
 }
 
+/// Free bytes on the disk holding a node's images: the one used for them, or
+/// the only one reported.
+fn images_disk_free(disks: &[cha_wire::Disk]) -> Option<u64> {
+    disks
+        .iter()
+        .find(|d| d.uses.contains(&cha_wire::DiskUse::Images))
+        .or(match disks {
+            [only] => Some(only),
+            _ => None,
+        })
+        .map(|d| d.free_bytes)
+}
+
 /// The online nodes with their devices, usage and what runs on them.
 pub async fn online_nodes(state: &AppState) -> ApiResult<Vec<NodeView>> {
     let mut counts: HashMap<String, HashMap<Option<String>, u32>> = HashMap::new();
@@ -366,6 +391,9 @@ pub async fn online_nodes(state: &AppState) -> ApiResult<Vec<NodeView>> {
             manual: inventory
                 .as_ref()
                 .is_some_and(|inv| inv.placement == Some(cha_wire::PlacementMode::Manual)),
+            images_disk_free: inventory
+                .as_ref()
+                .and_then(|inv| images_disk_free(&inv.disks)),
             id: row.id,
             name: row.name,
             devices,
@@ -455,6 +483,7 @@ mod tests {
             images: Vec::new(),
             agent_version: None,
             manual: false,
+            images_disk_free: None,
         }
     }
 
@@ -537,6 +566,61 @@ mod tests {
         );
         let o = options(&PLAIN, &[a, b]);
         assert_eq!(best(&o).unwrap().node_name, "b");
+    }
+
+    #[test]
+    fn a_nearly_full_image_disk_stays_choosable_but_not_automatic() {
+        let mut full = node("full", vec![rtx()]);
+        full.images_disk_free = Some(3 << 30);
+        let mut roomy = node("roomy", vec![rtx()]);
+        roomy.images_disk_free = Some(200 << 30);
+        let o = options(&PLAIN, &[full, roomy]);
+        let full = o.iter().find(|o| o.node_name == "full").unwrap();
+        assert!(full.allowed);
+        assert_eq!(full.reason.as_deref(), Some("only 3.0 GB of disk free"));
+        assert_eq!(best(&o).unwrap().node_name, "roomy");
+        // With nowhere else it is still what auto picks.
+        let mut alone = node("alone", vec![rtx()]);
+        alone.images_disk_free = Some(1 << 30);
+        assert_eq!(best(&options(&PLAIN, &[alone])).unwrap().node_name, "alone");
+        // A node that reports no disks is unaffected.
+        assert_eq!(options(&PLAIN, &[node("old", vec![rtx()])])[0].reason, None);
+    }
+
+    #[test]
+    fn low_vram_is_said_before_low_disk() {
+        let mut both = node("both", vec![rtx()]);
+        both.usage = Some(gpu_usage_of(0, 23, 24));
+        both.images_disk_free = Some(1 << 30);
+        let o = options(&PLAIN, &[both]);
+        assert_eq!(o[0].reason.as_deref(), Some("only 1.0 GB of VRAM free"));
+    }
+
+    #[test]
+    fn the_images_disk_is_the_one_used_for_images_or_the_only_one() {
+        use cha_wire::{Disk, DiskUse};
+        let disk = |uses: Vec<DiskUse>, free: u64| Disk {
+            uses,
+            path: "/".into(),
+            total_bytes: 100 << 30,
+            free_bytes: free,
+        };
+        assert_eq!(images_disk_free(&[]), None);
+        assert_eq!(
+            images_disk_free(&[disk(vec![DiskUse::AppData], 7)]),
+            Some(7)
+        );
+        assert_eq!(
+            images_disk_free(&[
+                disk(vec![DiskUse::AppData], 7),
+                disk(vec![DiskUse::Images], 9)
+            ]),
+            Some(9)
+        );
+        assert_eq!(
+            images_disk_free(&[disk(vec![DiskUse::AppData], 7), disk(vec![], 9)]),
+            None
+        );
     }
 
     #[test]

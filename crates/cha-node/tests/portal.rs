@@ -282,6 +282,8 @@ fn test_inventory() -> Inventory {
         images: Vec::new(),
         agent_version: None,
         placement: None,
+        disks: Vec::new(),
+        platform: None,
     }
 }
 

@@ -282,6 +282,15 @@ impl Agent {
         let mut inventory = tokio::task::spawn_blocking(collect).await?;
         if let Some(runtime) = &self.runtime {
             inventory.images = runtime.images().await;
+            let docker_root = match runtime.engine() {
+                Some(docker) => docker.root_dir().await.ok().flatten(),
+                None => None,
+            };
+            let data_root = inventory.data_root.clone();
+            inventory.disks = tokio::task::spawn_blocking(move || {
+                inventory::disks(data_root.as_deref(), docker_root.as_deref())
+            })
+            .await?;
             inventory::add_vaapi(&mut inventory, runtime.vaapi_devices().await);
             if let Some(codecs) = runtime.cpu_codecs().await {
                 inventory::set_cpu_codecs(&mut inventory, codecs);

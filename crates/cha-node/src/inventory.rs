@@ -6,7 +6,9 @@ use std::fs;
 use std::net::{IpAddr, Ipv6Addr};
 use std::process::Command;
 
-use cha_wire::{Device, DeviceKind, Gpu, Inventory, PlacementMode};
+use cha_wire::{
+    Device, DeviceKind, Disk, DiskUse, Gpu, Inventory, PlacementMode, Platform, PlatformKind,
+};
 
 pub fn collect() -> Inventory {
     let mut inventory = Inventory {
@@ -27,12 +29,252 @@ pub fn collect() -> Inventory {
         images: Vec::new(),
         agent_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         placement: None,
+        // The agent adds them: it knows the data root and asks Docker where
+        // its own is.
+        disks: Vec::new(),
+        platform: platform(),
     };
     // NVIDIA and the CPU; the agent adds the VA-API devices it probes.
     let mut devices = inventory.devices_or_derived();
     devices.push(cpu_device(inventory.cpus));
     inventory.devices = Some(devices);
     inventory
+}
+
+/// What the images disk is called when the engine didn't say where it is.
+const DOCKERS_DISK: &str = "Docker's disk";
+
+/// What each of the node's disks has free: the one under Docker's images and
+/// the one under the data root, merged when they are the same filesystem.
+/// `docker_root` is the engine's `DockerRootDir`, only to show the admin.
+pub fn disks(data_root: Option<&str>, docker_root: Option<&str>) -> Vec<Disk> {
+    let mut readings = Vec::new();
+    // The agent's own root is overlayfs on Docker's data root, so "/" is
+    // Docker's disk.
+    if let Some(r) = read_disk("/", DiskUse::Images, docker_root.unwrap_or(DOCKERS_DISK)) {
+        readings.push(r);
+    }
+    if let Some(root) = data_root
+        && let Some(r) = read_disk(root, DiskUse::AppData, root)
+    {
+        readings.push(r);
+    }
+    merge_disks(readings)
+}
+
+/// One `statvfs`, before merging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskReading {
+    pub usage: DiskUse,
+    pub path: String,
+    pub fsid: u64,
+    pub total: u64,
+    pub free: u64,
+}
+
+fn read_disk(at: &str, usage: DiskUse, shown: &str) -> Option<DiskReading> {
+    let s = rustix::fs::statvfs(at).ok()?;
+    Some(DiskReading {
+        usage,
+        path: shown.into(),
+        fsid: s.f_fsid,
+        total: s.f_blocks.saturating_mul(s.f_frsize),
+        free: s.f_bavail.saturating_mul(s.f_frsize),
+    })
+}
+
+/// Readings of the same filesystem become one disk with all their uses (the
+/// first reading's path is shown). Overlayfs may report an `f_fsid` of its
+/// own, or none, so equal total and free space count as the same filesystem
+/// too: two disks that agree to the byte, read a moment apart, are one.
+pub fn merge_disks(readings: Vec<DiskReading>) -> Vec<Disk> {
+    let mut disks: Vec<(DiskReading, Disk)> = Vec::new();
+    for r in readings {
+        let same = disks.iter_mut().find(|(seen, _)| {
+            (r.fsid != 0 && seen.fsid == r.fsid) || (seen.total == r.total && seen.free == r.free)
+        });
+        match same {
+            Some((_, disk)) => {
+                if !disk.uses.contains(&r.usage) {
+                    disk.uses.push(r.usage);
+                }
+                // Where Docker's root is unknown, the data root names it better.
+                if disk.path == DOCKERS_DISK && r.usage == DiskUse::AppData {
+                    disk.path = r.path;
+                }
+            }
+            None => {
+                let disk = Disk {
+                    uses: vec![r.usage],
+                    path: r.path.clone(),
+                    total_bytes: r.total,
+                    free_bytes: r.free,
+                };
+                disks.push((r, disk));
+            }
+        }
+    }
+    disks.into_iter().map(|(_, d)| d).collect()
+}
+
+/// What the node runs on; `None` off Linux (a development Mac).
+#[cfg(target_os = "linux")]
+pub fn platform() -> Option<Platform> {
+    let read = |path: &str| fs::read_to_string(path).ok();
+    Some(detect_platform(&PlatformFacts {
+        osrelease: read("/proc/sys/kernel/osrelease"),
+        init_environ: fs::read("/proc/1/environ")
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).into_owned()),
+        container_manager: read("/run/host/container-manager"),
+        init_comm: read("/proc/1/comm"),
+        init_started: read("/proc/1/stat")
+            .and_then(|stat| stat_start_ticks(&stat))
+            .map(|ticks| ticks as f64 / USER_HZ),
+        sys_vendor: read("/sys/class/dmi/id/sys_vendor"),
+        product_name: read("/sys/class/dmi/id/product_name"),
+        bios_vendor: read("/sys/class/dmi/id/bios_vendor"),
+        hypervisor_type: read("/sys/hypervisor/type"),
+        cpuinfo: read("/proc/cpuinfo"),
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn platform() -> Option<Platform> {
+    None
+}
+
+/// The files [`detect_platform`] reads, as text; `None` where one is missing.
+#[derive(Debug, Default)]
+pub struct PlatformFacts {
+    pub osrelease: Option<String>,
+    /// `/proc/1/environ`, NUL-separated. The host's init, since the agent
+    /// runs with `pid: host`.
+    pub init_environ: Option<String>,
+    pub container_manager: Option<String>,
+    /// `/proc/1/comm`: which init process 1 is.
+    pub init_comm: Option<String>,
+    /// When process 1 started, in seconds after the kernel booted
+    /// (`/proc/1/stat`, readable without the rights `environ` needs).
+    pub init_started: Option<f64>,
+    pub sys_vendor: Option<String>,
+    pub product_name: Option<String>,
+    pub bios_vendor: Option<String>,
+    pub hypervisor_type: Option<String>,
+    pub cpuinfo: Option<String>,
+}
+
+/// The names process 1 has as a machine's or a container's init (not
+/// docker-init or tini, which mean the agent can't see the host's processes).
+const SYSTEM_INITS: [&str; 5] = ["systemd", "init", "openrc-init", "runit", "s6-svscan"];
+/// How long after the kernel booted a system init may start and still be the
+/// machine's own.
+const LATE_INIT_SECS: f64 = 10.0;
+
+/// The kernel's clock ticks per second in `/proc/<pid>/stat` (USER_HZ),
+/// fixed at 100 on x86-64.
+#[cfg(target_os = "linux")]
+const USER_HZ: f64 = 100.0;
+
+/// The start time field of `/proc/<pid>/stat`, in clock ticks after boot.
+/// Fields count from after the command's closing parenthesis, which may
+/// contain spaces.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn stat_start_ticks(stat: &str) -> Option<u64> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    // `starttime` is field 22; `rest` starts at field 3 (the state).
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// WSL, Docker Desktop, an LXC container, a virtual machine or bare metal,
+/// in that order. A machine whose probes all came back empty is `unknown`.
+pub fn detect_platform(f: &PlatformFacts) -> Platform {
+    let kernel = f
+        .osrelease
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(String::from);
+    let platform = |kind, detail: Option<&str>| Platform {
+        kind,
+        detail: detail.map(String::from),
+        kernel: kernel.clone(),
+    };
+    let release = f.osrelease.as_deref().unwrap_or("").to_lowercase();
+    if release.contains("microsoft") {
+        return platform(PlatformKind::Wsl, Some("WSL 2"));
+    }
+    if release.contains("linuxkit") {
+        return platform(PlatformKind::DockerDesktop, Some("Docker Desktop"));
+    }
+    let lxc_env = f
+        .init_environ
+        .as_deref()
+        .is_some_and(|e| e.split('\0').any(|kv| kv.trim() == "container=lxc"));
+    let lxc_manager = f.container_manager.as_deref().map(str::trim) == Some("lxc");
+    // Without the right to read init's environment (an agent with no
+    // CAP_SYS_PTRACE can't), a system init that started well after the
+    // kernel booted is a container's: a machine's or a VM's init starts
+    // within seconds of its kernel, a container's once the host is up.
+    let late_init = f
+        .init_comm
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|c| SYSTEM_INITS.contains(&c))
+        && f.init_started.is_some_and(|s| s > LATE_INIT_SECS);
+    if lxc_env || lxc_manager || late_init {
+        return platform(PlatformKind::Lxc, Some("LXC container"));
+    }
+    let lower = |v: &Option<String>| v.as_deref().unwrap_or("").trim().to_lowercase();
+    let (vendor, product, bios, hv) = (
+        lower(&f.sys_vendor),
+        lower(&f.product_name),
+        lower(&f.bios_vendor),
+        lower(&f.hypervisor_type),
+    );
+    let vm = if [&vendor, &product, &bios]
+        .iter()
+        .any(|v| v.contains("proxmox"))
+    {
+        Some("Proxmox VE VM (QEMU)")
+    } else if vendor.contains("qemu") || product.contains("kvm") || product.contains("standard pc")
+    {
+        Some("KVM (QEMU)")
+    } else if vendor.contains("vmware") || product.contains("vmware") {
+        Some("VMware")
+    } else if vendor.contains("microsoft") && product.contains("virtual machine") {
+        Some("Hyper-V")
+    } else if hv == "xen" || vendor.contains("xen") || product.contains("hvm domu") {
+        Some("Xen")
+    } else if vendor.contains("innotek") || product.contains("virtualbox") {
+        Some("VirtualBox")
+    } else if vendor.contains("amazon ec2") || product.contains("amazon ec2") {
+        Some("Amazon EC2")
+    } else if vendor.contains("google") && product.contains("google compute") {
+        Some("Google Compute Engine")
+    } else {
+        None
+    };
+    if let Some(detail) = vm {
+        return platform(PlatformKind::Vm, Some(detail));
+    }
+    let hypervisor_flag = f.cpuinfo.as_deref().is_some_and(|c| {
+        c.lines()
+            .filter(|l| l.starts_with("flags"))
+            .any(|l| l.split_whitespace().any(|w| w == "hypervisor"))
+    });
+    if hypervisor_flag {
+        return platform(PlatformKind::Vm, None);
+    }
+    // Nothing readable at all (no /sys, no /proc): say so rather than guess.
+    let nothing = f.osrelease.is_none()
+        && f.cpuinfo.is_none()
+        && f.sys_vendor.is_none()
+        && f.product_name.is_none();
+    if nothing {
+        return platform(PlatformKind::Unknown, None);
+    }
+    platform(PlatformKind::BareMetal, None)
 }
 
 /// `CHA_PLACEMENT`: `auto` (the default, also when empty) or `manual`.
@@ -359,6 +601,212 @@ fn transient_ipv6(table: &str) -> BTreeSet<Ipv6Addr> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn reading(usage: DiskUse, path: &str, fsid: u64, total: u64, free: u64) -> DiskReading {
+        DiskReading {
+            usage,
+            path: path.into(),
+            fsid,
+            total,
+            free,
+        }
+    }
+
+    #[test]
+    fn one_filesystem_is_one_disk_with_both_uses() {
+        let disks = merge_disks(vec![
+            reading(DiskUse::Images, DOCKERS_DISK, 7, 100, 40),
+            reading(DiskUse::AppData, "/srv/cha-portal", 7, 100, 40),
+        ]);
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].uses, [DiskUse::Images, DiskUse::AppData]);
+        assert_eq!(disks[0].path, "/srv/cha-portal");
+        assert_eq!((disks[0].total_bytes, disks[0].free_bytes), (100, 40));
+    }
+
+    #[test]
+    fn overlayfs_with_its_own_fsid_is_still_matched_by_space() {
+        let disks = merge_disks(vec![
+            reading(DiskUse::Images, "/var/lib/docker", 1, 500, 200),
+            reading(DiskUse::AppData, "/data", 2, 500, 200),
+        ]);
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].path, "/var/lib/docker");
+    }
+
+    #[test]
+    fn different_filesystems_stay_apart() {
+        let disks = merge_disks(vec![
+            reading(DiskUse::Images, "/var/lib/docker", 1, 500, 200),
+            reading(DiskUse::AppData, "/data", 2, 4000, 3000),
+        ]);
+        assert_eq!(disks.len(), 2);
+        assert_eq!(disks[0].uses, [DiskUse::Images]);
+        assert_eq!(disks[1].uses, [DiskUse::AppData]);
+        // An fsid of 0 (none reported) doesn't match another's.
+        let zero = merge_disks(vec![
+            reading(DiskUse::Images, "a", 0, 1, 1),
+            reading(DiskUse::AppData, "b", 0, 2, 2),
+        ]);
+        assert_eq!(zero.len(), 2);
+    }
+
+    fn facts() -> PlatformFacts {
+        PlatformFacts {
+            osrelease: Some("6.14.11-4-pve\n".into()),
+            cpuinfo: Some("flags\t\t: fpu vme sse\n".into()),
+            sys_vendor: Some("Supermicro\n".into()),
+            product_name: Some("X12\n".into()),
+            ..PlatformFacts::default()
+        }
+    }
+
+    #[test]
+    fn bare_metal_has_no_hypervisor_hints() {
+        let p = detect_platform(&facts());
+        assert_eq!(p.kind, PlatformKind::BareMetal);
+        assert_eq!(p.detail, None);
+        assert_eq!(p.kernel.as_deref(), Some("6.14.11-4-pve"));
+    }
+
+    #[test]
+    fn wsl_and_docker_desktop_come_from_the_kernel() {
+        let wsl = detect_platform(&PlatformFacts {
+            osrelease: Some("5.15.153.1-microsoft-standard-WSL2".into()),
+            ..facts()
+        });
+        assert_eq!(wsl.kind, PlatformKind::Wsl);
+        assert_eq!(wsl.detail.as_deref(), Some("WSL 2"));
+        let dd = detect_platform(&PlatformFacts {
+            osrelease: Some("6.10.14-linuxkit".into()),
+            ..facts()
+        });
+        assert_eq!(dd.kind, PlatformKind::DockerDesktop);
+        assert_eq!(dd.kernel.as_deref(), Some("6.10.14-linuxkit"));
+    }
+
+    #[test]
+    fn a_late_system_init_is_a_container() {
+        let late = PlatformFacts {
+            init_comm: Some("systemd\n".into()),
+            init_started: Some(42.0),
+            cpuinfo: Some("flags : fpu vme".into()),
+            ..PlatformFacts::default()
+        };
+        assert_eq!(detect_platform(&late).kind, PlatformKind::Lxc);
+        let early = PlatformFacts {
+            init_started: Some(1.2),
+            ..late
+        };
+        assert_eq!(detect_platform(&early).kind, PlatformKind::BareMetal);
+        // The agent's own init (no host process view) says nothing.
+        let own = PlatformFacts {
+            init_comm: Some("docker-init\n".into()),
+            init_started: Some(5000.0),
+            cpuinfo: Some("flags : fpu vme".into()),
+            ..PlatformFacts::default()
+        };
+        assert_eq!(detect_platform(&own).kind, PlatformKind::BareMetal);
+        let stat = "1 (systemd) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 20 0 1 0 4271 22609920 3074 18446744073709551615";
+        assert_eq!(stat_start_ticks(stat), Some(4271));
+        assert_eq!(
+            stat_start_ticks("7 (a b) c) S 0 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 99 0"),
+            Some(99)
+        );
+    }
+
+    #[test]
+    fn lxc_from_the_inits_environment_or_the_manager_file() {
+        let env = detect_platform(&PlatformFacts {
+            init_environ: Some("HOME=/\0container=lxc\0TERM=linux\0".into()),
+            // An LXC container shows its host's DMI as a VM would.
+            sys_vendor: Some("QEMU".into()),
+            ..facts()
+        });
+        assert_eq!(env.kind, PlatformKind::Lxc);
+        assert_eq!(env.detail.as_deref(), Some("LXC container"));
+        let file = detect_platform(&PlatformFacts {
+            container_manager: Some("lxc\n".into()),
+            ..facts()
+        });
+        assert_eq!(file.kind, PlatformKind::Lxc);
+        let other = detect_platform(&PlatformFacts {
+            init_environ: Some("container=podman\0".into()),
+            ..facts()
+        });
+        assert_eq!(other.kind, PlatformKind::BareMetal);
+    }
+
+    #[test]
+    fn virtual_machines_are_named_when_dmi_says() {
+        let vm = |vendor: &str, product: &str, bios: &str| {
+            detect_platform(&PlatformFacts {
+                sys_vendor: Some(vendor.into()),
+                product_name: Some(product.into()),
+                bios_vendor: Some(bios.into()),
+                ..facts()
+            })
+        };
+        let detail = |p: Platform| {
+            assert_eq!(p.kind, PlatformKind::Vm);
+            p.detail.unwrap()
+        };
+        assert_eq!(
+            detail(vm("QEMU", "Standard PC (Q35 + ICH9, 2009)", "SeaBIOS")),
+            "KVM (QEMU)"
+        );
+        assert_eq!(
+            detail(vm(
+                "QEMU",
+                "Standard PC (Q35 + ICH9, 2009)",
+                "Proxmox distribution of EDK II"
+            )),
+            "Proxmox VE VM (QEMU)"
+        );
+        assert_eq!(
+            detail(vm("VMware, Inc.", "VMware7,1", "VMware, Inc.")),
+            "VMware"
+        );
+        assert_eq!(
+            detail(vm(
+                "Microsoft Corporation",
+                "Virtual Machine",
+                "Microsoft Corporation"
+            )),
+            "Hyper-V"
+        );
+        assert_eq!(detail(vm("Xen", "HVM domU", "Xen")), "Xen");
+        assert_eq!(
+            detail(vm("innotek GmbH", "VirtualBox", "innotek GmbH")),
+            "VirtualBox"
+        );
+        assert_eq!(
+            detail(vm("Amazon EC2", "c5.large", "Amazon EC2")),
+            "Amazon EC2"
+        );
+        assert_eq!(
+            detail(vm("Google", "Google Compute Engine", "Google")),
+            "Google Compute Engine"
+        );
+    }
+
+    #[test]
+    fn the_hypervisor_cpu_flag_alone_is_a_vm_without_a_name() {
+        let p = detect_platform(&PlatformFacts {
+            cpuinfo: Some("flags\t: fpu hypervisor lm\n".into()),
+            ..facts()
+        });
+        assert_eq!(p.kind, PlatformKind::Vm);
+        assert_eq!(p.detail, None);
+    }
+
+    #[test]
+    fn nothing_readable_is_unknown() {
+        let p = detect_platform(&PlatformFacts::default());
+        assert_eq!(p.kind, PlatformKind::Unknown);
+    }
+
     #[test]
     fn placement_is_auto_or_manual() {
         assert_eq!(parse_placement(None).unwrap(), PlacementMode::Auto);
@@ -375,8 +823,6 @@ mod tests {
         assert!(err.contains("CHA_PLACEMENT"), "{err}");
         assert!(parse_placement(Some("never")).is_err());
     }
-
-    use super::*;
 
     #[test]
     fn reads_os_release() {

@@ -194,6 +194,17 @@ fn inventory(gamestream: bool) -> Inventory {
             http_port: 47989,
             name: "box".into(),
         }),
+        disks: vec![cha_wire::Disk {
+            uses: vec![cha_wire::DiskUse::Images, cha_wire::DiskUse::AppData],
+            path: "/data".into(),
+            total_bytes: 34359738368,
+            free_bytes: 18253611008,
+        }],
+        platform: Some(cha_wire::Platform {
+            kind: cha_wire::PlatformKind::Lxc,
+            detail: Some("LXC container".into()),
+            kernel: Some("6.14.11-4-pve".into()),
+        }),
         ..Inventory::default()
     }
 }
@@ -879,6 +890,27 @@ async fn a_node_without_gamestream_is_sent_nothing_and_everything_is_empty() {
         let list = reply.body.as_object().unwrap().values().next().unwrap();
         assert!(list.as_array().unwrap().is_empty(), "{path}");
     }
+}
+
+#[tokio::test]
+async fn the_nodes_list_carries_disks_and_platform() {
+    let p = Portal::start().await;
+    let _node = FakeNode::connect(&p, "box", false).await;
+    let nodes = wait_for(&p, "/api/nodes", &p.admin, |b| !b[0]["inventory"].is_null()).await;
+    let inventory = &nodes[0]["inventory"];
+    assert_eq!(
+        inventory["disks"],
+        serde_json::json!([{
+            "uses": ["images", "appData"], "path": "/data",
+            "totalBytes": 34359738368u64, "freeBytes": 18253611008u64,
+        }])
+    );
+    assert_eq!(
+        inventory["platform"],
+        serde_json::json!({
+            "kind": "lxc", "detail": "LXC container", "kernel": "6.14.11-4-pve",
+        })
+    );
 }
 
 #[tokio::test]

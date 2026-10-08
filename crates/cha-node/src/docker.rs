@@ -155,6 +155,13 @@ impl Docker {
         Ok(has_apparmor(&info))
     }
 
+    /// Where the engine keeps its images and containers (`DockerRootDir` of
+    /// `GET /info`).
+    pub async fn root_dir(&self) -> Result<Option<String>> {
+        let info: Value = serde_json::from_slice(&self.call(Method::GET, "/info", None).await?)?;
+        Ok(root_dir(&info))
+    }
+
     /// Runs a short-lived container to its end and removes it: the exit code
     /// and its output (stdout and stderr). For checks (`--doctor`).
     pub async fn run(
@@ -765,9 +772,27 @@ fn has_apparmor(info: &Value) -> bool {
     })
 }
 
+/// The engine's root directory from an `/info` reply.
+fn root_dir(info: &Value) -> Option<String> {
+    info["DockerRootDir"]
+        .as_str()
+        .filter(|d| !d.is_empty())
+        .map(String::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_engines_root_dir() {
+        use serde_json::json;
+        assert_eq!(
+            root_dir(&json!({"DockerRootDir": "/var/lib/docker"})).as_deref(),
+            Some("/var/lib/docker")
+        );
+        assert_eq!(root_dir(&json!({})), None);
+    }
 
     #[test]
     fn finds_apparmor_in_the_engines_security_options() {

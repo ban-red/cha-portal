@@ -22,6 +22,9 @@ use crate::hostfiles;
 use crate::storage::DataRoot;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Below this much free space on a disk Docker or the data root uses, the
+/// disk line warns.
+const LOW_DISK_BYTES: u64 = 10 << 30;
 /// Below this much free space under the data root, the doctor warns.
 const LOW_SPACE_BYTES: u64 = 20 << 30;
 /// Media tokens live 60 s: a clock this far off breaks connecting.
@@ -102,6 +105,8 @@ pub async fn run(
         checks.push(nvidia_wine(docker, config).await);
     }
     checks.push(storage(docker, config, engine.is_ok()).await);
+    checks.extend(disk_checks(docker, config, engine.is_ok()).await);
+    checks.push(platform_check());
     for (template, dir) in &config.shared_dirs {
         checks.push(external_shared(template, dir).await);
     }
@@ -612,6 +617,63 @@ async fn sandboxes(docker: &Docker, config: &DockerConfig) -> Check {
 /// write it, and Docker must find the same directory at the path the agent
 /// names (it is given host paths): a root that is only inside the agent's
 /// container would take users' data to places nothing keeps.
+/// One line per disk that matters: Docker's and the data root's.
+async fn disk_checks(docker: &Docker, config: &DockerConfig, engine: bool) -> Vec<Check> {
+    let docker_root = if engine {
+        docker.root_dir().await.ok().flatten()
+    } else {
+        None
+    };
+    let data_root = config.data_root.to_string_lossy().into_owned();
+    let disks = tokio::task::spawn_blocking(move || {
+        crate::inventory::disks(Some(&data_root), docker_root.as_deref())
+    })
+    .await
+    .unwrap_or_default();
+    disks.iter().map(disk_check).collect()
+}
+
+fn disk_check(disk: &cha_wire::Disk) -> Check {
+    use cha_wire::DiskUse::{AppData, Images};
+    let name = match (disk.uses.contains(&Images), disk.uses.contains(&AppData)) {
+        (true, true) => "Docker's and app data disk",
+        (true, false) => "Docker's disk",
+        _ => "App data disk",
+    };
+    let gb = |bytes: u64| (bytes as f64 / f64::from(1u32 << 30)).round() as u64;
+    let detail = format!(
+        "{} of {} GB free ({})",
+        gb(disk.free_bytes),
+        gb(disk.total_bytes),
+        disk.path
+    );
+    let level = if disk.free_bytes < LOW_DISK_BYTES {
+        Level::Warn
+    } else {
+        Level::Info
+    };
+    check(level, name, detail)
+}
+
+/// What the node runs on, as the inventory reports it.
+fn platform_check() -> Check {
+    match crate::inventory::platform() {
+        Some(p) => {
+            let what = match p.kind {
+                cha_wire::PlatformKind::BareMetal => "bare metal",
+                cha_wire::PlatformKind::Unknown => "unknown",
+                _ => p.detail.as_deref().unwrap_or("virtual machine"),
+            };
+            let detail = match &p.kernel {
+                Some(kernel) => format!("{what}, kernel {kernel}"),
+                None => what.to_string(),
+            };
+            check(Level::Info, "Platform", detail)
+        }
+        None => check(Level::Info, "Platform", "not Linux; not looked at"),
+    }
+}
+
 async fn storage(docker: &Docker, config: &DockerConfig, engine: bool) -> Check {
     let fix_missing = format!(
         "make it on the host (sudo mkdir -p {0}) and mount it into the agent at the same path \
@@ -1150,6 +1212,26 @@ mod tests {
         assert!(matches!(c.level, Level::Warn));
         assert!(!c.detail.contains("apparmor"));
         assert!(host_files(tmp.path(), true).detail.contains("cha-sandbox"));
+    }
+
+    #[test]
+    fn a_nearly_full_disk_warns() {
+        let disk = |uses: Vec<cha_wire::DiskUse>, free_gb: u64| cha_wire::Disk {
+            uses,
+            path: "/srv/cha-portal".into(),
+            total_bytes: 32 << 30,
+            free_bytes: free_gb << 30,
+        };
+        let ok = disk_check(&disk(vec![cha_wire::DiskUse::Images], 17));
+        assert!(ok.level == Level::Info);
+        assert_eq!(ok.name, "Docker's disk");
+        assert!(ok.detail.starts_with("17 of 32 GB free"));
+        let low = disk_check(&disk(
+            vec![cha_wire::DiskUse::Images, cha_wire::DiskUse::AppData],
+            3,
+        ));
+        assert!(low.level == Level::Warn);
+        assert_eq!(low.name, "Docker's and app data disk");
     }
 
     #[test]
