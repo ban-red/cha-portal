@@ -52,6 +52,9 @@ Creates an LXC container on this Proxmox host running Cha Portal's quick start
   --insecure-portal    with --portal-url: allow plain http:// to another
                        machine (a trusted LAN only)
   --tailscale          pass /dev/net/tun in and install Tailscale, for HTTPS
+  --enable-huc         on an Intel GPU of 6th to 10th generation Core, have the host
+                       load its HuC firmware at boot (the low-power encoder's
+                       bitrate control needs it); takes effect after a reboot
   --plain-http         the quick start over plain HTTP on the LAN, with no
                        Secure cookie (a trusted LAN only: SETUP.md, Without
                        HTTPS)
@@ -68,7 +71,7 @@ USAGE
 
 version= id= hostname=cha-node cores=4 memory=8192 disk=64 storage=local-lvm
 template_storage=local bridge=vmbr0 ip= gateway= data_dir= gpu=auto
-portal_url= join_token= insecure=0 tailscale=0 plain_http=0 pull=1 ssh_key= source= dry_run=0
+portal_url= join_token= insecure=0 tailscale=0 plain_http=0 pull=1 ssh_key= source= dry_run=0 enable_huc=0
 need() { [ $# -ge 2 ] && [ -n "$2" ] || { echo "create-node.sh: $1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
     case $1 in
@@ -90,6 +93,7 @@ while [ $# -gt 0 ]; do
         --join-token) need "$@"; join_token=$2; shift ;;
         --insecure-portal) insecure=1 ;;
         --tailscale) tailscale=1 ;;
+        --enable-huc) enable_huc=1 ;;
         --plain-http) plain_http=1 ;;
         --no-pull) pull=0 ;;
         --ssh-key) need "$@"; ssh_key=$2; shift ;;
@@ -168,6 +172,30 @@ net="name=eth0,bridge=$bridge,ip=${ip:-dhcp}${gateway:+,gw=$gateway}"
 say "container $id ($hostname): $cores cores, $memory MB, ${disk} GB on $storage, $net"
 say "GPU: ${gpus:-none}${data_dir:+; app data: $data_dir}"
 say "runs: ${portal_url:+a node for $portal_url}${portal_url:-the quick start (portal and node)}, release $version"
+# Intel's HuC: on the GPUs of 6th to 10th generation Core (Skylake to Ice Lake) the
+# kernel doesn't load it by default, and without it the low-power encoder
+# offers no bitrate control, so the streamer uses the slower one. i915's
+# enable_guc=2 loads the HuC alone; 11th generation and newer load it anyway.
+huc_info=$(cat /sys/kernel/debug/dri/*/gt0/uc/huc_info 2>/dev/null | head -1 || true)
+huc_conf=/etc/modprobe.d/cha-i915-huc.conf
+if [ "$huc_info" = "HuC disabled" ] && [ -n "$gpus" ]; then
+    if [ "$enable_huc" = 1 ] && [ "$dry_run" = 1 ]; then
+        say "HuC: would write $huc_conf (enable_guc=2) and update the initramfs; reboot the host after"
+    elif [ "$enable_huc" = 1 ]; then
+        say "the Intel GPU's HuC, from the next boot"
+        if [ -f "$huc_conf" ]; then
+            echo "have $huc_conf"
+        else
+            echo "options i915 enable_guc=2" >"$huc_conf"
+            update-initramfs -u -k all >/dev/null
+            echo "wrote $huc_conf and updated the initramfs: reboot the host to load the HuC"
+        fi
+    else
+        warn "this Intel GPU's HuC isn't loaded, so streams use its slower encoder. --enable-huc
+         sets the host to load it (a reboot of the host is needed): deploy/proxmox/README.md"
+    fi
+fi
+
 [ "$dry_run" = 1 ] && exit 0
 
 # 1. The modules, on the host.

@@ -70,6 +70,28 @@ For a node alone, the directory is `/opt/cha-portal/deploy/node`. Run compose fr
 - **Updating:** back up the portal's database first ([Upgrading](../../SETUP.md#upgrading-to-a-new-release)). Then in the container, `git fetch --depth 1 origin tag v0.3.0 && git checkout v0.3.0`, then `setup.sh --version 0.3.0`, then `docker compose pull && docker compose up -d` from the compose directory. For a node alone, also change the version in `deploy/node/.env` (`CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE`, `CHA_IMAGE_TAG`).
 - **Removing:** `pct stop <id> && pct destroy <id>`. On the host, `/etc/modules-load.d/cha.conf` and the udev rule stay until you delete them.
 
+### Intel GPUs: turn on the HuC
+
+On the GPUs of 6th to 10th generation Intel Core processors (Skylake to Comet Lake and Ice Lake: HD, UHD and Iris Plus Graphics), the low-power encoder's bitrate control runs on the GPU's HuC microcontroller, and Linux doesn't load its firmware there by default. Without it, the streamer falls back to the GPU's other encoder, which borrows the shader cores the apps also draw with. On a UHD 630 at 1440p60 that takes about 5 ms a frame for H.264 and 10 ms for HEVC. From 11th generation Core (Tiger Lake) on, and on Arc, the kernel loads the HuC by itself. HEVC on 6th to 9th generation has no low-power encoder at all, so it stays on the slower one either way.
+
+Check on the host. `HuC disabled` means it isn't loaded:
+
+```bash
+cat /sys/kernel/debug/dri/0/gt0/uc/huc_info
+```
+
+`create-node.sh` warns when it finds this, and `--enable-huc` sets it up. By hand, load the HuC alone (not the GuC's scheduling, which these generations don't need), rebuild the initramfs, and reboot the host:
+
+```bash
+echo "options i915 enable_guc=2" > /etc/modprobe.d/cha-i915-huc.conf
+```
+
+```bash
+update-initramfs -u -k all
+```
+
+The firmware comes with Proxmox (`/lib/firmware/i915/kbl_huc_*.bin` and the like). After the reboot, `huc_info` should say the firmware is loaded and authenticated, and the streamer's log says `entrypoint="EncSliceLP"` for H.264. The reboot restarts every guest on the host, so pick its time.
+
 ## A VM with the GPU passed through
 
 This is the way to run an NVIDIA GPU on Proxmox. The VM owns the GPU, so it behaves like any other machine, and the [Quick start](../../SETUP.md#quick-start) runs in it unchanged.
