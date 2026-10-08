@@ -50,6 +50,9 @@ pub struct DeviceProbes {
     /// The CPU's codecs: when asked, and what the image said (`None`: it
     /// didn't).
     cpu: Mutex<Option<(Instant, Option<Vec<String>>)>>,
+    /// Render nodes' groups as a container saw them, for nodes the agent's
+    /// own container doesn't have ([`Self::render_gid`]).
+    gids: Mutex<HashMap<String, u32>>,
 }
 
 impl DeviceProbes {
@@ -83,6 +86,43 @@ impl DeviceProbes {
         }
         *self.cpu.lock().expect("probe cache lock") = Some((Instant::now(), codecs.clone()));
         codecs
+    }
+
+    /// The group that owns `render_node` on the host, which the app needs to
+    /// open it. The agent's container usually has only NVIDIA's node (CDI) or
+    /// none, so for any other it asks a throwaway container of the streamer
+    /// image, given that node: Docker makes it with the host's owner. Kept
+    /// once known; `None` when neither can tell.
+    pub async fn render_gid(&self, docker: &Docker, image: &str, render_node: &str) -> Option<u32> {
+        if let Some(gid) = local_gid(render_node) {
+            return Some(gid);
+        }
+        if let Some(gid) = self.known_gid(render_node) {
+            return Some(gid);
+        }
+        match probe_gid(docker, image, render_node).await {
+            Ok(gid) => {
+                debug!(%render_node, gid, "render node's group, from a container");
+                self.gids
+                    .lock()
+                    .expect("probe cache lock")
+                    .insert(render_node.to_string(), gid);
+                Some(gid)
+            }
+            Err(err) => {
+                debug!(%render_node, "can't tell the render node's group: {err:#}");
+                None
+            }
+        }
+    }
+
+    /// A group [`Self::render_gid`] found earlier.
+    pub fn known_gid(&self, render_node: &str) -> Option<u32> {
+        self.gids
+            .lock()
+            .expect("probe cache lock")
+            .get(render_node)
+            .copied()
     }
 
     /// The VA-API devices on this host: every candidate render node the
@@ -141,7 +181,7 @@ pub async fn probe(docker: &Docker, image: &str, render_node: &str) -> Result<Op
     if !docker.image_exists(image).await? {
         anyhow::bail!("the streamer image {image} isn't here");
     }
-    let gid = std::fs::metadata(render_node).map(|m| m.gid()).ok();
+    let gid = local_gid(render_node);
     let name = render_node.rsplit('/').next().unwrap_or("renderD");
     let mut config = probe_config(image, &format!("vaapi:{render_node}"));
     config["HostConfig"]["Devices"] = json!([{
@@ -154,6 +194,34 @@ pub async fn probe(docker: &Docker, image: &str, render_node: &str) -> Result<Op
     parse_probe(&output, render_node)
         .context("the probe printed no device")
         .map(Some)
+}
+
+/// The group of `render_node` as the agent's own container sees it.
+fn local_gid(render_node: &str) -> Option<u32> {
+    std::fs::metadata(render_node).map(|m| m.gid()).ok()
+}
+
+/// `render_node`'s group as a container given it sees it: `stat` in a
+/// throwaway container of the streamer image, like [`probe`]'s.
+async fn probe_gid(docker: &Docker, image: &str, render_node: &str) -> Result<u32> {
+    if !valid_render_node(render_node) {
+        anyhow::bail!("{render_node} isn't a render node");
+    }
+    let name = render_node.rsplit('/').next().unwrap_or("renderD");
+    let mut config = probe_config(image, "");
+    config["Entrypoint"] = json!(["stat", "-c", "%g", render_node]);
+    config["HostConfig"]["Devices"] = json!([{
+        "PathOnHost": render_node,
+        "PathInContainer": render_node,
+        "CgroupPermissions": "r",
+    }]);
+    let output = run_probe(docker, &format!("cha-probe-gid-{name}"), &config).await?;
+    parse_gid(&output).context("stat printed no group")
+}
+
+/// The number `stat -c %g` printed, on its last line.
+fn parse_gid(output: &str) -> Option<u32> {
+    output.trim().lines().last()?.trim().parse().ok()
 }
 
 /// Asks the streamer image what the CPU device makes: the same throwaway
@@ -238,6 +306,14 @@ pub(crate) fn parse_probe(output: &str, render_node: &str) -> Option<Device> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_render_nodes_group_is_the_last_number_stat_prints() {
+        assert_eq!(parse_gid("104\n"), Some(104));
+        assert_eq!(parse_gid("some warning\n992\n"), Some(992));
+        assert_eq!(parse_gid("stat: cannot stat\n"), None);
+        assert_eq!(parse_gid(""), None);
+    }
 
     #[test]
     fn reads_what_a_probe_prints() {

@@ -1572,6 +1572,17 @@ impl DockerRuntime {
         self.docker.start(&streamer).await?;
         self.streamer_still_up(&spec.id).await?;
         let hidraw = self.streamer_hidraw(spec, port).await?;
+        if let Some(node) = vaapi_node(spec) {
+            // So app_render_gid knows it, though the agent may not have the node.
+            if self
+                .probes
+                .render_gid(&self.docker, &self.config.streamer_image, node)
+                .await
+                .is_none()
+            {
+                warn!(%node, "can't tell the render node's group; the app may not open the GPU");
+            }
+        }
         let app = self
             .docker
             .create(
@@ -1757,11 +1768,13 @@ impl DockerRuntime {
 
     /// The group that lets the app open its GPU's render node: the configured
     /// one's for `nvidia` (CDI passes the node through with the host's
-    /// ownership), the chosen node's for `vaapi`, none for `cpu`.
+    /// ownership), the chosen node's for `vaapi` (as the agent sees it, or as
+    /// [`DeviceProbes::render_gid`] found it), none for `cpu`.
     fn app_render_gid(&self, spec: &EnvironmentSpec) -> Option<u32> {
         match device_kind(spec) {
             DeviceKind::Nvidia => self.render_gid,
-            DeviceKind::Vaapi => vaapi_node(spec).and_then(render_gid),
+            DeviceKind::Vaapi => vaapi_node(spec)
+                .and_then(|node| render_gid(node).or_else(|| self.probes.known_gid(node))),
             DeviceKind::Cpu => None,
         }
     }
