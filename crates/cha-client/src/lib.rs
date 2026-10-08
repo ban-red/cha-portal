@@ -77,12 +77,20 @@ pub enum AppState {
     /// On its way up (a portal environment pulling its image, say).
     Starting,
     Running,
+    /// Closing down (a portal environment being stopped): it can't be
+    /// resumed, and a new one starts once it has gone.
+    Stopping,
 }
 
 impl AppState {
     /// Running or on its way: launching it joins it rather than starting another.
     pub fn is_up(self) -> bool {
-        self != AppState::Stopped
+        matches!(self, AppState::Starting | AppState::Running)
+    }
+
+    /// On its way up or down: worth looking again soon.
+    pub fn is_changing(self) -> bool {
+        matches!(self, AppState::Starting | AppState::Stopping)
     }
 }
 

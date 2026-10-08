@@ -77,6 +77,9 @@ const MAX_POLL_FAILURES: u32 = 4;
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 /// How often a launch looks at its environment.
 const LAUNCH_POLL: Duration = Duration::from_millis(500);
+/// How long a launch waits for the app's last environment to finish
+/// closing (Steam saving its state, the node removing containers).
+const STOP_WAIT: Duration = Duration::from_secs(120);
 /// Polls that fail to reach the portal in a row before a launch gives up.
 const MAX_LAUNCH_POLL_FAILURES: u32 = 5;
 
@@ -577,7 +580,23 @@ impl Inner {
         client: &PortalClient,
         template: &str,
     ) -> Result<Environment, PortalError> {
-        let existing = client.environments().await?;
+        let mut existing = client.environments().await?;
+        // One still closing down goes first: a second beside it would share
+        // its app data (Steam's home) while it shuts.
+        let closing = tokio::time::Instant::now() + STOP_WAIT;
+        while pick_existing(&existing, template).is_none()
+            && let Some(old) = stopping(&existing, template)
+        {
+            if tokio::time::Instant::now() >= closing {
+                return Err(PortalError::Other(anyhow!(
+                    "the last {template} is still closing after {} s; try again in a moment",
+                    STOP_WAIT.as_secs()
+                )));
+            }
+            info!(environment = %old.id, "waiting for the last one to close");
+            tokio::time::sleep(LAUNCH_POLL).await;
+            existing = client.environments().await?;
+        }
         let found = pick_existing(&existing, template);
         let mut env = match found {
             Some(env) => env.clone(),
@@ -640,11 +659,20 @@ pub fn pick_existing<'a>(
 }
 
 /// How the user's environments of `template` make its app look: running if
-/// one runs, starting if one starts, else stopped.
+/// one runs, starting if one starts, stopping if one is still closing down,
+/// else stopped.
 pub fn app_state(environments: &[Environment], template: &str) -> AppState {
     match pick_existing(environments, template).map(|e| e.state.as_str()) {
         Some("running") => AppState::Running,
         Some(_) => AppState::Starting,
+        None if stopping(environments, template).is_some() => AppState::Stopping,
         None => AppState::Stopped,
     }
+}
+
+/// The user's environment of `template` that is still closing down, if any.
+fn stopping<'a>(environments: &'a [Environment], template: &str) -> Option<&'a Environment> {
+    environments
+        .iter()
+        .find(|e| e.template_id == template && e.state == "stopping")
 }

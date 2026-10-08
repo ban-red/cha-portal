@@ -27,6 +27,8 @@ const INPUT_ACCESS_RECHECK: Duration = Duration::from_secs(2);
 /// How often a shown portal's apps are listed again: apps start and stop
 /// from browsers and other players too.
 const PORTAL_APPS_REFRESH: Duration = Duration::from_secs(5);
+/// …and this often while an app is starting or closing.
+const PORTAL_APPS_REFRESH_CHANGING: Duration = Duration::from_secs(1);
 /// System Settings, Privacy & Security, Input Monitoring.
 const INPUT_MONITORING_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
@@ -657,13 +659,23 @@ impl Launcher {
         }
 
         // A portal's apps start and stop elsewhere too: list them again now
-        // and then, keeping the list shown meanwhile.
+        // and then (every second while one starts or closes), keeping the
+        // list shown meanwhile.
+        let changing = matches!(
+            self.apps.get(&key),
+            Some(AppsState::Loaded { apps, .. }) if apps.iter().any(|a| a.state.is_changing())
+        );
+        let portal_refresh = if changing {
+            PORTAL_APPS_REFRESH_CHANGING
+        } else {
+            PORTAL_APPS_REFRESH
+        };
         if self.portal_transport == Some(t)
             && let Some(AppsState::Loaded {
                 listed, refreshing, ..
             }) = self.apps.get_mut(&key)
             && !*refreshing
-            && listed.elapsed() >= PORTAL_APPS_REFRESH
+            && listed.elapsed() >= portal_refresh
         {
             *refreshing = true;
             actions.push(Action::LoadApps {
@@ -715,7 +727,14 @@ impl Launcher {
                         crate::theme::widgets::card(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let launch = if state.is_up() { "Resume" } else { "Launch" };
-                                if primary_button_enabled(ui, !busy, launch).clicked() {
+                                // Closing: a new one starts once it has gone.
+                                let can_launch = !busy && state != AppState::Stopping;
+                                if primary_button_enabled(ui, can_launch, launch)
+                                    .on_disabled_hover_text(
+                                        "Still closing; launch it again once it has",
+                                    )
+                                    .clicked()
+                                {
                                     actions.push(Action::Launch {
                                         transport: t,
                                         host: host.id.clone(),
@@ -729,6 +748,9 @@ impl Launcher {
                                     }
                                     AppState::Starting => {
                                         status_label(ui, Status::Info, "(starting)");
+                                    }
+                                    AppState::Stopping => {
+                                        status_label(ui, Status::Warn, "(closing…)");
                                     }
                                     AppState::Stopped => {}
                                 }

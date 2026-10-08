@@ -355,6 +355,38 @@ async fn apps_say_which_run_and_quit_without_streaming() {
     assert!(f.connects.is_empty(), "quitting doesn't stream");
 }
 
+/// Quit from the player or a browser, an environment closes for a while:
+/// its app says so, and launching it waits for it to go before starting another.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closing_app_says_so_and_a_launch_waits_for_it() {
+    let fake: Shared = Arc::default();
+    fake.lock().unwrap().environments = vec![env("old", "steam", "stopping", None)];
+    let (portal, origin, _dir) = signed_in(fake.clone()).await;
+    let apps = portal.apps(&origin).await.unwrap();
+    let states: Vec<AppState> = apps.iter().map(|a| a.state).collect();
+    assert_eq!(states, [AppState::Stopped, AppState::Stopping]);
+    assert!(!AppState::Stopping.is_up() && AppState::Stopping.is_changing());
+
+    // The new one fails at once, so the launch ends quickly once it posts.
+    fake.lock().unwrap().poll_state = Some(("failed".into(), "test".into()));
+    let launching = {
+        let portal = portal.clone();
+        let origin = origin.clone();
+        let id = apps[1].id;
+        tokio::spawn(async move { portal.launch(&origin, id, config(vec![Codec::H264])).await })
+    };
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(
+        fake.lock().unwrap().posts.is_empty(),
+        "nothing starts while the last one closes"
+    );
+    fake.lock().unwrap().environments.clear(); // it has gone
+    let _ = launching.await.unwrap();
+    let f = fake.lock().unwrap();
+    assert_eq!(f.posts.len(), 1);
+    assert_eq!(f.posts[0]["templateId"], "steam");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_environment_that_fails_says_why() {
     let fake: Shared = Arc::default();
