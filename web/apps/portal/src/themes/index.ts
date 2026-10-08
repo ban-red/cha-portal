@@ -44,7 +44,7 @@ export interface ThemeInfo {
   appearances: readonly Appearance[];
   /** Preview colours for a theme picker: canvas, panel, accent, ok. */
   swatches: readonly string[];
-  /** The tab icon for this theme (a file in public/). */
+  /** The tab icon for this theme (a file in public/). Every theme uses the one logo today. */
   favicon: string;
 }
 
@@ -54,14 +54,14 @@ export const THEMES = [
     name: "Cha – Magenta",
     appearances: ["dark", "light"],
     swatches: ["#12060f", "#1c0b18", "#ff4fb3", "#34d399"],
-    favicon: "/favicon.svg",
+    favicon: "/favicon.png",
   },
   {
     id: "cha-jade",
     name: "Cha – Jade",
     appearances: ["dark", "light"],
     swatches: ["#0a0f11", "#10181b", "#2dd4bf", "#4ade80"],
-    favicon: "/favicon-jade.svg",
+    favicon: "/favicon.png",
   },
 ] as const satisfies readonly ThemeInfo[];
 

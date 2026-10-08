@@ -18,8 +18,10 @@ app="$root/target/Cha Player.app"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml" | head -1)
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/cha-player"
+# The app icon; made from the brand master by scripts/export-brand.sh.
+cp "$here/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 sed "s/@VERSION@/$version/" "$here/Info.plist" > "$app/Contents/Info.plist"
 if [ -n "${CHA_SIGN_IDENTITY:-}" ]; then
     codesign --force --sign "$CHA_SIGN_IDENTITY" --identifier sh.cha.player "$app"

@@ -62,3 +62,16 @@ Add an object to `cases` in `health-cases.json`:
 - `history` is a list of entries, oldest first. Each entry is the file's `base` (a healthy 60 fps LAN stream) with its fields set, `repeat` times (default 1). A field may be an array of `repeat` values for one per snapshot (`"lost": [0, 3, 6, 9, 12, 15, 18, 21]`). `node` merges into the base's node field by field (`null` removes one); `"node": null` is no report. `"NaN"` stands for a NaN.
 - `expect` lists the issues exactly, most severe first. `details` and `hints` give exact strings for the issues named; pin a few in every case that has issues so wording drift is caught.
 - Work out the expectation by reasoning, then run both runners; if one disagrees, that is the point of the case. Fix the check (or the spec), not the expectation, unless the expectation was wrong.
+
+## The logo
+
+`brand/logo.png` is the master logo: 1024×1024, transparent, cut out of the original artwork's dark background. Every other logo file is made from it by `sh scripts/export-brand.sh` (ImageMagick, and `iconutil` on macOS):
+
+| File | Use |
+|---|---|
+| `web/apps/portal/public/favicon.png`, `favicon.ico` | The portal's tab icon (every theme's `favicon`) |
+| `web/apps/portal/public/apple-touch-icon.png` | Home-screen icon, on the logo's own dark tile |
+| `web/apps/portal/public/logo.png` | `BrandMark.vue`, beside the product name |
+| `crates/cha-player/macos/AppIcon.icns` | Cha Player's app icon, on Apple's 824-in-1024 rounded tile |
+
+To change the logo, replace `brand/logo.png`, run the script and commit what it writes.
