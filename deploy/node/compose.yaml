@@ -67,6 +67,9 @@ services:
       # that streams an adopted one (deploy/README.md, Moonlight hosts).
       CHA_MOONLIGHT: ${CHA_MOONLIGHT:-true}
       CHA_GATEWAY_IMAGE: ${CHA_GATEWAY_IMAGE:-cha/gateway:dev}
+      # auto: the portal may pick this node for a launch. manual: only when a
+      # launch chooses it by hand (a test bed). Anything else stops the agent.
+      CHA_PLACEMENT: ${CHA_PLACEMENT:-auto}
       # Moonlight clients: the node hosts GameStream and gives each environment
       # a block of media ports (deploy/README.md, Playing from Moonlight).
       CHA_GAMESTREAM: ${CHA_GAMESTREAM:-false}

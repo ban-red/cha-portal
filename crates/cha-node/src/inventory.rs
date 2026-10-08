@@ -6,7 +6,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv6Addr};
 use std::process::Command;
 
-use cha_wire::{Device, DeviceKind, Gpu, Inventory};
+use cha_wire::{Device, DeviceKind, Gpu, Inventory, PlacementMode};
 
 pub fn collect() -> Inventory {
     let mut inventory = Inventory {
@@ -33,6 +33,15 @@ pub fn collect() -> Inventory {
     devices.push(cpu_device(inventory.cpus));
     inventory.devices = Some(devices);
     inventory
+}
+
+/// `CHA_PLACEMENT`: `auto` (the default, also when empty) or `manual`.
+pub fn parse_placement(value: Option<&str>) -> anyhow::Result<PlacementMode> {
+    match value.map(str::trim).unwrap_or_default() {
+        "" | "auto" => Ok(PlacementMode::Auto),
+        "manual" => Ok(PlacementMode::Manual),
+        other => anyhow::bail!("CHA_PLACEMENT must be auto or manual: {other:?}"),
+    }
 }
 
 /// Puts `vaapi` devices into an inventory's device list, ahead of the CPU.
@@ -342,6 +351,23 @@ fn transient_ipv6(table: &str) -> BTreeSet<Ipv6Addr> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn placement_is_auto_or_manual() {
+        assert_eq!(parse_placement(None).unwrap(), PlacementMode::Auto);
+        assert_eq!(parse_placement(Some("")).unwrap(), PlacementMode::Auto);
+        assert_eq!(
+            parse_placement(Some(" auto ")).unwrap(),
+            PlacementMode::Auto
+        );
+        assert_eq!(
+            parse_placement(Some("manual")).unwrap(),
+            PlacementMode::Manual
+        );
+        let err = parse_placement(Some("Manual")).unwrap_err().to_string();
+        assert!(err.contains("CHA_PLACEMENT"), "{err}");
+        assert!(parse_placement(Some("never")).is_err());
+    }
+
     use super::*;
 
     #[test]

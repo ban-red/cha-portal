@@ -68,7 +68,7 @@ use tracing::{debug, info, warn};
 
 use crate::crashlog::{self, Tail};
 use crate::devices::DeviceProbes;
-use crate::docker::{ContainerEvent, ContainerMount, Docker, encode, names_registry};
+use crate::docker::{ContainerEvent, ContainerMount, Docker, PullProgress, encode, names_registry};
 use crate::storage::{DataRoot, Seed, plan_seed};
 
 const LABEL_ENV: &str = "sh.cha.env";
@@ -134,6 +134,24 @@ pub struct Exit {
 pub struct Progress {
     pub id: String,
     pub detail: String,
+    /// How far along, when it can be counted (an image download): `done` of
+    /// `total` in `unit`.
+    pub done: Option<u64>,
+    pub total: Option<u64>,
+    pub unit: Option<&'static str>,
+}
+
+impl Progress {
+    /// A step that can't be counted.
+    fn note(id: &str, detail: impl Into<String>) -> Self {
+        Self {
+            id: id.to_string(),
+            detail: detail.into(),
+            done: None,
+            total: None,
+            unit: None,
+        }
+    }
 }
 
 /// Something wrong with a running environment that its user should be told,
@@ -186,6 +204,16 @@ pub trait Runtime: Send + Sync + 'static {
     }
     /// Warnings about running environments, as they come and go.
     fn warnings(&self) -> broadcast::Receiver<Warning> {
+        broadcast::channel(1).1
+    }
+    /// The `repo:tag` names of the images this runtime holds (ADR 0017);
+    /// empty from one that has none.
+    fn images(&self) -> BoxFuture<'_, Vec<String>> {
+        Box::pin(async { Vec::new() })
+    }
+    /// A signal each time an image has been pulled, so the inventory can be
+    /// sent again with it.
+    fn pulled(&self) -> broadcast::Receiver<()> {
         broadcast::channel(1).1
     }
     /// Where each environment that is watched stands now: a warning, or none.
@@ -271,6 +299,125 @@ impl DockerConfig {
             .as_ref()
             .and_then(|p| p.image_for(image))
             .unwrap_or_else(|| image.to_string())
+    }
+}
+
+impl DockerConfig {
+    /// The images an app may run from, in order (ADR 0017): the spec's
+    /// candidates, or its one `image` from a portal that predates them. Each
+    /// has `{version}` filled in and the published mapping applied.
+    pub fn app_candidates(&self, spec: &EnvironmentSpec, version: &str) -> Vec<String> {
+        let listed: &[String] = if spec.image_candidates.is_empty() {
+            std::slice::from_ref(&spec.image)
+        } else {
+            &spec.image_candidates
+        };
+        let mut out: Vec<String> = Vec::new();
+        for candidate in listed {
+            let image = self.app_image(&candidate.replace("{version}", version));
+            if !out.contains(&image) {
+                out.push(image);
+            }
+        }
+        out
+    }
+}
+
+/// The streamer images to try: the configured one, then the published copy
+/// for this release, unless the configured one already names a registry.
+pub fn streamer_candidates(configured: &str, version: &str) -> Vec<String> {
+    let mut out = vec![configured.to_string()];
+    if !names_registry(configured) {
+        out.push(format!("{PUBLISHED_STREAMER}:{version}"));
+    }
+    out
+}
+
+/// Where the release's streamer image is published
+/// (`.github/workflows/publish.yml`).
+const PUBLISHED_STREAMER: &str = "ghcr.io/ban-red/cha-streamer";
+
+/// The release this agent is, for the `{version}` in image names.
+const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The first of `candidates` the engine has, else the first that names a
+/// registry, pulled (`on_progress` hears how it goes, starting with nothing
+/// known). Whether it pulled comes with the image. Fails naming every
+/// candidate it tried.
+async fn resolve_image(
+    docker: &Docker,
+    role: &str,
+    candidates: &[String],
+    mut on_progress: impl FnMut(&str, PullProgress),
+) -> Result<(String, bool)> {
+    for image in candidates {
+        if docker.image_exists(image).await? {
+            info!(%image, %role, "using the image the engine has");
+            return Ok((image.clone(), false));
+        }
+    }
+    let tried = candidates.join(", ");
+    let Some(image) = candidates.iter().find(|i| names_registry(i)) else {
+        bail!(
+            "no image for the {role} is on this node (tried {tried}): build it (`docker compose -f images/compose.yaml build`, and for the streamer `docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .`)"
+        );
+    };
+    info!(%image, %role, %tried, "pulling the image");
+    on_progress(image, PullProgress::default());
+    let started = std::time::Instant::now();
+    let size = docker
+        .pull_with(image, |p| on_progress(image, p))
+        .await
+        .with_context(|| {
+            format!("{image} isn't on this node and couldn't be pulled (tried {tried})")
+        })?;
+    info!(%image, %role, secs = started.elapsed().as_secs_f32(), bytes = size.total, "pulled the image");
+    Ok((image.clone(), true))
+}
+
+/// What an image is called to the user: `ghcr.io/ban-red/cha-env-chrome:0.1.0`
+/// and `cha/env-chrome:dev` are "Chrome", `cha-env-test-pattern` is "Test
+/// pattern". (The catalog's own display name isn't in the launch spec.)
+fn display_name(image: &str) -> String {
+    let name = image.rsplit('/').next().unwrap_or(image);
+    let name = name.split(':').next().unwrap_or(name);
+    let name = ["cha-env-", "env-", "cha-"]
+        .iter()
+        .find_map(|p| name.strip_prefix(p))
+        .unwrap_or(name)
+        .replace('-', " ");
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => image.to_string(),
+    }
+}
+
+/// What the user reads while an image downloads: "Downloading Chrome (412 of
+/// 890 MB)", with the counts alongside for a progress bar.
+fn pull_progress(id: &str, what: &str, progress: PullProgress) -> Progress {
+    if progress.total == 0 {
+        return Progress::note(id, format!("Downloading {what}"));
+    }
+    Progress {
+        id: id.to_string(),
+        detail: format!("Downloading {what} ({})", sizes(progress)),
+        done: Some(progress.done),
+        total: Some(progress.total),
+        unit: Some("bytes"),
+    }
+}
+
+/// `412 of 890 MB`, or in GB from a gigabyte up.
+fn sizes(p: PullProgress) -> String {
+    if p.total >= 1_000_000_000 {
+        format!(
+            "{:.1} of {:.1} GB",
+            p.done as f64 / 1e9,
+            p.total as f64 / 1e9
+        )
+    } else {
+        format!("{} of {} MB", p.done / 1_000_000, p.total / 1_000_000)
     }
 }
 
@@ -463,6 +610,8 @@ pub struct DockerRuntime {
     exits: broadcast::Sender<Exit>,
     progress: broadcast::Sender<Progress>,
     warnings: broadcast::Sender<Warning>,
+    /// Fires after each image pull ([`Runtime::pulled`]).
+    pulled: broadcast::Sender<()>,
 }
 
 /// A per-user directory laid over a shared one in an app.
@@ -611,15 +760,13 @@ impl DockerRuntime {
     /// agent, clears out dead ones, and starts watching for exits.
     pub async fn new(docker: Docker, mut config: DockerConfig) -> Result<Arc<Self>> {
         docker.ping().await?;
-        // A published streamer image is pulled now, not at the first launch:
-        // the device probes and the checks below run in it.
-        if names_registry(&config.streamer_image)
-            && !docker.image_exists(&config.streamer_image).await?
-        {
-            info!(image = %config.streamer_image, "pulling the streamer image");
-            if let Err(err) = docker.pull(&config.streamer_image).await {
-                warn!(image = %config.streamer_image, "can't pull the streamer image: {err:#}");
-            }
+        // The streamer image is settled now, not at the first launch: the
+        // device probes and the checks below run in it. The configured one if
+        // the engine has it, else its published copy, pulled.
+        let candidates = streamer_candidates(&config.streamer_image, AGENT_VERSION);
+        match resolve_image(&docker, "streamer", &candidates, |_, _| {}).await {
+            Ok((image, _)) => config.streamer_image = image,
+            Err(err) => warn!("no streamer image: {err:#}"),
         }
         config.nvidia_wine_dir = Self::settle_nvidia_wine_dir(&docker, &config).await;
         let render_gid = render_gid(&config.render_node);
@@ -629,6 +776,7 @@ impl DockerRuntime {
         let (exits, _) = broadcast::channel(64);
         let (progress, _) = broadcast::channel(64);
         let (warnings, _) = broadcast::channel(64);
+        let (pulled, _) = broadcast::channel(8);
         let data = DataRoot::new(config.data_root.clone(), APP_UID, APP_UID)?;
         let runtime = Arc::new(Self {
             docker,
@@ -640,6 +788,7 @@ impl DockerRuntime {
             exits,
             progress,
             warnings,
+            pulled,
         });
         runtime.adopt().await?;
         let watcher = Arc::clone(&runtime);
@@ -909,12 +1058,16 @@ impl DockerRuntime {
     }
 
     async fn start_environment(&self, mut spec: EnvironmentSpec) -> Result<StreamerEndpoint> {
-        if spec.gateway.is_some() {
+        let version = AGENT_VERSION;
+        let candidates = if spec.gateway.is_some() {
             // The gateway stands in for the app and the streamer both.
-            spec.image = self.config.app_image(&self.config.gateway_image);
-            self.check_gateway(&spec)?;
+            vec![self.config.app_image(&self.config.gateway_image)]
         } else {
-            spec.image = self.config.app_image(&spec.image);
+            self.config.app_candidates(&spec, version)
+        };
+        spec.image = candidates[0].clone();
+        if spec.gateway.is_some() {
+            self.check_gateway(&spec)?;
         }
         check_storage(&spec)?;
         check_device(&spec)?;
@@ -928,14 +1081,11 @@ impl DockerRuntime {
         {
             return Ok(endpoint(port));
         }
-        let images = if spec.gateway.is_some() {
-            vec![&spec.image]
-        } else {
-            vec![&self.config.streamer_image, &spec.image]
-        };
-        for image in images {
-            self.ensure_image(image).await?;
+        if spec.gateway.is_none() {
+            let streamer = vec![self.config.streamer_image.clone()];
+            self.ensure_image(&spec.id, "streamer", &streamer).await?;
         }
+        spec.image = self.ensure_image(&spec.id, "app", &candidates).await?;
         let port = self.allocate(&spec.id)?;
         if spec.gateway.is_none()
             && let Err(err) = self.allocate_gamestream(&spec.id, port)
@@ -1110,20 +1260,19 @@ impl DockerRuntime {
         crashlog::report(&order)
     }
 
-    async fn ensure_image(&self, image: &str) -> Result<()> {
-        if self.docker.image_exists(image).await? {
-            return Ok(());
+    /// The first of `candidates` the engine has, else the first that names a
+    /// registry, pulled; the user is told how the download goes.
+    async fn ensure_image(&self, id: &str, role: &str, candidates: &[String]) -> Result<String> {
+        let (image, pulled) = resolve_image(&self.docker, role, candidates, |image, p| {
+            let _ = self
+                .progress
+                .send(pull_progress(id, &display_name(image), p));
+        })
+        .await?;
+        if pulled {
+            let _ = self.pulled.send(());
         }
-        if !names_registry(image) {
-            bail!(
-                "{image} isn't on this node: build it (`docker compose -f images/compose.yaml build`, and for the streamer `docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .`)"
-            );
-        }
-        info!(%image, "pulling");
-        self.docker
-            .pull(image)
-            .await
-            .with_context(|| format!("{image} isn't on this node and couldn't be pulled"))
+        Ok(image)
     }
 
     fn allocate(&self, id: &str) -> Result<u16> {
@@ -1311,10 +1460,10 @@ impl DockerRuntime {
         volume: &str,
     ) -> Result<()> {
         info!(id = %spec.id, %volume, "moving a home volume's files under the data root");
-        let _ = self.progress.send(Progress {
-            id: spec.id.clone(),
-            detail: "Moving your files to the new storage (this happens once)".into(),
-        });
+        let _ = self.progress.send(Progress::note(
+            &spec.id,
+            "Moving your files to the new storage (this happens once)",
+        ));
         let data = self.data.clone();
         let temp = {
             let (data, user, template) = (data.clone(), user.to_string(), template.to_string());
@@ -2105,6 +2254,19 @@ impl Runtime for DockerRuntime {
         self.warnings.subscribe()
     }
 
+    fn images(&self) -> BoxFuture<'_, Vec<String>> {
+        Box::pin(async {
+            self.docker.images().await.unwrap_or_else(|err| {
+                warn!("listing the engine's images: {err:#}");
+                Vec::new()
+            })
+        })
+    }
+
+    fn pulled(&self) -> broadcast::Receiver<()> {
+        self.pulled.subscribe()
+    }
+
     fn warnings_now(&self) -> Vec<Warning> {
         let state = self.state.lock().expect("state lock");
         state
@@ -2277,7 +2439,12 @@ pub fn catalog_images() -> Vec<String> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|t| t["image"].as_str().map(str::to_string))
+        .filter_map(|t| {
+            // The dev build when the catalog names one (ADR 0017), else the
+            // published reference for this release.
+            let image = t["localImage"].as_str().or_else(|| t["image"].as_str())?;
+            Some(image.replace("{version}", AGENT_VERSION))
+        })
         .collect()
 }
 
@@ -2493,6 +2660,7 @@ mod tests {
         let (exits, _) = broadcast::channel(1);
         let (progress, _) = broadcast::channel(16);
         let (warnings, _) = broadcast::channel(16);
+        let (pulled, _) = broadcast::channel(8);
         DockerRuntime {
             docker,
             config: DockerConfig {
@@ -2519,6 +2687,7 @@ mod tests {
             exits,
             progress,
             warnings,
+            pulled,
         }
     }
 
@@ -3310,6 +3479,222 @@ mod tests {
         assert!(mounts.iter().all(|m| m.get("VolumeOptions").is_none()));
     }
 
+    fn candidate_spec(candidates: &[&str]) -> EnvironmentSpec {
+        EnvironmentSpec {
+            image: candidates
+                .first()
+                .unwrap_or(&"cha/env-chrome:dev")
+                .to_string(),
+            image_candidates: candidates.iter().map(|c| c.to_string()).collect(),
+            ..spec(SecurityProfile::Browser)
+        }
+    }
+
+    const DEV: &str = "cha/env-chrome:dev";
+    const PUBLISHED: &str = "ghcr.io/ban-red/cha-env-chrome:{version}";
+
+    #[test]
+    fn candidates_get_the_agents_version() {
+        let config = runtime().config;
+        let spec = candidate_spec(&[DEV, PUBLISHED]);
+        assert_eq!(
+            config.app_candidates(&spec, "0.1.0"),
+            [DEV, "ghcr.io/ban-red/cha-env-chrome:0.1.0"]
+        );
+        // A portal that predates candidates sends `image` alone.
+        let old = EnvironmentSpec {
+            image_candidates: Vec::new(),
+            ..candidate_spec(&[])
+        };
+        assert_eq!(config.app_candidates(&old, "0.1.0"), [DEV]);
+        // The same image twice is tried once.
+        let twice = candidate_spec(&[DEV, DEV]);
+        assert_eq!(config.app_candidates(&twice, "0.1.0"), [DEV]);
+    }
+
+    #[test]
+    fn candidates_go_through_the_published_mapping() {
+        let mut config = runtime().config;
+        config.app_images =
+            PublishedImages::from_settings(Some("ghcr.io/ban-red"), Some("0.2.0")).unwrap();
+        let spec = candidate_spec(&[DEV, PUBLISHED]);
+        // A bare catalog name runs as its published copy; a full reference stays.
+        assert_eq!(
+            config.app_candidates(&spec, "0.1.0"),
+            [
+                "ghcr.io/ban-red/cha-env-chrome:0.2.0",
+                "ghcr.io/ban-red/cha-env-chrome:0.1.0"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_streamer_has_a_published_fallback() {
+        assert_eq!(
+            streamer_candidates("cha/streamer:dev", "0.1.0"),
+            ["cha/streamer:dev", "ghcr.io/ban-red/cha-streamer:0.1.0"]
+        );
+        // One that names its registry is the only one.
+        assert_eq!(
+            streamer_candidates("ghcr.io/ban-red/cha-streamer:0.0.9", "0.1.0"),
+            ["ghcr.io/ban-red/cha-streamer:0.0.9"]
+        );
+        assert_eq!(
+            streamer_candidates("localhost:5000/streamer", "0.1.0"),
+            ["localhost:5000/streamer"]
+        );
+    }
+
+    #[test]
+    fn images_are_named_for_people() {
+        assert_eq!(
+            display_name("ghcr.io/ban-red/cha-env-chrome:0.1.0"),
+            "Chrome"
+        );
+        assert_eq!(display_name("cha/env-chrome:dev"), "Chrome");
+        assert_eq!(display_name("cha/env-test-pattern:dev"), "Test pattern");
+        assert_eq!(
+            display_name("ghcr.io/ban-red/cha-streamer:0.1.0"),
+            "Streamer"
+        );
+        assert_eq!(display_name("ubuntu"), "Ubuntu");
+        let p = pull_progress(
+            "e1",
+            "Chrome",
+            PullProgress {
+                done: 412_300_000,
+                total: 890_900_000,
+            },
+        );
+        assert_eq!(p.detail, "Downloading Chrome (412 of 890 MB)");
+        assert_eq!(
+            (p.done, p.total, p.unit),
+            (Some(412_300_000), Some(890_900_000), Some("bytes"))
+        );
+        let p = pull_progress(
+            "e1",
+            "Steam",
+            PullProgress {
+                done: 1_500_000_000,
+                total: 4_200_000_000,
+            },
+        );
+        assert_eq!(p.detail, "Downloading Steam (1.5 of 4.2 GB)");
+        // Nothing is known of the size yet.
+        let p = pull_progress("e1", "Chrome", PullProgress::default());
+        assert_eq!(p.detail, "Downloading Chrome");
+        assert_eq!((p.done, p.total, p.unit), (None, None, None));
+    }
+
+    #[tokio::test]
+    async fn an_image_the_engine_has_is_not_pulled() {
+        let n = node(&[]);
+        let have = [
+            DEV.to_string(),
+            "ghcr.io/ban-red/cha-env-chrome:0.1.0".to_string(),
+        ];
+        let image = n.rt.ensure_image("e1", "app", &have).await.unwrap();
+        assert_eq!(image, DEV, "the first the engine has");
+        // The dev build is missing: the published copy that is here runs.
+        n.engine.absent_images.lock().unwrap().insert(DEV.into());
+        let image = n.rt.ensure_image("e1", "app", &have).await.unwrap();
+        assert_eq!(image, "ghcr.io/ban-red/cha-env-chrome:0.1.0");
+        assert!(n.engine.pulls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_missing_published_image_is_pulled_with_progress() {
+        let n = node(&[]);
+        let published = "ghcr.io/ban-red/cha-env-chrome:0.1.0".to_string();
+        n.engine
+            .absent_images
+            .lock()
+            .unwrap()
+            .extend([DEV.to_string(), published.clone()]);
+        let mut said = n.rt.progress.subscribe();
+        let mut pulled = n.rt.pulled();
+        let image =
+            n.rt.ensure_image("e1", "app", &[DEV.to_string(), published.clone()])
+                .await
+                .unwrap();
+        assert_eq!(image, published);
+        // Only the one that names a registry was asked for.
+        assert_eq!(
+            n.engine.pulls(),
+            ["/images/create?fromImage=ghcr.io%2Fban-red%2Fcha-env-chrome&tag=0.1.0"]
+        );
+        // A first note with nothing counted, then the final count.
+        let first = said.try_recv().unwrap();
+        assert_eq!(first.id, "e1");
+        assert_eq!(first.detail, "Downloading Chrome");
+        assert_eq!(first.total, None);
+        let mut last = first;
+        while let Ok(note) = said.try_recv() {
+            last = note;
+        }
+        assert_eq!(last.detail, "Downloading Chrome (4 of 4 MB)");
+        assert_eq!(
+            (last.done, last.total, last.unit),
+            (Some(4_000_000), Some(4_000_000), Some("bytes"))
+        );
+        pulled.try_recv().expect("the inventory is told");
+        // Now it is here.
+        assert!(n.rt.docker.image_exists(&published).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_bare_image_is_never_pulled() {
+        let n = node(&[]);
+        n.engine.absent_images.lock().unwrap().insert(DEV.into());
+        let err =
+            n.rt.ensure_image("e1", "app", &[DEV.to_string()])
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains(DEV) && err.contains("build it"), "{err}");
+        assert!(n.engine.pulls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_pull_names_every_candidate() {
+        let n = node(&[]);
+        let published = "ghcr.io/ban-red/cha-env-chrome:0.1.0".to_string();
+        n.engine
+            .absent_images
+            .lock()
+            .unwrap()
+            .extend([DEV.to_string(), published.clone()]);
+        *n.engine.pull_error.lock().unwrap() = Some("denied: access forbidden".into());
+        let err = format!(
+            "{:#}",
+            n.rt.ensure_image("e1", "app", &[DEV.to_string(), published.clone()])
+                .await
+                .unwrap_err()
+        );
+        assert!(err.contains("denied: access forbidden"), "{err}");
+        assert!(err.contains(DEV) && err.contains(&published), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_launch_runs_the_candidate_that_was_found() {
+        let n = node(&[]);
+        let published = "ghcr.io/ban-red/cha-env-chrome:{version}";
+        let versioned = format!("ghcr.io/ban-red/cha-env-chrome:{AGENT_VERSION}");
+        n.engine
+            .absent_images
+            .lock()
+            .unwrap()
+            .extend([DEV.to_string(), versioned.clone()]);
+        n.rt.start_environment(candidate_spec(&[DEV, published]))
+            .await
+            .unwrap();
+        assert_eq!(n.engine.pulls().len(), 1);
+        assert_eq!(
+            n.engine.created()["cha-env-e1-app"]["Image"],
+            versioned.as_str()
+        );
+    }
+
     /// The engine's API on a Unix socket, enough for an environment's life:
     /// it records every request and keeps the containers it is asked to make.
     #[derive(Default)]
@@ -3331,6 +3716,10 @@ mod tests {
         logs: Mutex<Vec<u8>>,
         /// A streamer that starts and straight away exits (no GPU memory).
         streamer_exits: Mutex<bool>,
+        /// Images the engine doesn't have until they are pulled.
+        absent_images: Mutex<HashSet<String>>,
+        /// What pulling says instead of succeeding.
+        pull_error: Mutex<Option<String>>,
     }
 
     impl Engine {
@@ -3362,6 +3751,17 @@ mod tests {
                         && body["Entrypoint"] == json!(["cp"])
                 })
                 .map(|(.., body)| body.clone())
+                .collect()
+        }
+
+        /// The pulls it was asked for (path and query).
+        fn pulls(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(method, uri, _)| method == "POST" && uri.starts_with("/images/create"))
+                .map(|(_, uri, _)| uri.clone())
                 .collect()
         }
 
@@ -3399,7 +3799,49 @@ mod tests {
         };
         let mut containers = engine.containers.lock().unwrap();
         match (method.as_str(), path) {
-            ("GET", p) if p.starts_with("/images/") => Json(json!({})).into_response(),
+            ("POST", "/images/create") => {
+                if let Some(err) = engine.pull_error.lock().unwrap().clone() {
+                    return format!(
+                        "{}\n{}\n",
+                        json!({"status": "Pulling fs layer", "id": "a1"}),
+                        json!({"error": err})
+                    )
+                    .into_response();
+                }
+                let mut absent = engine.absent_images.lock().unwrap();
+                absent.retain(|name| {
+                    let (repo, tag) = name.rsplit_once(':').unwrap();
+                    !uri.ends_with(&format!("fromImage={}&tag={}", encode(repo), encode(tag)))
+                });
+                // Two layers: one 3 MB, one 1 MB, and one the node had.
+                [
+                    json!({"status": "Already exists", "progressDetail": {}, "id": "l0"}),
+                    json!({"status": "Downloading", "progressDetail": {"current": 1000000, "total": 3000000}, "id": "l1"}),
+                    json!({"status": "Downloading", "progressDetail": {"current": 1000000, "total": 1000000}, "id": "l2"}),
+                    json!({"status": "Download complete", "progressDetail": {}, "id": "l2"}),
+                    json!({"status": "Download complete", "progressDetail": {}, "id": "l1"}),
+                    json!({"status": "Pull complete", "progressDetail": {}, "id": "l1"}),
+                ]
+                .iter()
+                .map(|l| format!("{l}\n"))
+                .collect::<String>()
+                .into_response()
+            }
+            ("GET", p) if p.starts_with("/images/") => {
+                let absent = engine.absent_images.lock().unwrap();
+                if absent
+                    .iter()
+                    .any(|name| p == format!("/images/{}/json", encode(name)))
+                {
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({ "message": "No such image" })),
+                    )
+                        .into_response()
+                } else {
+                    Json(json!({})).into_response()
+                }
+            }
             ("GET", p) if p.starts_with("/volumes/") => {
                 let name = p.trim_start_matches("/volumes/");
                 if engine.volumes.lock().unwrap().contains(name) {

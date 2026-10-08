@@ -874,6 +874,9 @@ async fn what_the_node_says_while_starting_shows_until_it_runs() {
         .send(Progress {
             id: id.clone(),
             detail: "Moving your files to the new storage (this happens once)".into(),
+            done: None,
+            total: None,
+            unit: None,
         })
         .unwrap();
     let env = p.wait_for_env(&id, |e| !e["detail"].is_null()).await;
@@ -890,6 +893,9 @@ async fn what_the_node_says_while_starting_shows_until_it_runs() {
         .send(Progress {
             id: "no-such-environment".into(),
             detail: "x".into(),
+            done: None,
+            total: None,
+            unit: None,
         })
         .unwrap();
     runtime.starts.add_permits(1);
@@ -900,6 +906,9 @@ async fn what_the_node_says_while_starting_shows_until_it_runs() {
         .send(Progress {
             id: id.clone(),
             detail: "late".into(),
+            done: None,
+            total: None,
+            unit: None,
         })
         .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;

@@ -127,6 +127,12 @@ On a node, set `CHA_NODE_IMAGE` the same way, and `CHA_STREAMER_IMAGE=ghcr.io/ba
 
 For the environments, set `CHA_IMAGE_REGISTRY=ghcr.io/ban-red` and `CHA_IMAGE_TAG=0.1.0` on the node. The agent then runs each catalog image from its published copy (`cha/env-chrome:dev` as `ghcr.io/ban-red/cha-env-chrome:0.1.0`), and pulls it on the first launch that needs it; pull them ahead of time to spare that first launch the download (Steam's is the largest). Without `CHA_IMAGE_REGISTRY` it runs the images built on the node.
 
+### Images
+
+A node pulls the images a launch needs when it needs them; there is nothing to install ahead of time ([ADR 0017](../docs/adr/0017-images-pulled-on-demand.md)). The portal sends each launch an ordered list of images (a local dev build such as `cha/env-chrome:dev`, then the published `ghcr.io/ban-red/cha-env-chrome:<version>`, where `<version>` is the agent's own release). The agent runs the first the engine already has. If it has none, it pulls the first that names a registry and tells the user as it goes ("Downloading Chrome (412 of 890 MB)"). A bare name is never pulled. If nothing can be run or pulled, the launch fails and lists every image it tried; `docker pull` it yourself or check the node's access to `ghcr.io`.
+
+The streamer works the same way: `CHA_STREAMER_IMAGE` first, then `ghcr.io/ban-red/cha-streamer:<version>` (unless `CHA_STREAMER_IMAGE` already names a registry), settled when the agent starts. The agent reports the images it holds to the portal, which prefers a node that already has the one a launch needs. Pulls are logged with the image used, how long they took and their size. `CHA_PLACEMENT=manual` takes a node out of that automatic choice.
+
 ## Reaching nodes
 
 The stream goes straight from the node to the browser; the portal only brokers it. A browser needs a UDP path to the node:
@@ -167,6 +173,7 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image: the local build, or a published one, which the agent pulls when it starts |
 | `CHA_IMAGE_REGISTRY` | | Run the environments from published images, e.g. `ghcr.io/ban-red` ([Published images](#published-images)); empty runs the ones built on the node. Must name a registry's host |
 | `CHA_IMAGE_TAG` | | The release of those images, e.g. `0.1.0`; needed with `CHA_IMAGE_REGISTRY` |
+| `CHA_PLACEMENT` | `auto` | `auto` lets the portal pick this node for a launch; `manual` keeps it to launches that choose it by hand, for a test bed. Anything else stops the agent at start-up ([Images](#images)) |
 | `CHA_MOONLIGHT` | `true` | Look for Moonlight hosts (Sunshine, Apollo) on the LAN ([Moonlight hosts](#moonlight-hosts)) |
 | `CHA_GATEWAY_IMAGE` | `cha/gateway:dev` | The image that streams an adopted Moonlight host; mapped through `CHA_IMAGE_REGISTRY` like the environments |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |

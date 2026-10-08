@@ -160,6 +160,10 @@ struct Args {
     /// The release of the published app images (`0.1.0`).
     #[arg(long, env = "CHA_IMAGE_TAG")]
     image_tag: Option<String>,
+    /// `auto` (the default) lets the portal pick this node for a launch;
+    /// `manual` keeps it to launches that choose it, for test beds.
+    #[arg(long, env = "CHA_PLACEMENT")]
+    placement: Option<String>,
 }
 
 #[tokio::main]
@@ -264,7 +268,8 @@ async fn main() -> Result<()> {
     }
     #[cfg(feature = "gamestream")]
     let node_name = identity.name.clone();
-    let mut agent = Agent::new(identity)?;
+    let placement = cha_node::inventory::parse_placement(args.placement.as_deref())?;
+    let mut agent = Agent::new(identity)?.with_placement(placement);
     #[cfg(feature = "gamestream")]
     let mut browse = None;
     if args.moonlight {

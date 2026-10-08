@@ -223,6 +223,7 @@ pub struct Agent {
     runtime: Option<Arc<dyn Runtime>>,
     moonlight: Option<Arc<dyn Control>>,
     gamestream: GameStreamHandle,
+    placement: cha_wire::PlacementMode,
 }
 
 impl Agent {
@@ -234,6 +235,7 @@ impl Agent {
             runtime: None,
             moonlight: None,
             gamestream: Default::default(),
+            placement: cha_wire::PlacementMode::Auto,
         })
     }
 
@@ -249,6 +251,12 @@ impl Agent {
     /// sends the portal a host list.
     pub fn with_moonlight(mut self, moonlight: Arc<dyn Control>) -> Self {
         self.moonlight = Some(moonlight);
+        self
+    }
+
+    /// Whether placement may pick this node by itself (`CHA_PLACEMENT`).
+    pub fn with_placement(mut self, placement: cha_wire::PlacementMode) -> Self {
+        self.placement = placement;
         self
     }
 
@@ -273,6 +281,7 @@ impl Agent {
     ) -> Result<Inventory> {
         let mut inventory = tokio::task::spawn_blocking(collect).await?;
         if let Some(runtime) = &self.runtime {
+            inventory.images = runtime.images().await;
             inventory::add_vaapi(&mut inventory, runtime.vaapi_devices().await);
             if let Some(codecs) = runtime.cpu_codecs().await {
                 inventory::set_cpu_codecs(&mut inventory, codecs);
@@ -384,7 +393,9 @@ impl Agent {
         // Only a portal that reads it hears of the GameStream host: it would
         // otherwise show Moonlight clients a host nobody can pair with.
         let gamestream = gamestream_info(&self.gamestream).filter(|_| portal_reads_gamestream);
+        let placement = self.placement;
         let collect = move || Inventory {
+            placement: Some(placement),
             data_root: data_root.clone(),
             shared_dirs: shared_dirs.clone(),
             gamestream: gamestream.clone(),
@@ -437,6 +448,7 @@ impl Agent {
         let mut exits = self.runtime.as_ref().map(|r| r.exits());
         let mut progress = self.runtime.as_ref().map(|r| r.progress());
         let mut warnings = self.runtime.as_ref().map(|r| r.warnings());
+        let mut pulled = self.runtime.as_ref().map(|r| r.pulled());
 
         let start = tokio::time::Instant::now();
         let mut heartbeats = tokio::time::interval_at(start + heartbeat, heartbeat);
@@ -495,6 +507,15 @@ impl Agent {
                         sink.send(encode(&ToPortal::Usage { usage })?).await?;
                     }
                 }
+                // An image came in (ADR 0017): tell the portal now, so the
+                // next launch can be placed where it already is.
+                _ = next_event(&mut pulled) => {
+                    let fresh = self.inventory_now(collect.clone()).await?;
+                    if fresh != inventory {
+                        inventory = fresh;
+                        sink.send(encode(&ToPortal::Inventory { inventory: inventory.clone() })?).await?;
+                    }
+                }
                 _ = refresh.tick() => {
                     let fresh = self.inventory_now(collect.clone()).await?;
                     if fresh != inventory {
@@ -532,8 +553,9 @@ impl Agent {
                     }
                 }
                 said = next_event(&mut progress) => {
-                    if let Some(Progress { id, detail }) = said {
-                        sink.send(encode(&ToPortal::EnvironmentProgress { id, detail, done: None, total: None, unit: None })?).await?;
+                    if let Some(Progress { id, detail, done, total, unit }) = said {
+                        let unit = unit.map(str::to_string);
+                        sink.send(encode(&ToPortal::EnvironmentProgress { id, detail, done, total, unit })?).await?;
                     }
                 }
                 said = next_event(&mut warnings) => {

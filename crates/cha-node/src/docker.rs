@@ -2,9 +2,11 @@
 //! HTTP/1.1 over the engine's Unix socket. (A full client crate would be most
 //! of the agent's build for a dozen endpoints.)
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode};
@@ -13,6 +15,11 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
+
+/// The most image names [`Docker::images`] lists.
+pub const IMAGE_LIST_LIMIT: usize = 500;
+/// How often [`Docker::pull_with`] reports progress, at most.
+pub const PULL_REPORT_EVERY: Duration = Duration::from_millis(500);
 
 pub const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
 
@@ -280,33 +287,73 @@ impl Docker {
         }
     }
 
+    /// The `repo:tag` names the engine holds (`GET /images/json`), sorted,
+    /// at most [`IMAGE_LIST_LIMIT`]; untagged images have no name to list.
+    pub async fn images(&self) -> Result<Vec<String>> {
+        let bytes = self.call(Method::GET, "/images/json", None).await?;
+        image_names(&bytes)
+    }
+
     /// Pulls `image` (which must name a registry it can reach: see
     /// [`names_registry`]).
-    pub async fn pull(&self, image: &str) -> Result<()> {
+    pub async fn pull(&self, image: &str) -> Result<PullProgress> {
+        self.pull_with(image, |_| {}).await
+    }
+
+    /// Pulls `image` and reports how far it is as the engine's response
+    /// arrives, line by line: at most [`PULL_REPORT_EVERY`] apart, and once
+    /// more when it ends. Returns the last report. An `error` line in the
+    /// stream fails the pull.
+    pub async fn pull_with(
+        &self,
+        image: &str,
+        mut on_progress: impl FnMut(PullProgress),
+    ) -> Result<PullProgress> {
         let (name, tag) = match image.rsplit_once(':') {
             Some((n, t)) if !t.contains('/') => (n, t),
             _ => (image, "latest"),
         };
-        let bytes = self
-            .call(
-                Method::POST,
-                &format!(
-                    "/images/create?fromImage={}&tag={}",
-                    encode(name),
-                    encode(tag)
-                ),
-                None,
-            )
-            .await?;
+        let path = format!(
+            "/images/create?fromImage={}&tag={}",
+            encode(name),
+            encode(tag)
+        );
+        let res = self.open(Method::POST, &path, None).await?;
+        let status = res.status();
+        let mut body = res.into_body();
+        if !status.is_success() {
+            let bytes = body.collect().await?.to_bytes();
+            bail!("Docker POST {path}: {status}: {}", engine_message(&bytes));
+        }
+        let mut tracker = PullTracker::default();
+        let mut throttle = Throttle::new(PULL_REPORT_EVERY);
+        let mut pending: Vec<u8> = Vec::new();
         // Pull progress is a stream of JSON lines; a failure arrives as one of them.
-        for line in bytes.split(|b| *b == b'\n') {
-            if let Ok(v) = serde_json::from_slice::<Value>(line)
-                && let Some(err) = v.get("error").and_then(Value::as_str)
-            {
-                bail!("pulling {image}: {err}");
+        let mut feed = |line: &[u8], tracker: &mut PullTracker| -> Result<()> {
+            tracker
+                .feed(line)
+                .map_err(|err| anyhow!("pulling {image}: {err}"))?;
+            if throttle.ready(Instant::now()) {
+                on_progress(tracker.progress());
+            }
+            Ok(())
+        };
+        while let Some(frame) = body.frame().await {
+            let Ok(data) = frame?.into_data() else {
+                continue;
+            };
+            pending.extend_from_slice(&data);
+            while let Some(end) = pending.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = pending.drain(..=end).collect();
+                feed(&line, &mut tracker)?;
             }
         }
-        Ok(())
+        if !pending.is_empty() {
+            feed(&pending, &mut tracker)?;
+        }
+        let last = tracker.progress();
+        on_progress(last);
+        Ok(last)
     }
 
     /// Whether `path` exists on the host, which the agent in its container
@@ -590,6 +637,118 @@ pub fn names_registry(image: &str) -> bool {
     }
 }
 
+/// How much of a pull is downloaded: bytes done of the bytes known so far
+/// (`total` grows as the engine learns each layer's size; 0 until it does).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PullProgress {
+    pub done: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Default)]
+struct Layer {
+    current: u64,
+    total: u64,
+}
+
+/// Sums the engine's pull stream per layer. Each line is
+/// `{"status":"Downloading","progressDetail":{"current":..,"total":..},"id":"<layer>"}`;
+/// only downloads count (extraction reports its own sizes). A layer that is
+/// "Download complete", "Pull complete" or "Already exists" is done: its
+/// whole size if the engine said it, else nothing, since it is not downloaded.
+#[derive(Debug, Default)]
+pub struct PullTracker {
+    layers: BTreeMap<String, Layer>,
+}
+
+impl PullTracker {
+    /// Takes one line of the stream; the engine's `error` fails it.
+    pub fn feed(&mut self, line: &[u8]) -> Result<(), String> {
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            return Ok(());
+        };
+        if let Some(err) = v.get("error").and_then(Value::as_str) {
+            return Err(err.to_string());
+        }
+        let (Some(id), Some(status)) = (
+            v.get("id").and_then(Value::as_str),
+            v.get("status").and_then(Value::as_str),
+        ) else {
+            return Ok(());
+        };
+        let layer = self.layers.entry(id.to_string()).or_default();
+        if status.starts_with("Downloading") {
+            let detail = &v["progressDetail"];
+            if let Some(total) = detail["total"].as_u64() {
+                layer.total = total;
+            }
+            if let Some(current) = detail["current"].as_u64() {
+                layer.current = current;
+            }
+        } else if matches!(
+            status,
+            "Download complete" | "Pull complete" | "Already exists"
+        ) {
+            layer.current = layer.total;
+        }
+        Ok(())
+    }
+
+    /// The sums so far.
+    pub fn progress(&self) -> PullProgress {
+        self.layers
+            .values()
+            .fold(PullProgress::default(), |sum, l| PullProgress {
+                done: sum.done + l.current,
+                total: sum.total + l.total,
+            })
+    }
+}
+
+/// Lets a report through at most once per `every`; the first always.
+#[derive(Debug)]
+pub struct Throttle {
+    every: Duration,
+    last: Option<Instant>,
+}
+
+impl Throttle {
+    pub fn new(every: Duration) -> Self {
+        Self { every, last: None }
+    }
+
+    pub fn ready(&mut self, now: Instant) -> bool {
+        if self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) < self.every)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
+/// `repo:tag` names from an `/images/json` body.
+fn image_names(body: &[u8]) -> Result<Vec<String>> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Image {
+        #[serde(default)]
+        repo_tags: Option<Vec<String>>,
+    }
+    let images: Vec<Image> = serde_json::from_slice(body)?;
+    let mut names: Vec<String> = images
+        .into_iter()
+        .flat_map(|i| i.repo_tags.unwrap_or_default())
+        .filter(|t| t != "<none>:<none>")
+        .collect();
+    names.sort();
+    names.dedup();
+    names.truncate(IMAGE_LIST_LIMIT);
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,5 +829,126 @@ mod tests {
             "No such image"
         );
         assert_eq!(engine_message(b"plain text\n"), "plain text");
+    }
+
+    /// A pull as the engine streams it: three layers, one already here.
+    const PULL_STREAM: &str = r#"{"status":"Pulling from ban-red/cha-env-chrome","id":"0.1.0"}
+{"status":"Pulling fs layer","progressDetail":{},"id":"aaa111"}
+{"status":"Pulling fs layer","progressDetail":{},"id":"bbb222"}
+{"status":"Already exists","progressDetail":{},"id":"ccc333"}
+{"status":"Waiting","progressDetail":{},"id":"bbb222"}
+{"status":"Downloading","progressDetail":{"current":1000,"total":4000},"progress":"[=>  ]","id":"aaa111"}
+{"status":"Downloading","progressDetail":{"current":500,"total":10000},"progress":"[=>  ]","id":"bbb222"}
+{"status":"Downloading","progressDetail":{"current":4000,"total":4000},"progress":"[===>]","id":"aaa111"}
+{"status":"Download complete","progressDetail":{},"id":"aaa111"}
+{"status":"Extracting","progressDetail":{"current":2000,"total":4000},"progress":"[===>]","id":"aaa111"}
+{"status":"Downloading","progressDetail":{"current":9000,"total":10000},"progress":"[=>  ]","id":"bbb222"}
+{"status":"Pull complete","progressDetail":{},"id":"aaa111"}
+{"status":"Download complete","progressDetail":{},"id":"bbb222"}
+{"status":"Pull complete","progressDetail":{},"id":"bbb222"}
+{"status":"Pull complete","progressDetail":{},"id":"ccc333"}
+{"status":"Digest: sha256:abc"}
+{"status":"Status: Downloaded newer image for ghcr.io/ban-red/cha-env-chrome:0.1.0"}
+"#;
+
+    #[test]
+    fn sums_a_pull_over_its_layers() {
+        let mut tracker = PullTracker::default();
+        let mut seen = Vec::new();
+        for line in PULL_STREAM.lines() {
+            tracker.feed(line.as_bytes()).unwrap();
+            seen.push(tracker.progress());
+        }
+        // Before any size is known there is nothing to report.
+        assert_eq!(seen[4], PullProgress::default());
+        // After two Downloading lines: 1000 + 500 of 4000 + 10000.
+        assert_eq!(
+            seen[6],
+            PullProgress {
+                done: 1500,
+                total: 14000
+            }
+        );
+        // A layer that completes counts whole; extraction moves nothing.
+        assert_eq!(
+            seen[8],
+            PullProgress {
+                done: 4500,
+                total: 14000
+            }
+        );
+        assert_eq!(seen[9], seen[8]);
+        assert_eq!(
+            seen[10],
+            PullProgress {
+                done: 13000,
+                total: 14000
+            }
+        );
+        // "Already exists" has no size and adds none.
+        assert_eq!(
+            tracker.progress(),
+            PullProgress {
+                done: 14000,
+                total: 14000
+            }
+        );
+    }
+
+    #[test]
+    fn a_pull_error_line_fails_it() {
+        let mut tracker = PullTracker::default();
+        tracker
+            .feed(br#"{"status":"Pulling fs layer","id":"a"}"#)
+            .unwrap();
+        // Lines that aren't progress are skipped.
+        tracker.feed(b"").unwrap();
+        tracker.feed(b"not json").unwrap();
+        let err = tracker
+            .feed(br#"{"errorDetail":{"message":"denied"},"error":"denied: requested access"}"#)
+            .unwrap_err();
+        assert_eq!(err, "denied: requested access");
+    }
+
+    #[test]
+    fn reports_at_most_twice_a_second() {
+        let mut throttle = Throttle::new(PULL_REPORT_EVERY);
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        assert!(throttle.ready(t0), "the first goes straight out");
+        assert!(!throttle.ready(at(100)));
+        assert!(!throttle.ready(at(499)));
+        assert!(throttle.ready(at(500)));
+        assert!(!throttle.ready(at(900)));
+        assert!(throttle.ready(at(1000)));
+        // A line every 10 ms for 3 s: 2 a second, plus the first.
+        let mut throttle = Throttle::new(PULL_REPORT_EVERY);
+        let sent = (0..3000)
+            .step_by(10)
+            .filter(|ms| throttle.ready(at(*ms)))
+            .count();
+        assert_eq!(sent, 6);
+    }
+
+    #[test]
+    fn lists_image_names() {
+        let body = br#"[
+            {"Id":"a","RepoTags":["ghcr.io/ban-red/cha-env-chrome:0.1.0","cha/env-chrome:dev"]},
+            {"Id":"b","RepoTags":["<none>:<none>"]},
+            {"Id":"c","RepoTags":null},
+            {"Id":"d"},
+            {"Id":"e","RepoTags":["cha/env-chrome:dev"]}]"#;
+        assert_eq!(
+            image_names(body).unwrap(),
+            ["cha/env-chrome:dev", "ghcr.io/ban-red/cha-env-chrome:0.1.0"]
+        );
+        let many: Vec<String> = (0..600)
+            .map(|n| format!(r#"{{"RepoTags":["r/i{n:03}:1"]}}"#))
+            .collect();
+        let body = format!("[{}]", many.join(","));
+        assert_eq!(
+            image_names(body.as_bytes()).unwrap().len(),
+            IMAGE_LIST_LIMIT
+        );
     }
 }
