@@ -113,21 +113,21 @@ A friend can play on a second gamepad, watch, or use the controls without an acc
 
 ## Published images
 
-A release (a `v*` tag) publishes every image to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, the Moonlight gateway, `cha-gateway`, and the environments, `cha-env-test-pattern`, `-chrome`, `-firefox`, `-xfce`, `-kde` and `-steam` (with their base, `cha-env-base`). Each is tagged with the version (`0.3.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all of them, since they change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.3.0 --owner ban-red`). The Chrome and Steam images contain Google Chrome and Valve's Steam bootstrap, under their owners' terms.
+A release (a `v*` tag) publishes every image to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, the Moonlight gateway, `cha-gateway`, and the environments, `cha-env-test-pattern`, `-chrome`, `-firefox`, `-xfce`, `-kde` and `-steam` (with their base, `cha-env-base`). Each is tagged with the version (`0.4.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all of them, since they change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.4.0 --owner ban-red`). The Chrome and Steam images contain Google Chrome and Valve's Steam bootstrap, under their owners' terms.
 
 For a portal and a node on one machine, [`quickstart/compose.yaml`](quickstart/compose.yaml) runs both from these images ([SETUP.md](../SETUP.md#quick-start)). With the separate stacks, set the image variables and pull instead of building:
 
 ```bash
-CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.3.0 docker compose -f deploy/portal/compose.yaml pull
+CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.4.0 docker compose -f deploy/portal/compose.yaml pull
 ```
 
 ```bash
-CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.3.0 docker compose -f deploy/portal/compose.yaml up -d
+CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.4.0 docker compose -f deploy/portal/compose.yaml up -d
 ```
 
-On a node, set `CHA_NODE_IMAGE` the same way, and `CHA_STREAMER_IMAGE=ghcr.io/ban-red/cha-streamer:0.3.0` (in `deploy/node/.env`, so every run gets them). The agent pulls the streamer image when it starts, if the node doesn't have it. It only ever pulls an image whose name includes its registry: a bare name like `cha/streamer:dev` is a local build, and pulling it would fetch whatever Docker Hub's `cha` namespace holds. To update, change the version and pull again; leave `--build` off, or compose builds from source instead.
+On a node, set `CHA_NODE_IMAGE` the same way, and `CHA_STREAMER_IMAGE=ghcr.io/ban-red/cha-streamer:0.4.0` (in `deploy/node/.env`, so every run gets them). The agent pulls the streamer image when it starts, if the node doesn't have it. It only ever pulls an image whose name includes its registry: a bare name like `cha/streamer:dev` is a local build, and pulling it would fetch whatever Docker Hub's `cha` namespace holds. To update, change the version and pull again; leave `--build` off, or compose builds from source instead.
 
-For the environments, set `CHA_IMAGE_REGISTRY=ghcr.io/ban-red` and `CHA_IMAGE_TAG=0.3.0` on the node. The agent then runs each catalog image from its published copy (`cha/env-chrome:dev` as `ghcr.io/ban-red/cha-env-chrome:0.3.0`), and pulls it on the first launch that needs it; pull them ahead of time to spare that first launch the download (Steam's is the largest). Without `CHA_IMAGE_REGISTRY` it runs the images built on the node, and when it has none, pulls the published ones for its own version ([Images](#images)).
+For the environments, set `CHA_IMAGE_REGISTRY=ghcr.io/ban-red` and `CHA_IMAGE_TAG=0.4.0` on the node. The agent then runs each catalog image from its published copy (`cha/env-chrome:dev` as `ghcr.io/ban-red/cha-env-chrome:0.4.0`), and pulls it on the first launch that needs it; pull them ahead of time to spare that first launch the download (Steam's is the largest). Without `CHA_IMAGE_REGISTRY` it runs the images built on the node, and when it has none, pulls the published ones for its own version ([Images](#images)).
 
 ### Images
 
@@ -202,7 +202,7 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_NODE_IMAGE` | `cha-node:dev` | The agent's image, for the compose file: the local build, or a published one ([Published images](#published-images)) |
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image: the local build, or a published one, which the agent pulls when it starts |
 | `CHA_IMAGE_REGISTRY` | | Run the environments from published images, e.g. `ghcr.io/ban-red` ([Published images](#published-images)); empty runs the ones built on the node. Must name a registry's host |
-| `CHA_IMAGE_TAG` | | The release of those images, e.g. `0.3.0`; needed with `CHA_IMAGE_REGISTRY` |
+| `CHA_IMAGE_TAG` | | The release of those images, e.g. `0.4.0`; needed with `CHA_IMAGE_REGISTRY` |
 | `CHA_PLACEMENT` | `auto` | `auto` lets the portal pick this node for a launch; `manual` keeps it to launches that choose it by hand, for a test bed. Anything else stops the agent at start-up ([Images](#images)) |
 | `CHA_MOONLIGHT` | `true` | Look for Moonlight hosts (Sunshine, Apollo) on the LAN ([Moonlight hosts](#moonlight-hosts)) |
 | `CHA_GATEWAY_IMAGE` | `cha/gateway:dev` | The image that streams an adopted Moonlight host; mapped through `CHA_IMAGE_REGISTRY` like the environments |

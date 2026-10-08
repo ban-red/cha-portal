@@ -1,6 +1,6 @@
 [package]
 name = "cha-testpattern"
-version = "0.3.0"
+version = "0.4.0"
 description = "The test-pattern environment: a Wayland client drawing a moving bar, a frame counter, a frame-ID strip and an input flash"
 edition.workspace = true
 license.workspace = true

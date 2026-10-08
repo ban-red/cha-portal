@@ -17,19 +17,19 @@ Either can run the whole quick start (the portal and a node) or just a node for 
 Run it as root on the Proxmox host. It needs only the script itself:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/ban-red/cha-portal/v0.3.0/deploy/proxmox/create-node.sh
+curl -fsSLO https://raw.githubusercontent.com/ban-red/cha-portal/v0.4.0/deploy/proxmox/create-node.sh
 ```
 
 Read it before running it, since it runs as root on your host. Then make the quick start: the portal and a node in one container, with HTTPS through Tailscale:
 
 ```bash
-sh create-node.sh --version 0.3.0 --tailscale
+sh create-node.sh --version 0.4.0 --tailscale
 ```
 
 Or make a node for a portal that is already running elsewhere:
 
 ```bash
-sh create-node.sh --version 0.3.0 --portal-url https://portal-host.your-tailnet.ts.net
+sh create-node.sh --version 0.4.0 --portal-url https://portal-host.your-tailnet.ts.net
 ```
 
 `--dry-run` prints the container's settings and changes nothing. `--help` lists every option: ID, cores, memory and disk (64 GB by default; the images live there), a static `--ip`, the `--gpu` to pass in, `--data-dir` to keep app data in a host directory such as a ZFS dataset, `--join-token`, `--no-pull`, `--ssh-key`, and `--source DIR`, which copies a checkout already on the host instead of cloning the release (offline, or to try a change).
@@ -67,7 +67,7 @@ For a node alone, the directory is `/opt/cha-portal/deploy/node`. Run compose fr
 - **No NVIDIA.** The script never passes an NVIDIA GPU to a container: the container's driver would have to match the host's exactly, and CDI expects to own it. If the host has one, the script says so; give it to a VM.
 - **GPU sharing.** An Intel or AMD GPU passed into a container is still the host's. Other containers, Plex for example, can use it at the same time, and they compete for its encoder.
 - **Gamepads haven't been tried in a container yet.** The devices they need are passed in and allowed, but no pad has been played there yet.
-- **Updating:** back up the portal's database first ([Upgrading](../../SETUP.md#upgrading-to-a-new-release)). Then in the container, `git fetch --depth 1 origin tag v0.3.0 && git checkout v0.3.0`, then `setup.sh --version 0.3.0`, then `docker compose pull && docker compose up -d` from the compose directory. For a node alone, also change the version in `deploy/node/.env` (`CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE`, `CHA_IMAGE_TAG`).
+- **Updating:** back up the portal's database first ([Upgrading](../../SETUP.md#upgrading-to-a-new-release)). Then in the container, `git fetch --depth 1 origin tag v0.4.0 && git checkout v0.4.0`, then `setup.sh --version 0.4.0`, then `docker compose pull && docker compose up -d` from the compose directory. For a node alone, also change the version in `deploy/node/.env` (`CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE`, `CHA_IMAGE_TAG`).
 - **Removing:** `pct stop <id> && pct destroy <id>`. On the host, `/etc/modules-load.d/cha.conf` and the udev rule stay until you delete them.
 
 ### Intel GPUs: turn on the HuC

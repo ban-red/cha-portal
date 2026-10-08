@@ -1,6 +1,6 @@
 [package]
 name = "cha-client-portal"
-version = "0.3.0"
+version = "0.4.0"
 description = "The native client's portal transport: signs in to a Cha Portal with a device token and lists its apps (ADR 0013)"
 edition.workspace = true
 license.workspace = true
