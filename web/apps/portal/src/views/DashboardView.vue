@@ -5,6 +5,7 @@ import { computed, nextTick, reactive, ref } from "vue";
 
 import { ApiError, api, type Environment, type EnvironmentState, type PlacementChoice, type StorageApp, type Template } from "../api";
 import AppCard from "../components/AppCard.vue";
+import DuplicateDialog from "../components/DuplicateDialog.vue";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import EnvironmentUsage from "../components/EnvironmentUsage.vue";
 import FormError from "../components/FormError.vue";
@@ -13,6 +14,7 @@ import MoonlightHostSection from "../components/MoonlightHostSection.vue";
 import ShareDialog from "../components/ShareDialog.vue";
 import SegmentedControl from "../components/SegmentedControl.vue";
 import WarningNote from "../components/WarningNote.vue";
+import { launchErrorText, portLines } from "../customEnv";
 import { ago, dateTime } from "../format";
 import { MOONLIGHT_HOSTS_KEY, hostMatches, isMissing, liveByTemplate, visibleApps } from "../moonlight";
 import { useSession } from "../stores/session";
@@ -30,6 +32,8 @@ const queryClient = useQueryClient();
 
 /** The running environment whose Share dialog is open. */
 const sharing = ref<Environment | null>(null);
+/** The template whose Duplicate dialog is open (admins). */
+const duplicating = ref<Template | null>(null);
 
 const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 });
 
@@ -212,7 +216,9 @@ const mac = isMac();
 async function openInPlayerApp(template: string) {
   error.value = await openInPlayer(template);
 }
-const message = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
+const message = launchErrorText;
+const baseNameOf = (t: Template) =>
+  t.custom ? ((catalog.data.value ?? []).find((x) => x.id === t.custom!.base)?.name ?? t.custom.base) : undefined;
 
 const launch = useMutation({
   mutationFn: (v: { template: Template; choice: PlacementChoice | null }) =>
@@ -320,6 +326,9 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             <p class="truncate text-xs text-ink-3" :title="dateTime(e.createdAt)">
               {{ STATES[e.state].text }} on {{ e.nodeName ?? "a removed node" }} · started {{ ago(e.createdAt) }}
             </p>
+            <ul v-if="portLines(e).length" class="mt-0.5 flex flex-wrap gap-x-3 font-mono text-xs text-ink-2" aria-label="Open ports">
+              <li v-for="line in portLines(e)" :key="line">{{ line }}</li>
+            </ul>
             <EnvironmentUsage v-if="e.usage" :usage="e.usage" class="mt-0.5" />
           </div>
           <RouterLink
@@ -352,6 +361,8 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
         </li>
       </ul>
     </section>
+
+    <DuplicateDialog :template="duplicating" @close="duplicating = null" />
 
     <ShareDialog
       :open="sharing !== null"
@@ -433,7 +444,10 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
                 :busy="launch.isPending.value && launch.variables.value?.template.id === t.id"
                 :disabled="session.user?.role === 'guest'"
                 :player="mac"
+                :duplicable="session.isAdmin"
+                :base-name="baseNameOf(t)"
                 @launch="(choice) => launch.mutate({ template: t, choice })"
+                @duplicate="duplicating = t"
                 @pin="togglePin(t.id)"
                 @open-in-player="openInPlayerApp(t.id)"
                 @set-persistent="(persistent) => setPersistent.mutate({ template: t.id, persistent })"

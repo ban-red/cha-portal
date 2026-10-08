@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
-import { Package, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-vue-next";
+import { Copy, Package, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-vue-next";
 import { computed, reactive, ref } from "vue";
 
 import { api, catalogIconUrl, type CatalogTemplateView, type CatalogView } from "../api";
 import { CATALOGS_KEY, IMAGE_SPEC_URL, addBody, approvalGrant, availability, errorText, needsApproval, sourceLabel } from "../catalogs";
+import DuplicateDialog from "../components/DuplicateDialog.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import FormError from "../components/FormError.vue";
 import SegmentedControl from "../components/SegmentedControl.vue";
@@ -79,6 +80,8 @@ const approve = useMutation({
   onError: (err, { c }) => (errors[c.slug] = errorText(err, "Couldn't change the approval.")),
 });
 
+const duplicating = ref<{ id: string; name: string } | null>(null);
+
 const removeTarget = ref<CatalogView | null>(null);
 const removeError = ref<string | null>(null);
 const remove = useMutation({
@@ -107,6 +110,10 @@ function confirmRemove(c: CatalogView) {
       <p>
         Authors: see the
         <a :href="IMAGE_SPEC_URL" target="_blank" rel="noopener" class="text-accent underline underline-offset-2 hover:text-ink">image and catalog spec</a>.
+      </p>
+      <p>
+        To change an app a little instead (a bigger <span class="font-mono">/dev/shm</span>, another image tag, a variable), duplicate it into a
+        <RouterLink to="/admin/custom" class="text-accent underline underline-offset-2 hover:text-ink">custom environment</RouterLink>.
       </p>
     </div>
 
@@ -237,6 +244,14 @@ function confirmRemove(c: CatalogView) {
               </p>
             </div>
             <button
+              v-if="t.available"
+              type="button"
+              class="btn-ghost"
+              @click="duplicating = { id: t.id, name: t.name }"
+            >
+              <Copy class="size-4" aria-hidden="true" />Duplicate<span class="sr-only"> {{ t.name }}</span>
+            </button>
+            <button
               v-if="needsApproval(t)"
               type="button"
               :class="t.approved ? 'btn-ghost' : 'btn-primary'"
@@ -251,6 +266,8 @@ function confirmRemove(c: CatalogView) {
         </ul>
       </li>
     </ul>
+
+    <DuplicateDialog :template="duplicating" @close="duplicating = null" />
 
     <ConfirmDialog
       :open="!!removeTarget"

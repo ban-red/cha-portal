@@ -2,12 +2,13 @@
 // One app of the catalog, as a card or a list row. The card lays itself out by its own
 // width (a container query): icon beside the title when it is wide, stacked when narrow;
 // the Controller and Frame rate pickers are compact pills that wrap when there is no room.
-import { Activity, AppWindow, Gamepad2, Gauge, Globe, Monitor, MonitorPlay, Pin } from "lucide-vue-next";
+import { Activity, AppWindow, Copy, Gamepad2, Gauge, Globe, Monitor, MonitorPlay, Pin } from "lucide-vue-next";
 import { computed, ref } from "vue";
 
 import { catalogIconUrl, type AppSettings, type ControllerApp, type Environment, type PlacementChoice, type Placements, type StorageApp, type Template } from "../api";
 import { FPS_CHOICES } from "../appFps";
 import { KINDS, kindLabel } from "../controllerKinds";
+import { dataNote } from "../customEnv";
 import { autoOption } from "../placements";
 import AppStorageMenu from "./AppStorageMenu.vue";
 import GpuBadge from "./GpuBadge.vue";
@@ -35,11 +36,16 @@ const props = defineProps<{
   disabled: boolean;
   /** Offer "Open in Cha Player" (on a Mac). */
   player?: boolean;
+  /** Offer "Duplicate" (admins): make a custom environment from this one. */
+  duplicable?: boolean;
+  /** For a custom environment, the name of the one it is based on. */
+  baseName?: string;
 }>();
 const emit = defineEmits<{
   launch: [choice: PlacementChoice | null];
   pin: [];
   openInPlayer: [];
+  duplicate: [];
   setPersistent: [persistent: boolean];
   chooseController: [event: Event];
   chooseFps: [event: Event];
@@ -54,6 +60,8 @@ const TILE = "grid place-items-center rounded-lg";
 const tileTone = computed(() => (logo.value ? "border border-line bg-panel-2" : "bg-accent-soft text-accent"));
 
 const t = computed(() => props.template);
+// "custom" marks an admin's copy; "uses Steam's data" when it shares the base's saved data.
+const sharesData = computed(() => dataNote(props.template, props.baseName ?? props.template.custom?.base ?? ""));
 // The device Launch would pick, if the portal says.
 const place = computed(() => autoOption(props.placements));
 const controllerText = computed(() =>
@@ -87,6 +95,10 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
             <GpuBadge v-if="place" :kind="place.kind" :name="place.label" />
           </h3>
           <p class="mt-0.5 line-clamp-2 text-sm text-ink-2" :title="t.description">{{ t.description }}</p>
+          <p v-if="t.custom" class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-3">
+            <span class="rounded-full border border-line-strong px-1.5 text-2xs text-ink-2">custom</span>
+            <span v-if="sharesData">{{ sharesData }}</span>
+          </p>
         </div>
         <div class="col-start-2 row-start-1 flex items-center gap-2 @min-[26rem]:col-start-3">
           <AppStorageMenu
@@ -105,6 +117,16 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
             @click="emit('openInPlayer')"
           >
             <MonitorPlay class="size-5" aria-hidden="true" />
+          </button>
+          <button
+            v-if="duplicable"
+            type="button"
+            class="inline-flex size-9 items-center justify-center rounded-lg text-ink-3 transition hover:bg-panel-2 hover:text-ink pointer-coarse:size-11"
+            :aria-label="`Duplicate ${t.name}`"
+            :title="`Duplicate ${t.name} as a custom environment`"
+            @click="emit('duplicate')"
+          >
+            <Copy class="size-5" aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -185,6 +207,7 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
       <div class="min-w-0 [grid-area:text]">
         <div class="flex items-center gap-2">
           <h3 class="truncate text-base leading-6 font-semibold">{{ t.name }}</h3>
+          <span v-if="t.custom" class="shrink-0 rounded-full border border-line-strong px-1.5 text-2xs text-ink-2">custom</span>
           <GpuBadge v-if="place" :kind="place.kind" :name="place.label" />
           <AppStorageMenu
             v-if="storage"
@@ -194,7 +217,7 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
             @toggle="(v) => emit('setPersistent', v)"
           />
         </div>
-        <p class="truncate text-sm text-ink-2" :title="t.description">{{ t.description }}</p>
+        <p class="truncate text-sm text-ink-2" :title="t.description">{{ t.description }}<template v-if="sharesData"> · {{ sharesData }}</template></p>
       </div>
       <p v-if="controllerText || fpsText" class="min-w-0 truncate text-xs text-ink-3 [grid-area:meta]" title="Change these in the grid view">
         <template v-if="controllerText"><span class="sr-only">Controller: </span>{{ controllerText }}</template>
@@ -211,6 +234,16 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
           @click="emit('openInPlayer')"
         >
           <MonitorPlay class="size-5" aria-hidden="true" />
+        </button>
+        <button
+          v-if="duplicable"
+          type="button"
+          class="inline-flex size-9 items-center justify-center rounded-lg text-ink-3 transition hover:bg-panel-2 hover:text-ink pointer-coarse:size-11"
+          :aria-label="`Duplicate ${t.name}`"
+          :title="`Duplicate ${t.name} as a custom environment`"
+          @click="emit('duplicate')"
+        >
+          <Copy class="size-5" aria-hidden="true" />
         </button>
       <button
         type="button"

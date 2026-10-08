@@ -8,6 +8,8 @@ import FormError from "../components/FormError.vue";
 import LaunchProgress from "../components/LaunchProgress.vue";
 import MoonlightHostsCard from "../components/MoonlightHostsCard.vue";
 import NodeUsage from "../components/NodeUsage.vue";
+import { HOST_OPTIONS_KEY } from "../customEnv";
+import { MODE_LABEL, policySummary } from "../hostOptions";
 import { diskView, platformLine } from "../nodeInfo";
 import { expectedVersion, updateLine, updateRunning } from "../nodeUpdate";
 import { normalizePairingCode } from "../pairingCode";
@@ -25,6 +27,16 @@ const nodes = useQuery({
   refetchInterval: (query) => (issued.value || query.state.data?.some(updateRunning) ? 2000 : 3000),
   refetchIntervalInBackground: false,
 });
+
+// Each node's host-options mode (ADR 0021), from the admin call; an older server answers 404 and the row is left out.
+const hostOptions = useQuery({
+  queryKey: HOST_OPTIONS_KEY,
+  queryFn: api.hostOptions,
+  refetchInterval: 10_000,
+  refetchIntervalInBackground: false,
+  retry: (count, err) => !(err instanceof ApiError && err.status === 404) && count < 2,
+});
+const hostOf = (id: string) => hostOptions.data.value?.find((h) => h.nodeId === id);
 
 // ---- Adding a node ----
 
@@ -436,6 +448,22 @@ function status(node: NodeInfo): { text: string; dot: string } {
               <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-line" aria-hidden="true">
                 <div class="h-full rounded-full" :class="d.low ? 'bg-warn' : 'bg-info'" :style="{ width: d.usedPct + '%' }" />
               </div>
+            </dd>
+          </template>
+          <template v-if="hostOf(node.id)">
+            <dt class="text-ink-3">Host options</dt>
+            <dd>
+              <span
+                v-if="hostOf(node.id)!.policy?.mode === 'full'"
+                class="inline-flex items-center gap-1 rounded-full border border-warn/50 bg-warn/10 px-2 py-0.5 text-xs text-warn"
+                tabindex="0"
+                title="Full: the portal's admins can run root-equivalent containers on this node (host paths, privileged, the host's network)."
+              >
+                <TriangleAlert class="size-3.5" aria-hidden="true" />{{ MODE_LABEL.full }}
+                <span class="sr-only">: the portal's admins can run root-equivalent containers on this node.</span>
+              </span>
+              <span v-else>{{ hostOf(node.id)!.policy ? MODE_LABEL[hostOf(node.id)!.policy!.mode] : "Not reported" }}</span>
+              <span class="mt-0.5 block text-xs text-ink-3">{{ policySummary(hostOf(node.id)!.policy) }}</span>
             </dd>
           </template>
           <dt class="text-ink-3">Addresses</dt>

@@ -6,7 +6,7 @@
 // - Under 768px: an off-canvas drawer opened from the header's menu button. While it is open
 //   focus is kept inside it, Esc and the scrim close it, and the page behind is `inert`.
 // A page can add controls to the header through the #page-actions element (Teleport).
-import { ChevronsLeft, Database, Laptop, FileText, Folder, Package, Gamepad2, LayoutGrid, LogOut, Menu, Monitor, MonitorPlay, MonitorSmartphone, Moon, Palette, Server, SlidersHorizontal, Sun, User } from "lucide-vue-next";
+import { ChevronsLeft, Database, Laptop, FileText, Folder, Package, Copy, Gamepad2, LayoutGrid, LogOut, Menu, Monitor, MonitorPlay, MonitorSmartphone, Moon, Palette, Server, SlidersHorizontal, Sun, User } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -38,6 +38,7 @@ const nav = computed<NavItem[]>(() => [
   { to: "/settings/devices", label: "Devices", icon: Laptop, show: true },
   { to: "/admin/nodes", label: "Nodes", icon: Server, show: session.isAdmin, section: "Admin" },
   { to: "/admin/catalogs", label: "Catalogs", icon: Package, show: session.isAdmin },
+  { to: "/admin/custom", label: "Custom", icon: Copy, show: session.isAdmin },
   { to: "/admin/users", label: "Users", icon: User, show: session.isAdmin },
   { to: "/admin/storage", label: "App data", icon: Folder, show: session.isAdmin },
   { to: "/admin/settings", label: "Settings", icon: SlidersHorizontal, show: session.isAdmin },

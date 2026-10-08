@@ -128,7 +128,7 @@ export interface GpuUsage {
   powerLimit?: number;
 }
 
-export type SecurityProfile = "standard" | "browser";
+export type SecurityProfile = "standard" | "browser" | "steam";
 
 /** Something users can launch (`images/catalog.json`). */
 /** Portal-wide settings (`/admin/settings`). */
@@ -154,6 +154,8 @@ export interface Template {
   needsGpu?: boolean;
   /** What the app shares across users by default, and the parts each user keeps apart. */
   shared?: { access: SharedAccess; perUser: string[] } | null;
+  /** On a custom environment only (ADR 0021). */
+  custom?: { base: string; shareData: boolean; host: HostOptions | null };
 }
 
 /** A device on a node, as a launch names it. */
@@ -232,6 +234,8 @@ export interface Environment {
   updatedAt: number;
   /** Where its streamer listens while it runs. */
   streamer: { host: string | null; httpPort: number; webrtcPort: number } | null;
+  /** The node's ports it asked for (custom environments, ADR 0021), the host's port filled in. */
+  ports?: HostPort[] | null;
 }
 
 /** How the other users' copies of an app reach the app's shared data. */
@@ -312,6 +316,106 @@ export interface CatalogView {
 
 /** A catalog to add: its URL or its document (a JSON object or JSON text). The slug may be left out. */
 export type CatalogSource = { slug?: string } & ({ url: string } | { document: unknown });
+
+// ---- Custom environments and host options (admin; ADR 0021) ----
+
+export type NetworkFs = "nfs" | "nfs4" | "cifs";
+export type PortProtocol = "tcp" | "udp";
+export type HostOptionsMode = "off" | "allowlist" | "full";
+
+export type MountSource =
+  | { kind: "named"; name: string }
+  | { kind: "path"; path: string }
+  | { kind: "network"; fsType: NetworkFs; device: string; options?: string };
+
+export interface HostMount {
+  source: MountSource;
+  /** Absolute path in the app's container. */
+  target: string;
+  readOnly?: boolean;
+}
+
+export interface HostPort {
+  container: number;
+  protocol: PortProtocol;
+  /** The node's port; absent: the node picks one. */
+  host?: number | null;
+}
+
+/** What a custom environment asks of its node beyond its template; empty lists may be left out. */
+export interface HostOptions {
+  mounts?: HostMount[];
+  ports?: HostPort[];
+  capAdd?: string[];
+  devices?: string[];
+  privileged?: boolean;
+  networkHost?: boolean;
+  securityOpt?: string[];
+}
+
+export interface AllowedMount {
+  name: string;
+  readOnly?: boolean;
+}
+
+export interface PortRange {
+  start: number;
+  end: number;
+  protocol: PortProtocol;
+}
+
+/** What a node allows (`CHA_HOST_OPTIONS`). */
+export interface HostPolicy {
+  mode: HostOptionsMode;
+  mounts?: AllowedMount[];
+  ports?: PortRange[];
+  caps?: string[];
+  devices?: string[];
+}
+
+/** One node's host options, from `GET /api/admin/host-options`. */
+export interface NodeHostOptions {
+  nodeId: string;
+  nodeName: string;
+  online: boolean;
+  /** What the agent understands in a spec ("env", "data-template", "host-options"). */
+  specFeatures: string[];
+  /** Null: the agent doesn't report one (it predates host options). */
+  policy: HostPolicy | null;
+}
+
+/** The fields a custom environment may change; absent ones follow the base. */
+export interface CustomOverrides {
+  name?: string;
+  description?: string;
+  image?: string;
+  class?: string;
+  shmMb?: number;
+  fps?: Fps;
+  gamepad?: PadKind;
+  fixedSize?: boolean;
+  needsGpu?: boolean;
+  persistent?: boolean;
+  sharedAccess?: SharedAccess;
+  security?: CatalogSecurity;
+  env?: Record<string, string>;
+}
+
+export interface CustomTemplate {
+  /** `custom.<slug>`. */
+  id: string;
+  slug: string;
+  base: string;
+  baseName: string;
+  shareData: boolean;
+  overrides: CustomOverrides;
+  host: HostOptions | null;
+  hasIcon: boolean;
+  /** Why it can't be launched now (its base is gone, …); null: it can. */
+  unavailable: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
 
 /** The virtual controller an app sees (docs/controllers.md). */
 export type PadKind = "xbox360" | "dualsense" | "steam";
@@ -516,12 +620,15 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+const request = <T>(method: string, path: string, body?: unknown) =>
+  requestRaw<T>(method, path, body === undefined ? undefined : JSON.stringify(body), "application/json");
+
+async function requestRaw<T>(method: string, path: string, body: string | undefined, contentType: string): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
     credentials: "same-origin",
-    headers: body === undefined ? undefined : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: body === undefined ? undefined : { "content-type": contentType },
+    body,
   });
   const text = await res.text();
   let data: unknown = null;
@@ -658,6 +765,26 @@ export const api = {
     ),
   /** 409 `in_use` while an environment of one of its apps is live. */
   removeCatalog: (slug: string) => request<{ removed: string }>("DELETE", `/admin/catalogs/${encodeURIComponent(slug)}`),
+  // Custom environments (admin; ADR 0021). Errors carry the server's `message`; 400 names the field, 409 is a conflict.
+  customTemplates: () => request<CustomTemplate[]>("GET", "/admin/custom-templates"),
+  createCustomTemplate: (body: {
+    slug: string;
+    base: string;
+    shareData: boolean;
+    overrides: CustomOverrides;
+    host?: HostOptions | null;
+  }) => request<CustomTemplate>("POST", "/admin/custom-templates", body),
+  /** 409 while the environment (or the data it shares) is live and `shareData` changes. */
+  updateCustomTemplate: (id: string, body: { overrides: CustomOverrides; host?: HostOptions | null; shareData: boolean }) =>
+    request<CustomTemplate>("PUT", `/admin/custom-templates/${encodeURIComponent(id)}`, body),
+  /** 409 while it is live. */
+  deleteCustomTemplate: (id: string) => request<null>("DELETE", `/admin/custom-templates/${encodeURIComponent(id)}`),
+  /** An SVG, sent as the body. */
+  setCustomIcon: (id: string, svg: string) =>
+    requestRaw<null>("PUT", `/admin/custom-templates/${encodeURIComponent(id)}/icon`, svg, "image/svg+xml"),
+  deleteCustomIcon: (id: string) => request<null>("DELETE", `/admin/custom-templates/${encodeURIComponent(id)}/icon`),
+  /** Each node's host-options policy. */
+  hostOptions: () => request<NodeHostOptions[]>("GET", "/admin/host-options"),
   /** STUN and TURN for the next connection (TURN credentials last a day). */
   iceServers: () => request<{ iceServers: RTCIceServer[] }>("GET", "/ice"),
   /** Brokers a WebRTC connection to the environment's streamer. */
