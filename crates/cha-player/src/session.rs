@@ -84,7 +84,8 @@ impl Shared {
 
     fn awdl_suspected(&self) -> bool {
         let log: Vec<u64> = self.arrivals.lock().unwrap().iter().copied().collect();
-        crate::awdl::looks_like_awdl(&log)
+        // The timing alone isn't enough: only with AWDL actually up.
+        crate::awdl::looks_like_awdl(&log) && crate::awdl::interface_active()
     }
 
     /// The window is about to draw: the next frame may wake it again.

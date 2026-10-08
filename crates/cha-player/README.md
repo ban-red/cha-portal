@@ -79,7 +79,7 @@ Fixes: use Ethernet (best), turn off AirDrop and Handoff (System Settings, Gener
 sudo ifconfig awdl0 down     # undo with: sudo ifconfig awdl0 up
 ```
 
-The player never runs this itself. The detector (`src/awdl.rs`) looks only at video arrival times: at least three gaps of 80 to 200 ms about 0.5 to 1.8 s apart, and few other long gaps. A host that sends nothing while the picture is still can in principle trigger it.
+The player never runs this itself. The detector (`src/awdl.rs`) looks only at video arrival times: at least three gaps of 80 to 200 ms about 0.5 to 1.8 s apart, and few other long gaps. A host that sends nothing while the picture is still can show the same rhythm over Ethernet, so the hint also needs `awdl0` up (it is down with Wi-Fi off).
 
 ## Layout
 

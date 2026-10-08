@@ -5,6 +5,35 @@
 //! 200 ms) that recur at that rhythm while everything between them is
 //! steady. A link that is just bad has gaps all over instead.
 
+/// Whether AWDL's interface (`awdl0`) is up and running on this Mac. With
+/// Wi-Fi off, or AirDrop and Handoff idle, it is down, and gaps in the
+/// stream have some other cause: over Ethernet, a picture that changes
+/// rarely can show the same rhythm (the host sends a frame only on a change).
+pub fn interface_active() -> bool {
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `list`, freed below; entries are read only
+    // while it lives.
+    if unsafe { libc::getifaddrs(&mut list) } != 0 {
+        return false;
+    }
+    let mut active = false;
+    let mut entry = list;
+    while !entry.is_null() {
+        // SAFETY: a node of the list getifaddrs returned.
+        let ifa = unsafe { &*entry };
+        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) };
+        let up = (libc::IFF_UP | libc::IFF_RUNNING) as u32;
+        if name.to_bytes() == b"awdl0" && ifa.ifa_flags & up == up {
+            active = true;
+            break;
+        }
+        entry = ifa.ifa_next;
+    }
+    // SAFETY: the list getifaddrs returned, freed once.
+    unsafe { libc::freeifaddrs(list) };
+    active
+}
+
 /// Gaps in this range are the AWDL kind: longer than a normal frame interval,
 /// shorter than a real outage.
 const GAP_MS: std::ops::RangeInclusive<u64> = 80..=200;

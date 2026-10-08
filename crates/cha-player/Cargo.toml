@@ -35,6 +35,7 @@ cha-client-gamestream = { path = "../cha-client-gamestream", optional = true }
 cha-client-portal = { path = "../cha-client-portal", optional = true }
 cha-pyrowave-wgpu = { path = "../cha-pyrowave-wgpu" }
 cpal = "0.18"
+libc = "0.2"
 egui = "0.35"
 egui-wgpu = "0.35"
 egui-winit = "0.35"

@@ -947,6 +947,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-media",

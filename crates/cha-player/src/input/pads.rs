@@ -164,6 +164,17 @@ fn run(commands: Receiver<Command>) -> Result<()> {
                 let Some(slot) = slot else { continue };
                 let state = standard_state(|b| slot.pad.button(b), |a| slot.pad.axis(a));
                 if slot.last.as_ref() != Some(&state) {
+                    tracing::debug!(
+                        index,
+                        pressed = ?state
+                            .buttons
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, v)| **v > 0.5)
+                            .map(|(i, _)| i)
+                            .collect::<Vec<_>>(),
+                        "pad state"
+                    );
                     slot.last = Some(state.clone());
                     c.input(Input::Pad {
                         index: index as u8,
