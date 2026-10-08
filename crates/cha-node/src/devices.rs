@@ -17,7 +17,7 @@ use serde_json::json;
 use tracing::{debug, info};
 
 use crate::docker::Docker;
-use crate::environments::valid_render_node;
+use crate::environments::{valid_dri_node, valid_render_node};
 use crate::inventory;
 
 /// A probe is quick (a driver opens, asks its entrypoints); a hung one is the
@@ -204,8 +204,8 @@ fn local_gid(render_node: &str) -> Option<u32> {
 /// `render_node`'s group as a container given it sees it: `stat` in a
 /// throwaway container of the streamer image, like [`probe`]'s.
 async fn probe_gid(docker: &Docker, image: &str, render_node: &str) -> Result<u32> {
-    if !valid_render_node(render_node) {
-        anyhow::bail!("{render_node} isn't a render node");
+    if !valid_dri_node(render_node) {
+        anyhow::bail!("{render_node} isn't a DRM node");
     }
     let name = render_node.rsplit('/').next().unwrap_or("renderD");
     let mut config = probe_config(image, "");

@@ -208,6 +208,12 @@ conf=/etc/pve/lxc/$id.conf
         echo "lxc.cgroup2.devices.allow: c 226:* rwm"
         for name in $gpus; do
             echo "lxc.mount.entry: /dev/dri/$name dev/dri/$name none bind,optional,create=file"
+            # Its primary node too: Steam's gamescope needs it.
+            for card in /sys/class/drm/$name/device/drm/card*; do
+                [ -e "$card" ] || continue
+                card=${card##*/}
+                echo "lxc.mount.entry: /dev/dri/$card dev/dri/$card none bind,optional,create=file"
+            done
         done
     fi
     echo "lxc.cgroup2.devices.allow: c 10:223 rwm"

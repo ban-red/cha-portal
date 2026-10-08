@@ -1583,6 +1583,15 @@ impl DockerRuntime {
                 warn!(%node, "can't tell the render node's group; the app may not open the GPU");
             }
         }
+        if let Some(card) = steam_primary_node(spec)
+            && self
+                .probes
+                .render_gid(&self.docker, &self.config.streamer_image, &card)
+                .await
+                .is_none()
+        {
+            warn!(%card, "can't tell the primary node's group; gamescope may not start");
+        }
         let app = self
             .docker
             .create(
@@ -2020,11 +2029,14 @@ impl DockerRuntime {
         if spec.security == SecurityProfile::Steam {
             security.push(format!("apparmor={SANDBOX_APPARMOR}"));
         }
-        let groups: Vec<String> = self
-            .app_render_gid(spec)
-            .iter()
-            .map(|g| g.to_string())
-            .collect();
+        let card_gid = steam_primary_node(spec)
+            .and_then(|card| render_gid(&card).or_else(|| self.probes.known_gid(&card)));
+        let mut groups: Vec<String> = Vec::new();
+        for gid in self.app_render_gid(spec).into_iter().chain(card_gid) {
+            if !groups.contains(&gid.to_string()) {
+                groups.push(gid.to_string());
+            }
+        }
         let mut mounts = self.mounts(&spec.id, true);
         let list = mounts.as_array_mut().expect("mounts are a list");
         list.extend(self.storage_mounts(spec));
@@ -2092,9 +2104,16 @@ impl DockerRuntime {
                 "Init": true,
             },
         });
-        // Only a render node; the app's input devices come through the cgroup
-        // rules and the volumes.
-        let devices = self.gpu_devices(spec);
+        // A render node, and for Steam its primary node too; the app's input
+        // devices come through the cgroup rules and the volumes.
+        let mut devices = self.gpu_devices(spec);
+        if let Some(card) = steam_primary_node(spec) {
+            devices.push(json!({
+                "PathOnHost": card,
+                "PathInContainer": card,
+                "CgroupPermissions": "rw",
+            }));
+        }
         if !devices.is_empty() {
             config["HostConfig"]["Devices"] = json!(devices);
         }
@@ -2509,11 +2528,45 @@ fn vaapi_node(spec: &EnvironmentSpec) -> Option<&str> {
         .filter(|n| valid_render_node(n))
 }
 
+/// The primary node (`/dev/dri/card0`) of a Steam environment's VA-API
+/// render node. Gamescope wants its GPU's primary node, not only the render
+/// node: without it Vulkan reports "no primary node" and gamescope aborts.
+/// Only Steam gets it, since a primary node can drive the host's displays.
+/// (NVIDIA's comes through CDI.)
+fn steam_primary_node(spec: &EnvironmentSpec) -> Option<String> {
+    if spec.security != SecurityProfile::Steam {
+        return None;
+    }
+    primary_node_in(Path::new("/sys/class/drm"), vaapi_node(spec)?)
+}
+
+/// The `card*` beside `render_node` under `sys` (`/sys/class/drm`), which
+/// every container sees as the host's.
+fn primary_node_in(sys: &Path, render_node: &str) -> Option<String> {
+    let name = render_node.strip_prefix("/dev/dri/")?;
+    let mut cards: Vec<String> = std::fs::read_dir(sys.join(name).join("device/drm"))
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| valid_dri_node(&format!("/dev/dri/{n}")) && n.starts_with("card"))
+        .collect();
+    cards.sort();
+    cards.first().map(|n| format!("/dev/dri/{n}"))
+}
+
 /// Whether `path` is a DRM render node (`/dev/dri/renderD128`). Docker is
 /// handed it as a device to give the app, so nothing else will do.
 pub(crate) fn valid_render_node(path: &str) -> bool {
     path.strip_prefix("/dev/dri/renderD")
         .is_some_and(|n| (1..=4).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether `path` is a DRM render node or primary node (`/dev/dri/card0`).
+pub(crate) fn valid_dri_node(path: &str) -> bool {
+    valid_render_node(path)
+        || path
+            .strip_prefix("/dev/dri/card")
+            .is_some_and(|n| (1..=4).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Refuses a `vaapi` spec without a render node of the host's DRM kind.
@@ -3218,6 +3271,23 @@ mod tests {
         assert!(app["HostConfig"].get("Devices").is_none());
         assert_eq!(app["HostConfig"]["GroupAdd"], json!([]));
         assert!(!mounts_wine_dir(&app));
+    }
+
+    #[test]
+    fn steam_finds_the_primary_node_beside_its_render_node() {
+        let sys = tempfile::tempdir().unwrap();
+        let drm = sys.path().join("renderD129/device/drm");
+        for n in ["renderD129", "controlD65", "card1"] {
+            std::fs::create_dir_all(drm.join(n)).unwrap();
+        }
+        assert_eq!(
+            primary_node_in(sys.path(), "/dev/dri/renderD129").as_deref(),
+            Some("/dev/dri/card1")
+        );
+        assert_eq!(primary_node_in(sys.path(), "/dev/dri/renderD128"), None);
+        assert!(valid_dri_node("/dev/dri/card0"));
+        assert!(!valid_dri_node("/dev/dri/card0/../x"));
+        assert!(!valid_dri_node("/dev/dri/controlD64"));
     }
 
     #[test]
