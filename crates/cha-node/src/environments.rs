@@ -1717,6 +1717,10 @@ impl DockerRuntime {
         let mut env = vec![
             format!("XDG_RUNTIME_DIR={RUNTIME_DIR}"),
             "RUST_LOG=info,smithay=warn,str0m=warn".to_string(),
+            // Whose pads: a Steam Controller's serial is made from it, so Steam
+            // keeps one configuration for it across launches. An environment
+            // variable, which an older streamer ignores.
+            format!("CHA_PAD_IDENTITY={}/{}", spec.owner, spec.template),
         ];
         let mut labels = self.labels(&spec.id, "streamer", port);
         // Whose it is, which the node's GameStream host reads back after a restart.
@@ -2676,6 +2680,14 @@ mod tests {
         );
         let env = s["Env"].as_array().unwrap();
         assert!(env.contains(&json!(format!("CHA_GAMESTREAM_SECRET={}", access.secret))));
+        let sp = spec(SecurityProfile::Standard);
+        assert!(
+            env.contains(&json!(format!(
+                "CHA_PAD_IDENTITY={}/{}",
+                sp.owner, sp.template
+            ))),
+            "a Steam Controller's serial follows its owner and app"
+        );
         assert_eq!(s["Labels"][LABEL_GAMESTREAM_PORTS], "7703,7704,7705");
         // Those labels bring the access back after an agent restart.
         let labels: std::collections::HashMap<String, String> = s["Labels"]

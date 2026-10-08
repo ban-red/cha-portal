@@ -474,6 +474,11 @@ pub struct Gamepads {
     app_uid: Option<u32>,
     /// Makes this run's devices' MAC addresses and serials its own.
     seed: u64,
+    /// Whose pads these are, the same on every launch (`CHA_PAD_IDENTITY`,
+    /// from the node: owner and app). A Steam Controller's serial comes from
+    /// it, so Steam, which keeps a configuration set per serial, finds last
+    /// time's settings instead of meeting a new controller every launch.
+    identity: Option<String>,
     pads: Mutex<Vec<Slot>>,
     events: broadcast::Sender<PadEvent>,
     /// The last lightbar, player LEDs and trigger effects, for viewers that
@@ -604,6 +609,9 @@ impl Gamepads {
             udev_dir: input_dir.join("udev/data"),
             app_uid,
             seed: run_seed(),
+            identity: std::env::var(PAD_IDENTITY_ENV)
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
             pads: Mutex::default(),
             events: broadcast::channel(64).0,
             memory: Arc::default(),
@@ -714,6 +722,15 @@ impl Gamepads {
     }
 
     /// A number for this run's pad `index`, stable for the run.
+    /// What a pad's serial is made from: stable per owner, app and slot when
+    /// the node said whose pads these are, else the run's.
+    fn serial_hash(&self, index: usize) -> u64 {
+        match &self.identity {
+            Some(identity) => stable_hash(&format!("{identity}/pad{index}")),
+            None => self.pad_hash(index),
+        }
+    }
+
     fn pad_hash(&self, index: usize) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (self.seed, index).hash(&mut hasher);
@@ -731,7 +748,8 @@ impl Gamepads {
         // bytes of the run's. A Steam Controller's `uniq` is one too (it is
         // Bluetooth); its serial is made as Valve formats them, from the run's.
         let mac = [0x02, 0xca, 0xfe, bytes[5], bytes[6], bytes[7]];
-        let serial = steam_controller::serial_for(steam_controller::VARIANT, hash);
+        let serial =
+            steam_controller::serial_for(steam_controller::VARIANT, self.serial_hash(index));
         let tag = format!("{hash:016x}");
         // What the kernel keeps as the device's `phys` (and finds it by here).
         let phys = format!("cha/pad{index}/{tag}");
@@ -1063,6 +1081,18 @@ fn udev_entry(initialized: u128, class: Class, identity: &Identity) -> String {
          E:ID_SERIAL={}\nG:seat\nG:uaccess\nQ:seat\nQ:uaccess\nV:1\n",
         identity.bus, identity.vendor, identity.product, identity.serial
     )
+}
+
+/// The environment variable naming whose pads these are (see
+/// `Gamepads::identity`).
+pub const PAD_IDENTITY_ENV: &str = "CHA_PAD_IDENTITY";
+
+/// FNV-1a, 64-bit: the same for the same text in every build (std's hasher
+/// isn't promised to be), so a serial made from it survives upgrades.
+fn stable_hash(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// Something that differs between runs, between streamers on one host (their
@@ -1412,6 +1442,17 @@ pub(crate) fn ioctl_int(fd: c_int, request: libc::c_ulong, value: c_int) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_users_steam_controller_keeps_its_serial() {
+        // FNV-1a's published test vector: the hash can't drift between builds.
+        assert_eq!(stable_hash("a"), 0xaf63_dc4c_8601_ec8c);
+        let serial =
+            |who: &str| steam_controller::serial_for(steam_controller::VARIANT, stable_hash(who));
+        assert_eq!(serial("u1/steam/pad0"), serial("u1/steam/pad0"));
+        assert_ne!(serial("u1/steam/pad0"), serial("u1/steam/pad1"));
+        assert_ne!(serial("u1/steam/pad0"), serial("u2/steam/pad0"));
+    }
 
     #[test]
     fn struct_sizes_match_the_ioctls() {
