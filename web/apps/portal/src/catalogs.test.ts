@@ -7,7 +7,9 @@ describe("approvalGrant", () => {
   test("says what each elevated profile grants", () => {
     expect(approvalGrant("browser")).toBe("lets this app's container create user namespaces (browser sandboxes)");
     expect(approvalGrant("steam")).toContain("cha-sandbox AppArmor profile");
+    expect(approvalGrant("vm")).toContain("/dev/kvm");
     expect(approvalGrant("standard")).toBeNull();
+    expect(needsApproval({ security: "vm" })).toBe(true);
     expect(needsApproval({ security: "steam" })).toBe(true);
     expect(needsApproval({ security: "standard" })).toBe(false);
   });

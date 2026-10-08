@@ -17,7 +17,7 @@ use serde_json::json;
 use tracing::{debug, info};
 
 use crate::docker::Docker;
-use crate::environments::{valid_dri_node, valid_render_node};
+use crate::environments::{KVM_DEVICE, UDMABUF_DEVICE, valid_dri_node, valid_render_node};
 use crate::inventory;
 
 /// A probe is quick (a driver opens, asks its entrypoints); a hung one is the
@@ -88,8 +88,8 @@ impl DeviceProbes {
         codecs
     }
 
-    /// The group that owns `render_node` on the host, which the app needs to
-    /// open it. The agent's container usually has only NVIDIA's node (CDI) or
+    /// The group that owns `render_node` (or `/dev/kvm`, `/dev/udmabuf`) on
+    /// the host, which the app needs to open it. The agent's container usually has only NVIDIA's node (CDI) or
     /// none, so for any other it asks a throwaway container of the streamer
     /// image, given that node: Docker makes it with the host's owner. Kept
     /// once known; `None` when neither can tell.
@@ -114,6 +114,14 @@ impl DeviceProbes {
                 None
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remember_gid(&self, node: &str, gid: u32) {
+        self.gids
+            .lock()
+            .expect("probe cache lock")
+            .insert(node.to_string(), gid);
     }
 
     /// A group [`Self::render_gid`] found earlier.
@@ -204,8 +212,8 @@ fn local_gid(render_node: &str) -> Option<u32> {
 /// `render_node`'s group as a container given it sees it: `stat` in a
 /// throwaway container of the streamer image, like [`probe`]'s.
 async fn probe_gid(docker: &Docker, image: &str, render_node: &str) -> Result<u32> {
-    if !valid_dri_node(render_node) {
-        anyhow::bail!("{render_node} isn't a DRM node");
+    if !probeable_node(render_node) {
+        anyhow::bail!("{render_node} isn't a device whose group may be probed");
     }
     let name = render_node.rsplit('/').next().unwrap_or("renderD");
     let mut config = probe_config(image, "");
@@ -217,6 +225,12 @@ async fn probe_gid(docker: &Docker, image: &str, render_node: &str) -> Result<u3
     }]);
     let output = run_probe(docker, &format!("cha-probe-gid-{name}"), &config).await?;
     parse_gid(&output).context("stat printed no group")
+}
+
+/// The devices a group may be probed for: DRM nodes, and exactly the two a
+/// `vm` app is given. Docker is handed the path as a device to pass through.
+fn probeable_node(path: &str) -> bool {
+    valid_dri_node(path) || path == KVM_DEVICE || path == UDMABUF_DEVICE
 }
 
 /// The number `stat -c %g` printed, on its last line.
@@ -313,6 +327,28 @@ mod tests {
         assert_eq!(parse_gid("some warning\n992\n"), Some(992));
         assert_eq!(parse_gid("stat: cannot stat\n"), None);
         assert_eq!(parse_gid(""), None);
+    }
+
+    #[test]
+    fn only_drm_nodes_kvm_and_udmabuf_may_be_probed() {
+        for ok in [
+            "/dev/dri/renderD128",
+            "/dev/dri/card0",
+            "/dev/kvm",
+            "/dev/udmabuf",
+        ] {
+            assert!(probeable_node(ok), "{ok}");
+        }
+        for bad in [
+            "/dev/kvm/../sda",
+            "/dev/sda",
+            "/dev/mem",
+            "/dev/kvm0",
+            "/dev/dri/../kvm",
+            "",
+        ] {
+            assert!(!probeable_node(bad), "{bad}");
+        }
     }
 
     #[test]

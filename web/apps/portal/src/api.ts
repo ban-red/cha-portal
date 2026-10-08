@@ -128,7 +128,7 @@ export interface GpuUsage {
   powerLimit?: number;
 }
 
-export type SecurityProfile = "standard" | "browser" | "steam";
+export type SecurityProfile = "standard" | "browser" | "steam" | "vm";
 
 /** Something users can launch (`images/catalog.json`). */
 /** Portal-wide settings (`/admin/settings`). */
@@ -279,7 +279,7 @@ export interface AdminStorageInfo {
 
 // ---- Loaded catalogs (admin; ADR 0019) ----
 
-export type CatalogSecurity = "standard" | "browser" | "steam";
+export type CatalogSecurity = "standard" | "browser" | "steam" | "vm";
 
 export interface CatalogTemplateView {
   /** Namespaced: `<catalog>.<app>`. */
@@ -294,7 +294,7 @@ export interface CatalogTemplateView {
   /** A user can launch it. */
   available: boolean;
   unavailableReason: string | null;
-  /** An admin approved its `browser` or `steam` profile. */
+  /** An admin approved its `browser`, `steam` or `vm` profile. */
   approved: boolean;
   /** Served at `catalogIconUrl(id)`. */
   hasIcon: boolean;

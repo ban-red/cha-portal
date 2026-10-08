@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 
 use crate::docker::{Docker, PullProgress, names_registry};
 use crate::environments::{
-    AGENT_VERSION, APP_HOME, APP_UID, RUNTIME_DIR, SANDBOX_APPARMOR, app_env, app_host_config,
-    app_user,
+    AGENT_VERSION, APP_HOME, APP_UID, DEFAULT_VM_MEMORY_MB, RUNTIME_DIR, SANDBOX_APPARMOR, app_env,
+    app_host_config, app_user,
 };
 
 /// Marks every container and volume the check makes; its value is this run's id.
@@ -103,7 +103,8 @@ pub fn parse_profile(name: &str) -> Result<SecurityProfile> {
         "standard" => Ok(SecurityProfile::Standard),
         "browser" => Ok(SecurityProfile::Browser),
         "steam" => Ok(SecurityProfile::Steam),
-        other => bail!("unknown profile {other}: use standard, browser or steam"),
+        "vm" => Ok(SecurityProfile::Vm),
+        other => bail!("unknown profile {other}: use standard, browser, steam or vm"),
     }
 }
 
@@ -112,6 +113,7 @@ fn profile_name(profile: SecurityProfile) -> &'static str {
         SecurityProfile::Standard => "standard",
         SecurityProfile::Browser => "browser",
         SecurityProfile::Steam => "steam",
+        SecurityProfile::Vm => "vm",
     }
 }
 
@@ -263,7 +265,7 @@ fn app_config(
     run: Run,
     entrypoint: Option<&str>,
 ) -> Value {
-    let mut host = app_host_config(profile, 1024);
+    let mut host = app_host_config(profile, 1024, DEFAULT_VM_MEMORY_MB);
     match run {
         // Not shared with a streamer: an empty directory the app owns, as a
         // launch's is once the streamer has made it over.
@@ -425,6 +427,10 @@ impl Check<'_> {
             let state = self.docker.inspect_container(&id).await?;
             if state["State"]["Running"].as_bool() != Some(true) {
                 let code = state["State"]["ExitCode"].as_i64().unwrap_or(-1);
+                let said = tail(self.docker, &id).await;
+                if wants_kvm(profile, &said) {
+                    break line(Level::Warn, "no compositor", kvm_missing(code, &said));
+                }
                 break line(
                     Level::Fail,
                     "no compositor",
@@ -432,7 +438,7 @@ impl Check<'_> {
                         "exited with code {code} after {:.1} s with no Wayland socket: an app must wait for \
                          the compositor (start through cha-run, or retry until /run/cha/wayland-0 exists){}",
                         started.elapsed().as_secs_f32(),
-                        tail(self.docker, &id).await
+                        said
                     ),
                 );
             }
@@ -563,6 +569,9 @@ impl Check<'_> {
                 // The check's compositor has no GPU; an app that needs one
                 // (Steam's gamescope) can't be judged here.
                 let lower = said.to_lowercase();
+                if wants_kvm(profile, &said) {
+                    return Ok(line(Level::Warn, "compositor", kvm_missing(code, &said)));
+                }
                 if lower.contains("vulkan") || lower.contains("no gpu") {
                     return Ok(line(
                         Level::Warn,
@@ -593,6 +602,19 @@ impl Check<'_> {
             }
         }
     }
+}
+
+/// Whether a `vm` app's output says it stopped for want of KVM: the check
+/// gives it no `/dev/kvm`, so such an image can't be judged here.
+fn wants_kvm(profile: SecurityProfile, said: &str) -> bool {
+    profile == SecurityProfile::Vm && said.to_lowercase().contains("kvm")
+}
+
+fn kvm_missing(code: i64, said: &str) -> String {
+    format!(
+        "couldn't test it: the app wants /dev/kvm and the check doesn't pass it (exit {code}); \
+         try a real launch on a node with KVM{said}"
+    )
 }
 
 /// How many clients are connected to the Wayland socket at `path`, from the
@@ -911,6 +933,7 @@ mod tests {
             (SecurityProfile::Standard, false, false),
             (SecurityProfile::Browser, true, false),
             (SecurityProfile::Steam, true, true),
+            (SecurityProfile::Vm, false, false),
         ] {
             let config = app_config("img", profile, "abcd", Run::Beside, None);
             assert_eq!(config["User"], "1000:1000");
@@ -934,7 +957,16 @@ mod tests {
     #[test]
     fn profiles_parse_by_name() {
         assert_eq!(parse_profile("steam").unwrap(), SecurityProfile::Steam);
+        assert_eq!(parse_profile("vm").unwrap(), SecurityProfile::Vm);
         assert!(parse_profile("root").is_err());
+    }
+
+    #[test]
+    fn a_vm_that_stopped_for_want_of_kvm_is_a_warning_not_a_failure() {
+        let said = "\nqemu-system-x86_64: Could not access KVM kernel module: No such file";
+        assert!(wants_kvm(SecurityProfile::Vm, said));
+        assert!(!wants_kvm(SecurityProfile::Browser, said));
+        assert!(!wants_kvm(SecurityProfile::Vm, "\nsegfault"));
     }
 
     #[test]

@@ -287,6 +287,7 @@ fn test_inventory() -> Inventory {
         update: None,
         spec_features: Vec::new(),
         host_options: None,
+        kvm: None,
     }
 }
 

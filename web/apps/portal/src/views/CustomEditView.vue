@@ -147,6 +147,7 @@ const FIELDS: Field[] = [
       { value: "standard", label: "standard" },
       { value: "browser", label: "browser" },
       { value: "steam", label: "steam" },
+      { value: "vm", label: "vm" },
     ],
   },
 ];

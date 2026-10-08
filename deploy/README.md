@@ -217,6 +217,7 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_GAMESTREAM_PORT_BASE` | `7700` | Where those ports start: UDP video, control and audio for the first environment, three more for each. The range (three ports times `CHA_MAX_ENVIRONMENTS`) must not overlap `CHA_PORT_BASE`'s; the agent refuses to start otherwise. Forward or open them for clients that aren't on the node's LAN; `cha-node --doctor` checks the first block is free |
 | `CHA_DATA_ROOT` | `/srv/cha-portal` | Where app data lives ([below](#app-data)): a host directory the compose file also mounts into the agent at the same path |
 | `CHA_NVIDIA_WINE_DIR` | `/usr/lib/x86_64-linux-gnu/nvidia/wine` | The driver's `nvngx.dll` and `_nvngx.dll`, which Proton copies into its prefixes for DLSS and the CDI spec leaves out. Bound read-only into apps at the same path when the host has it (the agent asks the engine; nothing to mount into the agent); empty goes without |
+| `CHA_VM_MEMORY_MB` | `12288` | The memory limit, RAM and swap, of an app that runs a virtual machine (the `vm` profile), at least 1024. A guest that outgrows it is killed, not the node |
 | `CHA_SHARED_DIRS` | | Keeps an app's shared directory elsewhere, `app=/absolute/path`, comma-separated (`steam=/mnt/games/steam`, a NAS). Bind each into the agent read-only at that path |
 | `CHA_HOST_OPTIONS` | `off` | What custom environments may ask of this node: `off`, `allowlist` or `full` ([Host options](#host-options)). Anything else stops the agent at start-up |
 | `CHA_HOST_MOUNTS`, `CHA_HOST_PORTS`, `CHA_HOST_CAPS`, `CHA_HOST_DEVICES` | | The allowlist: folders, host ports, capabilities and devices ([Host options](#host-options)) |
@@ -243,6 +244,10 @@ In `full` mode the lists stay usable: apps can still mount a folder by name, and
 Whatever the mode, the agent refuses a mount that would cover something it mounts itself (`/run/cha`, `/dev/input`, `/home/cha`, the shared directories, the controllers' `hidraw` nodes), one over a shared directory kept elsewhere (`CHA_SHARED_DIRS`), and any folder that holds the agent's Docker socket. Published ports can't be one the agent gives streamers. Every refusal names the option. A share mounted for a launch (`full` only) is a Docker volume named `cha-hostvol-<environment>-<n>`, removed when the environment stops.
 
 The node tells the portal its mode and what it names (mount names and whether each is read-only, port ranges, capabilities, devices; never host paths). The portal places a custom environment only on a node that allows everything it asks for, and the agent checks again before it starts anything. `cha-node --doctor` shows the mode, warns on `full`, and in allowlist mode warns about mounts and devices that aren't on the host. Edit `deploy/node/.env` (the compose file passes the five variables through) and recreate the agent for a change.
+
+### Virtual machine environments
+
+A template with the `vm` profile (a QEMU/KVM guest inside the app, from a catalog an admin approved) runs only on a node that has `/dev/kvm`: the host's `kvm_intel` or `kvm_amd` module loaded and virtualisation on in the firmware. The agent reports it, and the portal offers other nodes' placements as "no KVM". `/dev/udmabuf` is optional; the app gets it when the host has it. The app is limited to `CHA_VM_MEMORY_MB` and given 30 s to stop. `cha-node --doctor` says whether the node has KVM. A node under Proxmox, as a VM or an LXC container, needs the outer host to pass KVM through.
 
 ### When an environment dies
 

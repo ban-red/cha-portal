@@ -12,6 +12,8 @@ export function approvalGrant(security: CatalogSecurity): string | null {
   if (security === "browser") return "lets this app's container create user namespaces (browser sandboxes)";
   if (security === "steam")
     return "lets this app's container create user namespaces (browser sandboxes) and run under the cha-sandbox AppArmor profile";
+  if (security === "vm")
+    return "runs a virtual machine: the container gets /dev/kvm and the host's kvm group";
   return null;
 }
 

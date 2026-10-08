@@ -102,6 +102,7 @@ pub async fn run(
         });
         checks.push(gamepads(docker, config).await);
         checks.push(uhid_pads(docker, config).await);
+        checks.push(kvm(std::path::Path::new("/sys")));
         checks.push(sandboxes(docker, config).await);
         checks.push(nvidia_wine(docker, config).await);
     }
@@ -408,6 +409,33 @@ async fn pyrowave(docker: &Docker, config: &DockerConfig) -> Check {
         "rebuild the streamer image (it carries libpyrowave and the libraries NVIDIA's Vulkan driver \
          needs); VK_LOADER_DEBUG=error,driver in the probe says what the driver is missing",
     )
+}
+
+/// Whether the host has KVM (`sysfs` is the host's `/sys`), which `vm`
+/// environments need. A node without it is fine: it runs the others.
+fn kvm(sysfs: &std::path::Path) -> Check {
+    let name = "KVM";
+    if crate::inventory::has_kvm(sysfs) {
+        let udmabuf = sysfs.join("class/misc/udmabuf").exists();
+        return check(
+            Level::Ok,
+            name,
+            format!(
+                "/dev/kvm is there, so this node can run virtual machine environments (udmabuf {})",
+                if udmabuf {
+                    "too"
+                } else {
+                    "isn't, which they use when it is"
+                }
+            ),
+        );
+    }
+    check(
+        Level::Info,
+        name,
+        "no /dev/kvm: this node won't be offered virtual machine environments",
+    )
+    .fix("load the module (modprobe kvm_intel or kvm_amd) and turn virtualisation on in the firmware, to run them")
 }
 
 /// `/dev/uinput` as a streamer gets it.

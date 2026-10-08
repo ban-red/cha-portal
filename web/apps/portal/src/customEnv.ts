@@ -164,7 +164,9 @@ export function resolve(base: Template, o: CustomOverrides): Template {
 
 // ---- Security -----------------------------------------------------------------------------
 
-const RANK: Record<CatalogSecurity, number> = { standard: 0, browser: 1, steam: 2 };
+// vm is last, as on the server (custom.rs): not a wider sandbox, but a device
+// none of the others get.
+const RANK: Record<CatalogSecurity, number> = { standard: 0, browser: 1, steam: 2, vm: 3 };
 
 /** The profile grants more than the base's. */
 export const widerSecurity = (base: CatalogSecurity, chosen: CatalogSecurity) => RANK[chosen] > RANK[base];

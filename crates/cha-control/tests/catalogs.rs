@@ -632,6 +632,39 @@ async fn elevated_profiles_wait_for_approval_and_lose_it_when_they_change() {
 }
 
 #[tokio::test]
+async fn a_vm_template_waits_for_approval_like_the_other_elevated_profiles() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let player = p.setup_player(&admin).await;
+    let d = doc(vec![template("win", "ghcr.io/acme/win:1", "vm")]);
+    let r = p
+        .add(&admin, json!({ "slug": "acme", "document": d }))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["templates"][0]["security"], "vm");
+    assert_eq!(r.body["templates"][0]["available"], false);
+    assert_eq!(
+        r.body["templates"][0]["unavailableReason"],
+        "needs approval for the vm profile"
+    );
+    assert!(
+        !p.catalog_ids(&player)
+            .await
+            .contains(&"acme.win".to_string())
+    );
+    let r = p
+        .call(
+            "PUT",
+            "/api/admin/catalogs/acme/templates/win/approval",
+            Some(&admin),
+            Some(json!({ "approved": true })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["templates"][0]["available"], true);
+}
+
+#[tokio::test]
 async fn a_catalog_with_live_environments_cannot_be_removed() {
     let p = portal().await;
     let admin = p.setup_admin().await;

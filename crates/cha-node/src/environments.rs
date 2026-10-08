@@ -97,6 +97,9 @@ const LABEL_TEMPLATE: &str = "sh.cha.template";
 const LABEL_DATA_TEMPLATE: &str = "sh.cha.data-template";
 /// Volumes made for an app's network mounts: `cha-hostvol-<environment>-<n>`.
 const HOST_VOLUME_PREFIX: &str = "cha-hostvol-";
+/// On an app of a `vm` environment (value `vm`), so [`DockerRuntime::remove`]
+/// gives it the longer stop grace, also after the agent restarted.
+const LABEL_PROFILE: &str = "sh.cha.profile";
 /// On a streamer: the environment streams a Moonlight host's app (a gateway),
 /// not an app beside it. Which is how a restarted agent keeps them out of
 /// the GameStream host's app list.
@@ -302,6 +305,9 @@ pub struct DockerConfig {
     /// which Proton copies into its prefixes and the CDI spec leaves out:
     /// bound into apps read-only at the same path. `None` goes without.
     pub nvidia_wine_dir: Option<PathBuf>,
+    /// The memory limit of a `vm` app's container, in MiB
+    /// (`CHA_VM_MEMORY_MB`, [`DEFAULT_VM_MEMORY_MB`]).
+    pub vm_memory_mb: u64,
     /// Where the logs of environments that died are kept (the agent's state
     /// directory's `logs`); `None` keeps none.
     pub log_dir: Option<PathBuf>,
@@ -382,7 +388,7 @@ pub(crate) fn app_env(width: u32, height: u32, fps: u32) -> Vec<String> {
 /// The app container's confinement and limits for `security`: capabilities,
 /// privilege gain, seccomp, AppArmor, descriptors, shared memory, init. What
 /// the launch and `--check-image` both run an app under.
-pub(crate) fn app_host_config(security: SecurityProfile, shm_mb: u32) -> Value {
+pub(crate) fn app_host_config(security: SecurityProfile, shm_mb: u32, vm_memory_mb: u64) -> Value {
     let mut options = vec!["no-new-privileges".to_string()];
     if matches!(security, SecurityProfile::Browser | SecurityProfile::Steam) {
         options.push(format!("seccomp={}", compact(BROWSER_SECCOMP)));
@@ -396,14 +402,71 @@ pub(crate) fn app_host_config(security: SecurityProfile, shm_mb: u32) -> Value {
     } else {
         json!([])
     };
-    json!({
+    let mut host = json!({
         "Ulimits": ulimits,
         "CapDrop": ["ALL"],
         "SecurityOpt": options,
         "ShmSize": u64::from(shm_mb) * 1024 * 1024,
         "RestartPolicy": { "Name": "no" },
         "Init": true,
-    })
+    });
+    if security == SecurityProfile::Vm {
+        // A guest's RAM plus QEMU's own must not be able to push the shared
+        // host into memory exhaustion: an earlier test froze a node. Swap is
+        // capped to the same figure, so the container can't spill past it.
+        let bytes = vm_memory_mb * 1024 * 1024;
+        host["Memory"] = json!(bytes);
+        host["MemorySwap"] = json!(bytes);
+    }
+    host
+}
+
+/// What a `vm` app's container may use of the guest's RAM and QEMU's, when
+/// `CHA_VM_MEMORY_MB` doesn't say.
+pub const DEFAULT_VM_MEMORY_MB: u64 = 12 * 1024;
+
+/// How long a `vm` app has to stop on SIGTERM, so the guest can shut down;
+/// other apps get [`STOP_GRACE_SECS`]. Under the portal's stop timeout.
+const VM_STOP_GRACE_SECS: u32 = 30;
+const STOP_GRACE_SECS: u32 = 5;
+
+/// The host's KVM device, which `vm` apps run their guests on.
+pub(crate) const KVM_DEVICE: &str = "/dev/kvm";
+/// The host's udmabuf device, for zero-copy buffers between the guest's
+/// display and the compositor; a `vm` app gets it when the host has it.
+pub(crate) const UDMABUF_DEVICE: &str = "/dev/udmabuf";
+/// How the agent's container sees the host has them (sysfs is the host's).
+const KVM_SYSFS: &str = "/sys/class/misc/kvm";
+const UDMABUF_SYSFS: &str = "/sys/class/misc/udmabuf";
+
+/// Seconds a container with these labels has to stop on SIGTERM.
+fn stop_grace(labels: &std::collections::HashMap<String, String>) -> u32 {
+    match labels.get(LABEL_PROFILE).map(String::as_str) {
+        Some("vm") => VM_STOP_GRACE_SECS,
+        _ => STOP_GRACE_SECS,
+    }
+}
+
+/// The devices a `vm` app is given, read-write: KVM, and udmabuf when
+/// `udmabuf` (the host has it). Nothing for other profiles.
+fn vm_devices(spec: &EnvironmentSpec, udmabuf: bool) -> Vec<Value> {
+    if spec.security != SecurityProfile::Vm {
+        return Vec::new();
+    }
+    let mut paths = vec![KVM_DEVICE];
+    if udmabuf {
+        paths.push(UDMABUF_DEVICE);
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            json!({
+                "PathOnHost": path,
+                "PathInContainer": path,
+                "CgroupPermissions": "rw",
+            })
+        })
+        .collect()
 }
 
 /// The release this agent is, for the `{version}` in image names.
@@ -1257,6 +1320,12 @@ impl DockerRuntime {
                          Steam's sandbox needs (`cha-node --doctor` says how)"
                     );
                 }
+                if spec.security == SecurityProfile::Vm && format!("{err:#}").contains(KVM_DEVICE) {
+                    bail!(
+                        "this node couldn't give the app {KVM_DEVICE}: it needs the host's kvm \
+                         module loaded and virtualisation on in its firmware ({err:#})"
+                    );
+                }
                 Err(err)
             }
         }
@@ -1672,6 +1741,30 @@ impl DockerRuntime {
         {
             warn!(%card, "can't tell the primary node's group; gamescope may not start");
         }
+        if spec.security == SecurityProfile::Vm {
+            // So app_config knows their groups, though the agent may not
+            // have the nodes.
+            if self
+                .probes
+                .render_gid(&self.docker, &self.config.streamer_image, KVM_DEVICE)
+                .await
+                .is_none()
+            {
+                bail!(
+                    "can't tell which group owns {KVM_DEVICE} on this node, which the virtual \
+                     machine needs to open it (does the host have the kvm module loaded?)"
+                );
+            }
+            if Path::new(UDMABUF_SYSFS).exists()
+                && self
+                    .probes
+                    .render_gid(&self.docker, &self.config.streamer_image, UDMABUF_DEVICE)
+                    .await
+                    .is_none()
+            {
+                warn!("can't tell {UDMABUF_DEVICE}'s group; the guest's display may be slower");
+            }
+        }
         // Picking a free port and publishing it is one step: the next launch
         // sees this one's ports only once the app has them.
         let wants_ports = spec.host.as_deref().is_some_and(|h| !h.ports.is_empty());
@@ -1932,6 +2025,9 @@ impl DockerRuntime {
             // The environment's own template; the data's may be its base's.
             labels[LABEL_TEMPLATE] = json!(spec.template);
             labels[LABEL_DATA_TEMPLATE] = json!(data_template);
+        }
+        if spec.security == SecurityProfile::Vm {
+            labels[LABEL_PROFILE] = json!("vm");
         }
         labels
     }
@@ -2302,8 +2398,21 @@ impl DockerRuntime {
     ) -> Value {
         let card_gid = steam_primary_node(spec)
             .and_then(|card| render_gid(&card).or_else(|| self.probes.known_gid(&card)));
+        let udmabuf = Path::new(UDMABUF_SYSFS).exists();
+        // The groups that own the VM's devices, which the probes found
+        // before the app was made ([`Self::create_containers`]).
+        let vm_gids: Vec<u32> = vm_devices(spec, udmabuf)
+            .iter()
+            .filter_map(|d| d["PathOnHost"].as_str())
+            .filter_map(|path| render_gid(path).or_else(|| self.probes.known_gid(path)))
+            .collect();
         let mut groups: Vec<String> = Vec::new();
-        for gid in self.app_render_gid(spec).into_iter().chain(card_gid) {
+        for gid in self
+            .app_render_gid(spec)
+            .into_iter()
+            .chain(card_gid)
+            .chain(vm_gids)
+        {
             if !groups.contains(&gid.to_string()) {
                 groups.push(gid.to_string());
             }
@@ -2350,7 +2459,7 @@ impl DockerRuntime {
         if let Some(extra) = &spec.env {
             env.extend(extra.iter().map(|(name, value)| format!("{name}={value}")));
         }
-        let mut host = app_host_config(spec.security, spec.shm_mb);
+        let mut host = app_host_config(spec.security, spec.shm_mb, self.config.vm_memory_mb);
         host["Mounts"] = mounts;
         // Input devices: the gamepads' nodes, the only ones it has.
         host["DeviceCgroupRules"] = self.device_cgroup_rules(hidraw);
@@ -2366,6 +2475,7 @@ impl DockerRuntime {
         // A render node, and for Steam its primary node too; the app's input
         // devices come through the cgroup rules and the volumes.
         let mut devices = self.gpu_devices(spec);
+        devices.extend(vm_devices(spec, udmabuf));
         if let Some(card) = steam_primary_node(spec) {
             devices.push(json!({
                 "PathOnHost": card,
@@ -2440,7 +2550,8 @@ impl DockerRuntime {
                 ordered
                     .sort_by_key(|c| c.labels.get(LABEL_ROLE).map(String::as_str) != Some("app"));
                 for container in ordered {
-                    note(self.docker.remove(&container.id, 5).await);
+                    let grace = stop_grace(&container.labels);
+                    note(self.docker.remove(&container.id, grace).await);
                 }
             }
             Err(err) => note(Err(err)),
@@ -3054,8 +3165,19 @@ pub(crate) fn valid_dri_node(path: &str) -> bool {
 
 /// Refuses a `vaapi` spec without a render node of the host's DRM kind.
 fn check_device(spec: &EnvironmentSpec) -> Result<()> {
+    check_device_on(spec, Path::new(KVM_SYSFS).exists())
+}
+
+/// [`check_device`], given whether the host has KVM.
+fn check_device_on(spec: &EnvironmentSpec, kvm: bool) -> Result<()> {
     if device_kind(spec) == DeviceKind::Vaapi && vaapi_node(spec).is_none() {
         bail!("a vaapi environment needs a render node like /dev/dri/renderD128");
+    }
+    if spec.security == SecurityProfile::Vm && !kvm {
+        bail!(
+            "this node has no {KVM_DEVICE}: a virtual machine needs the host's kvm module loaded \
+             and virtualisation on in its firmware"
+        );
     }
     Ok(())
 }
@@ -3225,6 +3347,7 @@ mod tests {
                 data_root: root.clone(),
                 shared_dirs,
                 nvidia_wine_dir: None,
+                vm_memory_mb: DEFAULT_VM_MEMORY_MB,
                 log_dir: None,
                 app_images: None,
                 gateway_image: "cha/gateway:dev".into(),
@@ -3313,6 +3436,69 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn a_vm_gets_kvm_its_groups_a_memory_limit_and_a_longer_stop() {
+        let mut rt = runtime();
+        rt.probes.remember_gid(KVM_DEVICE, 993);
+        rt.probes.remember_gid(UDMABUF_DEVICE, 994);
+        rt.config.vm_memory_mb = 8192;
+        let vm = spec(SecurityProfile::Vm);
+        let app = rt.app_config(&vm, 7600, &[]);
+        let host = &app["HostConfig"];
+        // Docker's default seccomp and AppArmor, and no capabilities.
+        let opts = host["SecurityOpt"].as_array().unwrap();
+        assert_eq!(opts, &[json!("no-new-privileges")]);
+        assert_eq!(host["CapDrop"], json!(["ALL"]));
+        // The limit covers swap too.
+        assert_eq!(host["Memory"], 8192u64 * 1024 * 1024);
+        assert_eq!(host["MemorySwap"], host["Memory"]);
+        let paths: Vec<&str> = host["Devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["PathOnHost"].as_str().unwrap())
+            .collect();
+        assert!(paths.contains(&"/dev/kvm"));
+        assert_eq!(
+            paths.contains(&"/dev/udmabuf"),
+            Path::new(UDMABUF_SYSFS).exists()
+        );
+        let groups = host["GroupAdd"].as_array().unwrap();
+        assert!(groups.contains(&json!("993")));
+        assert_eq!(
+            groups.contains(&json!("994")),
+            Path::new(UDMABUF_SYSFS).exists()
+        );
+        assert_eq!(app["Labels"][LABEL_PROFILE], "vm");
+
+        // The devices, with and without udmabuf; others get none.
+        let devices = |udmabuf| vm_devices(&vm, udmabuf);
+        assert_eq!(devices(false).len(), 1);
+        assert_eq!(devices(true)[1]["PathOnHost"], "/dev/udmabuf");
+        assert_eq!(devices(true)[1]["CgroupPermissions"], "rw");
+        assert!(vm_devices(&spec(SecurityProfile::Browser), true).is_empty());
+
+        // Others have no limit, no VM label and the short stop.
+        let chrome = rt.app_config(&spec(SecurityProfile::Browser), 7600, &[]);
+        assert!(chrome["HostConfig"].get("Memory").is_none());
+        assert!(chrome["Labels"].get(LABEL_PROFILE).is_none());
+        let labels = |app: &Value| -> std::collections::HashMap<String, String> {
+            serde_json::from_value(app["Labels"].clone()).unwrap()
+        };
+        assert_eq!(stop_grace(&labels(&app)), 30);
+        assert_eq!(stop_grace(&labels(&chrome)), 5);
+        assert_eq!(stop_grace(&Default::default()), 5);
+    }
+
+    #[test]
+    fn a_vm_needs_a_node_with_kvm() {
+        let vm = spec(SecurityProfile::Vm);
+        assert!(check_device_on(&vm, true).is_ok());
+        let err = check_device_on(&vm, false).unwrap_err().to_string();
+        assert!(err.contains("this node has no /dev/kvm"), "{err}");
+        assert!(check_device_on(&spec(SecurityProfile::Browser), false).is_ok());
     }
 
     #[test]

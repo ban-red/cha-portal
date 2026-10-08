@@ -690,6 +690,10 @@ pub enum SecurityProfile {
     /// `cha-sandbox` AppArmor profile, which the owner loads on the node):
     /// Steam's pressure-vessel builds a container for every game.
     Steam,
+    /// Docker's default seccomp; the app also gets `/dev/kvm`, `/dev/udmabuf`
+    /// when the host has it, and their groups, and a memory limit: a
+    /// QEMU/KVM virtual machine runs inside it.
+    Vm,
 }
 
 /// Where an environment's streamer listens on its node.
@@ -809,6 +813,11 @@ pub struct Inventory {
     /// agents that predate it, which allow nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_options: Option<HostPolicy>,
+    /// The node has `/dev/kvm`, so it can run `vm` environments. Absent from
+    /// agents that predate it, which can't, and which drop the connection on
+    /// a profile they don't know: the portal sends none a `vm` spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kvm: Option<bool>,
 }
 
 impl Inventory {
@@ -1938,6 +1947,32 @@ mod tests {
         assert_eq!(json["devices"][0]["cores"], 8);
         assert!(json["devices"][0].get("renderNode").is_none());
         assert_eq!(reported.devices_or_derived(), [cpu]);
+    }
+
+    #[test]
+    fn kvm_is_optional_and_a_vm_profile_round_trips() {
+        let old = serde_json::json!({
+            "hostname": "h", "os": "o", "arch": "a", "cpus": 1, "memoryMb": 2,
+            "gpus": [], "addresses": [],
+        });
+        let inv: Inventory = serde_json::from_value(old).unwrap();
+        assert_eq!(inv.kvm, None);
+        assert!(serde_json::to_value(&inv).unwrap().get("kvm").is_none());
+        let with = Inventory {
+            kvm: Some(true),
+            ..inv
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["kvm"], true);
+        assert_eq!(serde_json::from_value::<Inventory>(json).unwrap(), with);
+        assert_eq!(
+            serde_json::to_value(SecurityProfile::Vm).unwrap(),
+            serde_json::json!("vm")
+        );
+        assert_eq!(
+            serde_json::from_value::<SecurityProfile>(serde_json::json!("vm")).unwrap(),
+            SecurityProfile::Vm
+        );
     }
 
     #[test]

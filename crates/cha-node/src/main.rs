@@ -64,7 +64,7 @@ struct Args {
     check_image: Option<String>,
     /// The security profile `--check-image` runs the image under.
     #[arg(long, requires = "check_image", default_value = "standard",
-          value_parser = ["standard", "browser", "steam"])]
+          value_parser = ["standard", "browser", "steam", "vm"])]
     profile: String,
     /// Update this agent to a release (`0.2.1`) as the portal's Update button
     /// does, and exit: run it in the agent's container (`docker exec
@@ -183,6 +183,15 @@ struct Args {
         default_value = "/usr/lib/x86_64-linux-gnu/nvidia/wine"
     )]
     nvidia_wine_dir: String,
+    /// The memory limit of a `vm` app's container, in MiB: its guest's RAM
+    /// plus QEMU's own. A guest that outgrows it is killed, not the node.
+    #[arg(
+        long,
+        env = "CHA_VM_MEMORY_MB",
+        default_value_t = cha_node::environments::DEFAULT_VM_MEMORY_MB,
+        value_parser = clap::value_parser!(u64).range(1024..)
+    )]
+    vm_memory_mb: u64,
     /// Run the catalog's apps from published images: the registry and owner,
     /// e.g. `ghcr.io/ban-red`, so `cha/env-chrome:dev` runs as
     /// `ghcr.io/ban-red/cha-env-chrome:<CHA_IMAGE_TAG>`, pulled when missing.
@@ -480,6 +489,7 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
         data_root: args.data_root.clone(),
         shared_dirs,
         nvidia_wine_dir: parse_nvidia_wine_dir(&args.nvidia_wine_dir)?,
+        vm_memory_mb: args.vm_memory_mb,
         log_dir: Some(args.state_dir.join("logs")),
         app_images: PublishedImages::from_settings(
             args.image_registry.as_deref(),

@@ -94,13 +94,16 @@ Anything else you set with `ENV` in the image stays. The image's own `ENV` is re
 
 | What | Value |
 |---|---|
-| User | `1000:1000`, plus the render node's group (and, for the `steam` profile, the primary node's group) |
+| User | `1000:1000`, plus the render node's group (and, for the `steam` profile, the primary node's group; for `vm`, the groups of `/dev/kvm` and `/dev/udmabuf`) |
 | GPU, NVIDIA | CDI device request (the driver's libraries, device nodes and vendor files) |
 | GPU, Intel or AMD | One render node (`/dev/dri/renderD*`) with `rw` |
 | GPU, none | Nothing |
+| KVM, `vm` only | `/dev/kvm` with `rw`, and `/dev/udmabuf` with `rw` when the host has it |
 | Device cgroup | `c 13:* rw` (input devices) when the node can make gamepads, plus exactly each hidraw node as `rwm` |
 | `/dev/shm` | `shmMb` MiB |
 | Open files | `nofile` 524288 for `steam`; Docker's default otherwise |
+| Memory, `vm` only | The container's RAM and swap are both limited to 12 GiB by default (`CHA_VM_MEMORY_MB` on the node); a guest that outgrows it is killed, not the node |
+| Stop | SIGTERM, then SIGKILL after 5 s; 30 s for `vm`, so the guest can shut down |
 | Capabilities | none (`CapDrop: ALL`) |
 | Privilege gain | blocked (`no-new-privileges`) |
 | Init | Docker's `tini` is PID 1 (`Init: true`) |
@@ -115,8 +118,9 @@ Anything else you set with `ENV` in the image stays. The image's own `ENV` is re
 | `standard` | Docker's default | Docker's default | Everything that doesn't create namespaces |
 | `browser` | Docker's default plus `clone`, `unshare`, `setns`, `chroot`, `mount`, `umount2`, `pivot_root` ([`seccomp-browser.json`](../crates/cha-node/profiles/seccomp-browser.json)) | Docker's default | Apps with their own namespace sandbox (Chrome, Firefox, Electron with the sandbox on) |
 | `steam` | as `browser` | `cha-sandbox` ([`deploy/node/host/apparmor/cha-sandbox`](../deploy/node/host/apparmor/cha-sandbox)), which allows mounts and `pivot_root` inside user namespaces the app creates | Apps that build a bubblewrap container (Steam's pressure-vessel). The owner must load the profile on the node |
+| `vm` | Docker's default | Docker's default | Apps that run a KVM virtual machine (QEMU). Only nodes with `/dev/kvm` are offered it |
 
-The `browser` profile widens seccomp only. The kernel still demands capabilities inside a new namespace, and the container has none in its own, so a namespace the app creates can't reach beyond the container. The `steam` profile is the widest we offer and the portal keeps it behind an admin's approval for third-party catalogs (section 6.3).
+The `browser` profile widens seccomp only. The kernel still demands capabilities inside a new namespace, and the container has none in its own, so a namespace the app creates can't reach beyond the container. The `vm` profile keeps Docker's default seccomp and AppArmor, but hands the container the host's KVM device, whose ioctl interface is a kernel attack surface. The `steam` and `vm` profiles are the widest we offer and the portal keeps them behind an admin's approval for third-party catalogs (section 6.3).
 
 Pick the narrowest profile that works: try `standard` first. The sign that an app needs more is an error like `bwrap: Failed to make / slave: Permission denied`, `clone failed: Operation not permitted` or Chrome's `No usable sandbox`.
 
@@ -207,7 +211,7 @@ The built-in catalog is the same document without `id` and `name`.
 | `localImage` | string | no | none | A dev build the node runs when it already has it, before pulling `image`. Built-in catalog only. |
 | `class` | string | yes | | Groups the card. `browser`, `desktop`, `gaming` and `test` get their own icon, and `desktop` templates are listed as desktops; any other value is accepted and gets a generic icon. |
 | `icon` | string | no | none | The app's logo (6.4). Absent: a generic icon for the class. |
-| `security` | `standard` \| `browser` \| `steam` | yes | | The confinement profile (section 3). |
+| `security` | `standard` \| `browser` \| `steam` \| `vm` | yes | | The confinement profile (section 3). |
 | `shmMb` | integer | yes | | `/dev/shm` size in MiB. Docker's default is 64. Browsers need 512 to 1024; Steam uses 2048. |
 | `persistent` | boolean | no | `false` | The default for whether users keep their home. Users and admins override it. |
 | `fixedSize` | boolean | no | `false` | The app's display has a fixed size (`CHA_WIDTH`×`CHA_HEIGHT`) and the app letterboxes or misplaces input in any other. The page then never asks for a resize and the browser letterboxes the picture. |
@@ -222,14 +226,14 @@ The built-in catalog is the same document without `id` and `name`.
 |---|---|---|
 | `image` | Any reference; a bare dev name (`cha/env-chrome:dev`) is allowed | Must name a registry: the first path part has a `.` or `:` or is `localhost` (`ghcr.io/you/name:tag`, `localhost:5000/name`). A bare name or `library/name` is refused |
 | `localImage` | Allowed | Refused |
-| `security` | Any of the three | Any of the three, but see trust below |
+| `security` | Any of the four | Any of the four, but see trust below |
 | `icon` | A file in the template's directory under `images/`, listed in `ICONS` | An `https://` URL, or a path relative to the catalog's URL (6.4) |
 | Template ids | Bare (`chrome`) | Namespaced by the portal as `<catalog>.<app>` |
 | Duplicate ids | Refused | Refused |
 
 **Namespacing.** An external catalog is loaded under a slug the admin chooses (`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`; the catalog's own `id` is only a suggestion). Its template `foot` becomes `<slug>.foot` everywhere the portal uses an id. The separator is a dot because ids appear in URL path segments, in node directory names and in Docker labels. Don't put a dot in your own ids; the schema's id pattern forbids it. The built-in catalog keeps bare ids, so no external template can take the place of a built-in one.
 
-**Trust.** Adding a catalog trusts its `standard` templates. A template asking for `browser` or `steam` stays unavailable until an admin approves that template's profile explicitly. If a refresh of the catalog changes a template's profile or the registry host of its image, the approval is cleared and the admin approves again. A catalog cannot give itself more confinement than the three profiles above; it can't name a seccomp profile, a capability, a device or a mount of its own. Only an admin's custom environment can ask a node for those, and only from a node whose owner allows them ([ADR 0021](adr/0021-custom-environments.md)).
+**Trust.** Adding a catalog trusts its `standard` templates. A template asking for `browser`, `steam` or `vm` stays unavailable until an admin approves that template's profile explicitly. If a refresh of the catalog changes a template's profile or the registry host of its image, the approval is cleared and the admin approves again. A catalog cannot give itself more confinement than the four profiles above; it can't name a seccomp profile, a capability, a device or a mount of its own. That is why a virtual machine has a profile: `vm` is how a catalog asks for `/dev/kvm`. Only an admin's custom environment can ask a node for those, and only from a node whose owner allows them ([ADR 0021](adr/0021-custom-environments.md)).
 
 Loading catalogs is the admin's feature and is being built; this section is the contract it will enforce. Until it ships, test an image by adding a template to `images/catalog.json` in your own checkout of this repository (with `localImage` for a local build).
 
@@ -290,10 +294,10 @@ An image not built on our base MUST provide all of section 2 itself: the socket 
 ## 8. Checking an image
 
 ```bash
-cha-node --check-image <image-ref> [--profile standard|browser|steam]
+cha-node --check-image <image-ref> [--profile standard|browser|steam|vm]
 ```
 
-Run it on the node. An image the engine doesn't have is pulled if its reference names a registry; a bare name never is. Exit status is 0 when every MUST check passes, 1 otherwise. It prints one line per check, `ok`, `info`, `warn` or `FAIL`, then the check's name and a short reason. A `FAIL` is a MUST that isn't met; `info` lines (built on our base, size) judge nothing. The default profile is `standard`; pass the profile the template will ask for.
+Run it on the node. An image the engine doesn't have is pulled if its reference names a registry; a bare name never is. Exit status is 0 when every MUST check passes, 1 otherwise. It prints one line per check, `ok`, `info`, `warn` or `FAIL`, then the check's name and a short reason. A `FAIL` is a MUST that isn't met; `info` lines (built on our base, size) judge nothing. The default profile is `standard`; pass the profile the template will ask for. The check doesn't pass `/dev/kvm` to a `vm` image, so one that stops for want of KVM is reported as a `warn`, not a `FAIL`.
 
 What it does:
 

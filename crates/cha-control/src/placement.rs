@@ -18,7 +18,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use cha_wire::{
     Device, DeviceKind, GpuUsage, HostOptions, HostPolicy, Inventory, NodeUsage,
-    SPEC_FEATURE_DATA_TEMPLATE, SPEC_FEATURE_ENV, SPEC_FEATURE_HOST_OPTIONS, Storage,
+    SPEC_FEATURE_DATA_TEMPLATE, SPEC_FEATURE_ENV, SPEC_FEATURE_HOST_OPTIONS, SecurityProfile,
+    Storage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -126,6 +127,9 @@ pub struct NodeView {
     pub spec_features: Vec<String>,
     /// What it lets custom environments ask for; `None` is nothing.
     pub host_policy: Option<HostPolicy>,
+    /// Whether it reports `/dev/kvm`. An older agent doesn't, and drops its
+    /// connection on a profile it doesn't know, so it is never sent a `vm`.
+    pub kvm: bool,
 }
 
 impl NodeView {
@@ -152,6 +156,8 @@ impl NodeView {
 pub struct Needs {
     pub gpu: bool,
     pub app_data: bool,
+    /// A virtual machine runs inside the app: only a node with KVM will do.
+    pub vm: bool,
     /// The images the template can run from, in order; empty when it doesn't
     /// matter.
     pub images: Vec<String>,
@@ -169,6 +175,7 @@ impl Needs {
         Self {
             gpu: template.needs_gpu,
             app_data: storage.is_some(),
+            vm: template.security == SecurityProfile::Vm,
             images: template.image_candidates(),
             env: !template.env.is_empty(),
             data_template: storage.is_some_and(|s| s.data_template.is_some()),
@@ -288,6 +295,12 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
             {
                 allowed = false;
                 reason = Some("it can't encode a video format browsers play".to_string());
+            } else if needs.vm && !node.kvm {
+                allowed = false;
+                reason = Some(
+                    "no KVM (it reports /dev/kvm once its agent is up to date and the host has it)"
+                        .to_string(),
+                );
             } else if needs.app_data && !node.keeps_app_data {
                 allowed = false;
                 reason = Some(
@@ -468,6 +481,7 @@ pub async fn online_nodes(state: &AppState) -> ApiResult<Vec<NodeView>> {
                 .map(|inv| inv.spec_features.clone())
                 .unwrap_or_default(),
             host_policy: inventory.as_ref().and_then(|inv| inv.host_options.clone()),
+            kvm: inventory.as_ref().is_some_and(|inv| inv.kvm == Some(true)),
             id: row.id,
             name: row.name,
             devices,
@@ -560,6 +574,7 @@ mod tests {
             images_disk_free: None,
             spec_features: Vec::new(),
             host_policy: None,
+            kvm: false,
         }
     }
 
@@ -583,6 +598,7 @@ mod tests {
     const PLAIN: Needs = Needs {
         gpu: false,
         app_data: false,
+        vm: false,
         images: Vec::new(),
         env: false,
         data_template: false,
@@ -591,6 +607,7 @@ mod tests {
     const GAME: Needs = Needs {
         gpu: true,
         app_data: false,
+        vm: false,
         images: Vec::new(),
         env: false,
         data_template: false,
@@ -764,6 +781,25 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_runs_only_on_a_node_that_reports_kvm() {
+        let needs = Needs {
+            vm: true,
+            ..PLAIN_NEEDS()
+        };
+        let mut kvm = node("kvm", vec![rtx()]);
+        kvm.kvm = true;
+        let o = options(&needs, &[node("plain", vec![rtx()]), kvm]);
+        assert_eq!(o.len(), 2);
+        // The node with KVM comes first and is allowed; the other says why not.
+        assert!(o[0].allowed);
+        assert_eq!(o[0].node_name, "kvm");
+        assert!(!o[1].allowed);
+        assert!(o[1].reason.as_deref().unwrap().starts_with("no KVM"));
+        // Everything else ignores KVM.
+        assert!(options(&PLAIN, &[node("plain", vec![rtx()])])[0].allowed);
+    }
+
+    #[test]
     fn a_node_that_reports_no_devices_is_read_as_one_nvidia_gpu() {
         use cha_wire::{Gpu, Inventory};
         let inv = Inventory {
@@ -801,6 +837,7 @@ mod tests {
             env: false,
             data_template: false,
             host: None,
+            vm: false,
         }
     }
 

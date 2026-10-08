@@ -450,6 +450,9 @@ fn profile_rank(p: SecurityProfile) -> u8 {
         SecurityProfile::Standard => 0,
         SecurityProfile::Browser => 1,
         SecurityProfile::Steam => 2,
+        // Not a wider sandbox than steam's, but a device none of the others
+        // get: last, so a custom environment moved to it is flagged as wider.
+        SecurityProfile::Vm => 3,
     }
 }
 

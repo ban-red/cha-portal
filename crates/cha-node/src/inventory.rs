@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::net::{IpAddr, Ipv6Addr};
+use std::path::Path;
 use std::process::Command;
 
 use cha_wire::{
@@ -42,12 +43,19 @@ pub fn collect() -> Inventory {
         ],
         // The agent adds it: the owner's settings are the runtime's.
         host_options: Some(cha_wire::HostPolicy::default()),
+        kvm: Some(has_kvm(Path::new("/sys"))),
     };
     // NVIDIA and the CPU; the agent adds the VA-API devices it probes.
     let mut devices = inventory.devices_or_derived();
     devices.push(cpu_device(inventory.cpus));
     inventory.devices = Some(devices);
     inventory
+}
+
+/// Whether the kernel has KVM, which the agent's container sees through the
+/// host's sysfs: `/dev/kvm` itself is only passed to `vm` apps.
+pub(crate) fn has_kvm(sysfs: &Path) -> bool {
+    sysfs.join("class/misc/kvm").exists()
 }
 
 /// What the images disk is called when the engine didn't say where it is.
@@ -620,6 +628,18 @@ mod tests {
             total,
             free,
         }
+    }
+
+    #[test]
+    fn kvm_is_there_when_sysfs_lists_it() {
+        let dir = std::env::temp_dir().join(format!("cha-kvm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(!has_kvm(&dir));
+        fs::create_dir_all(dir.join("class/misc")).unwrap();
+        assert!(!has_kvm(&dir));
+        fs::create_dir_all(dir.join("class/misc/kvm")).unwrap();
+        assert!(has_kvm(&dir));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -68,8 +68,8 @@
           "minLength": 1
         },
         "security": {
-          "description": "The confinement profile of the app container. 'standard': Docker's default seccomp profile. 'browser': also allows creating namespaces, for Chrome's and Firefox's sandboxes. 'steam': 'browser' plus the cha-sandbox AppArmor profile and a high open-files limit. In an external catalog, 'browser' and 'steam' stay unavailable until an admin approves them.",
-          "enum": ["standard", "browser", "steam"]
+          "description": "The confinement profile of the app container. 'standard': Docker's default seccomp profile. 'browser': also allows creating namespaces, for Chrome's and Firefox's sandboxes. 'steam': 'browser' plus the cha-sandbox AppArmor profile and a high open-files limit. 'vm': Docker's default seccomp, plus /dev/kvm (and /dev/udmabuf when the host has it), their groups, a memory limit and a longer stop, for an app that runs a QEMU/KVM virtual machine; only nodes with KVM are offered it. In an external catalog, 'browser', 'steam' and 'vm' stay unavailable until an admin approves them.",
+          "enum": ["standard", "browser", "steam", "vm"]
         },
         "shmMb": {
           "description": "Size of /dev/shm in MiB. Docker's default is 64; browsers need 512 to 1024.",
