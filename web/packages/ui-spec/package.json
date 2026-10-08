@@ -4,10 +4,14 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "The in-stream UI's spec, shared by the browser player and Cha Player: icons, themes (ADR 0016)",
+  "description": "The in-stream UI's spec, shared by the browser player and Cha Player: icons, themes, the health grade (ADR 0016)",
   "exports": {
     ".": "./index.ts",
     "./icons.json": "./icons.json",
+    "./health.json": "./health.json",
+    "./health-cases": "./health-cases.ts",
+    "./health-cases.json": "./health-cases.json",
+    "./fill-cases.json": "./fill-cases.json",
     "./themes/cha-magenta.json": "./themes/cha-magenta.json",
     "./themes/cha-jade.json": "./themes/cha-jade.json"
   }

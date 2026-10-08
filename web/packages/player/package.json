@@ -19,6 +19,7 @@
     "vite": "^8.3.2"
   },
   "dependencies": {
-    "@cha/pyrowave-webgpu": "workspace:*"
+    "@cha/pyrowave-webgpu": "workspace:*",
+    "@cha/ui-spec": "workspace:*"
   }
 }

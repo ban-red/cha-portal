@@ -69,9 +69,9 @@ Each phase lands both sides together, with its cases, and leaves both players wo
    - Native: `theme/icons.rs`, a small SVG path parser (M L H V C Q A Z, absolute and relative) that strokes or fills with egui's painter, plus snapshot renders of every icon at 1× and 2×.
    - The stats panel's icons switch to it on both sides.
    - This is the smallest phase and it proves the plumbing.
-2. **Health.**
+2. **Health.** Done: `health.json` holds every constant, band, weight and issue text (templates with `{name:format}` placeholders and per-platform wording), `health-cases.json` holds 89 shared cases (70 for both players, 17 browser-only, 2 native-only) and `fill-cases.json` the template cases; `health.ts` and `health.rs` keep only their checks, keyed by issue id, and both run the cases and a coverage test. `check-ui-spec.ts` validates the issues, placeholders and cases, and `check.sh` now runs the player package's tests. One disagreement found and fixed: Rust rounded a half to even in detail texts where the browser rounds it up.
    - Move the constants, bands, weights and issue texts into `health.json`.
-   - Turn `health.test.ts`'s cases into `health-cases.json`; web-only checks (`sound-restart`, `sound-out`, `audio`, delivery spread) keep TS-only tests, and native-only ones (`awdl`) get Rust-only cases.
+   - Turn `health.test.ts`'s cases into `health-cases.json`; web-only checks (`sound-restart`, `sound-out`, `audio`, delivery spread) get browser-only cases, and native-only ones (`awdl`) get native-only cases.
    - `health.ts` and `health.rs` read the spec and keep their check functions.
    - Add the coverage tests.
    - Highest value: this is where drift does real harm (two players grading the same stream differently).

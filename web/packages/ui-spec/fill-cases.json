@@ -1,0 +1,15 @@
+[
+  { "name": "text without placeholders", "template": "no placeholders", "values": {}, "expect": "no placeholders" },
+  { "name": "strings go in as they are", "template": "{a} and {b}", "values": { "a": "x", "b": "y z" }, "expect": "x and y z" },
+  { "name": "f0 rounds to a whole number", "template": "{v:f0} fps", "values": { "v": 59.6 }, "expect": "60 fps" },
+  { "name": "f1 and f2 keep their digits", "template": "{v:f1} / {v:f2}", "values": { "v": 3 }, "expect": "3.0 / 3.00" },
+  { "name": "ms0 and ms1 add the unit", "template": "{v:ms0} {v:ms1}", "values": { "v": 12.34 }, "expect": "12 ms 12.3 ms" },
+  { "name": "a half rounds up, as the browser's toFixed does", "template": "{a:f0} {b:f0} {c:f0} {d:f0}", "values": { "a": 0.5, "b": 1.5, "c": 2.5, "d": 34.5 }, "expect": "1 2 3 35" },
+  { "name": "a half after the decimal point rounds up too", "template": "{a:f1} {b:f2}", "values": { "a": 12.25, "b": 0.125 }, "expect": "12.3 0.13" },
+  { "name": "a number just under a half does not", "template": "{a:f1} {b:f2} {c:f0}", "values": { "a": 0.15, "b": 1.005, "c": 2.4999 }, "expect": "0.1 1.00 2" },
+  { "name": "a half rounds away from zero when negative", "template": "{v:f0}", "values": { "v": -2.5 }, "expect": "-3" },
+  { "name": "zero is plain, even when it is negative", "template": "{v:f1}", "values": { "v": 0 }, "expect": "0.0" },
+  { "name": "NaN reads NaN", "template": "{v:f1} {w:ms0}", "values": { "v": { "nan": true }, "w": { "nan": true } }, "expect": "NaN NaN ms" },
+  { "name": "a brace that is not a placeholder stays", "template": "{ x } {X} {a:}", "values": { "a": "1" }, "expect": "{ x } {X} {a:}" },
+  { "name": "a percent sign is just text", "template": "CPU {v:f0}%", "values": { "v": 96.4 }, "expect": "CPU 96%" }
+]

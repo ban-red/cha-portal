@@ -76,6 +76,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@cha/pyrowave-webgpu": "workspace:*",
+        "@cha/ui-spec": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "^1.4.2",

@@ -2,8 +2,9 @@
 # Everything CI would run: Rust formatting, the workspace-hack's freshness,
 # lints and tests across the workspace, the Steam image's scripts' tests (the
 # status watcher, the library registration), the node's host installer's
-# tests, and the portal's colour guard, theme contrast tests, the player
-# themes' freshness, the UI spec's check, typecheck and production build.
+# tests, and the portal's colour guard, theme contrast tests, the browser
+# player's tests (including the shared health cases), the player themes'
+# freshness, the UI spec's check, typecheck and production build.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -37,9 +38,11 @@ python3 scripts/image-inputs.py >/dev/null
 echo "==> portal: raw-colour guard + theme contrast tests"
 sh scripts/check-portal-colors.sh
 bun run --cwd web/apps/portal test
+echo "==> browser player tests (the shared health cases among them)"
+bun run --cwd web/packages/player test
 echo "==> player themes (web/packages/ui-spec/themes up to date)"
 bun scripts/export-player-themes.ts --check
-echo "==> ui spec (icons valid, every <Icon> exists)"
+echo "==> ui spec (icons, health issues and cases valid, every <Icon> exists)"
 bun scripts/check-ui-spec.ts
 echo "==> portal: typecheck + build"
 bun run --cwd web/apps/portal build >/dev/null

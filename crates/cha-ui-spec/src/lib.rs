@@ -7,9 +7,14 @@
 //! - [`Icon`]: every icon in `icons.json`, as an enum generated at build time.
 //! - [`path`]: an SVG path-data parser and flattener the icons are drawn with.
 //! - [`fill`]: convexity and ear clipping for filled parts.
+//! - [`health`]: the health grade's constants, bands and texts, and the template `fill`.
+//! - [`health_cases`]: the shared test vectors (feature `cases`).
 //! - [`THEMES`]: the generated built-in themes, as text.
 
 pub mod fill;
+pub mod health;
+#[cfg(any(test, feature = "cases"))]
+pub mod health_cases;
 pub mod path;
 
 use std::sync::LazyLock;

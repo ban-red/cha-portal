@@ -11,7 +11,7 @@ use cha_client::{Codec, Ended, Feedback, Session, SessionControl, TransportStats
 use tokio::runtime::Handle;
 
 use crate::audio::{AudioOut, Volume};
-use crate::health::{self, Assessment, HEALTH_WINDOW};
+use crate::health::{self, Assessment, health_window};
 use crate::input::pads::PadService;
 use crate::ui::StatsSnapshot;
 use crate::video::{self, DecodedFrame};
@@ -407,7 +407,7 @@ impl Rates {
             self.since = Instant::now();
             self.apply_transport(control.transport_stats(), now.presented);
             self.history.push_back(self.shown.clone());
-            while self.history.len() > HEALTH_WINDOW {
+            while self.history.len() > health_window() {
                 self.history.pop_front();
             }
             let history: Vec<StatsSnapshot> = self.history.iter().cloned().collect();

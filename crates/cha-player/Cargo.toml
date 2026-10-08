@@ -30,6 +30,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 
+[dev-dependencies]
+cha-ui-spec = { path = "../cha-ui-spec", features = ["cases"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 cha-client-gamestream = { path = "../cha-client-gamestream", optional = true }

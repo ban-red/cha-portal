@@ -1,0 +1,800 @@
+{
+  "base": {"codec":"hevc","target_fps":60,"sent_fps":60,"shown_sent_fps":null,"shown_fps":60,"decode_ms":3,"jitter_buffer_ms":null,"rtt_ms":2,"lost":0,"recovered":0,"partial":0,"dropped":0,"latency_ms":12,"delivery_ms":6,"delivery_p95_ms":9,"frame_gap_ms":20,"audio_jitter_ms":null,"node": {"cpu":30,"cores":16,"mem_used":8,"mem_total":32,"gpu":50,"vram_used":4,"vram_total":12,"enc":20,"streamer_cpu":40}},
+  "cases": [
+    {
+      "name": "a healthy stream is an A with no issues",
+      "history": [{"repeat":8}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a hidden page is not graded",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"shown_fps":2}],
+      "context": {"visible":false},
+      "expect": {
+        "grade": null, "score": null, "summary": "Paused while the tab is hidden",
+        "issues": []
+      }
+    },
+    {
+      "name": "no snapshots are not graded",
+      "history": [],
+      "expect": {
+        "grade": null, "score": null, "summary": "Measuring…",
+        "issues": []
+      }
+    },
+    {
+      "name": "one snapshot is not graded",
+      "history": [{}],
+      "expect": {
+        "grade": null, "score": null, "summary": "Measuring…",
+        "issues": []
+      }
+    },
+    {
+      "name": "two snapshots are graded",
+      "history": [{"repeat":2}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "only the last window counts",
+      "history": [{"repeat":20,"shown_fps":5}, {"repeat":8}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "sustained half rate is a critical stutter",
+      "history": [{"repeat":8,"shown_fps":30}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Some stutter",
+        "issues": [{"id":"stutter","severity":"critical"}],
+        "details": {"stutter":"30 fps shown of 60 sent"}
+      }
+    },
+    {
+      "name": "a mild shortfall is minor and costs an A",
+      "history": [{"repeat":8,"shown_fps":56}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "Some stutter",
+        "issues": [{"id":"stutter","severity":"minor"}],
+        "details": {"stutter":"56 fps shown of 60 sent"}
+      }
+    },
+    {
+      "name": "a static desktop (almost nothing sent) is an A, not a stutter or freeze",
+      "history": [{"repeat":8,"shown_fps":1,"sent_fps":0.5,"frame_gap_ms":1000}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a static desktop with nothing sent and a long gap is an A",
+      "history": [{"repeat":8,"shown_fps":0,"sent_fps":0,"frame_gap_ms":3000,"delivery_ms":null,"delivery_p95_ms":null}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a slow source that shows what it sends is fine",
+      "history": [{"repeat":8,"shown_fps":24,"sent_fps":24,"frame_gap_ms":45}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "an unknown send rate judges neither stutter nor freeze",
+      "history": [{"repeat":8,"shown_fps":5,"sent_fps":null,"frame_gap_ms":900}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a burst then a still screen is smooth: shown is judged over the send rate's own span",
+      "history": [{"repeat":8,"shown_fps":0,"sent_fps":12,"shown_sent_fps":12,"frame_gap_ms":4}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a busy source with far fewer frames shown is a stutter",
+      "history": [{"repeat":8,"shown_fps":20,"sent_fps":60}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Some stutter",
+        "issues": [{"id":"stutter","severity":"critical"}],
+        "details": {"stutter":"20 fps shown of 60 sent"}
+      }
+    },
+    {
+      "name": "stutter rounds a half up, as the browser does",
+      "history": [{"repeat":8,"shown_fps":30.5}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Some stutter",
+        "issues": [{"id":"stutter","severity":"critical"}],
+        "details": {"stutter":"31 fps shown of 60 sent"}
+      }
+    },
+    {
+      "name": "dropped frames come from the counter's growth",
+      "history": [{"repeat":8,"dropped":[1000,1006,1012,1018,1024,1030,1036,1042]}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Dropped frames",
+        "issues": [{"id":"dropped","severity":"major"}],
+        "details": {"dropped":"6.0 frames/s dropped"},
+        "hints": {"dropped":{"web":"The browser decoded frames it had no time to show. Close heavy tabs and apps on this computer, or try 60 fps.","native":"The player decoded frames it had no time to show. Close heavy apps on this Mac, or try 60 fps."}}
+      }
+    },
+    {
+      "name": "an old total of drops is not a current problem",
+      "history": [{"repeat":8,"dropped":5000}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a counter that resets (reconnect) counts as no growth",
+      "history": [{"repeat":8,"dropped":[900,901,902,903,2,2,2,2]}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "decoding over the frame budget is critical and says what to try",
+      "history": [{"repeat":8,"decode_ms":20}],
+      "expect": {
+        "grade": "D", "score": 65, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"critical"}],
+        "details": {"decode":"20.0 ms to decode a frame, of 16.7 ms per frame"},
+        "hints": {"decode":{"web":"Your browser or computer can't decode fast enough. Try 60 fps or another codec (HEVC and H.264 are hardware-decoded on most machines), and close other heavy apps.","native":"This Mac can't decode fast enough. Try 60 fps or another codec (HEVC and H.264 are hardware-decoded), and close other heavy apps."}}
+      }
+    },
+    {
+      "name": "the decode budget is generous at 60 fps: 9 ms costs a B",
+      "history": [{"repeat":8,"decode_ms":9}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"minor"}],
+        "details": {"decode":"9.0 ms to decode a frame, of 16.7 ms per frame"}
+      }
+    },
+    {
+      "name": "the decode budget scales with the frame rate",
+      "history": [{"repeat":8,"decode_ms":6,"target_fps":120,"sent_fps":120,"shown_fps":120}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"major"}],
+        "details": {"decode":"6.0 ms to decode a frame, of 8.3 ms per frame"}
+      }
+    },
+    {
+      "name": "3 ms decoding is clean",
+      "history": [{"repeat":8,"decode_ms":3}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "decode isn't judged on a still picture: a few slow keyframes hold nothing up",
+      "history": [{"repeat":8,"decode_ms":16,"sent_fps":0.5,"shown_fps":0}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "decode time rounds a half up, as the browser does",
+      "history": [{"repeat":8,"decode_ms":12.25}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"major"}],
+        "details": {"decode":"12.3 ms to decode a frame, of 16.7 ms per frame"}
+      }
+    },
+    {
+      "name": "under 20 ms is clean",
+      "history": [{"repeat":8,"latency_ms":19}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "latency of 25 ms",
+      "history": [{"repeat":8,"latency_ms":25}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "High latency",
+        "issues": [{"id":"latency","severity":"minor"}],
+        "details": {"latency":{"web":"25 ms from sent to shown","native":"25 ms from received to shown"}}
+      }
+    },
+    {
+      "name": "latency of 35 ms",
+      "history": [{"repeat":8,"latency_ms":35}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "High latency",
+        "issues": [{"id":"latency","severity":"minor"}],
+        "details": {"latency":{"web":"35 ms from sent to shown","native":"35 ms from received to shown"}}
+      }
+    },
+    {
+      "name": "latency of 60 ms",
+      "history": [{"repeat":8,"latency_ms":60}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "High latency",
+        "issues": [{"id":"latency","severity":"major"}],
+        "details": {"latency":{"web":"60 ms from sent to shown","native":"60 ms from received to shown"}},
+        "hints": {"latency":{"web":"Frames take long from the node to your screen. Check the network (a cable, not Wi-Fi) and whether the node is busy; a lower frame rate or bitrate can help on a weak link.","native":"Frames take long from arriving here to showing. This Mac is busy or the decoder is falling behind; close other apps, or lower the frame rate or bitrate."}}
+      }
+    },
+    {
+      "name": "latency of 110 ms",
+      "history": [{"repeat":8,"latency_ms":110}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "High latency",
+        "issues": [{"id":"latency","severity":"critical"}],
+        "details": {"latency":{"web":"110 ms from sent to shown","native":"110 ms from received to shown"}}
+      }
+    },
+    {
+      "name": "latency rounds a half up, as the browser does",
+      "history": [{"repeat":8,"latency_ms":34.5}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "High latency",
+        "issues": [{"id":"latency","severity":"minor"}],
+        "details": {"latency":{"web":"35 ms from sent to shown","native":"35 ms from received to shown"}}
+      }
+    },
+    {
+      "name": "a wide delivery spread is uneven latency",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"delivery_ms":6,"delivery_p95_ms":60}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Uneven latency",
+        "issues": [{"id":"jitter","severity":"critical"}],
+        "details": {"jitter":"delivery varies by 54 ms (p95 over p50)"}
+      }
+    },
+    {
+      "name": "latency wandering across the window is uneven latency",
+      "history": [{"repeat":8,"latency_ms":[10,40,10,40,10,40,10,40]}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Uneven latency",
+        "issues": [{"id":"jitter","severity":"critical"}, {"id":"latency","severity":"minor"}],
+        "details": {"jitter":"latency wanders by 30 ms over the last seconds","latency":{"web":"25 ms from sent to shown","native":"25 ms from received to shown"}}
+      }
+    },
+    {
+      "name": "a WebRTC jitter buffer that grows",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"delivery_ms":null,"delivery_p95_ms":null,"frame_gap_ms":null,"jitter_buffer_ms":70}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Uneven latency",
+        "issues": [{"id":"jitter","severity":"critical"}],
+        "details": {"jitter":"jitter buffer holds frames 70 ms"}
+      }
+    },
+    {
+      "name": "lost frames over WebTransport",
+      "history": [{"repeat":8,"lost":[0,3,6,9,12,15,18,21]}],
+      "expect": {
+        "grade": "C", "score": 77, "summary": "Network losses",
+        "issues": [{"id":"loss","severity":"major"}],
+        "details": {"loss":"3.0 frames lost per second"},
+        "hints": {"loss":"The network is dropping packets, which costs frames or forces resends. Wi-Fi interference or a congested link: try a cable, or move closer to the access point."}
+      }
+    },
+    {
+      "name": "a transport that can't count losses is not penalised",
+      "history": [{"repeat":8,"lost":null,"recovered":null}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "WebRTC packet counts are judged on a looser scale: a few are nothing",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"delivery_ms":null,"delivery_p95_ms":null,"frame_gap_ms":null,"lost":[0,1,2,3,4,5,6,7]}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "WebRTC packet counts: 40 a second is loss",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"delivery_ms":null,"delivery_p95_ms":null,"frame_gap_ms":null,"lost":[0,40,80,120,160,200,240,280]}],
+      "expect": {
+        "grade": "C", "score": 71, "summary": "Network losses",
+        "issues": [{"id":"loss","severity":"major"}],
+        "details": {"loss":"40.0 packets lost per second"}
+      }
+    },
+    {
+      "name": "FEC repairs are a minor note, not a failure",
+      "history": [{"repeat":8,"recovered":[0,8,16,24,32,40,48,56]}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "Lossy network",
+        "issues": [{"id":"recovered","severity":"minor"}],
+        "details": {"recovered":"8.0 frames/s rebuilt from parity"},
+        "hints": {"recovered":"Error correction is rebuilding frames that lost packets, so you see nothing yet, but the link is dropping data and a worse moment would show. Wi-Fi or a busy link: try a cable."}
+      }
+    },
+    {
+      "name": "PyroWave: 1 frame a second skipped at 120 fps is under 1 %, nothing to say",
+      "history": [{"repeat":8,"codec":"pyrowave444","target_fps":120,"sent_fps":120,"shown_fps":120,"lost":[0,1,2,3,4,5,6,7]}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "PyroWave frames skipped are judged as a share of the rate, not as lost frames",
+      "history": [{"repeat":8,"codec":"pyrowave444","target_fps":120,"sent_fps":120,"shown_fps":120,"lost":[0,6,12,18,24,30,36,42]}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Skipped frames",
+        "issues": [{"id":"skipped","severity":"major"}],
+        "details": {"skipped":"6.0 frames/s skipped"},
+        "hints": {"skipped":"PyroWave frames that lost a packet and were overtaken by the next whole one are skipped: each costs one frame, and the next shows whole. Many of them read as stutter. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi."}
+      }
+    },
+    {
+      "name": "PyroWave frames shown incomplete are a minor note, not packet loss",
+      "history": [{"repeat":8,"partial":[0,2,5,7,10,12,14,17]}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "Lossy network",
+        "issues": [{"id":"partial","severity":"minor"}],
+        "details": {"partial":"2.4 frames/s shown with packets missing"},
+        "hints": {"partial":"PyroWave shows a frame from the packets that arrived, so a lost packet softens a few blocks for one frame instead of breaking the picture. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi."}
+      }
+    },
+    {
+      "name": "a long round trip",
+      "history": [{"repeat":8,"rtt_ms":50}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Slow network",
+        "issues": [{"id":"rtt","severity":"major"}],
+        "details": {"rtt":"round trip 50.0 ms"}
+      }
+    },
+    {
+      "name": "a long gap between frames is critical, even once",
+      "history": [{"repeat":8,"frame_gap_ms":[20,20,20,20,20,20,600,20]}],
+      "expect": {
+        "grade": "B", "score": 84, "summary": "Freezing",
+        "issues": [{"id":"freeze","severity":"minor"}],
+        "details": {"freeze":"up to 600 ms between frames"}
+      }
+    },
+    {
+      "name": "sustained freezing is an F",
+      "history": [{"repeat":8,"frame_gap_ms":800,"shown_fps":20}],
+      "expect": {
+        "grade": "F", "score": 25, "summary": "Freezing",
+        "issues": [{"id":"freeze","severity":"critical"}, {"id":"stutter","severity":"critical"}],
+        "details": {"freeze":"up to 800 ms between frames","stutter":"20 fps shown of 60 sent"},
+        "hints": {"freeze":"No frames arrived for a moment while the node was sending. Usually a network stall (Wi-Fi roaming or interference, a busy link) or a node that stopped to catch up; a cable is the first thing to try."}
+      }
+    },
+    {
+      "name": "frames sent but a 400 ms gap is a freeze",
+      "history": [{"repeat":8,"frame_gap_ms":[20,20,20,20,20,20,400,20]}],
+      "expect": {
+        "grade": "B", "score": 87, "summary": "Freezing",
+        "issues": [{"id":"freeze","severity":"minor"}],
+        "details": {"freeze":"up to 400 ms between frames"}
+      }
+    },
+    {
+      "name": "the same gap while nothing was being sent is not",
+      "history": [{"repeat":8,"sent_fps":2,"shown_fps":2,"frame_gap_ms":[20,20,20,20,20,20,400,20]}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "no frames shown while sending counts as a freeze when there is no gap measure",
+      "history": [{"repeat":8,"delivery_ms":null,"delivery_p95_ms":null,"frame_gap_ms":null,"shown_fps":0,"sent_fps":60}],
+      "expect": {
+        "grade": "F", "score": 25, "summary": "Freezing",
+        "issues": [{"id":"freeze","severity":"critical"}, {"id":"stutter","severity":"critical"}],
+        "details": {"freeze":"up to 1000 ms between frames","stutter":"0 fps shown of 60 sent"}
+      }
+    },
+    {
+      "name": "a gap of a couple of frames is normal",
+      "history": [{"repeat":8,"frame_gap_ms":30}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "node: CPU saturated",
+      "history": [{"repeat":8,"node":{"cpu":97}}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"critical"}],
+        "details": {"node":"CPU 97%"}
+      }
+    },
+    {
+      "name": "node: VRAM saturated",
+      "history": [{"repeat":8,"node":{"vram_used":12}}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"critical"}],
+        "details": {"node":"VRAM 100%"}
+      }
+    },
+    {
+      "name": "node: NVENC saturated",
+      "history": [{"repeat":8,"node":{"enc":99}}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"critical"}],
+        "details": {"node":"NVENC 99%"}
+      }
+    },
+    {
+      "name": "node: streamer CPU saturated",
+      "history": [{"repeat":8,"node":{"streamer_cpu":1500}}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"major"}],
+        "details": {"node":"streamer CPU 1500% of a core"}
+      }
+    },
+    {
+      "name": "node: RAM saturated",
+      "history": [{"repeat":8,"node":{"mem_used":31}}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"major"}],
+        "details": {"node":"RAM 97%"},
+        "hints": {"node":"The machine running the environment is out of something, so frames are made late. Close other apps on it, lower the frame rate, or choose another device."}
+      }
+    },
+    {
+      "name": "a full GPU is no issue while the streamer's frames are on time",
+      "history": [{"repeat":8,"node":{"gpu":100},"encode_p99_ms":2}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a full GPU is no issue without an encode time",
+      "history": [{"repeat":8,"node":{"gpu":100}}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a full GPU counts once the streamer encodes late",
+      "history": [{"repeat":8,"node":{"gpu":99},"encode_p99_ms":12}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"critical"}],
+        "details": {"node":"GPU 99%"}
+      }
+    },
+    {
+      "name": "busy but under the limits is fine",
+      "history": [{"repeat":8,"node":{"cpu":80,"gpu":90,"enc":80}}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "no node report (older streamer, or stale) is not penalised",
+      "history": [{"repeat":8,"node":null}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a CPU-only node has no GPU fields",
+      "history": [{"repeat":8,"node":{"gpu":null,"vram_used":null,"vram_total":null,"enc":null,"cpu":96}}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"major"}],
+        "details": {"node":"CPU 96%"}
+      }
+    },
+    {
+      "name": "several resources over their limits are all named",
+      "history": [{"repeat":8,"node":{"cpu":99,"mem_used":31,"enc":99}}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"critical"}],
+        "details": {"node":"CPU 99%, RAM 97%, NVENC 99%"}
+      }
+    },
+    {
+      "name": "a rebuilt sound is a note",
+      "platforms": ["web"],
+      "history": [{"repeat":5}, {"repeat":3,"audio_restarts":1}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "Sound hiccups",
+        "issues": [{"id":"sound-restart","severity":"minor"}],
+        "details": {"sound-restart":"sound rebuilt 1 time"}
+      }
+    },
+    {
+      "name": "repeated sound rebuilds count more",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_restarts":[0,1,2,3,4,5,6,7]}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Sound hiccups",
+        "issues": [{"id":"sound-restart","severity":"critical"}],
+        "details": {"sound-restart":"sound rebuilt 7 times"}
+      }
+    },
+    {
+      "name": "sound arriving but not played is reported",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_in_peak":0.3,"audio_out_peak":0}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "No sound output",
+        "issues": [{"id":"sound-out","severity":"critical"}],
+        "details": {"sound-out":"sound arriving (peak 0.30) but 8 s of silence played"},
+        "hints": {"sound-out":"Sound is arriving and decoding, but the browser's audio output plays none of it. Use Restart sound; if that doesn't help, check the computer's output device, and quit and reopen the browser, which has cleared this before."}
+      }
+    },
+    {
+      "name": "sound arriving but not played is not reported before several seconds",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_in_peak":0.3,"audio_out_peak":[0,0,0,0.3,0.3,0.3,0.3,0.3]}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "silence in is not a dead output",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_in_peak":0,"audio_out_peak":0}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "an output waiting for a click (null) is not a dead output",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_in_peak":0.3,"audio_out_peak":null}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "played sound is not a dead output",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_in_peak":0.3,"audio_out_peak":0.3}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a growing audio buffer",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_jitter_ms":150}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Sound hiccups",
+        "issues": [{"id":"audio","severity":"critical"}],
+        "details": {"audio":"audio buffer at 150 ms"},
+        "hints": {"audio":"Sound packets are arriving late, so the player holds more sound back to keep it smooth, and the sound runs behind the picture; past the buffer it crackles. A busy or lossy link does this: a cable helps, and so does a lighter codec or frame rate when the link is nearly full."}
+      }
+    },
+    {
+      "name": "a normal audio buffer",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_jitter_ms":15}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "NetEq's usual 50 ms on WebRTC is no issue",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"delivery_ms":null,"delivery_p95_ms":null,"frame_gap_ms":null,"audio_jitter_ms":50}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "NetEq well past its usual is an issue",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"delivery_ms":null,"delivery_p95_ms":null,"frame_gap_ms":null,"audio_jitter_ms":200}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Sound hiccups",
+        "issues": [{"id":"audio","severity":"major"}],
+        "details": {"audio":"audio buffer at 200 ms"}
+      }
+    },
+    {
+      "name": "our WebTransport audio buffer growing past 20 ms is late packets",
+      "platforms": ["web"],
+      "history": [{"repeat":8,"audio_jitter_ms":50}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Sound hiccups",
+        "issues": [{"id":"audio","severity":"major"}],
+        "details": {"audio":"audio buffer at 50 ms"}
+      }
+    },
+    {
+      "name": "AWDL suspected in the latest second is listed like the others",
+      "platforms": ["native"],
+      "history": [{"repeat":7}, {"awdl_suspected":true}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Wi-Fi spikes",
+        "issues": [{"id":"awdl","severity":"major"}],
+        "details": {"awdl":"frames arrive in bursts, typical of AWDL (AirDrop, Continuity)"},
+        "hints": {"awdl":"Likely AWDL (AirDrop/Continuity) taking turns with Wi-Fi. A cable avoids it; see the README."}
+      }
+    },
+    {
+      "name": "AWDL suspected only in an old second is forgotten",
+      "platforms": ["native"],
+      "history": [{"awdl_suspected":true}, {"repeat":7}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "one bad second doesn't flash an F",
+      "history": [{"repeat":5}, {"shown_fps":10,"frame_gap_ms":400}, {"repeat":2}],
+      "expect": {
+        "grade": "C", "score": 77, "summary": "Freezing",
+        "issues": [{"id":"freeze","severity":"minor"}, {"id":"stutter","severity":"minor"}],
+        "details": {"freeze":"up to 400 ms between frames","stutter":"54 fps shown of 60 sent"}
+      }
+    },
+    {
+      "name": "a latency spike of one second",
+      "history": [{"repeat":5}, {"latency_ms":120}, {"repeat":2}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "High latency",
+        "issues": [{"id":"latency","severity":"minor"}],
+        "details": {"latency":{"web":"26 ms from sent to shown","native":"26 ms from received to shown"}}
+      }
+    },
+    {
+      "name": "the same latency sustained is worse than the spike",
+      "history": [{"repeat":8,"latency_ms":120}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "High latency",
+        "issues": [{"id":"latency","severity":"critical"}],
+        "details": {"latency":{"web":"120 ms from sent to shown","native":"120 ms from received to shown"}}
+      }
+    },
+    {
+      "name": "a spike that has aged out of the window is forgotten",
+      "history": [{"latency_ms":200}, {"repeat":8}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "several problems sum, most severe first",
+      "history": [{"repeat":8,"shown_fps":35,"decode_ms":25,"latency_ms":90,"lost":[0,4,8,12,16,20,24,28],"node":{"cpu":99}}],
+      "expect": {
+        "grade": "F", "score": 0, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"critical"}, {"id":"stutter","severity":"critical"}, {"id":"node","severity":"critical"}, {"id":"latency","severity":"critical"}, {"id":"loss","severity":"major"}],
+        "details": {"decode":"25.0 ms to decode a frame, of 16.7 ms per frame","stutter":"35 fps shown of 60 sent","node":"CPU 99%","latency":{"web":"90 ms from sent to shown","native":"90 ms from received to shown"},"loss":"4.0 frames lost per second"}
+      }
+    },
+    {
+      "name": "the summary names the worst issue: slow decoding",
+      "history": [{"repeat":8,"decode_ms":20}],
+      "expect": {
+        "grade": "D", "score": 65, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"critical"}],
+        "details": {"decode":"20.0 ms to decode a frame, of 16.7 ms per frame"}
+      }
+    },
+    {
+      "name": "the summary names the worst issue: node overloaded",
+      "history": [{"repeat":8,"node":{"cpu":99}}],
+      "expect": {
+        "grade": "D", "score": 69, "summary": "Node overloaded",
+        "issues": [{"id":"node","severity":"critical"}],
+        "details": {"node":"CPU 99%"}
+      }
+    },
+    {
+      "name": "a WebRTC snapshot of a healthy stream is an A",
+      "history": [{"repeat":8,"delivery_ms":null,"delivery_p95_ms":null,"frame_gap_ms":null,"jitter_buffer_ms":4,"audio_jitter_ms":12,"node":null}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "everything unknown is not penalised",
+      "history": [{"repeat":8,"shown_fps":null,"target_fps":null,"sent_fps":null,"decode_ms":null,"jitter_buffer_ms":null,"rtt_ms":null,"latency_ms":null,"delivery_ms":null,"delivery_p95_ms":null,"frame_gap_ms":null,"audio_jitter_ms":null,"lost":null,"recovered":null,"partial":null,"dropped":null,"node":null,"codec":null}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "a snapshot with NaN fields doesn't crash or penalise",
+      "history": [{"repeat":8,"decode_ms":"NaN","latency_ms":"NaN","rtt_ms":"NaN"}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "grade scale: decoding at 20 ms",
+      "history": [{"repeat":8,"decode_ms":20}],
+      "expect": {
+        "grade": "D", "score": 65, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"critical"}],
+        "details": {"decode":"20.0 ms to decode a frame, of 16.7 ms per frame"}
+      }
+    },
+    {
+      "name": "grade scale: decoding at 12 ms",
+      "history": [{"repeat":8,"decode_ms":12}],
+      "expect": {
+        "grade": "C", "score": 79, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"major"}],
+        "details": {"decode":"12.0 ms to decode a frame, of 16.7 ms per frame"}
+      }
+    },
+    {
+      "name": "grade scale: decoding at 9 ms",
+      "history": [{"repeat":8,"decode_ms":9}],
+      "expect": {
+        "grade": "B", "score": 89, "summary": "Slow decoding",
+        "issues": [{"id":"decode","severity":"minor"}],
+        "details": {"decode":"9.0 ms to decode a frame, of 16.7 ms per frame"}
+      }
+    },
+    {
+      "name": "grade scale: decoding at 7 ms",
+      "history": [{"repeat":8,"decode_ms":7}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    },
+    {
+      "name": "grade scale: decoding at 3 ms",
+      "history": [{"repeat":8,"decode_ms":3}],
+      "expect": {
+        "grade": "A", "score": 100, "summary": "Smooth",
+        "issues": []
+      }
+    }
+  ]
+}

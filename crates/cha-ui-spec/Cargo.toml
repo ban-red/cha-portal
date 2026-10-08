@@ -7,6 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# The shared test vectors (health-cases.json), for the players' test runners.
+cases = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

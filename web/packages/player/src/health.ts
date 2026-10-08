@@ -1,4 +1,10 @@
 // A letter grade for the stream right now, from the last few seconds of stats snapshots.
+//
+// The numbers, weights and words are in `@cha/ui-spec`'s health.json, shared with Cha Player
+// (crates/cha-player/src/health.rs); this file holds the checks, which read them. Shared cases
+// in health-cases.json keep the two judging alike (see web/packages/ui-spec/README.md).
+
+import { type Band, fill, HEALTH, healthIssues, textFor } from "@cha/ui-spec";
 
 import type { NodeStats, StatsSnapshot } from "./stats";
 
@@ -34,157 +40,35 @@ export interface HealthContext {
   intervalMs?: number;
 }
 
-/** Snapshots judged: the last ~8 s. Long enough that one hiccup doesn't flash an F, short enough that a fix shows. */
-export const HEALTH_WINDOW = 8;
+/** Snapshots judged: the last few seconds. */
+export const HEALTH_WINDOW = HEALTH.window;
 /** Fewer snapshots than this and the counters' deltas and the spread mean nothing. */
-export const MIN_SNAPSHOTS = 2;
+export const MIN_SNAPSHOTS = HEALTH.min_snapshots;
+
+const PLATFORM = "web";
+const LEVELS = HEALTH.levels;
+const P = HEALTH.params;
+const B = HEALTH.bands;
 
 /**
- * A snapshot's level for a signal is 0 below `from`, then 0.2 at `from` rising linearly to 1 at `to`.
- * The window's level is the larger of its mean (sustained trouble) and `SPIKE_SHARE` of its worst
- * (a spike counts, but a single one stays minor).
+ * A snapshot's level for a signal is 0 below the band's `from`, then `base` at `from` rising
+ * linearly to base + slope at `to`.
  */
-export const SPIKE_SHARE = 0.35;
-/** A signal whose window level is under this isn't reported. */
-export const MIN_LEVEL = 0.1;
-/** Window levels from which an issue is major, and critical. */
-export const MAJOR_LEVEL = 0.4;
-export const CRITICAL_LEVEL = 0.75;
-
-/** The best score an issue of each severity allows: any issue rules out an A, a major one a B, a critical one a C. */
-export const SEVERITY_CAP: Record<IssueSeverity, number> = { minor: 89, major: 79, critical: 69 };
-/** Score floors of the letters. */
-export const GRADE_FLOORS: [HealthGrade, number][] = [
-  ["A", 90],
-  ["B", 80],
-  ["C", 70],
-  ["D", 55],
-  ["F", 0],
-];
-
-// Thresholds are the first value that counts (`from`) and the value that is as bad as it gets (`to`),
-// set for a wired or good Wi-Fi LAN, the product's target.
-
-/** Shown fps as a fraction of the fps the streamer sent: under 95% is visible stutter, under 60% a slideshow. */
-const FPS_RATIO = { from: 0.95, to: 0.6 };
-/**
- * The streamer sends only when the picture changes, so an idle desktop sends almost nothing and
- * shows almost nothing. Stutter and freezes are judged only while it sends at least this many
- * frames per second; without a send rate (an older streamer) they aren't judged at all.
- */
-const BUSY_SENT_FPS = 10;
-/** Frames the browser dropped, per second as a fraction of the target rate. */
-const DROPPED = { from: 0.01, to: 0.15 };
-/** Decode time as a fraction of the frame budget (1000 / fps): hardware decoders pipeline, but past half a frame there is no headroom. */
-const DECODE_BUDGET = { from: 0.5, to: 1.2 };
-/** Send → shown p50, ms: under 20 is A on a LAN. */
-const LATENCY = { from: 20, to: 100 };
-/** Delivery p95 over p50, ms, and the spread of the latency p50 across the window (interquartile range, ms). */
-const DELIVERY_SPREAD = { from: 8, to: 40 };
-const LATENCY_SPREAD = { from: 6, to: 30 };
-/** WebRTC jitter-buffer wait per frame, ms. */
-const JITTER_BUFFER = { from: 25, to: 80 };
-/**
- * PyroWave frames skipped, per second as a fraction of the target rate: a frame that missed a
- * packet and was overtaken by the next whole one never shows, but costs only itself (every frame
- * stands alone), so it is judged like a dropped frame, not like a lost one.
- */
-const SKIPPED = { from: 0.01, to: 0.15 };
-/**
- * The node's GPU load counts only while the streamer's composited → encoded p99 is past this share
- * of the frame budget: a game using the whole GPU is a game running, not the node making frames late.
- */
-const GPU_LATE_ENCODE = 0.5;
-/** Lost frames per second (WebTransport counts frames FEC couldn't rebuild) or packets per second (WebRTC, which retransmits). */
-const LOST_FRAMES = { from: 0.2, to: 6 };
-const LOST_PACKETS = { from: 2, to: 60 };
-/** Frames FEC rebuilt per second: no harm, but the network is dropping packets. */
-const RECOVERED = { from: 2, to: 30 };
-/**
- * PyroWave frames shown with packets missing, per second: each one is a single frame a little
- * softer where blocks are missing (the next is whole), so like parity repairs it says the link
- * is dropping data rather than that the picture broke.
- */
-const PARTIAL = { from: 2, to: 30 };
-/** Round trip, ms: a LAN is a few. */
-const RTT = { from: 10, to: 80 };
-/** The longest wait between frames, in frame budgets (at least this many ms), and when it is a freeze. */
-const FREEZE_BUDGETS = 3;
-const FREEZE = { to: 500 };
-/** The node's use, percent. */
-const NODE_CPU = { from: 90, to: 100 };
-const NODE_RAM = { from: 95, to: 100 };
-const NODE_GPU = { from: 95, to: 100 };
-const NODE_VRAM = { from: 95, to: 100 };
-const NODE_ENC = { from: 95, to: 100 };
-/** The streamer's CPU as a share of the whole machine, or of one core when the core count is unknown. */
-const STREAMER_CPU = { from: 90, to: 100 };
-/**
- * Audio buffer, ms. WebTransport: our own buffer, which sits at 0 on a calm LAN and grows (to at
- * most 80 ms) only to cover late packets. WebRTC: the browser's NetEq, which holds 30–60 ms on a
- * perfect LAN in Chrome and Safari, so only well past that means late packets.
- */
-const AUDIO_JITTER_WT = { from: 20, to: 80 };
-const AUDIO_JITTER_RTC = { from: 100, to: 300 };
-
-/** Score points an issue costs at level 1; at lower levels, in proportion. */
-const WEIGHT = {
-  stutter: 30,
-  dropped: 20,
-  decode: 35,
-  latency: 30,
-  jitter: 15,
-  loss: 40,
-  recovered: 8,
-  partial: 8,
-  skipped: 20,
-  soundRestart: 10,
-  soundOut: 25,
-  rtt: 12,
-  freeze: 45,
-  node: 30,
-  audio: 10,
-};
-
-/** Decoded sound counts as sound above this peak (0..1); the output plays nothing under the second. */
-const SOUND_PRESENT = 0.01;
-const SOUND_PLAYED = 0.0005;
-/** Seconds of sound in and none out before it is reported. */
-const SOUND_OUT_SECONDS = 4;
-
-const FALLBACK_FPS = 60;
-
-interface Band {
-  from: number;
-  to: number;
-}
-
 function level(v: number | null | undefined, band: Band): number {
   if (v === null || v === undefined || !Number.isFinite(v) || v < band.from) return 0;
-  return 0.2 + 0.8 * Math.min(1, (v - band.from) / (band.to - band.from));
+  return LEVELS.base + LEVELS.slope * Math.min(1, (v - band.from) / (band.to - band.from));
 }
 
 /** The same for a signal where lower is worse (`from` above `to`). */
 function levelBelow(v: number | null | undefined, band: Band): number {
   if (v === null || v === undefined || !Number.isFinite(v) || v > band.from) return 0;
-  return 0.2 + 0.8 * Math.min(1, (band.from - v) / (band.from - band.to));
+  return LEVELS.base + LEVELS.slope * Math.min(1, (band.from - v) / (band.from - band.to));
 }
 
 /** What a check found: the window's level, and the text for it. */
 interface Finding {
   level: number;
   detail: string;
-}
-
-interface Check {
-  id: string;
-  title: string;
-  /** For the one-line summary. */
-  summary: string;
-  weight: number;
-  hint: string;
-  /** A snapshot's level, for the checks judged sample by sample; the check's own `detail` text is built from `worst`. */
-  find(window: StatsSnapshot[], ctx: Ctx): Finding | null;
 }
 
 interface Ctx {
@@ -194,13 +78,18 @@ interface Ctx {
   seconds: number;
 }
 
-const ms = (v: number, digits = 0) => `${v.toFixed(digits)} ms`;
 const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
 
-/** Mean and worst of per-snapshot levels, combined as described at `SPIKE_SHARE`. */
+/** The detail text of an issue's variant on this platform, filled in. */
+function detail(id: string, variant: string, values: Record<string, number | string>): string {
+  const issue = HEALTH.issues.find((i) => i.id === id)!;
+  return fill(textFor(issue.details[variant]!, PLATFORM, `${id} detail ${variant}`), values);
+}
+
+/** Mean and worst of per-snapshot levels: sustained trouble counts, and so does a spike, but a single one stays minor. */
 function windowLevel(levels: number[]): number {
   if (!levels.length) return 0;
-  return Math.max(mean(levels), SPIKE_SHARE * Math.max(...levels));
+  return Math.max(mean(levels), LEVELS.spike_share * Math.max(...levels));
 }
 
 /** The snapshots' values for a field, where it is present. */
@@ -236,271 +125,191 @@ function rateFinding(rate: number, band: Band, text: (rate: number) => string): 
 /** Frames per second shown over the send rate's span, or the last second's on a snapshot without it. */
 const shownOfSent = (s: StatsSnapshot) => s.shownSentFps ?? s.fps;
 
+/** Whether the snapshot is of a source sending at a rate, so stutter and freezes can be judged. */
+const isBusy = (s: StatsSnapshot) => s.sentFps !== null && s.sentFps >= P.busy_sent_fps;
+
 /** Whether the stream is WebTransport, which has delivery times and frame gaps that WebRTC lacks. */
 const isWebTransport = (window: StatsSnapshot[]) => window.some((s) => s.deliveryMs !== null || s.frameGapMs !== null);
 /** PyroWave: every frame stands alone, so a lost one is skipped, not a broken chain. */
 const isPyroWave = (window: StatsSnapshot[]) => window.some((s) => s.codec?.startsWith("PYROWAVE") ?? false);
 
-const CHECKS: Check[] = [
-  {
-    id: "stutter",
-    title: "Stuttering picture",
-    summary: "Some stutter",
-    weight: WEIGHT.stutter,
-    hint: "Frames are being sent but not all of them show. Check the other lines: if the network is fine, try 60 fps or another codec; if it isn't, a cable beats Wi-Fi.",
-    find(window) {
-      // Shown over the same span as sent: the last second's `fps` against a few seconds' send
-      // rate would call a burst followed by a still screen a stutter.
-      const busy = window.filter((s) => s.sentFps !== null && s.sentFps >= BUSY_SENT_FPS && shownOfSent(s) !== null);
-      const l = windowLevel(busy.map((s) => levelBelow(shownOfSent(s)! / s.sentFps!, FPS_RATIO)));
-      if (l === 0) return null;
-      return {
-        level: l,
-        detail: `${mean(busy.map((s) => shownOfSent(s)!)).toFixed(0)} fps shown of ${mean(busy.map((s) => s.sentFps!)).toFixed(0)} sent`,
-      };
-    },
+/** The checks, by issue id. Titles, hints, weights and the words of a detail are the spec's. */
+const CHECKS: Record<string, (window: StatsSnapshot[], ctx: Ctx) => Finding | null> = {
+  stutter(window) {
+    // Shown over the same span as sent: the last second's `fps` against a few seconds' send
+    // rate would call a burst followed by a still screen a stutter.
+    const busy = window.filter((s) => isBusy(s) && shownOfSent(s) !== null);
+    const l = windowLevel(busy.map((s) => levelBelow(shownOfSent(s)! / s.sentFps!, B.fps_ratio)));
+    if (l === 0) return null;
+    return {
+      level: l,
+      detail: detail("stutter", "main", {
+        shown: mean(busy.map((s) => shownOfSent(s)!)),
+        sent: mean(busy.map((s) => s.sentFps!)),
+      }),
+    };
   },
-  {
-    id: "dropped",
-    title: "Browser dropping frames",
-    summary: "Dropped frames",
-    weight: WEIGHT.dropped,
-    hint: "The browser decoded frames it had no time to show. Close heavy tabs and apps on this computer, or try 60 fps.",
-    find(window, { target, seconds }) {
-      if (seconds <= 0) return null;
-      const rate = growth(window, (s) => s.framesDropped) / seconds;
-      return rateFinding(rate / target, DROPPED, () => `${rate.toFixed(1)} frames/s dropped`);
-    },
-  },
-  {
-    id: "decode",
-    title: "Slow decoding",
-    summary: "Slow decoding",
-    weight: WEIGHT.decode,
-    hint: "Your browser or computer can't decode fast enough. Try 60 fps or another codec (HEVC and H.264 are hardware-decoded on most machines), and close other heavy apps.",
-    find(window, { budgetMs }) {
-      // Only while frames come at a rate: a few frames on a still picture
-      // (often keyframes, the slowest to decode) hold nothing up.
-      const busy = window.filter((s) => s.sentFps !== null && s.sentFps >= BUSY_SENT_FPS);
-      const v = values(busy, (s) => s.decodeMs);
-      const l = windowLevel(v.map((d) => level(d / budgetMs, DECODE_BUDGET)));
-      if (l === 0) return null;
-      return { level: l, detail: `${ms(mean(v), 1)} to decode a frame, of ${ms(budgetMs, 1)} per frame` };
-    },
-  },
-  {
-    id: "freeze",
-    title: "Picture freezes",
-    summary: "Freezing",
-    weight: WEIGHT.freeze,
-    hint: "No frames arrived for a moment while the node was sending. Usually a network stall (Wi-Fi roaming or interference, a busy link) or a node that stopped to catch up; a cable is the first thing to try.",
-    find(window, { budgetMs }) {
-      const levels: number[] = [];
-      let worst = 0;
-      for (const s of window) {
-        // Only while frames were being sent: a still picture has long gaps by nature. A source
-        // sending at 10 fps has 100 ms between frames, so the gap must also beat 3 send intervals.
-        if (s.sentFps === null || s.sentFps < BUSY_SENT_FPS) continue;
-        // A WebRTC page has no gap measure, but a second with no frames at all is one.
-        const gap = s.frameGapMs !== null ? s.frameGapMs : shownOfSent(s) === 0 ? 1000 : null;
-        if (gap === null) continue;
-        const from = Math.max(50, FREEZE_BUDGETS * budgetMs, (FREEZE_BUDGETS * 1000) / s.sentFps);
-        levels.push(level(gap, { from, to: FREEZE.to }));
-        worst = Math.max(worst, gap);
-      }
-      const l = windowLevel(levels);
-      if (l === 0) return null;
-      return { level: l, detail: `up to ${ms(worst)} between frames` };
-    },
-  },
-  {
-    id: "latency",
-    title: "High latency",
-    summary: "High latency",
-    weight: WEIGHT.latency,
-    hint: "Frames take long from the node to your screen. Check the network (a cable, not Wi-Fi) and whether the node is busy; a lower frame rate or bitrate can help on a weak link.",
-    find(window) {
-      const v = values(window, (s) => s.latencyMs);
-      const l = windowLevel(v.map((d) => level(d, LATENCY)));
-      if (l === 0) return null;
-      return { level: l, detail: `${ms(mean(v))} from sent to shown` };
-    },
-  },
-  {
-    id: "jitter",
-    title: "Uneven latency",
-    summary: "Uneven latency",
-    weight: WEIGHT.jitter,
-    hint: "Delivery time varies from frame to frame, which shows as judder. Queueing on the network (other traffic, Wi-Fi) is the usual cause.",
-    find(window) {
-      const candidates: Finding[] = [];
-      const spreads = values(window, (s) => (s.deliveryMs !== null && s.deliveryP95Ms !== null ? s.deliveryP95Ms - s.deliveryMs : null));
-      if (spreads.length) {
-        const l = windowLevel(spreads.map((d) => level(d, DELIVERY_SPREAD)));
-        if (l > 0) candidates.push({ level: l, detail: `delivery varies by ${ms(Math.max(...spreads))} (p95 over p50)` });
-      }
-      const lat = values(window, (s) => s.latencyMs);
-      if (lat.length >= 3) {
-        const sd = interquartile(lat);
-        const l = level(sd, LATENCY_SPREAD);
-        if (l > 0) candidates.push({ level: l, detail: `latency wanders by ${ms(sd)} over the last seconds` });
-      }
-      const buf = values(window, (s) => s.jitterMs);
-      if (buf.length) {
-        const l = windowLevel(buf.map((d) => level(d, JITTER_BUFFER)));
-        if (l > 0) candidates.push({ level: l, detail: `jitter buffer holds frames ${ms(mean(buf))}` });
-      }
-      return candidates.sort((a, b) => b.level - a.level)[0] ?? null;
-    },
-  },
-  {
-    id: "loss",
-    title: "Packet loss",
-    summary: "Network losses",
-    weight: WEIGHT.loss,
-    hint: "The network is dropping packets, which costs frames or forces resends. Wi-Fi interference or a congested link: try a cable, or move closer to the access point.",
-    find(window, { seconds }) {
-      if (seconds <= 0 || isPyroWave(window)) return null;
-      const wt = isWebTransport(window);
-      const rate = growth(window, (s) => s.packetsLost) / seconds;
-      return rateFinding(rate, wt ? LOST_FRAMES : LOST_PACKETS, () => `${rate.toFixed(1)} ${wt ? "frames" : "packets"} lost per second`);
-    },
-  },
-  {
-    id: "recovered",
-    title: "Network needs repair",
-    summary: "Lossy network",
-    weight: WEIGHT.recovered,
-    hint: "Error correction is rebuilding frames that lost packets, so you see nothing yet, but the link is dropping data and a worse moment would show. Wi-Fi or a busy link: try a cable.",
-    find(window, { seconds }) {
-      if (seconds <= 0) return null;
-      const rate = growth(window, (s) => s.framesRecovered) / seconds;
-      return rateFinding(rate, RECOVERED, () => `${rate.toFixed(1)} frames/s rebuilt from parity`);
-    },
-  },
-  {
-    id: "skipped",
-    title: "Frames skipped",
-    summary: "Skipped frames",
-    weight: WEIGHT.skipped,
-    hint: "PyroWave frames that lost a packet and were overtaken by the next whole one are skipped: each costs one frame, and the next shows whole. Many of them read as stutter. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi.",
-    find(window, { seconds, target }) {
-      if (seconds <= 0 || !isPyroWave(window)) return null;
-      const rate = growth(window, (s) => s.packetsLost) / seconds;
-      return rateFinding(rate / target, SKIPPED, () => `${rate.toFixed(1)} frames/s skipped`);
-    },
-  },
-  {
-    id: "partial",
-    title: "Frames shown incomplete",
-    summary: "Lossy network",
-    weight: WEIGHT.partial,
-    hint: "PyroWave shows a frame from the packets that arrived, so a lost packet softens a few blocks for one frame instead of breaking the picture. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi.",
-    find(window, { seconds }) {
-      if (seconds <= 0) return null;
-      const rate = growth(window, (s) => s.framesPartial ?? 0) / seconds;
-      return rateFinding(rate, PARTIAL, () => `${rate.toFixed(1)} frames/s shown with packets missing`);
-    },
-  },
-  {
-    id: "rtt",
-    title: "Slow network round trip",
-    summary: "Slow network",
-    weight: WEIGHT.rtt,
-    hint: "The round trip to the node is long for a LAN. Check you are on the same network as the node, and for a VPN or Wi-Fi in the way.",
-    find(window) {
-      const v = values(window, (s) => s.rttMs);
-      const l = windowLevel(v.map((d) => level(d, RTT)));
-      if (l === 0) return null;
-      return { level: l, detail: `round trip ${ms(mean(v), 1)}` };
-    },
-  },
-  {
-    id: "node",
-    title: "Node overloaded",
-    summary: "Node overloaded",
-    weight: WEIGHT.node,
-    hint: "The machine running the environment is out of something, so frames are made late. Close other apps on it, lower the frame rate, or choose another device.",
-    find(window, { budgetMs }) {
-      const per = window
-        .filter((s) => s.node)
-        .map((s) => nodeLevels(s.node!, s.encodeP99Ms != null && s.encodeP99Ms > GPU_LATE_ENCODE * budgetMs));
-      if (!per.length) return null;
-      const l = windowLevel(per.map((p) => Math.max(0, ...p.map((x) => x.level))));
-      if (l === 0) return null;
-      // Name whatever was over in the worst reading.
-      const worst = per.reduce((a, b) => (Math.max(0, ...b.map((x) => x.level)) > Math.max(0, ...a.map((x) => x.level)) ? b : a));
-      return { level: l, detail: worst.filter((x) => x.level > 0).map((x) => x.text).join(", ") };
-    },
-  },
-  {
-    id: "sound-restart",
-    title: "Sound restarted",
-    summary: "Sound hiccups",
-    weight: WEIGHT.soundRestart,
-    hint: "The page's sound decoder or track failed and was rebuilt, so a few milliseconds of sound were lost instead of the rest of the session. Once in a while is harmless; if it repeats, use Restart sound, or reload the page and tell us what the browser's console says.",
-    find(window) {
-      const n = growth(window, (s) => s.audioRestarts ?? 0);
-      if (n <= 0) return null;
-      // One in the window is a note; several is real trouble.
-      return { level: Math.min(1, 0.2 + 0.2 * (n - 1)), detail: `sound rebuilt ${n} time${n === 1 ? "" : "s"}` };
-    },
-  },
-  {
-    id: "sound-out",
-    title: "Sound not reaching the speakers",
-    summary: "No sound output",
-    weight: WEIGHT.soundOut,
-    hint: "Sound is arriving and decoding, but the browser's audio output plays none of it. Use Restart sound; if that doesn't help, check the computer's output device, and quit and reopen the browser, which has cleared this before.",
-    find(window) {
-      // "Sound in it": the decoded sound handed to the output had a sample above SOUND_PRESENT in
-      // that second, while the output played a peak under SOUND_PLAYED (the stats are null while the
-      // output waits for a click, which isn't this). Several seconds of it, not a blip.
-      const dead = window.filter(
-        (s) => s.audioInPeak != null && s.audioOutPeak != null && s.audioInPeak > SOUND_PRESENT && s.audioOutPeak < SOUND_PLAYED,
-      );
-      if (dead.length < SOUND_OUT_SECONDS) return null;
-      return {
-        level: Math.min(1, 0.6 + 0.1 * (dead.length - SOUND_OUT_SECONDS)),
-        detail: `sound arriving (peak ${mean(dead.map((s) => s.audioInPeak!)).toFixed(2)}) but ${dead.length} s of silence played`,
-      };
-    },
-  },
-  {
-    id: "audio",
-    title: "Sound buffering",
-    summary: "Sound hiccups",
-    weight: WEIGHT.audio,
-    hint: "Sound packets are arriving late, so the player holds more sound back to keep it smooth, and the sound runs behind the picture; past the buffer it crackles. A busy or lossy link does this: a cable helps, and so does a lighter codec or frame rate when the link is nearly full.",
-    find(window) {
-      const v = values(window, (s) => s.audioJitterMs);
-      const band = isWebTransport(window) ? AUDIO_JITTER_WT : AUDIO_JITTER_RTC;
-      const l = windowLevel(v.map((d) => level(d, band)));
-      if (l === 0) return null;
-      return { level: l, detail: `audio buffer at ${ms(mean(v))}` };
-    },
-  },
-];
 
-/** What a node report puts over its limits, each as a level and a phrase. */
-/** Each resource's level; the GPU's only while `encodeLate` (see GPU_LATE_ENCODE). */
+  dropped(window, { target, seconds }) {
+    if (seconds <= 0) return null;
+    const rate = growth(window, (s) => s.framesDropped) / seconds;
+    return rateFinding(rate / target, B.dropped, () => detail("dropped", "main", { rate }));
+  },
+
+  decode(window, { budgetMs }) {
+    // Only while frames come at a rate: a few frames on a still picture
+    // (often keyframes, the slowest to decode) hold nothing up.
+    const v = values(window.filter(isBusy), (s) => s.decodeMs);
+    const l = windowLevel(v.map((d) => level(d / budgetMs, B.decode_budget)));
+    if (l === 0) return null;
+    return { level: l, detail: detail("decode", "main", { decode: mean(v), budget: budgetMs }) };
+  },
+
+  freeze(window, { budgetMs }) {
+    const levels: number[] = [];
+    let worst = 0;
+    for (const s of window) {
+      // Only while frames were being sent: a still picture has long gaps by nature. A source
+      // sending slowly has a long time between frames, so the gap must also beat that many send intervals.
+      if (!isBusy(s)) continue;
+      // A WebRTC page has no gap measure, but a second with no frames at all is one.
+      const gap = s.frameGapMs !== null ? s.frameGapMs : shownOfSent(s) === 0 ? P.no_frames_gap_ms : null;
+      if (gap === null) continue;
+      const from = Math.max(P.freeze_min_ms, P.freeze_budgets * budgetMs, (P.freeze_budgets * 1000) / s.sentFps!);
+      levels.push(level(gap, { from, to: P.freeze_to_ms }));
+      worst = Math.max(worst, gap);
+    }
+    const l = windowLevel(levels);
+    if (l === 0) return null;
+    return { level: l, detail: detail("freeze", "main", { gap: worst }) };
+  },
+
+  latency(window) {
+    const v = values(window, (s) => s.latencyMs);
+    const l = windowLevel(v.map((d) => level(d, B.latency)));
+    if (l === 0) return null;
+    return { level: l, detail: detail("latency", "main", { latency: mean(v) }) };
+  },
+
+  jitter(window) {
+    const candidates: Finding[] = [];
+    const spreads = values(window, (s) => (s.deliveryMs !== null && s.deliveryP95Ms !== null ? s.deliveryP95Ms - s.deliveryMs : null));
+    if (spreads.length) {
+      const l = windowLevel(spreads.map((d) => level(d, B.delivery_spread)));
+      if (l > 0) candidates.push({ level: l, detail: detail("jitter", "delivery", { spread: Math.max(...spreads) }) });
+    }
+    const lat = values(window, (s) => s.latencyMs);
+    if (lat.length >= P.latency_spread_samples) {
+      const sd = interquartile(lat);
+      const l = level(sd, B.latency_spread);
+      if (l > 0) candidates.push({ level: l, detail: detail("jitter", "latency", { spread: sd }) });
+    }
+    const buf = values(window, (s) => s.jitterMs);
+    if (buf.length) {
+      const l = windowLevel(buf.map((d) => level(d, B.jitter_buffer)));
+      if (l > 0) candidates.push({ level: l, detail: detail("jitter", "buffer", { wait: mean(buf) }) });
+    }
+    return candidates.sort((a, b) => b.level - a.level)[0] ?? null;
+  },
+
+  loss(window, { seconds }) {
+    if (seconds <= 0 || isPyroWave(window)) return null;
+    const wt = isWebTransport(window);
+    const rate = growth(window, (s) => s.packetsLost) / seconds;
+    return rateFinding(rate, wt ? B.lost_frames : B.lost_packets, () => detail("loss", "main", { rate, unit: wt ? "frames" : "packets" }));
+  },
+
+  recovered(window, { seconds }) {
+    if (seconds <= 0) return null;
+    const rate = growth(window, (s) => s.framesRecovered) / seconds;
+    return rateFinding(rate, B.recovered, () => detail("recovered", "main", { rate }));
+  },
+
+  skipped(window, { seconds, target }) {
+    if (seconds <= 0 || !isPyroWave(window)) return null;
+    const rate = growth(window, (s) => s.packetsLost) / seconds;
+    return rateFinding(rate / target, B.skipped, () => detail("skipped", "main", { rate }));
+  },
+
+  partial(window, { seconds }) {
+    if (seconds <= 0) return null;
+    const rate = growth(window, (s) => s.framesPartial ?? 0) / seconds;
+    return rateFinding(rate, B.partial, () => detail("partial", "main", { rate }));
+  },
+
+  rtt(window) {
+    const v = values(window, (s) => s.rttMs);
+    const l = windowLevel(v.map((d) => level(d, B.rtt)));
+    if (l === 0) return null;
+    return { level: l, detail: detail("rtt", "main", { rtt: mean(v) }) };
+  },
+
+  node(window, { budgetMs }) {
+    const per = window
+      .filter((s) => s.node)
+      .map((s) => nodeLevels(s.node!, s.encodeP99Ms != null && s.encodeP99Ms > P.gpu_late_encode * budgetMs));
+    if (!per.length) return null;
+    const l = windowLevel(per.map((p) => Math.max(0, ...p.map((x) => x.level))));
+    if (l === 0) return null;
+    // Name whatever was over in the worst reading.
+    const worst = per.reduce((a, b) => (Math.max(0, ...b.map((x) => x.level)) > Math.max(0, ...a.map((x) => x.level)) ? b : a));
+    const parts = worst.filter((x) => x.level > 0).map((x) => x.text);
+    return { level: l, detail: detail("node", "main", { parts: parts.join(HEALTH.text.list_separator) }) };
+  },
+
+  "sound-restart"(window) {
+    const n = growth(window, (s) => s.audioRestarts ?? 0);
+    if (n <= 0) return null;
+    // One in the window is a note; several is real trouble.
+    return {
+      level: Math.min(1, P.sound_restart_first + P.sound_restart_step * (n - 1)),
+      detail: detail("sound-restart", "main", { count: n, s: n === 1 ? "" : "s" }),
+    };
+  },
+
+  "sound-out"(window) {
+    // "Sound in it": the decoded sound handed to the output had a sample above `sound_present` in
+    // that second, while the output played a peak under `sound_played` (the stats are null while the
+    // output waits for a click, which isn't this). Several seconds of it, not a blip.
+    const dead = window.filter(
+      (s) => s.audioInPeak != null && s.audioOutPeak != null && s.audioInPeak > P.sound_present && s.audioOutPeak < P.sound_played,
+    );
+    if (dead.length < P.sound_out_seconds) return null;
+    return {
+      level: Math.min(1, P.sound_out_first + P.sound_out_step * (dead.length - P.sound_out_seconds)),
+      detail: detail("sound-out", "main", { peak: mean(dead.map((s) => s.audioInPeak!)), seconds: dead.length }),
+    };
+  },
+
+  audio(window) {
+    const v = values(window, (s) => s.audioJitterMs);
+    const band = isWebTransport(window) ? B.audio_jitter_wt : B.audio_jitter_rtc;
+    const l = windowLevel(v.map((d) => level(d, band)));
+    if (l === 0) return null;
+    return { level: l, detail: detail("audio", "main", { buffer: mean(v) }) };
+  },
+};
+
+/** The ids of the checks implemented here, for the coverage test. */
+export const CHECK_IDS = Object.keys(CHECKS);
+
+/** Each resource's level and phrase; the GPU's only while `encodeLate` (see `gpu_late_encode`). */
 function nodeLevels(n: NodeStats, encodeLate: boolean): { level: number; text: string }[] {
-  const pct = (v: number) => `${v.toFixed(0)}%`;
-  const out = [
-    { level: level(n.cpu, NODE_CPU), text: `CPU ${pct(n.cpu)}` },
-    { level: n.memTotal > 0 ? level((n.memUsed / n.memTotal) * 100, NODE_RAM) : 0, text: `RAM ${pct((n.memUsed / n.memTotal) * 100)}` },
-    { level: encodeLate ? level(n.gpu, NODE_GPU) : 0, text: `GPU ${pct(n.gpu ?? 0)}` },
+  const text = (variant: string, pct: number) => detail("node", variant, { pct });
+  return [
+    { level: level(n.cpu, B.node_cpu), text: text("cpu", n.cpu) },
+    { level: n.memTotal > 0 ? level((n.memUsed / n.memTotal) * 100, B.node_ram) : 0, text: text("ram", (n.memUsed / n.memTotal) * 100) },
+    { level: encodeLate ? level(n.gpu, B.node_gpu) : 0, text: text("gpu", n.gpu ?? 0) },
     {
-      level: n.vramTotal && n.vramUsed !== undefined ? level((n.vramUsed / n.vramTotal) * 100, NODE_VRAM) : 0,
-      text: `VRAM ${pct(((n.vramUsed ?? 0) / (n.vramTotal || 1)) * 100)}`,
+      level: n.vramTotal && n.vramUsed !== undefined ? level((n.vramUsed / n.vramTotal) * 100, B.node_vram) : 0,
+      text: text("vram", ((n.vramUsed ?? 0) / (n.vramTotal || 1)) * 100),
     },
-    { level: level(n.enc, NODE_ENC), text: `NVENC ${pct(n.enc ?? 0)}` },
-    { level: level(n.cores > 0 ? n.streamerCpu / n.cores : n.streamerCpu, STREAMER_CPU), text: `streamer CPU ${pct(n.streamerCpu)} of a core` },
+    { level: level(n.enc, B.node_enc), text: text("enc", n.enc ?? 0) },
+    { level: level(n.cores > 0 ? n.streamerCpu / n.cores : n.streamerCpu, B.streamer_cpu), text: text("streamer", n.streamerCpu) },
   ];
-  return out;
 }
 
-const severityOf = (l: number): IssueSeverity => (l >= CRITICAL_LEVEL ? "critical" : l >= MAJOR_LEVEL ? "major" : "minor");
+const severityOf = (l: number): IssueSeverity => (l >= LEVELS.critical ? "critical" : l >= LEVELS.major ? "major" : "minor");
 const SEVERITY_RANK: Record<IssueSeverity, number> = { critical: 2, major: 1, minor: 0 };
 
 /**
@@ -508,12 +317,12 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = { critical: 2, major: 1, mi
  * Fields a snapshot lacks (an older streamer, or the other transport) are skipped, never penalised.
  */
 export function assessHealth(history: StatsSnapshot[], context: HealthContext): HealthAssessment {
-  if (!context.visible) return { grade: null, score: null, summary: "Paused while the tab is hidden", issues: [] };
+  if (!context.visible) return { grade: null, score: null, summary: HEALTH.text.hidden, issues: [] };
   const window = history.slice(-HEALTH_WINDOW);
-  if (window.length < MIN_SNAPSHOTS) return { grade: null, score: null, summary: "Measuring…", issues: [] };
+  if (window.length < MIN_SNAPSHOTS) return { grade: null, score: null, summary: HEALTH.text.measuring, issues: [] };
 
   const latest = window[window.length - 1]!;
-  const target = latest.targetFps && latest.targetFps > 0 ? latest.targetFps : FALLBACK_FPS;
+  const target = latest.targetFps && latest.targetFps > 0 ? latest.targetFps : HEALTH.fallback_fps;
   const ctx: Ctx = {
     target,
     budgetMs: 1000 / target,
@@ -521,25 +330,31 @@ export function assessHealth(history: StatsSnapshot[], context: HealthContext): 
   };
 
   const found: { issue: HealthIssue; penalty: number; summary: string }[] = [];
-  for (const check of CHECKS) {
-    const f = check.find(window, ctx);
-    if (!f || f.level < MIN_LEVEL) continue;
+  for (const spec of healthIssues(PLATFORM)) {
+    const f = CHECKS[spec.id]?.(window, ctx);
+    if (!f || f.level < LEVELS.min) continue;
     found.push({
-      issue: { id: check.id, severity: severityOf(f.level), title: check.title, detail: f.detail, hint: check.hint },
-      penalty: check.weight * f.level,
-      summary: check.summary,
+      issue: {
+        id: spec.id,
+        severity: severityOf(f.level),
+        title: textFor(spec.title, PLATFORM, `${spec.id} title`),
+        detail: f.detail,
+        hint: textFor(spec.hint, PLATFORM, `${spec.id} hint`),
+      },
+      penalty: spec.weight * f.level,
+      summary: spec.summary,
     });
   }
   found.sort((a, b) => SEVERITY_RANK[b.issue.severity] - SEVERITY_RANK[a.issue.severity] || b.penalty - a.penalty);
 
   let score = 100 - found.reduce((sum, f) => sum + f.penalty, 0);
-  for (const f of found) score = Math.min(score, SEVERITY_CAP[f.issue.severity]);
+  for (const f of found) score = Math.min(score, HEALTH.severity_cap[f.issue.severity]);
   score = Math.max(0, Math.round(score));
-  const grade = GRADE_FLOORS.find(([, floor]) => score >= floor)![0];
+  const grade = HEALTH.grades.find(({ floor }) => score >= floor)!.grade;
   return {
     grade,
     score,
-    summary: found.length ? found[0]!.summary : "Smooth",
+    summary: found.length ? found[0]!.summary : HEALTH.text.smooth,
     issues: found.map((f) => f.issue),
   };
 }

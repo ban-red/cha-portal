@@ -1,15 +1,22 @@
 //! A letter grade for the stream right now, from the last few seconds of
-//! stats snapshots. It is `web/packages/player/src/health.ts` in Rust: the
-//! same issue ids, severities, thresholds, titles, hints, score maths and
-//! summary words, so the browser and this player judge a stream alike. Where
-//! the player measures a thing differently the text says so.
+//! stats snapshots. It is `web/packages/player/src/health.ts` in Rust.
 //!
-//! Ported: stutter, dropped frames, decoding, freezes, latency, uneven
+//! The numbers, weights and words (thresholds, bands, titles, hints, summary
+//! words, detail templates) are not here: they are
+//! `web/packages/ui-spec/health.json`, read through `cha_ui_spec::health`,
+//! and shared with the browser player. This file holds the checks, keyed by
+//! issue id. The shared cases in `health-cases.json` run against both
+//! implementations (`cargo test -p cha-player health`, `bun run --cwd
+//! web/packages/player test`), so the two judge a stream alike; where this
+//! player measures a thing differently the spec words it per platform.
+//!
+//! Checks here: stutter, dropped frames, decoding, freezes, latency, uneven
 //! latency (the latency spread only), packet loss, repairs, skipped frames
-//! (PyroWave), incomplete frames (PyroWave), round trip, node overload.
-//! Added for this player: Wi-Fi latency spikes (AWDL, no browser counterpart).
+//! (PyroWave), incomplete frames (PyroWave), round trip, node overload, and
+//! `awdl`, which has no browser counterpart (Wi-Fi latency spikes).
 //!
-//! Not ported, because this player can't measure the signal:
+//! The spec's `platforms` field says what is left to the browser, because
+//! this player can't measure the signal:
 //! - `sound-restart` and `sound-out`: Web Audio's decoder and output;
 //!   CoreAudio gives no peak of what it played.
 //! - `audio` (sound buffering): the player's own buffer sits at its 30 ms
@@ -22,7 +29,12 @@
 //! Checks that need a number a transport doesn't give (round trip, losses,
 //! the send rate, the node) are skipped, never penalised.
 
+use cha_ui_spec::health::{Band, HealthSpec, Platform, Val, fill, spec};
+
 use crate::ui::StatsSnapshot;
+
+/// This player's side of the spec.
+const PLATFORM: Platform = Platform::Native;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Grade {
@@ -41,6 +53,17 @@ impl Grade {
             Grade::C => "C",
             Grade::D => "D",
             Grade::F => "F",
+        }
+    }
+
+    fn from_letter(letter: &str) -> Grade {
+        match letter {
+            "A" => Grade::A,
+            "B" => Grade::B,
+            "C" => Grade::C,
+            "D" => Grade::D,
+            "F" => Grade::F,
+            other => panic!("health.json: unknown grade {other:?}"),
         }
     }
 }
@@ -64,17 +87,19 @@ impl Severity {
     /// The best score an issue of this severity allows: any issue rules out
     /// an A, a major one a B, a critical one a C.
     fn cap(self) -> f64 {
+        let cap = &spec().severity_cap;
         match self {
-            Severity::Minor => 89.0,
-            Severity::Major => 79.0,
-            Severity::Critical => 69.0,
+            Severity::Minor => cap.minor,
+            Severity::Major => cap.major,
+            Severity::Critical => cap.critical,
         }
     }
 
     fn of(level: f64) -> Self {
-        if level >= CRITICAL_LEVEL {
+        let levels = &spec().levels;
+        if level >= levels.critical {
             Severity::Critical
-        } else if level >= MAJOR_LEVEL {
+        } else if level >= levels.major {
             Severity::Major
         } else {
             Severity::Minor
@@ -111,7 +136,7 @@ impl Default for Assessment {
         Self {
             grade: None,
             score: None,
-            summary: "Measuring…",
+            summary: spec().text.measuring.as_str(),
             issues: Vec::new(),
         }
     }
@@ -124,76 +149,17 @@ impl Assessment {
     }
 }
 
-/// Snapshots judged: the last ~8 s.
-pub const HEALTH_WINDOW: usize = 8;
-/// Fewer snapshots than this and the counters' deltas and the spread mean nothing.
-pub const MIN_SNAPSHOTS: usize = 2;
-
-const SPIKE_SHARE: f64 = 0.35;
-const MIN_LEVEL: f64 = 0.1;
-const MAJOR_LEVEL: f64 = 0.4;
-const CRITICAL_LEVEL: f64 = 0.75;
-const GRADE_FLOORS: [(Grade, f64); 5] = [
-    (Grade::A, 90.0),
-    (Grade::B, 80.0),
-    (Grade::C, 70.0),
-    (Grade::D, 55.0),
-    (Grade::F, 0.0),
-];
-
-#[derive(Clone, Copy)]
-struct Band {
-    from: f64,
-    to: f64,
+/// Snapshots judged: the last few seconds.
+pub fn health_window() -> usize {
+    spec().window
 }
 
-const fn band(from: f64, to: f64) -> Band {
-    Band { from, to }
-}
-
-const FPS_RATIO: Band = band(0.95, 0.6);
-const BUSY_SENT_FPS: f64 = 10.0;
-const DROPPED: Band = band(0.01, 0.15);
-const DECODE_BUDGET: Band = band(0.5, 1.2);
-const LATENCY: Band = band(20.0, 100.0);
-const LATENCY_SPREAD: Band = band(6.0, 30.0);
-const SKIPPED: Band = band(0.01, 0.15);
-const GPU_LATE_ENCODE: f64 = 0.5;
-const LOST_FRAMES: Band = band(0.2, 6.0);
-const RECOVERED: Band = band(2.0, 30.0);
-const PARTIAL: Band = band(2.0, 30.0);
-const RTT: Band = band(10.0, 80.0);
-const FREEZE_BUDGETS: f64 = 3.0;
-const FREEZE: Band = band(0.0, 500.0);
-const NODE_CPU: Band = band(90.0, 100.0);
-const NODE_RAM: Band = band(95.0, 100.0);
-const NODE_GPU: Band = band(95.0, 100.0);
-const NODE_VRAM: Band = band(95.0, 100.0);
-const NODE_ENC: Band = band(95.0, 100.0);
-const STREAMER_CPU: Band = band(90.0, 100.0);
-const FALLBACK_FPS: f64 = 60.0;
-
-mod weight {
-    pub const STUTTER: f64 = 30.0;
-    pub const DROPPED: f64 = 20.0;
-    pub const DECODE: f64 = 35.0;
-    pub const LATENCY: f64 = 30.0;
-    pub const JITTER: f64 = 15.0;
-    pub const LOSS: f64 = 40.0;
-    pub const RECOVERED: f64 = 8.0;
-    pub const PARTIAL: f64 = 8.0;
-    pub const SKIPPED: f64 = 20.0;
-    pub const RTT: f64 = 12.0;
-    pub const FREEZE: f64 = 45.0;
-    pub const NODE: f64 = 30.0;
-    pub const AWDL: f64 = 10.0;
-}
-
-/// 0 below `from`, then 0.2 at `from` rising linearly to 1 at `to`.
+/// 0 below `from`, then `base` at `from` rising linearly to `base + slope` at `to`.
 fn level(v: Option<f64>, band: Band) -> f64 {
+    let levels = &spec().levels;
     match v {
         Some(v) if v.is_finite() && v >= band.from => {
-            0.2 + 0.8 * ((v - band.from) / (band.to - band.from)).min(1.0)
+            levels.base + levels.slope * ((v - band.from) / (band.to - band.from)).min(1.0)
         }
         _ => 0.0,
     }
@@ -201,9 +167,10 @@ fn level(v: Option<f64>, band: Band) -> f64 {
 
 /// The same for a signal where lower is worse (`from` above `to`).
 fn level_below(v: Option<f64>, band: Band) -> f64 {
+    let levels = &spec().levels;
     match v {
         Some(v) if v.is_finite() && v <= band.from => {
-            0.2 + 0.8 * ((band.from - v) / (band.from - band.to)).min(1.0)
+            levels.base + levels.slope * ((band.from - v) / (band.from - band.to)).min(1.0)
         }
         _ => 0.0,
     }
@@ -234,7 +201,7 @@ fn window_level(levels: &[f64]) -> f64 {
     if levels.is_empty() {
         return 0.0;
     }
-    mean(levels).max(SPIKE_SHARE * max(levels.iter().copied()))
+    mean(levels).max(spec().levels.spike_share * max(levels.iter().copied()))
 }
 
 fn values(window: &[StatsSnapshot], pick: impl Fn(&StatsSnapshot) -> Option<f32>) -> Vec<f64> {
@@ -261,16 +228,18 @@ fn interquartile(a: &[f64]) -> f64 {
     at(0.75) - at(0.25)
 }
 
-fn rate_finding(rate: f64, band: Band, text: impl Fn(f64) -> String) -> Option<Finding> {
+fn rate_finding(rate: f64, band: Band, detail: impl Fn() -> String) -> Option<Finding> {
     let l = level(Some(rate), band);
     (l > 0.0).then(|| Finding {
         level: l,
-        detail: text(rate),
+        detail: detail(),
     })
 }
 
-fn ms(v: f64, digits: usize) -> String {
-    format!("{v:.digits$} ms")
+/// The detail text of an issue's variant on this platform, filled in.
+fn detail(id: &str, variant: &str, values: &[(&str, Val)]) -> String {
+    let issue = spec().issue(id).expect("an issue in health.json");
+    fill(issue.detail(variant, PLATFORM), values)
 }
 
 /// Frames per second shown over the send rate's span, or the last second's.
@@ -278,20 +247,14 @@ fn shown_of_sent(s: &StatsSnapshot) -> f64 {
     f64::from(s.shown_sent_fps.unwrap_or(s.present_fps))
 }
 
-struct Check {
-    id: &'static str,
-    title: &'static str,
-    /// For the one-line summary.
-    summary: &'static str,
-    weight: f64,
-    hint: &'static str,
-    find: fn(&[StatsSnapshot], &Ctx) -> Option<Finding>,
-}
+type Find = fn(&[StatsSnapshot], &Ctx) -> Option<Finding>;
 
+/// The send rate of a snapshot of a source sending at a rate, so stutter and
+/// freezes can be judged.
 fn busy(s: &StatsSnapshot) -> Option<f64> {
     s.sent_fps
         .map(f64::from)
-        .filter(|sent| *sent >= BUSY_SENT_FPS)
+        .filter(|sent| *sent >= spec().params.busy_sent_fps)
 }
 
 fn find_stutter(window: &[StatsSnapshot], _: &Ctx) -> Option<Finding> {
@@ -301,7 +264,7 @@ fn find_stutter(window: &[StatsSnapshot], _: &Ctx) -> Option<Finding> {
         .collect();
     let levels: Vec<f64> = busy_ones
         .iter()
-        .map(|(shown, sent)| level_below(Some(shown / sent), FPS_RATIO))
+        .map(|(shown, sent)| level_below(Some(shown / sent), spec().bands.fps_ratio))
         .collect();
     let l = window_level(&levels);
     if l == 0.0 {
@@ -311,7 +274,14 @@ fn find_stutter(window: &[StatsSnapshot], _: &Ctx) -> Option<Finding> {
     let sent: Vec<f64> = busy_ones.iter().map(|b| b.1).collect();
     Some(Finding {
         level: l,
-        detail: format!("{:.0} fps shown of {:.0} sent", mean(&shown), mean(&sent)),
+        detail: detail(
+            "stutter",
+            "main",
+            &[
+                ("shown", Val::Num(mean(&shown))),
+                ("sent", Val::Num(mean(&sent))),
+            ],
+        ),
     })
 }
 
@@ -320,8 +290,8 @@ fn find_dropped(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
         return None;
     }
     let rate = growth(window, |s| s.dropped) / ctx.seconds;
-    rate_finding(rate / ctx.target, DROPPED, |_| {
-        format!("{rate:.1} frames/s dropped")
+    rate_finding(rate / ctx.target, spec().bands.dropped, || {
+        detail("dropped", "main", &[("rate", Val::Num(rate))])
     })
 }
 
@@ -335,7 +305,7 @@ fn find_decode(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
         .collect();
     let levels: Vec<f64> = v
         .iter()
-        .map(|d| level(Some(d / ctx.budget_ms), DECODE_BUDGET))
+        .map(|d| level(Some(d / ctx.budget_ms), spec().bands.decode_budget))
         .collect();
     let l = window_level(&levels);
     if l == 0.0 {
@@ -343,61 +313,75 @@ fn find_decode(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
     }
     Some(Finding {
         level: l,
-        detail: format!(
-            "{} to decode a frame, of {} per frame",
-            ms(mean(&v), 1),
-            ms(ctx.budget_ms, 1)
+        detail: detail(
+            "decode",
+            "main",
+            &[
+                ("decode", Val::Num(mean(&v))),
+                ("budget", Val::Num(ctx.budget_ms)),
+            ],
         ),
     })
 }
 
 fn find_freeze(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
+    let p = &spec().params;
     let mut levels = Vec::new();
     let mut worst = 0.0f64;
     for s in window {
         // Only while frames were being sent: a still picture has long gaps by
-        // nature. A source sending at 10 fps has 100 ms between frames, so
-        // the gap must also beat 3 send intervals.
+        // nature. A source sending slowly has a long time between frames, so
+        // the gap must also beat that many send intervals.
         let Some(sent) = busy(s) else { continue };
         let gap = match s.frame_gap_ms {
             Some(g) => f64::from(g),
             // A second with no frames at all is a gap.
-            None if shown_of_sent(s) == 0.0 => 1000.0,
+            None if shown_of_sent(s) == 0.0 => p.no_frames_gap_ms,
             None => continue,
         };
-        let from = 50.0f64
-            .max(FREEZE_BUDGETS * ctx.budget_ms)
-            .max(FREEZE_BUDGETS * 1000.0 / sent);
-        levels.push(level(Some(gap), band(from, FREEZE.to)));
+        let from = p
+            .freeze_min_ms
+            .max(p.freeze_budgets * ctx.budget_ms)
+            .max(p.freeze_budgets * 1000.0 / sent);
+        levels.push(level(
+            Some(gap),
+            Band {
+                from,
+                to: p.freeze_to_ms,
+            },
+        ));
         worst = worst.max(gap);
     }
     let l = window_level(&levels);
     (l > 0.0).then(|| Finding {
         level: l,
-        detail: format!("up to {} between frames", ms(worst, 0)),
+        detail: detail("freeze", "main", &[("gap", Val::Num(worst))]),
     })
 }
 
 fn find_latency(window: &[StatsSnapshot], _: &Ctx) -> Option<Finding> {
     let v = values(window, |s| s.latency_ms);
-    let levels: Vec<f64> = v.iter().map(|d| level(Some(*d), LATENCY)).collect();
+    let levels: Vec<f64> = v
+        .iter()
+        .map(|d| level(Some(*d), spec().bands.latency))
+        .collect();
     let l = window_level(&levels);
     (l > 0.0).then(|| Finding {
         level: l,
-        detail: format!("{} from received to shown", ms(mean(&v), 0)),
+        detail: detail("latency", "main", &[("latency", Val::Num(mean(&v)))]),
     })
 }
 
 fn find_jitter(window: &[StatsSnapshot], _: &Ctx) -> Option<Finding> {
     let lat = values(window, |s| s.latency_ms);
-    if lat.len() < 3 {
+    if lat.len() < spec().params.latency_spread_samples {
         return None;
     }
     let sd = interquartile(&lat);
-    let l = level(Some(sd), LATENCY_SPREAD);
+    let l = level(Some(sd), spec().bands.latency_spread);
     (l > 0.0).then(|| Finding {
         level: l,
-        detail: format!("latency wanders by {} over the last seconds", ms(sd, 0)),
+        detail: detail("jitter", "latency", &[("spread", Val::Num(sd))]),
     })
 }
 
@@ -409,8 +393,8 @@ fn find_loss(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
         return None;
     }
     let rate = growth(window, |s| s.lost.unwrap_or(0)) / ctx.seconds;
-    rate_finding(rate, LOST_FRAMES, |_| {
-        format!("{rate:.1} frames lost per second")
+    rate_finding(rate, spec().bands.lost_frames, || {
+        detail("loss", "main", &[("rate", Val::Num(rate))])
     })
 }
 
@@ -419,8 +403,8 @@ fn find_recovered(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
         return None;
     }
     let rate = growth(window, |s| s.recovered.unwrap_or(0)) / ctx.seconds;
-    rate_finding(rate, RECOVERED, |_| {
-        format!("{rate:.1} frames/s rebuilt from parity")
+    rate_finding(rate, spec().bands.recovered, || {
+        detail("recovered", "main", &[("rate", Val::Num(rate))])
     })
 }
 
@@ -432,8 +416,8 @@ fn find_skipped(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
         return None;
     }
     let rate = growth(window, |s| s.lost.unwrap_or(0)) / ctx.seconds;
-    rate_finding(rate / ctx.target, SKIPPED, |_| {
-        format!("{rate:.1} frames/s skipped")
+    rate_finding(rate / ctx.target, spec().bands.skipped, || {
+        detail("skipped", "main", &[("rate", Val::Num(rate))])
     })
 }
 
@@ -442,31 +426,35 @@ fn find_partial(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
         return None;
     }
     let rate = growth(window, |s| s.partial) / ctx.seconds;
-    rate_finding(rate, PARTIAL, |_| {
-        format!("{rate:.1} frames/s shown with packets missing")
+    rate_finding(rate, spec().bands.partial, || {
+        detail("partial", "main", &[("rate", Val::Num(rate))])
     })
 }
 
 fn find_rtt(window: &[StatsSnapshot], _: &Ctx) -> Option<Finding> {
     let v = values(window, |s| s.rtt_ms);
-    let levels: Vec<f64> = v.iter().map(|d| level(Some(*d), RTT)).collect();
+    let levels: Vec<f64> = v
+        .iter()
+        .map(|d| level(Some(*d), spec().bands.rtt))
+        .collect();
     let l = window_level(&levels);
     (l > 0.0).then(|| Finding {
         level: l,
-        detail: format!("round trip {}", ms(mean(&v), 1)),
+        detail: detail("rtt", "main", &[("rtt", Val::Num(mean(&v)))]),
     })
 }
 
 fn find_awdl(window: &[StatsSnapshot], _: &Ctx) -> Option<Finding> {
     window.last().filter(|s| s.awdl_suspected).map(|_| Finding {
-        level: MAJOR_LEVEL,
-        detail: "frames arrive in bursts, typical of AWDL (AirDrop, Continuity)".into(),
+        level: spec().levels.major,
+        detail: detail("awdl", "main", &[]),
     })
 }
 
 /// Each resource's level, with a phrase; the GPU's only while `encode_late`.
 fn node_levels(n: &cha_client::NodeStats, encode_late: bool) -> Vec<(f64, String)> {
-    let pct = |v: f64| format!("{v:.0}%");
+    let b = &spec().bands;
+    let text = |variant: &str, pct: f64| detail("node", variant, &[("pct", Val::Num(pct))]);
     let f = |v: f32| f64::from(v);
     let ram = if n.mem_total > 0 {
         n.mem_used as f64 / n.mem_total as f64 * 100.0
@@ -483,37 +471,31 @@ fn node_levels(n: &cha_client::NodeStats, encode_late: bool) -> Vec<(f64, String
         f(n.streamer_cpu)
     };
     vec![
-        (
-            level(Some(f(n.cpu)), NODE_CPU),
-            format!("CPU {}", pct(f(n.cpu))),
-        ),
+        (level(Some(f(n.cpu)), b.node_cpu), text("cpu", f(n.cpu))),
         (
             if ram.is_nan() {
                 0.0
             } else {
-                level(Some(ram), NODE_RAM)
+                level(Some(ram), b.node_ram)
             },
-            format!("RAM {}", pct(ram)),
+            text("ram", ram),
         ),
         (
             if encode_late {
-                level(n.gpu.map(f), NODE_GPU)
+                level(n.gpu.map(f), b.node_gpu)
             } else {
                 0.0
             },
-            format!("GPU {}", pct(n.gpu.map_or(0.0, f))),
+            text("gpu", n.gpu.map_or(0.0, f)),
+        ),
+        (level(vram, b.node_vram), text("vram", vram.unwrap_or(0.0))),
+        (
+            level(n.enc.map(f), b.node_enc),
+            text("enc", n.enc.map_or(0.0, f)),
         ),
         (
-            level(vram, NODE_VRAM),
-            format!("VRAM {}", pct(vram.unwrap_or(0.0))),
-        ),
-        (
-            level(n.enc.map(f), NODE_ENC),
-            format!("NVENC {}", pct(n.enc.map_or(0.0, f))),
-        ),
-        (
-            level(Some(streamer), STREAMER_CPU),
-            format!("streamer CPU {} of a core", pct(f(n.streamer_cpu))),
+            level(Some(streamer), b.streamer_cpu),
+            text("streamer", f(n.streamer_cpu)),
         ),
     ]
 }
@@ -525,7 +507,7 @@ fn find_node(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
             s.node.as_ref().map(|n| {
                 let late = s
                     .encode_p99_ms
-                    .is_some_and(|p| f64::from(p) > GPU_LATE_ENCODE * ctx.budget_ms);
+                    .is_some_and(|p| f64::from(p) > spec().params.gpu_late_encode * ctx.budget_ms);
                 node_levels(n, late)
             })
         })
@@ -544,135 +526,50 @@ fn find_node(window: &[StatsSnapshot], ctx: &Ctx) -> Option<Finding> {
         &per[0],
         |a, b| if worst_of(b) > worst_of(a) { b } else { a },
     );
-    let detail = worst
+    let parts = worst
         .iter()
         .filter(|x| x.0 > 0.0)
         .map(|x| x.1.as_str())
         .collect::<Vec<_>>()
-        .join(", ");
-    Some(Finding { level: l, detail })
+        .join(&spec().text.list_separator);
+    Some(Finding {
+        level: l,
+        detail: detail("node", "main", &[("parts", Val::Str(parts))]),
+    })
 }
 
-const CHECKS: [Check; 13] = [
-    Check {
-        id: "stutter",
-        title: "Stuttering picture",
-        summary: "Some stutter",
-        weight: weight::STUTTER,
-        hint: "Frames are being sent but not all of them show. Check the other lines: if the network is fine, try 60 fps or another codec; if it isn't, a cable beats Wi-Fi.",
-        find: find_stutter,
-    },
-    Check {
-        id: "dropped",
-        title: "Player dropping frames",
-        summary: "Dropped frames",
-        weight: weight::DROPPED,
-        hint: "The player decoded frames it had no time to show. Close heavy apps on this Mac, or try 60 fps.",
-        find: find_dropped,
-    },
-    Check {
-        id: "decode",
-        title: "Slow decoding",
-        summary: "Slow decoding",
-        weight: weight::DECODE,
-        hint: "This Mac can't decode fast enough. Try 60 fps or another codec (HEVC and H.264 are hardware-decoded), and close other heavy apps.",
-        find: find_decode,
-    },
-    Check {
-        id: "freeze",
-        title: "Picture freezes",
-        summary: "Freezing",
-        weight: weight::FREEZE,
-        hint: "No frames arrived for a moment while the node was sending. Usually a network stall (Wi-Fi roaming or interference, a busy link) or a node that stopped to catch up; a cable is the first thing to try.",
-        find: find_freeze,
-    },
-    Check {
-        id: "latency",
-        title: "High latency",
-        summary: "High latency",
-        weight: weight::LATENCY,
-        hint: "Frames take long from arriving here to showing. This Mac is busy or the decoder is falling behind; close other apps, or lower the frame rate or bitrate.",
-        find: find_latency,
-    },
-    Check {
-        id: "jitter",
-        title: "Uneven latency",
-        summary: "Uneven latency",
-        weight: weight::JITTER,
-        hint: "Delivery time varies from frame to frame, which shows as judder. Queueing on the network (other traffic, Wi-Fi) is the usual cause.",
-        find: find_jitter,
-    },
-    Check {
-        id: "loss",
-        title: "Packet loss",
-        summary: "Network losses",
-        weight: weight::LOSS,
-        hint: "The network is dropping packets, which costs frames or forces resends. Wi-Fi interference or a congested link: try a cable, or move closer to the access point.",
-        find: find_loss,
-    },
-    Check {
-        id: "recovered",
-        title: "Network needs repair",
-        summary: "Lossy network",
-        weight: weight::RECOVERED,
-        hint: "Error correction is rebuilding frames that lost packets, so you see nothing yet, but the link is dropping data and a worse moment would show. Wi-Fi or a busy link: try a cable.",
-        find: find_recovered,
-    },
-    Check {
-        id: "skipped",
-        title: "Frames skipped",
-        summary: "Skipped frames",
-        weight: weight::SKIPPED,
-        hint: "PyroWave frames that lost a packet and were overtaken by the next whole one are skipped: each costs one frame, and the next shows whole. Many of them read as stutter. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi.",
-        find: find_skipped,
-    },
-    Check {
-        id: "partial",
-        title: "Frames shown incomplete",
-        summary: "Lossy network",
-        weight: weight::PARTIAL,
-        hint: "PyroWave shows a frame from the packets that arrived, so a lost packet softens a few blocks for one frame instead of breaking the picture. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi.",
-        find: find_partial,
-    },
-    Check {
-        id: "rtt",
-        title: "Slow network round trip",
-        summary: "Slow network",
-        weight: weight::RTT,
-        hint: "The round trip to the node is long for a LAN. Check you are on the same network as the node, and for a VPN or Wi-Fi in the way.",
-        find: find_rtt,
-    },
-    Check {
-        id: "node",
-        title: "Node overloaded",
-        summary: "Node overloaded",
-        weight: weight::NODE,
-        hint: "The machine running the environment is out of something, so frames are made late. Close other apps on it, lower the frame rate, or choose another device.",
-        find: find_node,
-    },
-    Check {
-        id: "awdl",
-        title: "Wi-Fi latency spikes",
-        summary: "Wi-Fi spikes",
-        weight: weight::AWDL,
-        hint: "Likely AWDL (AirDrop/Continuity) taking turns with Wi-Fi. A cable avoids it; see the README.",
-        find: find_awdl,
-    },
+/// The checks, by issue id. Titles, hints, weights and the words of a detail
+/// are the spec's.
+const CHECKS: [(&str, Find); 13] = [
+    ("stutter", find_stutter),
+    ("dropped", find_dropped),
+    ("decode", find_decode),
+    ("freeze", find_freeze),
+    ("latency", find_latency),
+    ("jitter", find_jitter),
+    ("loss", find_loss),
+    ("recovered", find_recovered),
+    ("skipped", find_skipped),
+    ("partial", find_partial),
+    ("rtt", find_rtt),
+    ("node", find_node),
+    ("awdl", find_awdl),
 ];
 
 /// Grades the stream from `history` (oldest first, one snapshot per second;
-/// only the last `HEALTH_WINDOW` count). Fields a snapshot lacks (a transport
+/// only the last `health_window()` count). Fields a snapshot lacks (a transport
 /// that can't say) are skipped, never penalised.
 pub fn assess(history: &[StatsSnapshot]) -> Assessment {
-    let window = &history[history.len().saturating_sub(HEALTH_WINDOW)..];
-    if window.len() < MIN_SNAPSHOTS {
+    let spec: &'static HealthSpec = spec();
+    let window = &history[history.len().saturating_sub(spec.window)..];
+    if window.len() < spec.min_snapshots {
         return Assessment::default();
     }
     let latest = &window[window.len() - 1];
     let target = latest
         .target_fps
         .filter(|f| *f > 0)
-        .map_or(FALLBACK_FPS, f64::from);
+        .map_or(spec.fallback_fps, f64::from);
     let ctx = Ctx {
         target,
         budget_ms: 1000.0 / target,
@@ -685,23 +582,26 @@ pub fn assess(history: &[StatsSnapshot]) -> Assessment {
         summary: &'static str,
     }
     let mut found: Vec<Found> = Vec::new();
-    for check in &CHECKS {
-        let Some(f) = (check.find)(window, &ctx) else {
+    for issue in spec.issues_for(PLATFORM) {
+        let Some((_, find)) = CHECKS.iter().find(|(id, _)| *id == issue.id) else {
             continue;
         };
-        if f.level < MIN_LEVEL {
+        let Some(f) = find(window, &ctx) else {
+            continue;
+        };
+        if f.level < spec.levels.min {
             continue;
         }
         found.push(Found {
             issue: Issue {
-                id: check.id,
+                id: issue.id.as_str(),
                 severity: Severity::of(f.level),
-                title: check.title,
+                title: issue.title(PLATFORM),
                 detail: f.detail,
-                hint: check.hint,
+                hint: issue.hint(PLATFORM),
             },
-            penalty: check.weight * f.level,
-            summary: check.summary,
+            penalty: issue.weight * f.level,
+            summary: issue.summary.as_str(),
         });
     }
     found.sort_by(|a, b| {
@@ -717,472 +617,211 @@ pub fn assess(history: &[StatsSnapshot]) -> Assessment {
         score = score.min(f.issue.severity.cap());
     }
     let score = score.max(0.0).round();
-    let grade = GRADE_FLOORS
+    let grade = spec
+        .grades
         .iter()
-        .find(|(_, floor)| score >= *floor)
-        .map(|(g, _)| *g);
+        .find(|g| score >= g.floor)
+        .map(|g| Grade::from_letter(&g.grade));
     Assessment {
         grade,
         score: Some(score as u32),
-        summary: found.first().map_or("Smooth", |f| f.summary),
+        summary: found
+            .first()
+            .map_or(spec.text.smooth.as_str(), |f| f.summary),
         issues: found.into_iter().map(|f| f.issue).collect(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use cha_client::NodeStats;
+    use std::collections::BTreeMap;
 
-    fn healthy_node() -> NodeStats {
+    use cha_client::NodeStats;
+    use cha_ui_spec::health::PlatformText;
+    use cha_ui_spec::health_cases::{SpecNode, SpecSnapshot, health_cases};
+
+    use super::*;
+
+    // The shared cases (web/packages/ui-spec/health-cases.json) run here and in
+    // web/packages/player/src/health.test.ts. What stays in this file is what a
+    // case can't say: the mapping and the spec's coverage.
+
+    fn node_from_spec(n: &SpecNode) -> NodeStats {
+        let get = |v: Option<f64>| v.unwrap_or(0.0);
         NodeStats {
-            cpu: 30.0,
-            cores: 16,
-            load1: 2.0,
-            mem_used: 8,
-            mem_total: 32,
-            gpu: Some(50.0),
-            vram_used: Some(4),
-            vram_total: Some(12),
-            enc: Some(20.0),
-            dec: Some(0.0),
-            streamer_cpu: 40.0,
+            cpu: get(n.cpu) as f32,
+            cores: get(n.cores) as u32,
+            mem_used: get(n.mem_used) as u64,
+            mem_total: get(n.mem_total) as u64,
+            gpu: n.gpu.map(|v| v as f32),
+            vram_used: n.vram_used.map(|v| v as u64),
+            vram_total: n.vram_total.map(|v| v as u64),
+            enc: n.enc.map(|v| v as f32),
+            streamer_cpu: get(n.streamer_cpu) as f32,
             ..NodeStats::default()
         }
     }
 
-    /// A healthy 60 fps WebTransport LAN stream.
-    fn snap() -> StatsSnapshot {
+    /// A neutral snapshot as this player's own. Fields it can't measure (the
+    /// browser's delivery times, jitter buffer and sound) are dropped.
+    fn from_snapshot(s: &SpecSnapshot) -> StatsSnapshot {
+        let f32_of = |v: Option<f64>| v.map(|v| v as f32);
+        let count = |v: Option<f64>| v.map(|v| v.round() as u64);
         StatsSnapshot {
-            codec: "Hevc".into(),
-            width: 2560,
-            height: 1440,
-            present_fps: 60.0,
-            target_fps: Some(60),
-            sent_fps: Some(60.0),
-            shown_sent_fps: None,
-            mbps: Some(60.0),
-            decode_ms: Some(3.0),
-            rtt_ms: Some(2.0),
-            lost: Some(0),
-            recovered: Some(0),
-            latency_ms: Some(12.0),
-            frame_gap_ms: Some(20.0),
-            node: Some(healthy_node()),
+            // "hevc" is "Hevc" and "pyrowave444" is "PyroWave444", as the core names them.
+            codec: s.codec.as_deref().map_or_else(String::new, |c| {
+                match c.strip_prefix("pyrowave") {
+                    Some(rest) => format!("PyroWave{rest}"),
+                    None => c[..1].to_uppercase() + &c[1..],
+                }
+            }),
+            present_fps: f32_of(s.shown_fps).unwrap_or(0.0),
+            target_fps: s.target_fps.map(|v| v as u32),
+            sent_fps: f32_of(s.sent_fps),
+            shown_sent_fps: f32_of(s.shown_sent_fps),
+            encode_p99_ms: f32_of(s.encode_p99_ms),
+            decode_ms: f32_of(s.decode_ms),
+            latency_ms: f32_of(s.latency_ms),
+            frame_gap_ms: f32_of(s.frame_gap_ms),
+            rtt_ms: f32_of(s.rtt_ms),
+            lost: count(s.lost),
+            recovered: count(s.recovered),
+            dropped: count(s.dropped).unwrap_or(0),
+            partial: count(s.partial).unwrap_or(0),
+            node: s.node.as_ref().map(node_from_spec),
+            awdl_suspected: s.awdl_suspected.unwrap_or(false),
             ..StatsSnapshot::default()
         }
     }
 
-    fn run(n: usize, f: impl Fn(usize, &mut StatsSnapshot)) -> Vec<StatsSnapshot> {
-        (0..n)
-            .map(|i| {
-                let mut s = snap();
-                f(i, &mut s);
-                s
-            })
-            .collect()
-    }
-
-    fn ids(a: &Assessment) -> Vec<&'static str> {
-        a.issues.iter().map(|i| i.id).collect()
-    }
-
-    fn issue<'a>(a: &'a Assessment, id: &str) -> &'a Issue {
-        a.issues.iter().find(|i| i.id == id).unwrap()
-    }
-
-    #[test]
-    fn a_healthy_stream_is_an_a_with_no_issues() {
-        let h = assess(&run(8, |_, _| {}));
-        assert_eq!(h.grade, Some(Grade::A));
-        assert_eq!(h.score, Some(100));
-        assert_eq!(h.summary, "Smooth");
-        assert!(h.issues.is_empty());
-    }
-
-    #[test]
-    fn too_few_snapshots_are_not_graded() {
-        assert_eq!(assess(&[]).grade, None);
-        assert_eq!(assess(&run(1, |_, _| {})).grade, None);
-        assert_eq!(assess(&run(1, |_, _| {})).summary, "Measuring…");
-        assert_eq!(assess(&run(2, |_, _| {})).grade, Some(Grade::A));
-    }
-
-    #[test]
-    fn only_the_last_window_counts() {
-        let mut history = run(20, |_, s| s.present_fps = 5.0);
-        history.extend(run(HEALTH_WINDOW, |_, _| {}));
-        assert_eq!(assess(&history).grade, Some(Grade::A));
-    }
-
-    #[test]
-    fn sustained_half_rate_is_a_major_stutter() {
-        let h = assess(&run(8, |_, s| s.present_fps = 30.0));
-        assert!(ids(&h).contains(&"stutter"));
-        assert!(
-            issue(&h, "stutter")
-                .detail
-                .contains("30 fps shown of 60 sent")
-        );
-        assert!(matches!(h.grade, Some(Grade::D | Grade::F)));
-    }
-
-    #[test]
-    fn a_mild_shortfall_is_minor_and_costs_an_a() {
-        let h = assess(&run(8, |_, s| s.present_fps = 56.0));
-        assert_eq!(
-            h.issues.iter().map(|i| i.severity).collect::<Vec<_>>(),
-            [Severity::Minor]
-        );
-        assert_eq!(h.grade, Some(Grade::B));
-    }
-
-    #[test]
-    fn a_static_desktop_is_an_a_not_a_stutter_or_freeze() {
-        let h = assess(&run(8, |_, s| {
-            s.present_fps = 1.0;
-            s.sent_fps = Some(0.5);
-            s.frame_gap_ms = Some(1000.0);
-            s.mbps = Some(0.01);
-        }));
-        assert_eq!(h.grade, Some(Grade::A));
-        assert!(h.issues.is_empty());
-    }
-
-    #[test]
-    fn an_unknown_send_rate_judges_neither_stutter_nor_freeze() {
-        let h = assess(&run(8, |_, s| {
-            s.present_fps = 5.0;
-            s.sent_fps = None;
-            s.frame_gap_ms = Some(900.0);
-        }));
-        assert_eq!(h.grade, Some(Grade::A));
-    }
-
-    #[test]
-    fn a_burst_then_a_still_screen_is_smooth() {
-        let h = assess(&run(8, |_, s| {
-            s.present_fps = 0.0;
-            s.sent_fps = Some(12.0);
-            s.shown_sent_fps = Some(12.0);
-            s.frame_gap_ms = Some(4.0);
-        }));
-        assert_eq!(h.grade, Some(Grade::A));
-        assert!(h.issues.is_empty());
-    }
-
-    #[test]
-    fn dropped_frames_come_from_the_counters_growth() {
-        let h = assess(&run(8, |i, s| s.dropped = 1000 + i as u64 * 6));
-        assert_eq!(ids(&h), ["dropped"]);
-        assert_eq!(h.grade, Some(Grade::C));
-        // An old total of drops is not a current problem.
-        assert_eq!(
-            assess(&run(8, |_, s| s.dropped = 5000)).grade,
-            Some(Grade::A)
-        );
-        // A counter that resets (a reconnect) counts as no growth.
-        let h = assess(&run(8, |i, s| {
-            s.dropped = if i < 4 { 900 + i as u64 } else { 2 };
-        }));
-        assert!(h.issues.is_empty());
-    }
-
-    #[test]
-    fn decoding_over_the_budget_is_critical() {
-        let h = assess(&run(8, |_, s| s.decode_ms = Some(20.0)));
-        assert_eq!(issue(&h, "decode").severity, Severity::Critical);
-        assert!(issue(&h, "decode").hint.contains("60 fps"));
-        assert!(matches!(h.grade, Some(Grade::D | Grade::F)));
-    }
-
-    #[test]
-    fn the_decode_budget_scales_with_the_frame_rate() {
-        assert_eq!(
-            assess(&run(8, |_, s| s.decode_ms = Some(9.0))).grade,
-            Some(Grade::B)
-        );
-        let h = assess(&run(8, |_, s| {
-            s.decode_ms = Some(6.0);
-            s.target_fps = Some(120);
-            s.sent_fps = Some(120.0);
-            s.present_fps = 120.0;
-        }));
-        assert!(ids(&h).contains(&"decode"));
-        // A still picture's few slow keyframes hold nothing up.
-        let still = assess(&run(8, |_, s| {
-            s.decode_ms = Some(16.0);
-            s.sent_fps = Some(0.5);
-            s.present_fps = 0.0;
-        }));
-        assert!(!ids(&still).contains(&"decode"));
-        assert_eq!(still.grade, Some(Grade::A));
-    }
-
-    #[test]
-    fn latency_bands() {
-        let sev = |l: f32| {
-            assess(&run(8, |_, s| s.latency_ms = Some(l)))
-                .issues
-                .iter()
-                .find(|i| i.id == "latency")
-                .map(|i| i.severity)
-        };
-        assert_eq!(sev(19.0), None);
-        assert_eq!(sev(25.0), Some(Severity::Minor));
-        assert_eq!(sev(35.0), Some(Severity::Minor));
-        assert_eq!(sev(60.0), Some(Severity::Major));
-        assert_eq!(sev(110.0), Some(Severity::Critical));
-        assert_eq!(
-            assess(&run(8, |_, s| s.latency_ms = Some(60.0))).grade,
-            Some(Grade::C)
-        );
-    }
-
-    #[test]
-    fn latency_wandering_is_uneven_latency() {
-        let h = assess(&run(8, |i, s| {
-            s.latency_ms = Some(if i % 2 == 1 { 40.0 } else { 10.0 });
-        }));
-        assert!(ids(&h).contains(&"jitter"));
-    }
-
-    #[test]
-    fn lost_frames_are_judged_and_say_what_to_try() {
-        let h = assess(&run(8, |i, s| s.lost = Some(i as u64 * 3)));
-        assert!(issue(&h, "loss").detail.contains("frames lost"));
-        assert_ne!(h.grade, Some(Grade::A));
-        assert!(issue(&h, "loss").hint.contains("cable"));
-        // A transport that can't count losses isn't penalised.
-        let h = assess(&run(8, |_, s| {
-            s.lost = None;
-            s.recovered = None;
-        }));
-        assert_eq!(h.grade, Some(Grade::A));
-    }
-
-    #[test]
-    fn repairs_are_a_minor_note_not_a_failure() {
-        let h = assess(&run(8, |i, s| s.recovered = Some(i as u64 * 8)));
-        assert_eq!(ids(&h), ["recovered"]);
-        assert_ne!(h.issues[0].severity, Severity::Critical);
-        assert!(matches!(h.grade, Some(Grade::B | Grade::C)));
-    }
-
-    #[test]
-    fn pyrowave_skipped_frames_are_a_share_of_the_rate() {
-        let pyro = |s: &mut StatsSnapshot| {
-            s.codec = "PyroWave444".into();
-            s.target_fps = Some(120);
-            s.sent_fps = Some(120.0);
-            s.present_fps = 120.0;
-        };
-        // 1 a second at 120 fps: under 1 %, nothing to say.
-        let h = assess(&run(8, |i, s| {
-            pyro(s);
-            s.lost = Some(i as u64);
-        }));
-        assert_eq!(h.grade, Some(Grade::A));
-        // 6 a second (5 %): skipped frames, not "Packet loss".
-        let h = assess(&run(8, |i, s| {
-            pyro(s);
-            s.lost = Some(i as u64 * 6);
-        }));
-        assert_eq!(ids(&h), ["skipped"]);
-        assert!(h.issues[0].detail.contains("frames/s skipped"));
-    }
-
-    #[test]
-    fn pyrowave_incomplete_frames_are_a_minor_note() {
-        let h = assess(&run(8, |i, s| s.partial = (i as f64 * 2.4).round() as u64));
-        assert_eq!(ids(&h), ["partial"]);
-        assert_eq!(h.issues[0].severity, Severity::Minor);
-        assert!(h.issues[0].detail.contains("shown with packets missing"));
-        assert_eq!(h.grade, Some(Grade::B));
-    }
-
-    #[test]
-    fn a_long_round_trip() {
-        let h = assess(&run(8, |_, s| s.rtt_ms = Some(50.0)));
-        assert_eq!(ids(&h), ["rtt"]);
-    }
-
-    #[test]
-    fn a_long_gap_between_frames_is_a_freeze() {
-        let h = assess(&run(8, |i, s| {
-            s.frame_gap_ms = Some(if i == 6 { 600.0 } else { 20.0 });
-        }));
-        assert!(ids(&h).contains(&"freeze"));
-        assert_ne!(h.grade, Some(Grade::A));
-        let h = assess(&run(8, |_, s| {
-            s.frame_gap_ms = Some(800.0);
-            s.present_fps = 20.0;
-        }));
-        assert_eq!(h.grade, Some(Grade::F));
-        assert_eq!(h.issues[0].severity, Severity::Critical);
-        // The same gap while little was being sent is not one.
-        let h = assess(&run(8, |i, s| {
-            s.sent_fps = Some(2.0);
-            s.present_fps = 2.0;
-            s.frame_gap_ms = Some(if i == 6 { 400.0 } else { 20.0 });
-        }));
-        assert!(!ids(&h).contains(&"freeze"));
-        // A gap of a couple of frames is normal.
-        assert_eq!(
-            assess(&run(8, |_, s| s.frame_gap_ms = Some(30.0))).grade,
-            Some(Grade::A)
-        );
-    }
-
-    #[test]
-    fn no_frames_shown_while_sending_is_a_freeze_without_a_gap_measure() {
-        let h = assess(&run(8, |_, s| {
-            s.frame_gap_ms = None;
-            s.present_fps = 0.0;
-        }));
-        assert!(ids(&h).contains(&"freeze"));
-    }
-
-    #[test]
-    fn node_saturation_is_named() {
-        type Tweak = fn(&mut NodeStats);
-        let cases: [(&str, Tweak); 5] = [
-            ("CPU", |n| n.cpu = 97.0),
-            ("VRAM", |n| n.vram_used = Some(12)),
-            ("NVENC", |n| n.enc = Some(99.0)),
-            ("streamer CPU", |n| n.streamer_cpu = 1500.0),
-            ("RAM", |n| n.mem_used = 31),
-        ];
-        for (name, tweak) in cases {
-            let h = assess(&run(8, |_, s| tweak(s.node.as_mut().unwrap())));
-            assert_eq!(ids(&h), ["node"], "{name}");
-            assert!(
-                h.issues[0].detail.contains(name),
-                "{name}: {}",
-                h.issues[0].detail
-            );
-            assert_ne!(h.grade, Some(Grade::A));
+    fn severity_name(s: Severity) -> &'static str {
+        match s {
+            Severity::Minor => "minor",
+            Severity::Major => "major",
+            Severity::Critical => "critical",
         }
     }
 
-    #[test]
-    fn a_full_gpu_counts_only_while_the_streamer_encodes_late() {
-        let gpu = |gpu: f32, p99: Option<f32>| {
-            assess(&run(8, |_, s| {
-                s.node.as_mut().unwrap().gpu = Some(gpu);
-                s.encode_p99_ms = p99;
-            }))
-        };
-        assert_eq!(gpu(100.0, Some(2.0)).grade, Some(Grade::A));
-        assert_eq!(gpu(100.0, None).grade, Some(Grade::A));
-        let h = gpu(99.0, Some(12.0));
-        assert_eq!(ids(&h), ["node"]);
-        assert!(h.issues[0].detail.contains("GPU"));
+    /// Issue id to text; None for an issue the assessment lacks.
+    type Texts = BTreeMap<String, Option<String>>;
+
+    /// What a case checks, from an assessment or from the expectation.
+    #[derive(Debug, PartialEq)]
+    struct Outcome {
+        grade: Option<String>,
+        score: Option<u32>,
+        summary: String,
+        issues: Vec<(String, String)>,
+        details: Option<Texts>,
+        hints: Option<Texts>,
     }
 
     #[test]
-    fn busy_but_under_the_limits_and_no_report_are_fine() {
-        let h = assess(&run(8, |_, s| {
-            let n = s.node.as_mut().unwrap();
-            n.cpu = 80.0;
-            n.gpu = Some(90.0);
-            n.enc = Some(80.0);
-        }));
-        assert_eq!(h.grade, Some(Grade::A));
-        assert_eq!(assess(&run(8, |_, s| s.node = None)).grade, Some(Grade::A));
-    }
-
-    #[test]
-    fn a_cpu_only_node_has_no_gpu_fields() {
-        let h = assess(&run(8, |_, s| {
-            let n = s.node.as_mut().unwrap();
-            n.gpu = None;
-            n.vram_used = None;
-            n.vram_total = None;
-            n.enc = None;
-            n.cpu = 96.0;
-        }));
-        assert_eq!(h.issues[0].detail, "CPU 96%");
-    }
-
-    #[test]
-    fn awdl_is_listed_like_the_others() {
-        let h = assess(&run(8, |i, s| s.awdl_suspected = i == 7));
-        assert_eq!(ids(&h), ["awdl"]);
-        assert_eq!(h.issues[0].title, "Wi-Fi latency spikes");
-        assert_eq!(h.issues[0].severity, Severity::Major);
-    }
-
-    #[test]
-    fn one_bad_second_does_not_flash_an_f_and_sustained_is_worse() {
-        let h = assess(&run(8, |i, s| {
-            if i == 5 {
-                s.present_fps = 10.0;
-                s.frame_gap_ms = Some(400.0);
-            }
-        }));
-        assert_ne!(h.grade, Some(Grade::F));
-        assert_ne!(h.grade, Some(Grade::A));
-        assert!(h.issues.iter().all(|i| i.severity != Severity::Critical));
-
-        let spike = assess(&run(8, |i, s| {
-            if i == 5 {
-                s.latency_ms = Some(120.0);
-            }
-        }));
-        let steady = assess(&run(8, |_, s| s.latency_ms = Some(120.0)));
-        assert!(steady.score.unwrap() < spike.score.unwrap());
-        // A spike that has aged out of the window is forgotten.
-        let mut history = run(1, |_, s| s.latency_ms = Some(200.0));
-        history.extend(run(HEALTH_WINDOW, |_, _| {}));
-        assert_eq!(assess(&history).grade, Some(Grade::A));
-    }
-
-    #[test]
-    fn several_problems_sum_most_severe_first_and_the_summary_names_the_worst() {
-        let h = assess(&run(8, |i, s| {
-            s.present_fps = 35.0;
-            s.decode_ms = Some(25.0);
-            s.latency_ms = Some(90.0);
-            s.lost = Some(i as u64 * 4);
-            s.node.as_mut().unwrap().cpu = 99.0;
-        }));
-        assert_eq!(h.grade, Some(Grade::F));
-        assert!(h.score.unwrap() < 55);
-        assert!(h.issues.len() >= 4);
-        let ranks: Vec<u8> = h.issues.iter().map(|i| i.severity.rank()).collect();
-        assert!(ranks.windows(2).all(|w| w[0] >= w[1]));
-
-        assert_eq!(
-            assess(&run(8, |_, s| s.decode_ms = Some(20.0))).summary,
-            "Slow decoding"
-        );
-        assert_eq!(
-            assess(&run(8, |_, s| s.node.as_mut().unwrap().cpu = 99.0)).summary,
-            "Node overloaded"
-        );
-    }
-
-    #[test]
-    fn everything_unknown_is_not_penalised() {
-        let h = assess(&run(8, |_, s| {
-            *s = StatsSnapshot {
-                width: 2560,
-                height: 1440,
-                ..StatsSnapshot::default()
+    fn the_shared_cases() {
+        let all = health_cases();
+        let mut ran = 0;
+        let mut failures = Vec::new();
+        for case in all.cases.iter().filter(|c| c.runs_on(PLATFORM)) {
+            ran += 1;
+            let ctx = case.context.clone().unwrap_or_default();
+            assert!(
+                ctx.visible.unwrap_or(true) && ctx.interval_ms.is_none_or(|i| i == 1000.0),
+                "{}: only the browser has a hidden page or another interval; give the case platforms: [\"web\"]",
+                case.name
+            );
+            let history: Vec<StatsSnapshot> = all.history(case).iter().map(from_snapshot).collect();
+            let h = assess(&history);
+            let e = &case.expect;
+            let texts = |want: &Option<BTreeMap<String, PlatformText>>,
+                         pick: fn(&Issue) -> String|
+             -> (Option<Texts>, Option<Texts>) {
+                let Some(want) = want else {
+                    return (None, None);
+                };
+                let actual = want
+                    .keys()
+                    .map(|id| (id.clone(), h.issues.iter().find(|i| i.id == id).map(pick)))
+                    .collect();
+                let expected = want
+                    .iter()
+                    .map(|(id, t)| (id.clone(), t.get(PLATFORM).map(str::to_owned)))
+                    .collect();
+                (Some(actual), Some(expected))
             };
-        }));
-        assert_eq!(h.grade, Some(Grade::A));
-        assert_eq!(h.score, Some(100));
+            let (details, want_details) = texts(&e.details, |i| i.detail.clone());
+            let (hints, want_hints) = texts(&e.hints, |i| i.hint.to_owned());
+            let actual = Outcome {
+                grade: h.grade.map(|g| g.letter().to_owned()),
+                score: h.score,
+                summary: h.summary.to_owned(),
+                issues: h
+                    .issues
+                    .iter()
+                    .map(|i| (i.id.to_owned(), severity_name(i.severity).to_owned()))
+                    .collect(),
+                details,
+                hints,
+            };
+            let expected = Outcome {
+                grade: e.grade.clone(),
+                score: e.score,
+                summary: e.summary.clone(),
+                issues: e
+                    .issues
+                    .iter()
+                    .map(|i| (i.id.clone(), i.severity.clone()))
+                    .collect(),
+                details: want_details,
+                hints: want_hints,
+            };
+            if actual != expected {
+                failures.push(format!(
+                    "case {:?}\n  expected: {expected:#?}\n  actual:   {actual:#?}",
+                    case.name
+                ));
+            }
+        }
+        assert!(ran > 50, "only {ran} shared cases ran");
+        assert!(
+            failures.is_empty(),
+            "{} of {ran} cases failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
     #[test]
-    fn nan_fields_do_not_crash_or_penalise() {
-        let h = assess(&run(8, |_, s| {
-            s.decode_ms = Some(f32::NAN);
-            s.latency_ms = Some(f32::NAN);
-            s.rtt_ms = Some(f32::NAN);
-        }));
-        assert_eq!(h.grade, Some(Grade::A));
+    fn every_native_issue_in_the_spec_has_a_check_and_every_check_an_issue() {
+        let mut spec_ids: Vec<&str> = spec().issues_for(PLATFORM).map(|i| i.id.as_str()).collect();
+        let mut check_ids: Vec<&str> = CHECKS.iter().map(|(id, _)| *id).collect();
+        spec_ids.sort_unstable();
+        check_ids.sort_unstable();
+        assert_eq!(spec_ids, check_ids);
+    }
+
+    #[test]
+    fn the_window_and_minimum_come_from_the_spec() {
+        assert_eq!(health_window(), spec().window);
+        assert_eq!(
+            Assessment::default().summary,
+            spec().text.measuring.as_str()
+        );
+    }
+
+    #[test]
+    fn bad_finds_the_first_listed_issue() {
+        let a = assess(
+            &(0..8)
+                .map(|_| StatsSnapshot {
+                    present_fps: 30.0,
+                    sent_fps: Some(60.0),
+                    target_fps: Some(60),
+                    decode_ms: Some(20.0),
+                    ..StatsSnapshot::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(a.bad(&["decode"]).map(|i| i.id), Some("decode"));
+        assert!(a.bad(&["rtt"]).is_none());
     }
 }

@@ -1,0 +1,258 @@
+{
+  "window": 8,
+  "min_snapshots": 2,
+  "fallback_fps": 60,
+  "levels": { "base": 0.2, "slope": 0.8, "spike_share": 0.35, "min": 0.1, "major": 0.4, "critical": 0.75 },
+  "severity_cap": { "minor": 89, "major": 79, "critical": 69 },
+  "grades": [
+    { "grade": "A", "floor": 90 },
+    { "grade": "B", "floor": 80 },
+    { "grade": "C", "floor": 70 },
+    { "grade": "D", "floor": 55 },
+    { "grade": "F", "floor": 0 }
+  ],
+  "text": {
+    "hidden": "Paused while the tab is hidden",
+    "measuring": "Measuring…",
+    "smooth": "Smooth",
+    "list_separator": ", "
+  },
+  "params": {
+    "busy_sent_fps": 10,
+    "gpu_late_encode": 0.5,
+    "freeze_budgets": 3,
+    "freeze_min_ms": 50,
+    "freeze_to_ms": 500,
+    "no_frames_gap_ms": 1000,
+    "latency_spread_samples": 3,
+    "sound_present": 0.01,
+    "sound_played": 0.0005,
+    "sound_out_seconds": 4,
+    "sound_restart_first": 0.2,
+    "sound_restart_step": 0.2,
+    "sound_out_first": 0.6,
+    "sound_out_step": 0.1
+  },
+  "bands": {
+    "fps_ratio": { "from": 0.95, "to": 0.6 },
+    "dropped": { "from": 0.01, "to": 0.15 },
+    "decode_budget": { "from": 0.5, "to": 1.2 },
+    "latency": { "from": 20, "to": 100 },
+    "delivery_spread": { "from": 8, "to": 40 },
+    "latency_spread": { "from": 6, "to": 30 },
+    "jitter_buffer": { "from": 25, "to": 80 },
+    "skipped": { "from": 0.01, "to": 0.15 },
+    "lost_frames": { "from": 0.2, "to": 6 },
+    "lost_packets": { "from": 2, "to": 60 },
+    "recovered": { "from": 2, "to": 30 },
+    "partial": { "from": 2, "to": 30 },
+    "rtt": { "from": 10, "to": 80 },
+    "node_cpu": { "from": 90, "to": 100 },
+    "node_ram": { "from": 95, "to": 100 },
+    "node_gpu": { "from": 95, "to": 100 },
+    "node_vram": { "from": 95, "to": 100 },
+    "node_enc": { "from": 95, "to": 100 },
+    "streamer_cpu": { "from": 90, "to": 100 },
+    "audio_jitter_wt": { "from": 20, "to": 80 },
+    "audio_jitter_rtc": { "from": 100, "to": 300 }
+  },
+  "notes": {
+    "levels": "A snapshot's level for a signal is 0 below a band's `from`, then `base` at `from` rising linearly (by `slope`) to base + slope at `to`. The window's level is the larger of its mean (sustained trouble) and `spike_share` of its worst (a spike counts, but a single one stays minor). A level under `min` isn't reported; from `major` an issue is major, from `critical` critical.",
+    "severity_cap": "The best score an issue of each severity allows: any issue rules out an A, a major one a B, a critical one a C.",
+    "bands": "A band is the first value that counts (`from`) and the value that is as bad as it gets (`to`), set for a wired or good Wi-Fi LAN, the product's target. fps_ratio runs downward (shown over sent: under 95% is visible stutter, under 60% a slideshow). dropped, skipped: per second as a share of the target rate. decode_budget: decode time over the frame budget (1000 / fps). latency: p50 in ms, under 20 is an A on a LAN. delivery_spread: delivery p95 over p50, ms. latency_spread: the interquartile range of the latency across the window, ms. jitter_buffer: WebRTC wait per frame, ms. lost_frames: WebTransport frames FEC couldn't rebuild, per second. lost_packets: WebRTC packets per second (it retransmits). recovered, partial: frames per second. rtt: ms. node_*, streamer_cpu: percent; the streamer's CPU is a share of the whole machine, or of one core when the core count is unknown. audio_jitter_wt: our own buffer, which sits at 0 on a calm LAN. audio_jitter_rtc: the browser's NetEq, which holds 30-60 ms on a perfect LAN in Chrome and Safari.",
+    "params": "busy_sent_fps: the streamer sends only when the picture changes, so stutter, decoding and freezes are judged only while it sends at least this many frames per second (not at all without a send rate). gpu_late_encode: the node's GPU load counts only while the streamer's composited to encoded p99 is past this share of the frame budget. freeze_*: the longest wait between frames must beat max(freeze_min_ms, freeze_budgets frame budgets, freeze_budgets send intervals) to count, and freeze_to_ms is as bad as it gets; with no gap measure, a second with no frames is a gap of no_frames_gap_ms. latency_spread_samples: fewest latencies the spread needs. sound_*: decoded sound counts as sound above sound_present (peak, 0..1), the output plays nothing under sound_played, and sound_out_seconds of that report it. The sound levels are first + step per further occurrence (or second)."
+  },
+  "issues": [
+    {
+      "id": "stutter",
+      "platforms": ["web", "native"],
+      "title": "Stuttering picture",
+      "summary": "Some stutter",
+      "weight": 30,
+      "hint": "Frames are being sent but not all of them show. Check the other lines: if the network is fine, try 60 fps or another codec; if it isn't, a cable beats Wi-Fi.",
+      "details": { "main": "{shown:f0} fps shown of {sent:f0} sent" },
+      "placeholders": { "shown": "number", "sent": "number" }
+    },
+    {
+      "id": "dropped",
+      "platforms": ["web", "native"],
+      "title": { "web": "Browser dropping frames", "native": "Player dropping frames" },
+      "summary": "Dropped frames",
+      "weight": 20,
+      "hint": {
+        "web": "The browser decoded frames it had no time to show. Close heavy tabs and apps on this computer, or try 60 fps.",
+        "native": "The player decoded frames it had no time to show. Close heavy apps on this Mac, or try 60 fps."
+      },
+      "details": { "main": "{rate:f1} frames/s dropped" },
+      "placeholders": { "rate": "number" }
+    },
+    {
+      "id": "decode",
+      "platforms": ["web", "native"],
+      "title": "Slow decoding",
+      "summary": "Slow decoding",
+      "weight": 35,
+      "hint": {
+        "web": "Your browser or computer can't decode fast enough. Try 60 fps or another codec (HEVC and H.264 are hardware-decoded on most machines), and close other heavy apps.",
+        "native": "This Mac can't decode fast enough. Try 60 fps or another codec (HEVC and H.264 are hardware-decoded), and close other heavy apps."
+      },
+      "details": { "main": "{decode:ms1} to decode a frame, of {budget:ms1} per frame" },
+      "placeholders": { "decode": "number", "budget": "number" }
+    },
+    {
+      "id": "freeze",
+      "platforms": ["web", "native"],
+      "title": "Picture freezes",
+      "summary": "Freezing",
+      "weight": 45,
+      "hint": "No frames arrived for a moment while the node was sending. Usually a network stall (Wi-Fi roaming or interference, a busy link) or a node that stopped to catch up; a cable is the first thing to try.",
+      "details": { "main": "up to {gap:ms0} between frames" },
+      "placeholders": { "gap": "number" }
+    },
+    {
+      "id": "latency",
+      "platforms": ["web", "native"],
+      "title": "High latency",
+      "summary": "High latency",
+      "weight": 30,
+      "hint": {
+        "web": "Frames take long from the node to your screen. Check the network (a cable, not Wi-Fi) and whether the node is busy; a lower frame rate or bitrate can help on a weak link.",
+        "native": "Frames take long from arriving here to showing. This Mac is busy or the decoder is falling behind; close other apps, or lower the frame rate or bitrate."
+      },
+      "details": {
+        "main": {
+          "web": "{latency:ms0} from sent to shown",
+          "native": "{latency:ms0} from received to shown"
+        }
+      },
+      "placeholders": { "latency": "number" }
+    },
+    {
+      "id": "jitter",
+      "platforms": ["web", "native"],
+      "title": "Uneven latency",
+      "summary": "Uneven latency",
+      "weight": 15,
+      "hint": "Delivery time varies from frame to frame, which shows as judder. Queueing on the network (other traffic, Wi-Fi) is the usual cause.",
+      "details": {
+        "delivery": { "web": "delivery varies by {spread:ms0} (p95 over p50)" },
+        "latency": "latency wanders by {spread:ms0} over the last seconds",
+        "buffer": { "web": "jitter buffer holds frames {wait:ms0}" }
+      },
+      "placeholders": { "spread": "number", "wait": "number" }
+    },
+    {
+      "id": "loss",
+      "platforms": ["web", "native"],
+      "title": "Packet loss",
+      "summary": "Network losses",
+      "weight": 40,
+      "hint": "The network is dropping packets, which costs frames or forces resends. Wi-Fi interference or a congested link: try a cable, or move closer to the access point.",
+      "details": {
+        "main": {
+          "web": "{rate:f1} {unit} lost per second",
+          "native": "{rate:f1} frames lost per second"
+        }
+      },
+      "placeholders": { "rate": "number", "unit": "string" }
+    },
+    {
+      "id": "recovered",
+      "platforms": ["web", "native"],
+      "title": "Network needs repair",
+      "summary": "Lossy network",
+      "weight": 8,
+      "hint": "Error correction is rebuilding frames that lost packets, so you see nothing yet, but the link is dropping data and a worse moment would show. Wi-Fi or a busy link: try a cable.",
+      "details": { "main": "{rate:f1} frames/s rebuilt from parity" },
+      "placeholders": { "rate": "number" }
+    },
+    {
+      "id": "skipped",
+      "platforms": ["web", "native"],
+      "title": "Frames skipped",
+      "summary": "Skipped frames",
+      "weight": 20,
+      "hint": "PyroWave frames that lost a packet and were overtaken by the next whole one are skipped: each costs one frame, and the next shows whole. Many of them read as stutter. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi.",
+      "details": { "main": "{rate:f1} frames/s skipped" },
+      "placeholders": { "rate": "number" }
+    },
+    {
+      "id": "partial",
+      "platforms": ["web", "native"],
+      "title": "Frames shown incomplete",
+      "summary": "Lossy network",
+      "weight": 8,
+      "hint": "PyroWave shows a frame from the packets that arrived, so a lost packet softens a few blocks for one frame instead of breaking the picture. The link is dropping data, often because it is nearly full: 4:2:0 or 60 fps leaves room, and a cable beats Wi-Fi.",
+      "details": { "main": "{rate:f1} frames/s shown with packets missing" },
+      "placeholders": { "rate": "number" }
+    },
+    {
+      "id": "rtt",
+      "platforms": ["web", "native"],
+      "title": "Slow network round trip",
+      "summary": "Slow network",
+      "weight": 12,
+      "hint": "The round trip to the node is long for a LAN. Check you are on the same network as the node, and for a VPN or Wi-Fi in the way.",
+      "details": { "main": "round trip {rtt:ms1}" },
+      "placeholders": { "rtt": "number" }
+    },
+    {
+      "id": "node",
+      "platforms": ["web", "native"],
+      "title": "Node overloaded",
+      "summary": "Node overloaded",
+      "weight": 30,
+      "hint": "The machine running the environment is out of something, so frames are made late. Close other apps on it, lower the frame rate, or choose another device.",
+      "details": {
+        "main": "{parts}",
+        "cpu": "CPU {pct:f0}%",
+        "ram": "RAM {pct:f0}%",
+        "gpu": "GPU {pct:f0}%",
+        "vram": "VRAM {pct:f0}%",
+        "enc": "NVENC {pct:f0}%",
+        "streamer": "streamer CPU {pct:f0}% of a core"
+      },
+      "placeholders": { "parts": "string", "pct": "number" }
+    },
+    {
+      "id": "sound-restart",
+      "platforms": ["web"],
+      "title": "Sound restarted",
+      "summary": "Sound hiccups",
+      "weight": 10,
+      "hint": "The page's sound decoder or track failed and was rebuilt, so a few milliseconds of sound were lost instead of the rest of the session. Once in a while is harmless; if it repeats, use Restart sound, or reload the page and tell us what the browser's console says.",
+      "details": { "main": "sound rebuilt {count:f0} time{s}" },
+      "placeholders": { "count": "number", "s": "string" }
+    },
+    {
+      "id": "sound-out",
+      "platforms": ["web"],
+      "title": "Sound not reaching the speakers",
+      "summary": "No sound output",
+      "weight": 25,
+      "hint": "Sound is arriving and decoding, but the browser's audio output plays none of it. Use Restart sound; if that doesn't help, check the computer's output device, and quit and reopen the browser, which has cleared this before.",
+      "details": { "main": "sound arriving (peak {peak:f2}) but {seconds:f0} s of silence played" },
+      "placeholders": { "peak": "number", "seconds": "number" }
+    },
+    {
+      "id": "audio",
+      "platforms": ["web"],
+      "title": "Sound buffering",
+      "summary": "Sound hiccups",
+      "weight": 10,
+      "hint": "Sound packets are arriving late, so the player holds more sound back to keep it smooth, and the sound runs behind the picture; past the buffer it crackles. A busy or lossy link does this: a cable helps, and so does a lighter codec or frame rate when the link is nearly full.",
+      "details": { "main": "audio buffer at {buffer:ms0}" },
+      "placeholders": { "buffer": "number" }
+    },
+    {
+      "id": "awdl",
+      "platforms": ["native"],
+      "title": "Wi-Fi latency spikes",
+      "summary": "Wi-Fi spikes",
+      "weight": 10,
+      "hint": "Likely AWDL (AirDrop/Continuity) taking turns with Wi-Fi. A cable avoids it; see the README.",
+      "details": { "main": "frames arrive in bursts, typical of AWDL (AirDrop, Continuity)" },
+      "placeholders": {}
+    }
+  ]
+}
