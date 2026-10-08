@@ -900,8 +900,12 @@ pub struct MediaClaims {
     pub env: String,
     /// The user it was issued to.
     pub sub: String,
-    /// `owner` (the only role until sharing, plan §3.4).
+    /// `owner`, `admin`, or `player` from a share link (ADR 0014). A
+    /// streamer treats a role it doesn't know as a viewer with no input.
     pub role: String,
+    /// A player's gamepad slot, 1 to 3 (player 2 to 4); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u8>,
     /// Expiry, Unix seconds.
     pub exp: i64,
 }
@@ -1772,11 +1776,21 @@ mod tests {
             env: "e1".into(),
             sub: "u1".into(),
             role: "owner".into(),
+            slot: None,
             exp: 1_000,
         };
         let token = sign_media_token(&portal, &claims);
         let key = portal.public_b64();
         assert_eq!(verify_media_token(&key, &token, "e1", 999), Ok(claims));
+        // A share's player token carries its slot.
+        let player = MediaClaims {
+            role: "player".into(),
+            slot: Some(2),
+            sub: "share:s1".into(),
+            ..verify_media_token(&key, &token, "e1", 999).unwrap()
+        };
+        let token = sign_media_token(&portal, &player);
+        assert_eq!(verify_media_token(&key, &token, "e1", 999), Ok(player));
         assert_eq!(
             verify_media_token(&key, &token, "e1", 1_001),
             Err(MediaTokenError::Expired)

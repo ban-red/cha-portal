@@ -768,6 +768,7 @@ async fn connect(
             "admin"
         }
         .into(),
+        slot: None,
         exp: db::now() + MEDIA_TOKEN_SECS,
     };
     let media_token = sign_media_token(&state.media_key, &claims);

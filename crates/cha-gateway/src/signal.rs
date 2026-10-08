@@ -200,6 +200,7 @@ mod tests {
                 env: env.into(),
                 sub: "u1".into(),
                 role: "owner".into(),
+                slot: None,
                 exp,
             },
         )

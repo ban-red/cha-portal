@@ -1,0 +1,11 @@
+# 0014: Share links, first for players
+
+- **Status:** accepted (2026-10-07). Starts Phase 3's sharing (PLAN §3.4).
+- **Context:** an environment can already have up to four sessions, one of which holds the controls (keyboard, mouse, pads, size, clipboard); only owners and admins can join. Couch co-op needs a friend on a second gamepad, without an account on the portal and without the rest of the controls.
+- **Decision:**
+  - **A share link is the credential.** The owner (or an admin) of a running environment makes a link, `https://<portal>/s/<token>`. Anyone who has it can join from a browser with no account. The token is 256 random bits, kept hashed, and is shown once when made.
+  - **The first role is `player`: one gamepad slot and nothing else.** A link names a slot (player 2, 3 or 4, so pad index 1, 2 or 3). A player session never holds the controls. Of everything it sends, only gamepad state reaches the environment, and its first pad is put on the link's slot. It gets that slot's rumble, lightbar and LED feedback. It doesn't get the apps' clipboard or count for the floor. A controller's own pads on a slot a player holds are dropped. Viewer and controller links come later.
+  - **A link lasts as long as its environment runs**, at most 24 hours, and the owner can revoke it at any time. It stops working once the environment stops, and a revoked or expired link ends the guest's session when the guest next reconnects (media tokens last 60 s and are checked only at the start of a session, so a live session isn't cut at once).
+  - **The media token carries it.** The claims gain `role: "player"` and `slot`. The streamer applies the role, and an older streamer reads an unknown role as a viewer with no input, so a guest on an old node watches but can't play.
+  - **The guest page** (`/s/<token>`) needs no sign-in: it names the app and the owner, offers "Join as player N", and plays through `@cha/player` with only gamepads sent. The owner makes, copies and revokes links from the environment's page in the portal.
+- **Consequences:** the portal gets its first unauthenticated route that leads to a stream, so the link must be treated like a password: it is shown once, never logged, and its use is audited. The streamer learns to route pads and their feedback by slot.
