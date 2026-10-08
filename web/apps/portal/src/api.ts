@@ -173,6 +173,14 @@ export interface EnvironmentUsage {
   vramTotal?: number;
 }
 
+/** A starting environment's counted step (an image download). */
+export interface EnvironmentProgress {
+  done: number;
+  total: number;
+  /** "bytes". */
+  unit: string;
+}
+
 export interface Environment {
   id: string;
   templateId: string;
@@ -183,6 +191,8 @@ export interface Environment {
   state: EnvironmentState;
   /** Why it failed or ended. */
   detail: string | null;
+  /** How far a download or similar step is, while it starts; null (or absent from older portals) when not counted. */
+  progress?: EnvironmentProgress | null;
   /** Something its node noticed while it runs, for the user (null: nothing). */
   warning: string | null;
   /** The last lines its containers logged when it died (its owner and admins; null: none kept). */

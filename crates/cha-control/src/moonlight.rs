@@ -172,6 +172,7 @@ fn template_for(row: &MoonlightHostRow, app: &MoonlightApp) -> Template {
         name: app.name.clone(),
         description: format!("On {}", row.name),
         image: GATEWAY_IMAGE.into(),
+        local_image: None,
         class: CLASS.into(),
         icon: None,
         security: SecurityProfile::Standard,

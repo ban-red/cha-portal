@@ -44,6 +44,7 @@ import { loadToolbarPrefs, saveToolbarPrefs, toolbarKey, type ToolbarPrefs } fro
 import { PREFS_KEY, parsePrefs, type OverlayPrefs } from "../statsOverlay";
 import Icon from "../components/Icon.vue";
 import WarningNote from "../components/WarningNote.vue";
+import LaunchProgress from "../components/LaunchProgress.vue";
 
 // The environment, full screen. The portal brokers the connection; the picture
 // and input go straight between this browser and the node.
@@ -1187,7 +1188,12 @@ const STATUS: Record<PlayerState, string> = {
       <div class="max-w-md rounded-xl border border-line bg-panel/90 px-6 py-5 text-center backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none">
         <p class="font-medium">{{ STATUS[state] }}</p>
         <p v-if="problem" class="mt-2 text-sm text-danger">{{ problem }}</p>
-        <p v-if="env.data.value && env.data.value.state !== 'running'" class="mt-2 text-sm text-ink-2">
+        <LaunchProgress
+          v-if="env.data.value?.state === 'starting' && env.data.value.progress"
+          :env="env.data.value"
+          class="mt-3 w-72 max-w-full"
+        />
+        <p v-else-if="env.data.value && env.data.value.state !== 'running'" class="mt-2 text-sm text-ink-2">
           The environment is {{ env.data.value.state }}<template v-if="env.data.value.detail">: {{ env.data.value.detail }}</template>.
         </p>
         <p v-if="env.data.value?.state === 'destroyed' || env.data.value?.state === 'failed'" class="mt-2 text-sm text-ink-2">

@@ -70,7 +70,12 @@ pub struct Template {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// The reference to run. A catalog's names a registry and may hold
+    /// `{version}`, which the node fills with its release (ADR 0017).
     pub image: String,
+    /// A dev build the node runs when it has it, before pulling `image`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_image: Option<String>,
     /// `browser`, `desktop`, `test`, …
     pub class: String,
     /// Its logo, an SVG beside its image (`images/<id>/<icon>`), served at
@@ -105,17 +110,93 @@ pub struct Template {
     pub needs_gpu: bool,
 }
 
+impl Template {
+    /// The images to try, in order: the local build if any, then `image`
+    /// (its `{version}` unexpanded, for the node to fill).
+    pub fn image_candidates(&self) -> Vec<String> {
+        self.local_image
+            .iter()
+            .chain(std::iter::once(&self.image))
+            .cloned()
+            .collect()
+    }
+}
+
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Catalog {
+    /// Absent means 1.
+    #[serde(default)]
+    version: Option<u32>,
     templates: Vec<Template>,
+}
+
+/// The catalog format this portal reads.
+pub const CATALOG_VERSION: u32 = 1;
+
+/// Where a catalog came from, which decides what it may hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalogSource {
+    /// `images/catalog.json`, built in: bare dev names and `localImage` are
+    /// fine.
+    BuiltIn,
+    /// A catalog an owner adds: every image names a registry, with no
+    /// `localImage`, so a node only ever pulls from somewhere it can say.
+    External,
+}
+
+/// Whether `image` starts with a registry host (`ghcr.io/…`,
+/// `localhost:5000/…`): its first path part holds a `.` or `:` or is
+/// `localhost`, as Docker reads it. A bare `cha/env-chrome:dev` doesn't.
+pub fn names_registry(image: &str) -> bool {
+    let Some((first, rest)) = image.split_once('/') else {
+        return false;
+    };
+    !rest.is_empty() && (first.contains('.') || first.contains(':') || first == "localhost")
+}
+
+/// Reads a catalog document and checks it for `source`.
+pub fn parse_catalog(json: &str, source: CatalogSource) -> Result<Vec<Template>, String> {
+    let catalog: Catalog = serde_json::from_str(json).map_err(|e| format!("not a catalog: {e}"))?;
+    match catalog.version {
+        None | Some(CATALOG_VERSION) => {}
+        Some(other) => {
+            return Err(format!(
+                "catalog version {other} isn't one this portal reads (it reads {CATALOG_VERSION})"
+            ));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for t in &catalog.templates {
+        if t.id.is_empty() || !seen.insert(t.id.as_str()) {
+            return Err(format!("template id {:?} is empty or repeated", t.id));
+        }
+        if t.image.trim().is_empty() {
+            return Err(format!("{}: no image", t.id));
+        }
+        if source == CatalogSource::External {
+            if t.local_image.is_some() {
+                return Err(format!("{}: localImage is for the built-in catalog", t.id));
+            }
+            if !names_registry(&t.image) {
+                return Err(format!(
+                    "{}: image {:?} must name a registry (like ghcr.io/owner/name:tag)",
+                    t.id, t.image
+                ));
+            }
+        }
+    }
+    Ok(catalog.templates)
 }
 
 pub fn catalog() -> &'static [Template] {
     static CATALOG: OnceLock<Vec<Template>> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        serde_json::from_str::<Catalog>(include_str!("../../../images/catalog.json"))
-            .expect("images/catalog.json is valid (checked by a test)")
-            .templates
+        parse_catalog(
+            include_str!("../../../images/catalog.json"),
+            CatalogSource::BuiltIn,
+        )
+        .expect("images/catalog.json is valid (checked by a test)")
     })
 }
 
@@ -173,6 +254,9 @@ struct EnvironmentView {
     node_name: Option<String>,
     state: String,
     detail: Option<String>,
+    /// How far along a download or similar step is, while it is starting and
+    /// its node can count it; `None` otherwise.
+    progress: Option<ProgressView>,
     /// Something to tell the user while it runs (its node noticed a problem).
     warning: Option<String>,
     /// What its containers last logged when it died, for its owner and admins.
@@ -194,6 +278,15 @@ struct EnvironmentView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ProgressView {
+    done: u64,
+    total: u64,
+    /// `bytes`.
+    unit: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct UsageView {
     /// Percent of the node's whole CPU.
     cpu: f64,
@@ -210,6 +303,13 @@ struct UsageView {
 
 /// Fills in what a running environment uses, from its node's latest report.
 fn attach_usage(state: &AppState, view: &mut EnvironmentView) {
+    if view.state == "starting" {
+        view.progress = state.nodes.progress(&view.id).map(|p| ProgressView {
+            done: p.done,
+            total: p.total,
+            unit: p.unit,
+        });
+    }
     if view.state != "running" {
         return;
     }
@@ -336,6 +436,7 @@ fn view(
         node_id: row.node_id,
         state: row.state,
         detail: row.detail,
+        progress: None,
         warning: row.warning,
         log,
         codecs,
@@ -597,8 +698,8 @@ fn environment_spec(
     } = settings;
     EnvironmentSpec {
         id,
-        image: template.image.clone(),
-        image_candidates: Vec::new(),
+        image: template.image_candidates().remove(0),
+        image_candidates: template.image_candidates(),
         security: template.security,
         shm_mb: template.shm_mb,
         width: WIDTH,
@@ -990,6 +1091,7 @@ async fn start_on_node(state: AppState, node_id: String, spec: EnvironmentSpec) 
         Ok(other) => Err(format!("the node answered {other:?}")),
         Err(err) => Err(err.to_string()),
     };
+    state.nodes.clear_progress(&id);
     if let Err(reason) = result {
         warn!(%id, %node_id, "start failed: {reason}");
         let _ = db::transition_environment(&state.db, &id, &["starting"], "failed", Some(&reason))
@@ -1005,6 +1107,7 @@ pub(crate) async fn stop_on_node(
     id: String,
     reason: Option<String>,
 ) {
+    state.nodes.clear_progress(&id);
     let reply = state
         .nodes
         .request_timeout(
@@ -1088,6 +1191,7 @@ pub async fn reconcile(
 /// An environment stopped on its own on its node.
 pub async fn exited(state: AppState, id: String, detail: String, failed: bool, log: Vec<String>) {
     let detail: String = detail.chars().take(DETAIL_CHARS).collect();
+    state.nodes.clear_progress(&id);
     let log = bounded_log(log);
     let log = (!log.is_empty()).then(|| serde_json::to_string(&log).unwrap_or_default());
     if let Err(err) = db::record_exit(&state.db, &id, failed, &detail, log.as_deref()).await {
@@ -1144,6 +1248,134 @@ mod tests {
                 .filter(|t| t.id != "steam")
                 .all(|t| !t.needs_gpu)
         );
+    }
+
+    const ONE: &str = r#"{"templates":[{"id":"x","name":"X","description":"d",
+        "image":"IMAGE","class":"test","security":"standard","shmMb":64LOCAL}]}"#;
+
+    fn one(image: &str, local: Option<&str>, version: Option<&str>) -> String {
+        let local = local.map_or(String::new(), |l| format!(r#","localImage":"{l}""#));
+        let doc = ONE.replace("IMAGE", image).replace("LOCAL", &local);
+        match version {
+            Some(v) => doc.replacen('{', &format!(r#"{{"version":{v},"#), 1),
+            None => doc,
+        }
+    }
+
+    #[test]
+    fn the_built_in_catalog_names_published_images_and_local_builds() {
+        let src = include_str!("../../../images/catalog.json");
+        assert!(src.contains(r#""version": 1"#));
+        for t in catalog() {
+            assert_eq!(
+                t.image,
+                format!("ghcr.io/ban-red/cha-env-{}:{{version}}", t.id),
+                "{}",
+                t.id
+            );
+            assert_eq!(
+                t.local_image.as_deref(),
+                Some(format!("cha/env-{}:dev", t.id).as_str())
+            );
+            assert!(names_registry(&t.image));
+            assert_eq!(
+                t.image_candidates(),
+                [t.local_image.clone().unwrap(), t.image.clone()]
+            );
+        }
+    }
+
+    #[test]
+    fn a_catalog_reads_with_or_without_version_and_local_image() {
+        for (doc, local) in [
+            (one("cha/env-x:dev", None, None), None),
+            (one("cha/env-x:dev", None, Some("1")), None),
+            (
+                one("ghcr.io/o/x:{version}", Some("cha/env-x:dev"), Some("1")),
+                Some("cha/env-x:dev"),
+            ),
+        ] {
+            let t = parse_catalog(&doc, CatalogSource::BuiltIn).unwrap();
+            assert_eq!(t.len(), 1);
+            assert_eq!(t[0].local_image.as_deref(), local);
+            let want = local.map_or(1, |_| 2);
+            assert_eq!(t[0].image_candidates().len(), want);
+            assert_eq!(t[0].image_candidates().last().unwrap(), &t[0].image);
+        }
+        let err =
+            parse_catalog(&one("a/b:1", None, Some("2")), CatalogSource::BuiltIn).unwrap_err();
+        assert!(err.contains("version 2"), "{err}");
+        assert!(parse_catalog("{", CatalogSource::BuiltIn).is_err());
+    }
+
+    #[test]
+    fn an_external_catalog_must_name_registries_and_have_no_local_builds() {
+        let ok = one("ghcr.io/o/x:1", None, Some("1"));
+        assert!(parse_catalog(&ok, CatalogSource::External).is_ok());
+        assert!(
+            parse_catalog(
+                &one("localhost:5000/x:1", None, None),
+                CatalogSource::External
+            )
+            .is_ok()
+        );
+        for bare in ["cha/env-x:dev", "x", "ubuntu:24.04", "o/x"] {
+            let err = parse_catalog(&one(bare, None, None), CatalogSource::External).unwrap_err();
+            assert!(err.contains("registry"), "{bare}: {err}");
+            // The built-in catalog may.
+            assert!(parse_catalog(&one(bare, None, None), CatalogSource::BuiltIn).is_ok());
+        }
+        let err = parse_catalog(
+            &one("ghcr.io/o/x:1", Some("cha/env-x:dev"), None),
+            CatalogSource::External,
+        )
+        .unwrap_err();
+        assert!(err.contains("localImage"), "{err}");
+        // Repeated ids are refused for any source.
+        let twice = ok.replace(r#"}]}"#, r#"},{"id":"x","name":"Y","description":"d","image":"ghcr.io/o/y:1","class":"test","security":"standard","shmMb":64}]}"#);
+        assert!(parse_catalog(&twice, CatalogSource::External).is_err());
+    }
+
+    fn spec_of(template: &Template) -> EnvironmentSpec {
+        environment_spec(
+            "e1".into(),
+            "u1",
+            template,
+            "key".into(),
+            None,
+            Settings {
+                gamepad: GamepadKind::default(),
+                fps: 60,
+                device: Device {
+                    id: "cpu".into(),
+                    kind: DeviceKind::Cpu,
+                    name: "CPU".into(),
+                    render_node: None,
+                    vendor: None,
+                    codecs: vec![],
+                    cores: None,
+                },
+                gateway: None,
+            },
+        )
+    }
+
+    #[test]
+    fn the_launch_spec_carries_the_candidates_and_image_is_the_first() {
+        let chrome = spec_of(template("chrome").unwrap());
+        assert_eq!(
+            chrome.image_candidates,
+            [
+                "cha/env-chrome:dev",
+                "ghcr.io/ban-red/cha-env-chrome:{version}"
+            ]
+        );
+        assert_eq!(chrome.image, "cha/env-chrome:dev");
+        let mut bare = template("chrome").unwrap().clone();
+        bare.local_image = None;
+        let spec = spec_of(&bare);
+        assert_eq!(spec.image_candidates, [bare.image.clone()]);
+        assert_eq!(spec.image, bare.image);
     }
 
     #[test]

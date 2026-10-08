@@ -81,10 +81,69 @@ pub struct NodeHub {
     /// The latest usage each connected node reported, and when. In memory
     /// only: it is for a live view and means nothing after a restart.
     usage: std::sync::Mutex<HashMap<String, (NodeUsage, Instant, i64)>>,
+    /// How far each starting environment's download is. In memory only: it
+    /// is a live view, gone when the environment runs or ends.
+    progress: std::sync::Mutex<HashMap<String, Progress>>,
     next_id: AtomicU64,
 }
 
+/// A counted step of a starting environment (an image download).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub done: u64,
+    pub total: u64,
+    pub unit: String,
+}
+
+impl Progress {
+    /// What a node's report counts, if it does: both numbers and a total above
+    /// zero. `done` never passes `total`; the unit defaults to `bytes`.
+    pub fn from_report(
+        done: Option<u64>,
+        total: Option<u64>,
+        unit: Option<String>,
+    ) -> Option<Self> {
+        let (done, total) = (done?, total?);
+        (total > 0).then(|| Self {
+            done: done.min(total),
+            total,
+            unit: unit
+                .map(|u| u.chars().take(16).collect())
+                .unwrap_or_else(|| "bytes".to_string()),
+        })
+    }
+}
+
+/// More environments than this starting at once isn't real; the map stays
+/// bounded whatever a node sends.
+const PROGRESS_KEPT: usize = 256;
+
 impl NodeHub {
+    pub fn set_progress(&self, id: &str, progress: Option<Progress>) {
+        let mut map = self.progress.lock().expect("progress lock");
+        match progress {
+            Some(p) if map.len() < PROGRESS_KEPT || map.contains_key(id) => {
+                map.insert(id.to_string(), p);
+            }
+            Some(_) => {}
+            None => {
+                map.remove(id);
+            }
+        }
+    }
+
+    pub fn progress(&self, id: &str) -> Option<Progress> {
+        self.progress
+            .lock()
+            .expect("progress lock")
+            .get(id)
+            .cloned()
+    }
+
+    pub fn clear_progress(&self, id: &str) {
+        self.set_progress(id, None);
+    }
+
     pub async fn connected_since(&self, node_id: &str) -> Option<i64> {
         self.connections
             .lock()
@@ -458,9 +517,23 @@ async fn pump(
                             Err(err) => warn!(%node_id, "reconciling: {err}"),
                         }
                     }
-                    ToPortal::EnvironmentProgress { id, detail, .. } => {
+                    ToPortal::EnvironmentProgress {
+                        id,
+                        detail,
+                        done,
+                        total,
+                        unit,
+                    } => {
                         let detail: String = detail.chars().take(200).collect();
-                        db::set_environment_progress(&state.db, &id, node_id, &detail).await?;
+                        // Only the environment's own node, while it starts.
+                        let counted = db::set_environment_progress(
+                            &state.db, &id, node_id, &detail,
+                        )
+                        .await?;
+                        let progress = counted
+                            .then(|| Progress::from_report(done, total, unit))
+                            .flatten();
+                        state.nodes.set_progress(&id, progress);
                     }
                     ToPortal::EnvironmentWarning { id, warning } => {
                         let warning = warning.map(|w| w.chars().take(300).collect::<String>());
@@ -693,6 +766,25 @@ async fn ping(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_counts_only_when_the_node_gives_both_numbers() {
+        let p = |d, t, u: Option<&str>| Progress::from_report(d, t, u.map(String::from));
+        assert_eq!(p(None, None, None), None);
+        assert_eq!(p(Some(1), None, None), None);
+        assert_eq!(p(Some(1), Some(0), None), None);
+        let got = p(Some(900), Some(890), None).unwrap();
+        assert_eq!(
+            (got.done, got.total, got.unit.as_str()),
+            (890, 890, "bytes")
+        );
+        assert_eq!(p(Some(1), Some(2), Some("files")).unwrap().unit, "files");
+        let hub = NodeHub::default();
+        hub.set_progress("e1", p(Some(1), Some(2), None));
+        assert_eq!(hub.progress("e1").unwrap().done, 1);
+        hub.clear_progress("e1");
+        assert!(hub.progress("e1").is_none());
+    }
 
     #[test]
     fn usage_is_kept_until_it_is_stale_or_the_node_goes() {

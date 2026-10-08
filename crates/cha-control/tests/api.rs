@@ -13,6 +13,7 @@ struct TestPortal {
     app: Router,
     db: sqlx::SqlitePool,
     discovered: std::sync::Arc<cha_control::discovery::Discovered>,
+    nodes: std::sync::Arc<cha_control::nodes::NodeHub>,
     _dir: tempfile::TempDir,
 }
 
@@ -37,6 +38,7 @@ async fn portal_with(dev_login: bool) -> TestPortal {
     let state = AppState::new(config, pool.clone()).await.unwrap();
     TestPortal {
         discovered: state.discovered.clone(),
+        nodes: state.nodes.clone(),
         app: app(state),
         db: pool,
         _dir: dir,
@@ -1143,6 +1145,44 @@ async fn a_nodes_warning_shows_on_the_environment_until_it_clears_or_ends() {
             .await
             .unwrap()
     );
+}
+
+#[tokio::test]
+async fn a_starting_environments_download_shows_as_progress_until_it_runs() {
+    use cha_control::nodes::Progress;
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (node, id) = p.live_environment(&alice_id, "chrome").await;
+    sqlx::query("UPDATE environments SET state = 'starting' WHERE id = ?")
+        .bind(&id)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    let path = format!("/api/environments/{id}");
+    let shown = p.call("GET", &path, Some(&alice), None).await;
+    assert_eq!(shown.body["progress"], Value::Null);
+
+    // What the node's message does (`ToPortal::EnvironmentProgress`).
+    db::set_environment_progress(&p.db, &id, &node, "Downloading Chrome")
+        .await
+        .unwrap();
+    p.nodes
+        .set_progress(&id, Progress::from_report(Some(412), Some(890), None));
+    let shown = p.call("GET", &path, Some(&alice), None).await;
+    assert_eq!(shown.body["detail"], "Downloading Chrome");
+    assert_eq!(
+        shown.body["progress"],
+        serde_json::json!({ "done": 412, "total": 890, "unit": "bytes" })
+    );
+    let listed = p.call("GET", "/api/environments", Some(&alice), None).await;
+    assert_eq!(listed.body[0]["progress"]["done"], 412);
+
+    // Running (or ended): no progress, even if one lingers.
+    db::set_environment_running(&p.db, &id, 1, 2).await.unwrap();
+    let shown = p.call("GET", &path, Some(&alice), None).await;
+    assert_eq!(shown.body["state"], "running");
+    assert_eq!(shown.body["progress"], Value::Null);
 }
 
 #[tokio::test]
@@ -3274,6 +3314,7 @@ async fn a_guest_connects_with_a_player_token_that_carries_the_slot() {
         app: router,
         db: pool.clone(),
         discovered: Default::default(),
+        nodes: Default::default(),
         _dir: dir,
     };
     let admin = p.setup_admin().await;
@@ -3755,6 +3796,7 @@ async fn viewer_and_controller_guests_get_tokens_without_a_slot() {
         app: router,
         db: pool.clone(),
         discovered: Default::default(),
+        nodes: Default::default(),
         _dir: dir,
     };
     let admin = p.setup_admin().await;

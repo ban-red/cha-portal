@@ -10,6 +10,7 @@ import { ChevronDown, MonitorPlay, Play } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 import type { Environment, PlacementChoice, Placements } from "../api";
+import LaunchProgress from "./LaunchProgress.vue";
 import { KIND_LABEL, autoOption, describe, nowhereToRun } from "../placements";
 
 const props = defineProps<{
@@ -244,5 +245,6 @@ watch(
         <template v-else>{{ nowhereToRun(placements) }}</template>
       </span>
     </p>
+    <LaunchProgress v-if="instance?.state === 'starting'" :env="instance" compact class="mt-1.5" />
   </div>
 </template>

@@ -31,6 +31,10 @@ const BROWSER_CODECS: [&str; 3] = ["h264", "hevc", "av1"];
 const LOW_VRAM_BYTES: u64 = 2 << 30;
 /// What each environment already on a device costs it.
 const PER_ENVIRONMENT: f64 = 10.0;
+/// What already holding the image is worth: more than any one load step, so
+/// it breaks a tie and beats a slightly busier node, but a much faster device
+/// still wins.
+const HAS_IMAGE: i64 = 15;
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/placements", get(list))
@@ -59,13 +63,20 @@ pub struct PlacementOption {
     /// Why it isn't allowed, or what to know before choosing it anyway.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Something to know that doesn't keep `auto` away ("downloads the image
+    /// first").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub score: i64,
+    /// Its node is `manual`: never what `auto` picks.
+    #[serde(skip)]
+    manual: bool,
 }
 
 impl PlacementOption {
     /// What `auto` may pick: allowed, with nothing to warn about.
     fn automatic(&self) -> bool {
-        self.allowed && self.reason.is_none()
+        self.allowed && self.reason.is_none() && !self.manual
     }
 
     fn choice(&self) -> Choice {
@@ -94,12 +105,41 @@ pub struct NodeView {
     pub running: HashMap<String, u32>,
     /// Whether its agent keeps app data (it reports a data root).
     pub keeps_app_data: bool,
+    /// The `repo:tag` images its engine holds (ADR 0017).
+    pub images: Vec<String>,
+    /// Its agent's release, which fills `{version}` in image candidates.
+    pub agent_version: Option<String>,
+    /// `manual`: never the automatic choice.
+    pub manual: bool,
+}
+
+impl NodeView {
+    /// Whether the node already holds any of `candidates`: exactly, once
+    /// `{version}` is filled with its agent's release, or, when it reports
+    /// none, by the name before the `:`.
+    pub fn has_image(&self, candidates: &[String]) -> bool {
+        candidates.iter().any(|c| match &self.agent_version {
+            Some(v) => {
+                let c = c.replace("{version}", v);
+                self.images.contains(&c)
+            }
+            None => {
+                let name = c.split(':').next().unwrap_or(c);
+                self.images
+                    .iter()
+                    .any(|i| i.split(':').next().unwrap_or(i) == name)
+            }
+        })
+    }
 }
 
 /// What a template asks of the place it runs.
 pub struct Needs {
     pub gpu: bool,
     pub app_data: bool,
+    /// The images the template can run from, in order; empty when it doesn't
+    /// matter.
+    pub images: Vec<String>,
 }
 
 impl Needs {
@@ -107,6 +147,7 @@ impl Needs {
         Self {
             gpu: template.needs_gpu,
             app_data,
+            images: template.image_candidates(),
         }
     }
 }
@@ -165,6 +206,7 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
             let running = node.running.get(&device.id).copied().unwrap_or(0);
             let mut allowed = true;
             let mut reason = None;
+            let mut reason_note = None;
             if device.kind == DeviceKind::Cpu && needs.gpu {
                 allowed = false;
                 reason = Some("it needs a GPU".to_string());
@@ -181,6 +223,8 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                     "its agent needs an update to keep app data (it reports its data root once it can)"
                         .to_string(),
                 );
+            } else if node.manual {
+                reason = Some("manual placement".to_string());
             } else if let Some(free) = gpu
                 .and_then(|g| Some(g.vram_total?.saturating_sub(g.vram_used?)))
                 .filter(|free| *free < LOW_VRAM_BYTES)
@@ -190,6 +234,11 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                     free as f64 / f64::from(1u32 << 30)
                 ));
             }
+            let has_image = !needs.images.is_empty() && node.has_image(&needs.images);
+            // Only worth a word when it is the one thing to know.
+            if reason.is_none() && allowed && !needs.images.is_empty() && !has_image {
+                reason_note = Some("downloads the image first".to_string());
+            }
             options.push(PlacementOption {
                 node: node.id.clone(),
                 node_name: node.name.clone(),
@@ -198,7 +247,10 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                 label: label(device),
                 allowed,
                 reason,
-                score: score(device.kind, usage.map(|u| u.cpu), gpu, running),
+                note: reason_note,
+                score: score(device.kind, usage.map(|u| u.cpu), gpu, running)
+                    + if has_image { HAS_IMAGE } else { 0 },
+                manual: node.manual,
             });
         }
     }
@@ -222,12 +274,13 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
     options
 }
 
-/// The best option nothing warns about, else the best allowed one.
+/// The best option nothing warns about, else the best allowed one; never a
+/// `manual` node's.
 pub fn best(options: &[PlacementOption]) -> Option<&PlacementOption> {
     options
         .iter()
         .find(|o| o.automatic())
-        .or_else(|| options.iter().find(|o| o.allowed))
+        .or_else(|| options.iter().find(|o| o.allowed && !o.manual))
 }
 
 pub fn placements(needs: &Needs, nodes: &[NodeView]) -> Placements {
@@ -294,7 +347,17 @@ pub async fn online_nodes(state: &AppState) -> ApiResult<Vec<NodeView>> {
         }
         nodes.push(NodeView {
             usage: state.nodes.usage(&row.id).map(|(u, _)| u),
-            keeps_app_data: inventory.is_some_and(|inv| inv.data_root.is_some()),
+            keeps_app_data: inventory
+                .as_ref()
+                .is_some_and(|inv| inv.data_root.is_some()),
+            images: inventory
+                .as_ref()
+                .map(|inv| inv.images.clone())
+                .unwrap_or_default(),
+            agent_version: inventory.as_ref().and_then(|inv| inv.agent_version.clone()),
+            manual: inventory
+                .as_ref()
+                .is_some_and(|inv| inv.placement == Some(cha_wire::PlacementMode::Manual)),
             id: row.id,
             name: row.name,
             devices,
@@ -381,6 +444,9 @@ mod tests {
             usage: None,
             running: HashMap::new(),
             keeps_app_data: true,
+            images: Vec::new(),
+            agent_version: None,
+            manual: false,
         }
     }
 
@@ -404,10 +470,12 @@ mod tests {
     const PLAIN: Needs = Needs {
         gpu: false,
         app_data: false,
+        images: Vec::new(),
     };
     const GAME: Needs = Needs {
         gpu: true,
         app_data: false,
+        images: Vec::new(),
     };
 
     #[test]
@@ -515,6 +583,7 @@ mod tests {
         let needs = Needs {
             gpu: false,
             app_data: true,
+            images: Vec::new(),
         };
         let o = options(&needs, &[old]);
         assert!(!o[0].allowed);
@@ -541,6 +610,78 @@ mod tests {
             (o[0].device.as_str(), o[0].kind),
             ("nvidia:0", DeviceKind::Nvidia)
         );
+    }
+
+    fn wants(images: &[&str]) -> Needs {
+        Needs {
+            gpu: false,
+            app_data: false,
+            images: images.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn holding_the_image_beats_an_otherwise_equal_node() {
+        let needs = wants(&[
+            "cha/env-chrome:dev",
+            "ghcr.io/ban-red/cha-env-chrome:{version}",
+        ]);
+        let a = node("a", vec![rtx()]);
+        let mut b = node("b", vec![rtx()]);
+        b.images = vec!["cha/env-chrome:dev".into()];
+        // "a" sorts first by name, so only the bonus can put "b" ahead.
+        let o = options(&needs, &[a, b]);
+        assert_eq!(best(&o).unwrap().node_name, "b");
+        assert_eq!(o[0].score - o[1].score, HAS_IMAGE);
+        assert_eq!(o[1].note.as_deref(), Some("downloads the image first"));
+        assert!(o[0].note.is_none());
+        // No bonus, no note, when the template names no image.
+        assert!(options(&PLAIN, &[node("a", vec![rtx()])])[0].note.is_none());
+    }
+
+    #[test]
+    fn version_is_filled_from_the_nodes_agent_else_the_name_matches() {
+        let c = ["ghcr.io/ban-red/cha-env-chrome:{version}".to_string()];
+        let mut n = node("a", vec![rtx()]);
+        n.images = vec!["ghcr.io/ban-red/cha-env-chrome:0.1.0".into()];
+        n.agent_version = Some("0.1.0".into());
+        assert!(n.has_image(&c));
+        n.agent_version = Some("0.2.0".into());
+        assert!(!n.has_image(&c), "another release is another image");
+        n.agent_version = None;
+        assert!(n.has_image(&c), "no version reported: the name decides");
+        n.images = vec!["ghcr.io/ban-red/cha-env-firefox:0.1.0".into()];
+        assert!(!n.has_image(&c));
+    }
+
+    #[test]
+    fn manual_nodes_stay_allowed_but_are_never_auto() {
+        let mut m = node("m", vec![rtx()]);
+        m.manual = true;
+        let o = options(&PLAIN, &[m]);
+        assert!(o[0].allowed);
+        assert_eq!(o[0].reason.as_deref(), Some("manual placement"));
+        assert_eq!(
+            placements(
+                &PLAIN,
+                &[{
+                    let mut m = node("m", vec![rtx()]);
+                    m.manual = true;
+                    m
+                }]
+            )
+            .auto,
+            None
+        );
+        // With a worse automatic node around, that one wins, even with the
+        // image on the manual one.
+        let mut m = node("m", vec![rtx()]);
+        m.manual = true;
+        m.images = vec!["cha/env-chrome:dev".into()];
+        let cpu = node("c", vec![device("cpu", DeviceKind::Cpu, "CPU")]);
+        let p = placements(&wants(&["cha/env-chrome:dev"]), &[m, cpu]);
+        assert_eq!(p.auto.unwrap().node, "id-c");
+        assert!(p.options.iter().any(|o| o.node == "id-m" && o.allowed));
     }
 
     #[test]
