@@ -20,3 +20,4 @@ One file per decision, numbered, never rewritten: a later ADR supersedes an earl
 | [0014](0014-share-links-for-players.md) | Share links, first for players: anyone with the link joins one gamepad slot, until the environment stops (24 h cap), revocable | Accepted |
 | [0015](0015-share-links-for-viewers-and-controllers.md) | Share links for viewers and controllers: watch only, or the keyboard and mouse with one-at-a-time hand-off (take, give, take back) | Accepted; extends 0014 |
 | [0016](0016-one-ui-spec-for-both-players.md) | One UI spec (`@cha/ui-spec`) for the browser and native players: shared data, words, icons and test cases; thin renderers on each side | Accepted |
+| [0017](0017-images-pulled-on-demand.md) | Images pulled on demand, named by the catalog: ordered candidates (local, then published per release), pull progress, placement by images held; the catalog entry shape ready for external catalogs | Accepted |
