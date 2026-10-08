@@ -273,6 +273,46 @@ export interface AdminStorageInfo {
   apps: AdminStorageApp[];
 }
 
+// ---- Loaded catalogs (admin; ADR 0019) ----
+
+export type CatalogSecurity = "standard" | "browser" | "steam";
+
+export interface CatalogTemplateView {
+  /** Namespaced: `<catalog>.<app>`. */
+  id: string;
+  app: string;
+  name: string;
+  description: string;
+  image: string;
+  imageHost: string;
+  class: string;
+  security: CatalogSecurity;
+  /** A user can launch it. */
+  available: boolean;
+  unavailableReason: string | null;
+  /** An admin approved its `browser` or `steam` profile. */
+  approved: boolean;
+  /** Served at `catalogIconUrl(id)`. */
+  hasIcon: boolean;
+  iconError: string | null;
+}
+
+export interface CatalogView {
+  slug: string;
+  name: string;
+  /** `null` for a pasted catalog. */
+  url: string | null;
+  /** Unix seconds. */
+  addedAt: number;
+  fetchedAt: number;
+  lastError: string | null;
+  lastErrorAt: number | null;
+  templates: CatalogTemplateView[];
+}
+
+/** A catalog to add: its URL or its document (a JSON object or JSON text). The slug may be left out. */
+export type CatalogSource = { slug?: string } & ({ url: string } | { document: unknown });
+
 /** The virtual controller an app sees (docs/controllers.md). */
 export type PadKind = "xbox360" | "dualsense" | "steam";
 
@@ -600,6 +640,24 @@ export const api = {
   adminStorage: () => request<AdminStorageInfo>("GET", "/admin/storage"),
   setAdminStorage: (template: string, body: { defaultPersistent?: boolean; sharedAccess?: SharedAccess }) =>
     request<AdminStorageApp>("PUT", `/admin/storage/${encodeURIComponent(template)}`, body),
+  // Loaded catalogs (admin; ADR 0019). Errors carry the server's `message` as is.
+  adminCatalogs: () => request<{ catalogs: CatalogView[] }>("GET", "/admin/catalogs"),
+  addCatalog: (source: CatalogSource) => request<CatalogView>("POST", "/admin/catalogs", source),
+  /** A URL catalog refetches; a pasted one needs the new `document` (else 400 `no_url`). */
+  refreshCatalog: (slug: string, document?: unknown) =>
+    request<CatalogView>(
+      "POST",
+      `/admin/catalogs/${encodeURIComponent(slug)}/refresh`,
+      document === undefined ? {} : { document },
+    ),
+  approveCatalogTemplate: (slug: string, app: string, approved: boolean) =>
+    request<CatalogView>(
+      "PUT",
+      `/admin/catalogs/${encodeURIComponent(slug)}/templates/${encodeURIComponent(app)}/approval`,
+      { approved },
+    ),
+  /** 409 `in_use` while an environment of one of its apps is live. */
+  removeCatalog: (slug: string) => request<{ removed: string }>("DELETE", `/admin/catalogs/${encodeURIComponent(slug)}`),
   /** STUN and TURN for the next connection (TURN credentials last a day). */
   iceServers: () => request<{ iceServers: RTCIceServer[] }>("GET", "/ice"),
   /** Brokers a WebRTC connection to the environment's streamer. */

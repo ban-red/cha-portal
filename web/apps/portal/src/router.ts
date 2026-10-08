@@ -33,6 +33,7 @@ export const router = createRouter({
         { path: "link", name: "link", component: () => import("./views/LinkView.vue"), meta: { title: "Link a device", subtitle: "Approve a sign-in from Cha Player." } },
         { path: "admin/nodes", name: "nodes", component: () => import("./views/NodesView.vue"), meta: { admin: true, title: "Nodes" } },
         { path: "admin/settings", name: "admin-settings", component: () => import("./views/SettingsView.vue"), meta: { admin: true, title: "Settings", subtitle: "Portal-wide settings." } },
+        { path: "admin/catalogs", name: "catalogs", component: () => import("./views/CatalogsView.vue"), meta: { admin: true, title: "Catalogs" } },
         { path: "admin/users", name: "users", component: () => import("./views/UsersView.vue"), meta: { admin: true, title: "Users" } },
         { path: "admin/storage", name: "admin-storage", component: () => import("./views/AdminStorageView.vue"), meta: { admin: true, title: "App data" } },
         { path: "admin/audit", name: "audit", component: () => import("./views/AuditView.vue"), meta: { admin: true, title: "Audit log" } },

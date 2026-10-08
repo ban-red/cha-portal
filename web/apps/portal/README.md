@@ -10,6 +10,10 @@ bun run --cwd web/apps/portal typecheck
 bun run --cwd web/apps/portal test
 ```
 
+## Admin pages
+
+Admin → **Catalogs** (`/admin/catalogs`, `src/views/CatalogsView.vue`) loads app catalogs from a URL or pasted JSON ([ADR 0019](../../../docs/adr/0019-catalogs-loaded-by-the-admin.md)): it lists each catalog with its apps and their availability, refreshes (a pasted catalog asks for the new document), removes (refused while one of its apps runs), and approves or revokes each `browser` or `steam` app. Calls are in the "Loaded catalogs" block of `src/api.ts`, helpers in `src/catalogs.ts`.
+
 ## Themes
 
 The portal's colours are runtime CSS variables, so a theme is one file: `web/apps/portal/src/themes/<id>.css` sets a `--cha-<role>` variable for every role under `:root[data-theme="<id>"]`, and `src/style.css` maps the roles to Tailwind utilities (`bg-panel`, `text-ink-3`, `text-ok`, and so on). The roles are listed in `src/themes/index.ts` (`ROLES`): three surfaces, three inks, `line` and `line-strong`, the accent set (`accent`, `accent-fill`, `accent-fill-hover`, `on-accent`, `accent-soft`), `focus`, the status colours, `scrim` and `chart-1` to `chart-4`. Components use only these roles; `scripts/check-portal-colors.sh` fails on palette classes, `text-white` and hex values in components. Use `ok` for running or healthy, not `accent`.
