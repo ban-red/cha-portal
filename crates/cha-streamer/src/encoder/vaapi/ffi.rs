@@ -59,6 +59,7 @@ pub const ATTRIB_NOT_SUPPORTED: c_uint = sys::VA_ATTRIB_NOT_SUPPORTED;
 pub const RT_FORMAT_YUV420: c_uint = sys::VA_RT_FORMAT_YUV420;
 pub const RT_FORMAT_RGB32: c_uint = sys::VA_RT_FORMAT_RGB32;
 pub const RC_CBR: c_uint = sys::VA_RC_CBR;
+pub const RC_CQP: c_uint = sys::VA_RC_CQP;
 
 // VA_ENC_PACKED_HEADER_*.
 pub const PACKED_HEADER_SEQUENCE: c_uint = sys::VA_ENC_PACKED_HEADER_SEQUENCE;
@@ -149,6 +150,10 @@ type BeginPicture = unsafe extern "C" fn(*mut c_void, Id, Id) -> c_int;
 type RenderPicture = unsafe extern "C" fn(*mut c_void, Id, *mut Id, c_int) -> c_int;
 type EndPicture = unsafe extern "C" fn(*mut c_void, Id) -> c_int;
 type SyncSurface = unsafe extern "C" fn(*mut c_void, Id) -> c_int;
+type CreateImage =
+    unsafe extern "C" fn(*mut c_void, *mut ImageFormat, c_int, c_int, *mut Image) -> c_int;
+type GetImage = unsafe extern "C" fn(*mut c_void, Id, c_int, c_int, c_uint, c_uint, Id) -> c_int;
+type DestroyImage = unsafe extern "C" fn(*mut c_void, Id) -> c_int;
 
 /// The libva functions, resolved once for the process.
 pub struct Api {
@@ -178,6 +183,9 @@ pub struct Api {
     render_picture: RenderPicture,
     end_picture: EndPicture,
     sync_surface: SyncSurface,
+    create_image: CreateImage,
+    get_image: GetImage,
+    destroy_image: DestroyImage,
 }
 
 /// libva, if it loads (`libva2` and `libva-drm2`).
@@ -218,10 +226,50 @@ fn load() -> Result<Api> {
             render_picture: va.symbol(c"vaRenderPicture")?,
             end_picture: va.symbol(c"vaEndPicture")?,
             sync_surface: va.symbol(c"vaSyncSurface")?,
+            create_image: va.symbol(c"vaCreateImage")?,
+            get_image: va.symbol(c"vaGetImage")?,
+            destroy_image: va.symbol(c"vaDestroyImage")?,
             _va: va,
             _drm: drm,
         })
     }
+}
+
+/// `VAImageFormat` and `VAImage` (`va.h`), for the debug read-back only.
+/// Not in `sys.rs`: written from the header as I know it, with the size
+/// (120) asserted in a test; check it against the real header before
+/// trusting a dump.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ImageFormat {
+    fourcc: u32,
+    byte_order: u32,
+    bits_per_pixel: u32,
+    depth: u32,
+    red_mask: u32,
+    green_mask: u32,
+    blue_mask: u32,
+    alpha_mask: u32,
+    va_reserved: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Image {
+    image_id: u32,
+    // `va.h` order: the format comes before the buffer (offsets 4 and 52).
+    format: ImageFormat,
+    buf: u32,
+    width: u16,
+    height: u16,
+    data_size: u32,
+    num_planes: u32,
+    pitches: [u32; 3],
+    offsets: [u32; 3],
+    num_palette_entries: i32,
+    entry_bytes: i32,
+    component_order: [i8; 4],
+    va_reserved: [u32; 4],
 }
 
 impl SurfaceAttrib {
@@ -533,6 +581,66 @@ impl Display {
             ),
         )?;
         Ok(surface)
+    }
+
+    /// The NV12 `surface`'s top-left `width`×`height`, as a packed NV12
+    /// picture (Y rows, then interleaved UV rows, no padding): a debug
+    /// read-back through `vaGetImage`.
+    pub fn read_nv12(&self, surface: Id, width: u32, height: u32) -> Result<Vec<u8>> {
+        let mut format = ImageFormat {
+            fourcc: FOURCC_NV12,
+            byte_order: sys::VA_LSB_FIRST,
+            bits_per_pixel: 12,
+            depth: 0,
+            red_mask: 0,
+            green_mask: 0,
+            blue_mask: 0,
+            alpha_mask: 0,
+            va_reserved: [0; 4],
+        };
+        // SAFETY: plain integers: all-zero is a valid image.
+        let mut image: Image = unsafe { std::mem::zeroed() };
+        // SAFETY: valid pointers; sizes as libva asks.
+        let status = unsafe {
+            (self.api.create_image)(
+                self.raw,
+                &mut format,
+                width as c_int,
+                height as c_int,
+                &mut image,
+            )
+        };
+        self.check(status, "vaCreateImage (NV12)")?;
+        let result = (|| {
+            // SAFETY: a surface and an image of this display.
+            let status = unsafe {
+                (self.api.get_image)(self.raw, surface, 0, 0, width, height, image.image_id)
+            };
+            self.check(status, "vaGetImage")?;
+            let mut mapped: *mut c_void = std::ptr::null_mut();
+            // SAFETY: the image's buffer, mapped until the unmap.
+            let status = unsafe { (self.api.map_buffer)(self.raw, image.buf, &mut mapped) };
+            self.check(status, "vaMapBuffer (image)")?;
+            let base = mapped.cast::<u8>();
+            let mut out = Vec::with_capacity(width as usize * height as usize * 3 / 2);
+            // SAFETY: the mapping holds `data_size` bytes laid out by the
+            // image's pitches and offsets.
+            unsafe {
+                for y in 0..height as usize {
+                    let row = base.add(image.offsets[0] as usize + y * image.pitches[0] as usize);
+                    out.extend_from_slice(std::slice::from_raw_parts(row, width as usize));
+                }
+                for y in 0..height as usize / 2 {
+                    let row = base.add(image.offsets[1] as usize + y * image.pitches[1] as usize);
+                    out.extend_from_slice(std::slice::from_raw_parts(row, width as usize));
+                }
+                (self.api.unmap_buffer)(self.raw, image.buf);
+            }
+            Ok(out)
+        })();
+        // SAFETY: an image of this display.
+        unsafe { (self.api.destroy_image)(self.raw, image.image_id) };
+        result
     }
 
     pub fn destroy_surfaces(&self, surfaces: &[Id]) {

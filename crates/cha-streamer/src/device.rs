@@ -275,6 +275,7 @@ pub fn probe(spec: &str, pyrowave: bool) -> Result<()> {
     ) {
         let frames = frames.context("CHA_ENCODE_TEST is a number of frames")?;
         let result = vaapi::self_test(node, frames)?;
+        eprintln!("encoder: {}", result.setup);
         eprintln!(
             "encode test passed: {} frames, {} IDR, {} bytes, {:.2} ms a frame (NAL types of the first: {:?})",
             result.frames, result.keyframes, result.bytes, result.encode_ms_avg, result.first_nals

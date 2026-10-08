@@ -157,12 +157,19 @@ pub struct Rate {
 }
 
 impl Rate {
+    #[cfg(test)]
     pub fn new(bitrate_bps: u32, fps: u32) -> Self {
-        let fps = fps.max(1);
+        Self::with_buffer(bitrate_bps, fps, 1)
+    }
+
+    /// A buffer of `frames` frames' worth of bits (1: the low-latency
+    /// default; more lets a big frame, an IDR, borrow from the next ones).
+    pub fn with_buffer(bitrate_bps: u32, fps: u32, frames: u32) -> Self {
+        let (fps, frames) = (fps.max(1), frames.max(1));
         Self {
             bits_per_second: bitrate_bps.max(1),
-            window_ms: (1000 / fps).max(1),
-            buffer_bits: (bitrate_bps / fps).max(1),
+            window_ms: (1000 * frames / fps).max(1),
+            buffer_bits: (bitrate_bps / fps).saturating_mul(frames).max(1),
         }
     }
 }
@@ -377,6 +384,9 @@ pub fn slice_params(
     // SAFETY: integers and arrays of them.
     let mut p = unsafe { zeroed::<sys::VAEncSliceParameterBufferH264>() };
     p.macroblock_address = 0;
+    // No per-macroblock info buffer: zero would name buffer 0, which the
+    // driver may read as one.
+    p.macroblock_info = ffi::INVALID_ID;
     p.num_macroblocks = layout.macroblocks();
     p.slice_type = if picture.idr { SLICE_I } else { SLICE_P };
     p.pic_parameter_set_id = layout.pps.pps_id as u8;
@@ -581,6 +591,8 @@ mod tests {
 
     #[test]
     fn the_hrd_buffer_is_one_frame() {
+        let wide = Rate::with_buffer(24_000_000, 60, 4);
+        assert_eq!((wide.buffer_bits, wide.window_ms), (1_600_000, 66));
         let rate = Rate::new(24_000_000, 60);
         assert_eq!(rate.bits_per_second, 24_000_000);
         assert_eq!(rate.buffer_bits, 400_000);
@@ -712,6 +724,7 @@ mod tests {
         let idr = gop.next(true);
         let s = slice_params(&layout, &idr, None);
         assert_eq!(s.num_macroblocks, 120 * 68);
+        assert_eq!(s.macroblock_info, ffi::INVALID_ID);
         assert_eq!(s.slice_type, 2);
         assert_eq!(s.idr_pic_id, 1);
         assert!(s.RefPicList0.iter().all(|r| r.flags & 1 == 1));
@@ -755,6 +768,9 @@ mod tests {
         assert_eq!(size_of::<Misc<sys::VAEncMiscParameterHRD>>(), 28);
         assert_eq!(size_of::<Misc<sys::VAEncMiscParameterFrameRate>>(), 28);
         assert_eq!(size_of::<sys::VAProcPipelineParameterBuffer>(), 224);
+        // Our own, for the debug read-back (not from sys.rs).
+        assert_eq!(size_of::<ffi::Image>(), 120);
+        assert_eq!(size_of::<ffi::ImageFormat>(), 48);
     }
 
     #[test]

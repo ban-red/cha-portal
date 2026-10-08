@@ -39,6 +39,52 @@ use crate::encoder::bitstream::h264 as bits;
 use crate::encoder::{Params, VideoEncoder};
 use crate::media::Frame;
 
+/// The HRD buffer and rate window in frames. One frame starved iHD: a
+/// 1280x720 IDR got about 41 KB at 20 Mbit/s and came out at 27 dB with
+/// whole macroblock rows flat, P frames trailing the motion (23 dB). Measured
+/// on a UHD 630 (iHD 26.1.2): 2 frames 39/31 dB, 4 frames 45-56 dB with a
+/// 114 KB IDR (under 3 frame times to send), 8 frames 50-65 dB but 260 KB
+/// IDRs. IDRs are rare (on request), P frames small.
+const DEFAULT_HRD_FRAMES: u32 = 4;
+
+/// Settings for trying a driver, from the environment (read when an encoder
+/// starts, so they apply to a self-test run and to a streamer alike; they
+/// have to reach the process, which a container needs `-e` for).
+#[derive(Clone, Debug, Default)]
+struct Tuning {
+    /// `CHA_VAAPI_HRD_FRAMES=n`: the HRD buffer holds n frames
+    /// ([`DEFAULT_HRD_FRAMES`] unless set).
+    hrd_frames: u32,
+    /// `CHA_VAAPI_CQP=qp`: constant quantiser instead of CBR, as a diagnostic:
+    /// if the picture is right at a low QP, the pipeline (conversion,
+    /// references) is, and the rate control settings are what's off.
+    cqp: Option<u32>,
+    /// `CHA_VAAPI_DUMP_NV12=path`: write the first frame's NV12 input (after
+    /// the video processor) there, packed, with no padding.
+    dump_nv12: Option<std::path::PathBuf>,
+}
+
+impl Tuning {
+    fn from_env() -> Self {
+        let number = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
+        Self {
+            hrd_frames: number("CHA_VAAPI_HRD_FRAMES")
+                .unwrap_or(DEFAULT_HRD_FRAMES)
+                .clamp(1, 240),
+            cqp: number("CHA_VAAPI_CQP").map(|qp| qp.clamp(1, 51)),
+            dump_nv12: std::env::var_os("CHA_VAAPI_DUMP_NV12").map(Into::into),
+        }
+    }
+
+    fn rate_mode(&self) -> u32 {
+        if self.cqp.is_some() {
+            ffi::RC_CQP
+        } else {
+            ffi::RC_CBR
+        }
+    }
+}
+
 /// Which headers we pack ourselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Packed {
@@ -78,7 +124,7 @@ impl Setup {
 
 /// The best profile and entrypoint with CBR: High before Main before
 /// Constrained Baseline, the low-power entrypoint before the other.
-fn choose(display: &Display) -> Result<(Profile, c_int, u32)> {
+fn choose(display: &Display, rate_mode: u32) -> Result<(Profile, c_int, u32)> {
     let forced = std::env::var("CHA_VAAPI_ENTRYPOINT").ok();
     let entrypoints: &[c_int] = match forced.as_deref() {
         Some("slice") => &[ffi::ENTRYPOINT_ENC_SLICE],
@@ -102,7 +148,7 @@ fn choose(display: &Display) -> Result<(Profile, c_int, u32)> {
                 &[ffi::ATTRIB_RATE_CONTROL, ffi::ATTRIB_ENC_PACKED_HEADERS],
             );
             let (rate_control, packed) = (values[0], values[1]);
-            if rate_control != ffi::ATTRIB_NOT_SUPPORTED && rate_control & ffi::RC_CBR != 0 {
+            if rate_control != ffi::ATTRIB_NOT_SUPPORTED && rate_control & rate_mode != 0 {
                 let packed = if packed == ffi::ATTRIB_NOT_SUPPORTED {
                     0
                 } else {
@@ -124,6 +170,15 @@ fn choose(display: &Display) -> Result<(Profile, c_int, u32)> {
             seen.join("; ")
         }
     )
+}
+
+/// The stream's layout; with constant quantiser the PPS carries that QP.
+fn make_layout(profile: Profile, params: &Params, tuning: &Tuning) -> Result<Layout> {
+    let mut layout = Layout::new(profile, params)?;
+    if let Some(qp) = tuning.cqp {
+        layout.pps.pic_init_qp = qp as i32;
+    }
+    Ok(layout)
 }
 
 /// Which headers to pack, from what the driver says it takes.
@@ -298,6 +353,7 @@ pub struct Vaapi {
     /// The rate control changed: say so with the next picture.
     rc_dirty: bool,
     need_idr: bool,
+    tuning: Tuning,
     /// Packed headers go in without emulation prevention bytes.
     driver_escapes: bool,
     imported_logged: bool,
@@ -316,14 +372,15 @@ impl Vaapi {
             params.codec.name()
         );
         let display = Display::open(render_node)?;
-        let (profile, entrypoint, offered) = choose(&display)?;
+        let tuning = Tuning::from_env();
+        let (profile, entrypoint, offered) = choose(&display, tuning.rate_mode())?;
         let packed = packed_mode(
             offered,
             std::env::var("CHA_VAAPI_PACKED_HEADERS").ok().as_deref(),
         );
         let mut attribs = vec![
             (ffi::ATTRIB_RT_FORMAT, ffi::RT_FORMAT_YUV420),
-            (ffi::ATTRIB_RATE_CONTROL, ffi::RC_CBR),
+            (ffi::ATTRIB_RATE_CONTROL, tuning.rate_mode()),
         ];
         if let Some(value) = packed.attribute() {
             attribs.push((ffi::ATTRIB_ENC_PACKED_HEADERS, value));
@@ -339,8 +396,8 @@ impl Vaapi {
                     return Err(err.context("the driver has no video processor (RGB to NV12)"));
                 }
             };
-        let layout = Layout::new(profile, &params)?;
-        let rate = Rate::new(params.bitrate_bps, params.fps);
+        let layout = make_layout(profile, &params, &tuning)?;
+        let rate = Rate::with_buffer(params.bitrate_bps, params.fps, tuning.hrd_frames);
         let setup = Setup {
             entrypoint,
             packed,
@@ -356,7 +413,8 @@ impl Vaapi {
             width = params.width,
             height = params.height,
             entrypoint = if setup.low_power() { "EncSliceLP" } else { "EncSlice" },
-            rate_control = "CBR",
+            rate_control = if tuning.cqp.is_some() { "CQP" } else { "CBR" },
+            cqp = tuning.cqp,
             hrd_bits = rate.buffer_bits,
             packed_headers = ?packed,
             "VA-API encoder ready"
@@ -375,12 +433,34 @@ impl Vaapi {
             index: 0,
             rc_dirty: false,
             need_idr: true,
+            tuning,
             driver_escapes: std::env::var("CHA_VAAPI_PACKED_EMULATION")
                 .is_ok_and(|v| v == "driver"),
             imported_logged: false,
             scratch: Vec::with_capacity(1 << 20),
             timings: Timings::default(),
         })
+    }
+
+    /// What the encoder is set up as, for a self-test's output.
+    fn describe(&self) -> String {
+        format!(
+            "{} entrypoint, {} {}, hrd {} bits, packed headers {:?}, {:?}",
+            if self.setup.low_power() {
+                "EncSliceLP"
+            } else {
+                "EncSlice"
+            },
+            self.layout.profile.name,
+            if self.tuning.cqp.is_some() {
+                "CQP"
+            } else {
+                "CBR"
+            },
+            self.rate.buffer_bits,
+            self.setup.packed,
+            self.tuning
+        )
     }
 
     /// The RGB surface for a buffer, made on first use.
@@ -458,16 +538,19 @@ impl Vaapi {
         }
         if picture.idr || self.rc_dirty {
             let reset = self.rc_dirty;
-            buffers.add(
-                context,
-                ffi::BUFFER_ENC_MISC_PARAMETER,
-                &misc_rate_control(&self.rate, reset),
-            )?;
-            buffers.add(
-                context,
-                ffi::BUFFER_ENC_MISC_PARAMETER,
-                &misc_hrd(&self.rate),
-            )?;
+            // (With constant quantiser there is no rate to control.)
+            if self.tuning.cqp.is_none() {
+                buffers.add(
+                    context,
+                    ffi::BUFFER_ENC_MISC_PARAMETER,
+                    &misc_rate_control(&self.rate, reset),
+                )?;
+                buffers.add(
+                    context,
+                    ffi::BUFFER_ENC_MISC_PARAMETER,
+                    &misc_hrd(&self.rate),
+                )?;
+            }
             buffers.add(
                 context,
                 ffi::BUFFER_ENC_MISC_PARAMETER,
@@ -556,6 +639,21 @@ impl Vaapi {
             map: started.elapsed(),
             ..Timings::default()
         };
+        if let (Some(path), 0) = (&self.tuning.dump_nv12, self.index) {
+            match self
+                .display
+                .read_nv12(res.input, self.params.width, self.params.height)
+                .and_then(|nv12| std::fs::write(path, &nv12).map_err(Into::into))
+            {
+                Ok(()) => info!(
+                    path = %path.display(),
+                    width = self.params.width,
+                    height = self.params.height,
+                    "the encoder's NV12 input for the first frame written (packed NV12, no padding)"
+                ),
+                Err(err) => warn!("couldn't dump the NV12 input: {err:#}"),
+            }
+        }
         let idr = keyframe || self.need_idr || self.last.is_none();
         let picture = self.gop.next(idr);
         self.submit(&picture, res).context("encoding the frame")?;
@@ -603,7 +701,7 @@ impl VideoEncoder for Vaapi {
         let mut params = self.params.clone();
         params.width = width;
         params.height = height;
-        let layout = Layout::new(self.layout.profile, &params)?;
+        let layout = make_layout(self.layout.profile, &params, &self.tuning)?;
         self.drop_imports();
         self.drop_resources();
         self.params = params;
@@ -617,7 +715,7 @@ impl VideoEncoder for Vaapi {
 
     fn set_bitrate(&mut self, bitrate_bps: u32) -> Result<()> {
         self.params.bitrate_bps = bitrate_bps;
-        self.rate = Rate::new(bitrate_bps, self.params.fps);
+        self.rate = Rate::with_buffer(bitrate_bps, self.params.fps, self.tuning.hrd_frames);
         self.rc_dirty = true;
         Ok(())
     }
@@ -626,7 +724,7 @@ impl VideoEncoder for Vaapi {
         self.params.fps = fps;
         self.params.bitrate_bps = bitrate_bps;
         self.layout.with_fps(&self.params);
-        self.rate = Rate::new(bitrate_bps, fps);
+        self.rate = Rate::with_buffer(bitrate_bps, fps, self.tuning.hrd_frames);
         self.rc_dirty = true;
         Ok(())
     }
@@ -663,6 +761,43 @@ pub fn accepts_import(render_node: &Path, dmabuf: &Dmabuf) -> Result<()> {
     Ok(())
 }
 
+/// One row of the self-test picture, XRGB8888 (B, G, R, unused in memory): a
+/// static dark navy background with a fine grid (every 8 pixels, a stronger
+/// line every 64) and a purple gradient over the bottom quarter, so drift in
+/// still areas shows; and motion: a white bar sweeping across, and a block of
+/// 16 squares showing the frame number in binary.
+fn paint_row(row: &mut [u8], y: u32, n: u32, width: u32, height: u32) {
+    let sweep = (n * 12) % (width - 48);
+    for x in 0..width {
+        // R, G, B
+        let mut rgb = if y >= height * 3 / 4 {
+            let t = (y - height * 3 / 4) * 255 / (height / 4);
+            [(40 + t / 2) as u8, 20, (80 + t / 2) as u8]
+        } else {
+            [12, 16, 48]
+        };
+        if x.is_multiple_of(8) || y.is_multiple_of(8) {
+            rgb = [38, 54, 110];
+        }
+        if x.is_multiple_of(64) || y.is_multiple_of(64) {
+            rgb = [90, 120, 200];
+        }
+        if (sweep..sweep + 48).contains(&x) && (96..160).contains(&y) {
+            rgb = [255, 255, 255];
+        }
+        if (96..96 + 16 * 20).contains(&x) && (200..220).contains(&y) {
+            let bit = (x - 96) / 20;
+            rgb = if (n >> bit) & 1 == 1 {
+                [240, 220, 40]
+            } else {
+                [30, 30, 30]
+            };
+        }
+        let px = &mut row[x as usize * 4..x as usize * 4 + 4];
+        px.copy_from_slice(&[rgb[2], rgb[1], rgb[0], 0]);
+    }
+}
+
 /// What a self-test run found.
 #[derive(Debug)]
 pub struct SelfTest {
@@ -672,6 +807,8 @@ pub struct SelfTest {
     pub encode_ms_avg: f64,
     /// The NAL unit types of the first picture (SPS, PPS, IDR slice).
     pub first_nals: Vec<u8>,
+    /// How the encoder was set up (entrypoint, rate control, headers, knobs).
+    pub setup: String,
 }
 
 /// Encodes `frames` generated pictures on `render_node` and checks the output
@@ -721,10 +858,39 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
     let mut total = std::time::Duration::ZERO;
     let mut out = Vec::new();
     let mut first_nals = Vec::new();
+    // CHA_ENCODE_TEST_DUMP=/path/out.h264 writes the Annex-B stream there and
+    // the generated pictures to /path/out.src: raw, 1280×720, 4 bytes a pixel
+    // in the order B, G, R, unused (ffmpeg: `-f rawvideo -pix_fmt bgr0
+    // -video_size 1280x720 -framerate 60 -i out.src`).
+    let dump = std::env::var_os("CHA_ENCODE_TEST_DUMP").map(std::path::PathBuf::from);
+    let mut stream_file = dump
+        .as_ref()
+        .map(std::fs::File::create)
+        .transpose()
+        .context("creating the dump file")?;
+    let mut source = dump
+        .as_ref()
+        .map(|p| std::fs::File::create(p.with_extension("src")))
+        .transpose()
+        .context("creating the source dump file")?;
+    if let Some(path) = &dump {
+        let (stream, source) = (
+            path.display().to_string(),
+            path.with_extension("src").display().to_string(),
+        );
+        info!(
+            stream = stream.as_str(),
+            source = source.as_str(),
+            width,
+            height,
+            frames,
+            pixel_format = "bgr0 (B, G, R, unused), rows of width*4 bytes, no padding",
+            "self-test dump"
+        );
+    }
     let ask_idr_at = frames / 2;
     let change_bitrate_at = frames / 4;
     for n in 0..frames {
-        // A moving gradient and a box.
         {
             let mapping = dmabuf
                 .map_plane(0, DmabufMappingMode::WRITE)
@@ -733,7 +899,6 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
                 .sync_plane(0, DmabufSyncFlags::START | DmabufSyncFlags::WRITE)
                 .map_err(|e| anyhow::anyhow!("syncing the buffer: {e}"))?;
             let base = mapping.ptr().cast::<u8>();
-            let box_x = (n * 16) % (width - 64);
             for y in 0..height {
                 // SAFETY: the mapping holds `stride × height` bytes.
                 let row = unsafe {
@@ -742,33 +907,37 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
                         width as usize * 4,
                     )
                 };
-                for x in 0..width {
-                    let in_box = (box_x..box_x + 64).contains(&x) && (100..164).contains(&y);
-                    let px = &mut row[x as usize * 4..x as usize * 4 + 4];
-                    // XRGB8888 in memory is B, G, R, X.
-                    if in_box {
-                        px.copy_from_slice(&[255, 255, 255, 0]);
-                    } else {
-                        px.copy_from_slice(&[
-                            (n * 4) as u8,
-                            (y * 255 / height) as u8,
-                            (x * 255 / width) as u8,
-                            0,
-                        ]);
-                    }
+                paint_row(row, y, n, width, height);
+            }
+            if let Some(src) = &mut source {
+                use std::io::Write;
+                for y in 0..height {
+                    // SAFETY: as above.
+                    let row = unsafe {
+                        std::slice::from_raw_parts(
+                            base.add(y as usize * stride),
+                            width as usize * 4,
+                        )
+                    };
+                    src.write_all(row)?;
                 }
             }
             dmabuf
                 .sync_plane(0, DmabufSyncFlags::END | DmabufSyncFlags::WRITE)
                 .map_err(|e| anyhow::anyhow!("syncing the buffer: {e}"))?;
         }
-        if n == change_bitrate_at {
+        // (A rate change would muddy a comparison: with a dump the rate holds.)
+        if n == change_bitrate_at && dump.is_none() {
             encoder.set_bitrate(8_000_000)?;
         }
         let want_key = n == ask_idr_at;
         let started = Instant::now();
         let key = encoder.encode_dmabuf(&dmabuf, 1, want_key, &mut out)?;
         total += started.elapsed();
+        if let Some(file) = &mut stream_file {
+            use std::io::Write;
+            file.write_all(&out)?;
+        }
         let unit = h264::check_access_unit(&out)
             .with_context(|| format!("frame {n} ({} bytes) isn't well-formed H.264", out.len()))?;
         ensure!(
@@ -806,6 +975,7 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
         bytes,
         encode_ms_avg: total.as_secs_f64() * 1000.0 / f64::from(frames),
         first_nals,
+        setup: encoder.describe(),
     })
 }
 
