@@ -17,19 +17,19 @@ Either can run the whole quick start (the portal and a node) or just a node for 
 Run it as root on the Proxmox host. It needs only the script itself:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/ban-red/cha-portal/v0.2.1/deploy/proxmox/create-node.sh
+curl -fsSLO https://raw.githubusercontent.com/ban-red/cha-portal/v0.3.0/deploy/proxmox/create-node.sh
 ```
 
 Read it before running it, since it runs as root on your host. Then make the quick start: the portal and a node in one container, with HTTPS through Tailscale:
 
 ```bash
-sh create-node.sh --version 0.2.1 --tailscale
+sh create-node.sh --version 0.3.0 --tailscale
 ```
 
 Or make a node for a portal that is already running elsewhere:
 
 ```bash
-sh create-node.sh --version 0.2.1 --portal-url https://portal-host.your-tailnet.ts.net
+sh create-node.sh --version 0.3.0 --portal-url https://portal-host.your-tailnet.ts.net
 ```
 
 `--dry-run` prints the container's settings and changes nothing. `--help` lists every option: ID, cores, memory and disk (64 GB by default; the images live there), a static `--ip`, the `--gpu` to pass in, `--data-dir` to keep app data in a host directory such as a ZFS dataset, `--join-token`, `--no-pull`, `--ssh-key`, and `--source DIR`, which copies a checkout already on the host instead of cloning the release (offline, or to try a change).

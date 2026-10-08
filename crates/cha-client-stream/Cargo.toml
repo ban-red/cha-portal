@@ -1,6 +1,6 @@
 [package]
 name = "cha-client-stream"
-version = "0.2.1"
+version = "0.3.0"
 description = "The native client's cha-stream/1 receiver: WebTransport to a Cha streamer, as the browser player speaks it (ADR 0013)"
 edition.workspace = true
 license.workspace = true

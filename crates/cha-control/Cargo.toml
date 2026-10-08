@@ -1,6 +1,6 @@
 [package]
 name = "cha-control"
-version = "0.2.1"
+version = "0.3.0"
 description = "Cha Portal control plane: accounts, nodes, catalog, environments, session brokering"
 edition.workspace = true
 license.workspace = true

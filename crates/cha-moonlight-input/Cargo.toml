@@ -1,6 +1,6 @@
 [package]
 name = "cha-moonlight-input"
-version = "0.2.1"
+version = "0.3.0"
 description = "The browser input model (W3C key codes, standard-mapping pads) to Moonlight input events, shared by cha-gateway and the native client"
 edition.workspace = true
 license.workspace = true
