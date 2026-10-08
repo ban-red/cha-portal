@@ -147,6 +147,10 @@ pub enum Ended {
 pub struct MediaStats {
     pub video: VideoStats,
     pub audio: AudioStats,
+    /// The control connection's smoothed round trip to the host, ms (ENet's
+    /// own estimate, refreshed by the acks of the 100 ms control pings); `None`
+    /// before the control task has read it.
+    pub rtt_ms: Option<u32>,
     /// Control messages that didn't parse; dropped, the stream went on.
     pub malformed_control: u64,
     /// Control messages refused for no encryption or failing authentication.
@@ -813,7 +817,9 @@ async fn control_task(task: ControlTask) {
             shared.finish(Ended::Failed(format!("control stream: {e}")));
             break;
         }
+        let rtt = link.enet.peer_mut(link.peer).map(|p| p.round_trip_time());
         shared.update(|s| {
+            s.rtt_ms = rtt;
             s.malformed_control = malformed;
             s.rejected_control = rejected;
             s.feedback_dropped_slow = feedback_dropped;

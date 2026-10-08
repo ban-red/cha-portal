@@ -238,6 +238,28 @@ async fn a_session_streams_video_and_audio_and_takes_input_rumble_and_keyframe_r
         assert_access_unit(&frame.data, &au, &format!("a {len}-byte frame"));
     }
 
+    // The link: GameStream's tag, the control channel's round trip, the loss
+    // counters (nothing was lost on loopback) and the rate asked for. The host
+    // reports nothing of itself, so there is no node. The round trip is read
+    // from ENet by the control task as it runs, so it may take a tick.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let link = loop {
+        let link = session
+            .control
+            .transport_stats()
+            .expect("a GameStream session reports its link");
+        if link.rtt_ms.is_some() || Instant::now() > deadline {
+            break link;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(link.tag, "GS");
+    let rtt = link.rtt_ms.expect("the control channel has a round trip");
+    assert!((0.0..1000.0).contains(&rtt), "loopback round trip {rtt} ms");
+    assert_eq!((link.lost, link.recovered), (0, 0));
+    assert_eq!(link.target_fps, Some(60));
+    assert!(link.node.is_none() && link.sent_fps.is_none() && link.encode_p99_ms.is_none());
+
     // Audio: stereo Opus, in order.
     for n in 0..12u8 {
         backend

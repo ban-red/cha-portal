@@ -7,11 +7,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use cha_client::{
-    AudioPacket, Codec, Ended, Feedback, Input, Session, SessionControl, StreamConfig, VideoFrame,
+    AudioPacket, Codec, Ended, Feedback, Input, Session, SessionControl, StreamConfig,
+    TransportStats, VideoFrame,
 };
 use cha_gamestream::VideoCodec;
 use cha_gamestream::client::front::{Encrypt, HostClient, StreamRequest};
-use cha_gamestream::client::media::{self, MediaClient, MediaHandle, MediaOptions};
+use cha_gamestream::client::media::{self, MediaClient, MediaHandle, MediaOptions, MediaStats};
 use cha_gamestream::client::{self, InputEvent};
 use cha_moonlight_input::{InputState, rumble_levels};
 use tokio::sync::{mpsc, oneshot};
@@ -74,6 +75,28 @@ struct Control {
     /// The stream's size, which absolute mouse positions refer to.
     width: u32,
     height: u32,
+    /// The frame rate the host was asked to encode at, which it holds to.
+    fps: u32,
+}
+
+/// How the stream travels, for the codec text ("HEVC/GS"): GameStream, the
+/// protocol Moonlight speaks.
+const TRANSPORT_TAG: &str = "GS";
+
+/// What the media client has measured, as the player's stats read it. A
+/// GameStream host reports nothing about itself, so there is no node, send
+/// rate or encode time here. `lost` and `recovered` count frames, as the
+/// WebTransport transport's do: the video path gives up on whole frames, and
+/// counts a frame once however many of its FEC blocks were rebuilt.
+fn transport_stats_of(stats: &MediaStats, fps: u32) -> TransportStats {
+    TransportStats {
+        tag: TRANSPORT_TAG,
+        rtt_ms: stats.rtt_ms.map(|ms| ms as f32),
+        lost: stats.video.frames_lost,
+        recovered: stats.video.frames_recovered,
+        target_fps: Some(fps).filter(|f| *f > 0),
+        ..TransportStats::default()
+    }
 }
 
 impl Control {
@@ -107,6 +130,10 @@ impl SessionControl for Control {
         self.release_all();
         // The task is gone only when the session has ended.
         let _ = self.commands.send(Command::Stop { quit_app });
+    }
+
+    fn transport_stats(&self) -> Option<TransportStats> {
+        Some(transport_stats_of(&self.media.stats(), self.fps))
     }
 }
 
@@ -219,6 +246,7 @@ pub async fn start(host: HostClient, app_id: u32, config: StreamConfig) -> Resul
             input: Mutex::default(),
             width: setup.width,
             height: setup.height,
+            fps: setup.fps,
         }),
     })
 }
@@ -408,6 +436,30 @@ mod tests {
             [VideoCodec::Hevc]
         );
         assert!(offered(&both, &[Codec::PyroWave444]).is_err());
+    }
+
+    #[test]
+    fn media_stats_become_transport_stats() {
+        let mut stats = MediaStats::default();
+        // Before the control task has read the round trip, there is none.
+        let t = transport_stats_of(&stats, 60);
+        assert_eq!(t.tag, "GS");
+        assert_eq!((t.rtt_ms, t.lost, t.recovered), (None, 0, 0));
+        assert_eq!(t.target_fps, Some(60));
+        assert!(t.node.is_none() && t.sent_fps.is_none() && t.encode_p99_ms.is_none());
+        // No floor, viewers or overlay: nothing for the toolbar to offer.
+        assert!(t.control.is_none() && t.viewers.is_none() && t.overlay.is_none());
+
+        stats.rtt_ms = Some(3);
+        stats.video.frames_lost = 5;
+        stats.video.frames_recovered = 7;
+        // Blocks and discarded frames are not what the panel counts.
+        stats.video.blocks_recovered = 9;
+        stats.video.frames_discarded = 2;
+        let t = transport_stats_of(&stats, 0);
+        assert_eq!(t.rtt_ms, Some(3.0));
+        assert_eq!((t.lost, t.recovered), (5, 7));
+        assert_eq!(t.target_fps, None);
     }
 
     #[test]

@@ -254,12 +254,13 @@ pub enum PerfOverlay {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TransportStats {
     /// How the stream travels, in a few letters for the codec text ("WT" for
-    /// WebTransport).
+    /// WebTransport, "GS" for GameStream).
     pub tag: &'static str,
     /// Round trip to the host, ms.
     pub rtt_ms: Option<f32>,
     /// Frames the transport gave up on, since the session began (it survives
-    /// reconnects). PyroWave frames lost are skipped frames.
+    /// reconnects). PyroWave frames lost are skipped frames. A transport counts
+    /// frames, not packets, so the health check judges them on the frame scale.
     pub lost: u64,
     /// Frames rebuilt from parity instead of lost, since the session began.
     pub recovered: u64,

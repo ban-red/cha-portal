@@ -70,7 +70,7 @@
           "label": "Codec",
           "tooltip": {
             "web": "How the video is compressed on the node. The suffix is how it travels: WT is WebTransport, RTC is WebRTC.",
-            "native": "How the video is compressed on the node. The suffix is how it travels: WT is WebTransport."
+            "native": "How the video is compressed on the node. The suffix is how it travels: WT is WebTransport, GS is Moonlight (GameStream)."
           },
           "value": "{codec_tag}"
         },

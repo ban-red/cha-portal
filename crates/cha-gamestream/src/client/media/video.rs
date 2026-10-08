@@ -148,6 +148,9 @@ pub struct VideoStats {
     pub late: u64,
     /// FEC blocks that needed recovery and got it.
     pub blocks_recovered: u64,
+    /// Frames completed with at least one block rebuilt from parity (a frame
+    /// of several blocks counts once).
+    pub frames_recovered: u64,
     /// Frames delivered.
     pub frames_delivered: u64,
     /// Frames given up on: not completed, or recovered into nonsense.
@@ -189,6 +192,8 @@ struct Block {
     /// PyroWave: recovery was tried and gave nonsense; the shards it filled
     /// were taken back, and it is not tried again.
     recovery_failed: bool,
+    /// Parity rebuilt data shards of this block.
+    recovered: bool,
 }
 
 impl Block {
@@ -203,6 +208,7 @@ impl Block {
             got_parity: 0,
             state: BlockState::Open,
             recovery_failed: false,
+            recovered: false,
         }
     }
 }
@@ -446,6 +452,7 @@ impl VideoReceiver {
                 self.cfg.pyrowave.is_some(),
             )
         {
+            block.recovered = true;
             self.stats.blocks_recovered += 1;
         }
     }
@@ -457,6 +464,9 @@ impl VideoReceiver {
             match self.frames.get(&next) {
                 Some(f) if f.complete() => {
                     let f = self.frames.remove(&next).expect("just found");
+                    if f.blocks.iter().flatten().any(|b| b.recovered) {
+                        self.stats.frames_recovered += 1;
+                    }
                     self.deliver(next, &f, now);
                     self.next = Some(next + 1);
                 }
@@ -1099,6 +1109,12 @@ mod tests {
                     assert_eq!(
                         rx.stats.blocks_recovered > 0,
                         data_lost > 0,
+                        "{len} B, {name}"
+                    );
+                    // A frame counts once, however many of its blocks were rebuilt.
+                    assert_eq!(
+                        rx.stats.frames_recovered,
+                        u64::from(data_lost > 0),
                         "{len} B, {name}"
                     );
                     assert_eq!(rx.stats.frames_lost, 0, "{len} B, {name}");

@@ -292,6 +292,59 @@
     }
   },
   {
+    "name": "a GameStream stream has a round trip and loss counts but no node",
+    "platforms": ["native"],
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 40,
+      "codec_tag": "HEVC/GS",
+      "width": 1920,
+      "height": 1080,
+      "latency_ms": 9.2,
+      "decode_ms": 2,
+      "dropped": 4,
+      "decode_errors": 0,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "rtt_ms": 1.2,
+      "lost": 2,
+      "recovered": 1
+    },
+    "expect": {
+      "grade_tone": "ok",
+      "compact": "60 fps · 9.2 ms · 40.0 Mbit/s · HEVC/GS",
+      "sections": [
+        {
+          "id": "stream",
+          "summary": "HEVC/GS · 60 fps · 40.0 Mbit/s",
+          "row_ids": ["codec","size","fps","bitrate"],
+          "rows": [
+            {"id":"codec","label":"Codec","value":"HEVC/GS"},
+            {"id":"fps","label":"Frame rate","value":"60 of 60 fps"}
+          ]
+        },
+        {
+          "id": "latency",
+          "summary": "9.2 ms · decode 2.0 ms",
+          "row_ids": ["latency","decode","audio-underruns","audio-dropped"]
+        },
+        {
+          "id": "network",
+          "summary": "1.2 ms · 2 lost · 4 dropped",
+          "row_ids": ["rtt","lost","recovered","dropped","decode-errors"],
+          "rows": [
+            {"id":"rtt","label":"Round trip","value":"1.2 ms"},
+            {"id":"lost","label":"Lost","value":"2"},
+            {"id":"recovered","label":"Recovered","value":"1"},
+            {"id":"dropped","label":"Dropped","value":"4"}
+          ]
+        }
+      ],
+      "report": "Health: A (100/100), Smooth\nStream: HEVC/GS, 1920×1080, 60 of 60 fps, 40.0 Mbit/s\nLatency: received → shown 9.2 ms, decode 2.00 ms, audio buffer – ms\nNetwork: round trip 1.2 ms, 2 lost, 4 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nPlayer: Test Agent/1.0"
+    }
+  },
+  {
     "name": "nothing measured yet reads dashes",
     "values": {},
     "health": {"grade":null,"score":null,"summary":"Measuring…","issues":[]},

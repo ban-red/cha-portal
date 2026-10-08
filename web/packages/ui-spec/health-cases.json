@@ -300,6 +300,16 @@
       }
     },
     {
+      "name": "a GameStream stream (a round trip and frame counts, no node) is judged on the frame scale",
+      "platforms": ["native"],
+      "history": [{"repeat":8,"node":null,"sent_fps":null,"rtt_ms":1,"lost":[0,3,6,9,12,15,18,21],"recovered":[0,1,2,3,4,5,6,7]}],
+      "expect": {
+        "grade": "C", "score": 77, "summary": "Network losses",
+        "issues": [{"id":"loss","severity":"major"}],
+        "details": {"loss":"3.0 frames lost per second"}
+      }
+    },
+    {
       "name": "a transport that can't count losses is not penalised",
       "history": [{"repeat":8,"lost":null,"recovered":null}],
       "expect": {
