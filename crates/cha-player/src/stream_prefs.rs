@@ -11,14 +11,9 @@
 use std::collections::BTreeMap;
 
 use cha_ui_spec::health::Platform;
-use cha_ui_spec::prefs::{self, GroupName, limits};
+use cha_ui_spec::prefs::{self, GroupName};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-
-/// Frame rates the streamer offers (`FPS_CHOICES` in `cha-client-stream`).
-pub const FRAME_RATES: [u32; 3] = [60, 90, 120];
-/// The highest performance overlay level (4 is the full one).
-pub const OVERLAY_MAX: u8 = limits::TOOLBAR_OVERLAY_MAX;
 
 /// One app's toolbar settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

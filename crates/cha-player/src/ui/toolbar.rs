@@ -1,8 +1,18 @@
 //! The toolbar over the picture: the native twin of the portal's in-stream
-//! toolbar (`SessionView.vue`). A bar across the top while the pointer is
+//! toolbar (`SessionToolbar.vue`). A bar across the top while the pointer is
 //! free, folding into a thin bar you hover or click; Back, power off, the
 //! stream settings, exclusive input, the mouse switch, sound, controllers,
 //! full screen and the stats button. Ctrl+Alt+Shift+T shows it.
+//!
+//! What the toolbar says and when each control shows (its icon, tooltip and
+//! state, the menus' rows, the countdown's words and length, the fold timing)
+//! is `cha_ui_spec::toolbar::build_toolbar`'s, from
+//! `web/packages/ui-spec/toolbar.json`: the same model the browser draws.
+//! This file only lays it out and draws it, and carries out what the user
+//! picks. The session reports what it can do as capabilities
+//! ([`capabilities`]); the parts the two players share (the look, the icon
+//! button, the menu box, the chips, which pointer events are an overlay's) are
+//! in [`super::chrome`].
 //!
 //! [`Toolbar`] owns what the user is doing to it (folded or not, which menu is
 //! open, a power-off countdown) and where it was drawn, so the app can ask
@@ -14,19 +24,23 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cha_client::{PerfOverlay, TransportStats};
-use egui::epaint::Shadow;
+use cha_ui_spec::health::Platform;
+use cha_ui_spec::toolbar::{
+    Align as MenuAlign, ControlKind, RowKind, State, Toolbar as Model, ToolbarControl, ToolbarMenu,
+    ToolbarRow, build_toolbar, spec,
+};
 use egui::{
     Area, Color32, Context, FontId, Galley, Id, LayerId, Order, Painter, Pos2, Rect, RichText,
-    Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2, vec2,
+    Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
-use winit::event::{ElementState, WindowEvent};
+use winit::event::WindowEvent;
 
-use super::stats::{Look, StatsSnapshot};
+use super::chrome::{self, Hold, IconStyle, Look, MenuFrame, Press};
+use super::stats::StatsSnapshot;
 use crate::health::Assessment;
 use crate::input::pads::{InputAccess, PadInfo};
-use crate::stream_prefs::{FRAME_RATES, OVERLAY_MAX};
+use crate::theme::ThemeExt;
 use crate::theme::icons::{self, Icon};
-use crate::theme::{Palette, ThemeExt};
 
 /// The bar's top edge (`top-3`).
 pub const TOP: f32 = 12.0;
@@ -38,14 +52,18 @@ const RADIUS: f32 = 12.0;
 const BAR_H: f32 = BTN + 2.0 * PAD;
 const MENU_W: f32 = 256.0;
 const MENU_PAD: f32 = 12.0;
-/// Folds this long after the pointer leaves it.
-const COLLAPSE_AFTER: Duration = Duration::from_millis(1200);
-/// The pointer this close to the top keeps an open toolbar from folding.
-const NEAR_TOP: f32 = 72.0;
-/// "Powering off in 5…".
-const POWER_OFF_SECONDS: u32 = 5;
 const TEXT: f32 = 12.0;
 const FADE: f32 = 0.15;
+
+/// Folds this long after the pointer leaves it (the spec's `timing`).
+fn collapse_after() -> Duration {
+    Duration::from_millis(spec().timing.fold_after_ms)
+}
+
+/// The pointer this close to the top keeps an open toolbar from folding.
+fn near_top() -> f32 {
+    spec().timing.near_top_px
+}
 
 // ---- state the app feeds in, and what comes out -------------------------
 
@@ -95,11 +113,97 @@ pub enum ToolbarAction {
     OpenInputSettings,
 }
 
+/// The capabilities a session reports to the toolbar (the spec's vocabulary).
+/// The portal's streamer reports a keyboard-and-mouse floor, so those
+/// controls, the frame rate and the sound restart show; Moonlight's transport
+/// says nothing of the kind, so the rest does not. Sound restarts locally and
+/// so is always on. Nothing here is the browser's (Share, the GPU badge, Hand
+/// controls, the codec and transport pickers, the probe, WebHID).
+pub fn capabilities(link: Option<&TransportStats>) -> Vec<String> {
+    let mut caps = vec!["sound-restart".to_string()];
+    if let Some(l) = link {
+        if l.viewers.is_some() {
+            caps.push("viewers".into());
+        }
+        if l.control.is_some() {
+            caps.push("control-handoff".into());
+            caps.push("fps-change".into());
+        }
+        if l.overlay.is_some() {
+            caps.push("steam-overlay".into());
+        }
+    }
+    caps
+}
+
+impl ToolbarView<'_> {
+    /// The session's state as the spec's model reads it (the bar's own, expanded or open, is added
+    /// by [`Toolbar`]).
+    fn state(&self) -> State {
+        let link = self.link;
+        let mut s = State::new();
+        s.set("connected", self.connected)
+            .set("captured", self.locked)
+            .set("title", self.title)
+            .set("viewers", link.and_then(|l| l.viewers))
+            .set("has_control", link.is_none_or(|l| l.control != Some(false)))
+            .set("mouse_on", self.mouse)
+            .set("muted", self.muted)
+            .set("volume", self.volume)
+            .set("fullscreen", self.fullscreen)
+            .set("stats_open", self.stats_open)
+            .set("transport_name", self.transport)
+            .set("transport_tag", self.stats.transport_tag)
+            .set("input_denied", self.input_access == InputAccess::Denied);
+        // The codec the stream decodes, upper case; the rate the host runs at now, else the one asked for.
+        s.set("codec", self.stats.codec.to_uppercase());
+        let fps = link
+            .and_then(|l| l.target_fps)
+            .or(self.stats.target_fps)
+            .filter(|f| *f > 0);
+        s.set("fps", fps);
+        s.set(
+            "overlay",
+            link.and_then(|l| l.overlay).map(|o| match o {
+                PerfOverlay::Preset(level) => level.to_string(),
+                PerfOverlay::Custom => "custom".to_string(),
+            }),
+        );
+        s.set(
+            "controllers",
+            self.pads
+                .iter()
+                .map(|p| serde_json::json!({ "name": p.name, "slot": p.slot }))
+                .collect::<Vec<_>>(),
+        );
+        s.set("grade", self.health.grade.map_or("", |g| g.letter()));
+        s.set("grade_summary", self.health.summary);
+        s
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Menu {
     Stream,
     Sound,
     Controllers,
+}
+
+impl Menu {
+    /// The spec's id for the control that opens it.
+    fn id(self) -> &'static str {
+        match self {
+            Menu::Stream => "stream",
+            Menu::Sound => "sound",
+            Menu::Controllers => "controllers",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        [Menu::Stream, Menu::Sound, Menu::Controllers]
+            .into_iter()
+            .find(|m| m.id() == id)
+    }
 }
 
 /// The countdown before the app is stopped.
@@ -110,7 +214,7 @@ struct PowerOff {
 
 impl PowerOff {
     fn total() -> Duration {
-        Duration::from_secs(u64::from(POWER_OFF_SECONDS))
+        Duration::from_secs(u64::from(spec().power_off.seconds))
     }
 
     /// Seconds still to wait, rounded up: 5 at the start, 1 just before the end.
@@ -147,11 +251,14 @@ pub struct Toolbar {
     menu_rect: Option<Rect>,
     menu_button: Option<Rect>,
     /// A press began on the toolbar and its release hasn't come yet.
-    pressed: bool,
+    press: Press,
     /// The bar's height when it showed last: the stats panel sits below it.
     height: f32,
     /// Whether the last frame had the bar up (the fade has finished starting).
     shown: bool,
+    /// Controls and rows the spec has that this file did not draw (tests read it).
+    #[cfg(test)]
+    unhandled: Vec<String>,
 }
 
 impl Toolbar {
@@ -167,9 +274,11 @@ impl Toolbar {
             thin: None,
             menu_rect: None,
             menu_button: None,
-            pressed: false,
+            press: Press::default(),
             height: 0.0,
             shown: false,
+            #[cfg(test)]
+            unhandled: Vec::new(),
         }
     }
 
@@ -180,17 +289,31 @@ impl Toolbar {
 
     // ---- visibility ----
 
+    /// The model for this view: the session's state with the bar's own laid over.
+    fn model(&self, v: &ToolbarView, countdown: Option<u32>) -> Model {
+        let mut s = v.state();
+        self.bar_state(&mut s, countdown);
+        build_toolbar(spec(), &s, &capabilities(v.link), Platform::Native)
+    }
+
+    fn bar_state(&self, s: &mut State, countdown: Option<u32>) {
+        s.set("expanded", self.expanded)
+            .set("hover", self.hover)
+            .set("menu_open", self.menu.map_or("", Menu::id))
+            .set("countdown", countdown);
+    }
+
+    /// Whether the bar is up (the spec's `visibility` rules), given only the bar's own state.
+    #[cfg(test)]
     fn visible(&self, connected: bool, locked: bool) -> bool {
-        !locked
-            && (!connected
-                || self.expanded
-                || self.hover
-                || self.menu.is_some()
-                || self.power_off.is_some())
+        let mut s = State::new();
+        s.set("connected", connected).set("captured", locked);
+        self.bar_state(&mut s, self.power_off.map(|p| p.left(Instant::now())));
+        build_toolbar(spec(), &s, &[], Platform::Native).visible
     }
 
     fn collapse_soon(&mut self, now: Instant) {
-        self.collapse_at = Some(now + COLLAPSE_AFTER);
+        self.collapse_at = Some(now + collapse_after());
     }
 
     fn expand(&mut self) {
@@ -210,7 +333,7 @@ impl Toolbar {
     pub fn on_capture(&mut self) {
         self.hide();
         self.power_off = None;
-        self.pressed = false;
+        self.press.clear();
         self.clear_rects();
     }
 
@@ -245,7 +368,7 @@ impl Toolbar {
         if !self.expanded || self.hover {
             return;
         }
-        if y < NEAR_TOP {
+        if y < near_top() {
             self.collapse_at = None;
         } else {
             self.collapse_soon(now);
@@ -276,12 +399,7 @@ impl Toolbar {
 
     #[cfg(test)]
     pub fn open_menu_for_test(&mut self, name: &str) {
-        self.menu = match name {
-            "stream" => Some(Menu::Stream),
-            "sound" => Some(Menu::Sound),
-            "controllers" => Some(Menu::Controllers),
-            _ => None,
-        };
+        self.menu = Menu::from_id(name);
     }
 
     #[cfg(test)]
@@ -320,34 +438,28 @@ impl Toolbar {
         let over = self.regions().any(|r| pos.is_some_and(|p| r.contains(p)));
         let over_thin = inside(self.thin);
         let held = self.power_off.is_some();
-        match event {
-            WindowEvent::MouseInput { state, .. } => match state {
-                ElementState::Pressed => {
-                    // A press anywhere but the open menu (and its button) shuts it.
-                    if self.menu.is_some() && !inside(self.menu_rect) && !inside(self.menu_button) {
-                        self.menu = None;
-                    }
-                    let claimed = over || over_thin || held;
-                    self.pressed |= claimed;
-                    claimed
-                }
-                ElementState::Released => {
-                    std::mem::take(&mut self.pressed) || over || over_thin || held
-                }
-            },
-            WindowEvent::MouseWheel { .. } => over || over_thin || held,
-            WindowEvent::CursorMoved { .. } => {
-                if over_thin {
-                    // Hovering the thin bar brings the toolbar back.
-                    self.expand();
-                }
-                if let Some(p) = pos {
-                    self.pointer_y(p.y, now);
-                }
-                self.pressed || over || over_thin || held
-            }
-            _ => self.pressed || over || over_thin || held,
+        // A press anywhere but the open menu (and its button) shuts it.
+        if let WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            ..
+        } = event
+            && self.menu.is_some()
+            && !inside(self.menu_rect)
+            && !inside(self.menu_button)
+        {
+            self.menu = None;
         }
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            if over_thin {
+                // Hovering the thin bar brings the toolbar back.
+                self.expand();
+            }
+            if let Some(p) = pos {
+                self.pointer_y(p.y, now);
+            }
+        }
+        let hold = if held { Hold::All } else { Hold::Nothing };
+        self.press.claims(event, over || over_thin, hold)
     }
 
     // ---- drawing ----
@@ -376,10 +488,11 @@ impl Toolbar {
             ctx.request_repaint_after(t.saturating_duration_since(now));
         }
 
-        let visible = self.visible(v.connected, v.locked);
+        let model = self.model(v, self.power_off.map(|p| p.left(now)));
+        let visible = model.visible;
         let fade = ctx.animate_bool_with_time(Id::new("cha-toolbar-fade"), visible, FADE);
         if visible || fade > 0.0 {
-            self.draw_bar(ctx, v, &look, screen, fade, visible, &mut actions);
+            self.draw_bar(ctx, v, &model, &look, screen, fade, visible, &mut actions);
         } else {
             self.clear_bar();
         }
@@ -387,10 +500,10 @@ impl Toolbar {
         if visible {
             self.thin = None;
         } else {
-            self.draw_thin(ctx, &look, screen);
+            self.draw_thin(ctx, &look, screen, &model.folded_bar.tooltip);
         }
         if self.power_off.is_some() {
-            self.draw_power_off(ctx, v, &look, screen, now, &mut actions);
+            self.draw_power_off(ctx, &model, &look, screen, now, &mut actions);
         }
         actions
     }
@@ -400,7 +513,7 @@ impl Toolbar {
         (self.menu_rect, self.menu_button) = (None, None);
     }
 
-    fn draw_thin(&mut self, ctx: &Context, look: &Look, screen: Rect) {
+    fn draw_thin(&mut self, ctx: &Context, look: &Look, screen: Rect, tooltip: &str) {
         let p = &look.p;
         let hit = Rect::from_min_size(pos2(screen.center().x - 72.0, 0.0), vec2(144.0, 24.0));
         let mut clicked = false;
@@ -422,7 +535,7 @@ impl Toolbar {
                     Stroke::new(1.0, p.line),
                     StrokeKind::Inside,
                 );
-                clicked = resp.on_hover_text("Show the toolbar").clicked();
+                clicked = resp.on_hover_text(tooltip).clicked();
             });
         if clicked {
             self.expand();
@@ -435,21 +548,23 @@ impl Toolbar {
         &mut self,
         ctx: &Context,
         v: &ToolbarView,
+        model: &Model,
         look: &Look,
         screen: Rect,
         fade: f32,
         interactive: bool,
         actions: &mut Vec<ToolbarAction>,
     ) {
-        let layout = Layout::new(ctx, look, v, screen);
+        let layout = Layout::new(ctx, look, model, screen);
         let bar = layout.bar;
         self.height = bar.height();
         let mut menu_click = None;
         let mut hide_click = false;
         let mut power_click = false;
-        let menu = self.menu;
+        let mut open: Option<(&ToolbarMenu, Rect)> = None;
         let mut open_rect = None;
-        let mut menu_button = None;
+        #[cfg(test)]
+        let mut unhandled = Vec::new();
 
         Area::new(Id::new("cha-toolbar"))
             .order(Order::Foreground)
@@ -458,15 +573,7 @@ impl Toolbar {
                 let (rect, _) = ui.allocate_exact_size(bar.size(), Sense::hover());
                 let mut painter = ui.painter().clone();
                 painter.set_opacity(fade);
-                painter.add(
-                    Shadow {
-                        offset: [0, 4],
-                        blur: 14,
-                        spread: 0,
-                        color: Color32::from_black_alpha(70),
-                    }
-                    .as_shape(rect, RADIUS),
-                );
+                painter.add(chrome::shadow(rect, RADIUS, 70));
                 painter.rect(
                     rect,
                     RADIUS,
@@ -481,156 +588,57 @@ impl Toolbar {
                     live: interactive,
                     actions: &mut *actions,
                 };
-                for (item, r) in &layout.items {
-                    match item {
-                        Item::Back => {
-                            if b.text_button(*r, "back", "← Back", "Back to the dashboard (the app keeps running)", None) {
-                                b.actions.push(ToolbarAction::Back);
-                            }
+                for (c, r) in &layout.items {
+                    let clicked = match (c.kind, c.id.as_str()) {
+                        (ControlKind::Label, "name") => {
+                            b.label(*r, c.label.as_deref().unwrap_or_default(), look.p.ink);
+                            false
                         }
-                        Item::Power => {
-                            let hot = look.p.danger;
-                            if b.icon_button(
+                        (ControlKind::Label, "viewers") => {
+                            b.label_hover(
                                 *r,
-                                "power",
-                                Icon::Power,
-                                "Power off this app (a 5 second countdown, which you can cancel)",
-                                Style { hover: Some(hot), ..Style::default() },
-                            ) {
-                                power_click = true;
-                            }
+                                c.label.as_deref().unwrap_or_default(),
+                                c.tooltip.as_deref().unwrap_or_default(),
+                            );
+                            false
                         }
-                        Item::Title(text) => b.label(*r, text, look.p.ink),
-                        Item::Watching(n) => b.label_hover(
-                            *r,
-                            &format!("{n} watching"),
-                            &format!("{n} sessions are watching this app"),
-                        ),
-                        Item::TakeBack => {
-                            if b.text_button(
-                                *r,
-                                "take",
-                                "Viewing · Take back",
-                                "Someone else has the keyboard and mouse; take them back",
-                                Some(look.p.accent),
-                            ) {
-                                b.actions.push(ToolbarAction::TakeControl);
-                            }
+                        (ControlKind::Button, "back" | "take-control") => b.text_button(*r, c),
+                        (ControlKind::Toggle, "stats") => b.stats_button(*r, c, layout.letter_w),
+                        (
+                            ControlKind::Button | ControlKind::Toggle | ControlKind::Menu,
+                            "power" | "capture" | "mouse" | "fullscreen" | "stream" | "sound"
+                            | "controllers",
+                        ) => b.control_button(*r, c),
+                        _ => {
+                            #[cfg(test)]
+                            unhandled.push(c.id.clone());
+                            false
                         }
-                        Item::Menu(kind) => {
-                            let open = menu == Some(*kind);
-                            let (icon, id, tip, style) = match kind {
-                                Menu::Stream => (
-                                    Icon::StreamSettings,
-                                    "stream",
-                                    "Stream settings: frame rate, overlay, codec and transport",
-                                    Style { active: open, color: open.then_some(look.p.accent), ..Style::default() },
-                                ),
-                                Menu::Sound => (
-                                    if v.muted {
-                                        Icon::SoundMuted
-                                    } else {
-                                        Icon::SoundOn
-                                    },
-                                    "sound",
-                                    if v.muted {
-                                        "Sound off"
-                                    } else {
-                                        "Sound on"
-                                    },
-                                    Style {
-                                        active: open,
-                                        color: v.muted.then_some(look.ink2),
-                                        ..Style::default()
-                                    },
-                                ),
-                                Menu::Controllers => (
-                                    Icon::Controllers,
-                                    "controllers",
-                                    if v.pads.is_empty() {
-                                        "No controller yet"
-                                    } else {
-                                        "Controllers sending input"
-                                    },
-                                    Style {
-                                        active: open,
-                                        color: (!v.pads.is_empty()).then_some(look.p.accent),
-                                        badge: (!v.pads.is_empty()).then_some(v.pads.len()),
-                                        ..Style::default()
-                                    },
-                                ),
-                            };
-                            if b.icon_button(*r, id, icon, tip, style) {
-                                menu_click = Some(*kind);
-                            }
-                            if open {
-                                menu_button = Some(*r);
-                            }
-                        }
-                        Item::Capture => {
-                            let tip = if v.mouse {
-                                "Exclusive input: capture the mouse for games. Ctrl+Alt+Shift+T lets it go"
-                            } else {
-                                "Turn the mouse on to use exclusive input"
-                            };
-                            if b.icon_button(
-                                *r,
-                                "capture",
-                                Icon::ExclusiveInput,
-                                tip,
-                                Style { enabled: v.mouse, ..Style::default() },
-                            ) {
-                                b.actions.push(ToolbarAction::Capture);
-                            }
-                        }
-                        Item::Mouse => {
-                            let on = v.mouse;
-                            if b.icon_button(
-                                *r,
-                                "mouse",
-                                if on { Icon::MouseOn } else { Icon::MouseOff },
-                                if on {
-                                    "Mouse on: click to stop sending the mouse (the keyboard and controllers still work)"
-                                } else {
-                                    "Mouse off: click to send the mouse again"
-                                },
-                                Style { color: (!on).then_some(look.p.warn), ..Style::default() },
-                            ) {
-                                b.actions.push(ToolbarAction::SetMouse(!on));
-                            }
-                        }
-                        Item::Fullscreen => {
-                            let tip = if v.fullscreen {
-                                "Exit full screen (Cmd+Ctrl+F)"
-                            } else {
-                                "Full screen (Cmd+Ctrl+F)"
-                            };
-                            if b.icon_button(
-                                *r,
-                                "fullscreen",
-                                if v.fullscreen {
-                                    Icon::FullscreenExit
-                                } else {
-                                    Icon::FullscreenEnter
-                                },
-                                tip,
-                                Style::default(),
-                            ) {
-                                b.actions.push(ToolbarAction::ToggleFullScreen);
-                            }
-                        }
-                        Item::Stats => {
-                            if b.stats_button(*r, v, layout.letter_w) {
-                                b.actions.push(ToolbarAction::ToggleStats);
-                            }
-                        }
+                    };
+                    if let Some(menu) = &c.menu {
+                        // The open menu hangs from its button.
+                        open = Some((menu, *r));
+                    }
+                    if !clicked {
+                        continue;
+                    }
+                    match c.id.as_str() {
+                        "back" => b.actions.push(ToolbarAction::Back),
+                        "power" => power_click = true,
+                        "take-control" => b.actions.push(ToolbarAction::TakeControl),
+                        "capture" => b.actions.push(ToolbarAction::Capture),
+                        "mouse" => b.actions.push(ToolbarAction::SetMouse(!v.mouse)),
+                        "fullscreen" => b.actions.push(ToolbarAction::ToggleFullScreen),
+                        "stats" => b.actions.push(ToolbarAction::ToggleStats),
+                        id => menu_click = Menu::from_id(id),
                     }
                 }
                 let actions = b.actions;
                 // The tab that hangs from the bar's lower edge, in the middle.
-                let tab = Rect::from_center_size(pos2(rect.center().x, rect.bottom()), vec2(36.0, 20.0));
+                let tab =
+                    Rect::from_center_size(pos2(rect.center().x, rect.bottom()), vec2(36.0, 20.0));
                 let resp = ui.interact(tab, ui.id().with("tab"), Sense::click());
-                let live = interactive && v.connected;
+                let live = interactive && !model.hide_tab.disabled;
                 let hot = live && resp.hovered();
                 painter.rect(
                     tab,
@@ -651,20 +659,21 @@ impl Toolbar {
                         look.ink2
                     },
                 );
-                let tip = "Hide the toolbar (hover the thin bar at the top to bring it back)";
-                if resp.on_hover_text(tip).clicked() && live {
+                if resp.on_hover_text(&model.hide_tab.tooltip).clicked() && live {
                     hide_click = true;
                 }
                 self.tab = Some(tab);
 
-                if let (Some(kind), true, Some(btn)) = (menu, interactive, menu_button) {
-                    let at = menu_origin(kind, btn, screen);
-                    open_rect = Some(draw_menu(ui, look, v, kind, at, actions));
+                if let (true, Some((menu, btn))) = (interactive, open) {
+                    let at = menu_origin(menu.align, btn, screen);
+                    open_rect = Some(draw_menu(ui, look, v, menu, at, actions));
                 }
             });
+        #[cfg(test)]
+        self.unhandled.extend(unhandled);
         self.bar = Some(bar);
         self.menu_rect = open_rect;
-        self.menu_button = menu_button;
+        self.menu_button = open.map(|(_, r)| r);
 
         if power_click {
             self.menu = None;
@@ -689,13 +698,15 @@ impl Toolbar {
     fn draw_power_off(
         &mut self,
         ctx: &Context,
-        v: &ToolbarView,
+        model: &Model,
         look: &Look,
         screen: Rect,
         now: Instant,
         actions: &mut Vec<ToolbarAction>,
     ) {
-        let Some(power) = self.power_off else { return };
+        let (Some(power), Some(count)) = (self.power_off, model.countdown.as_ref()) else {
+            return;
+        };
         let p = &look.p;
         let mut cancel = false;
         let scrim = Id::new("cha-power-scrim");
@@ -711,16 +722,11 @@ impl Toolbar {
             });
         ctx.move_to_top(LayerId::new(Order::Foreground, scrim));
         let card = Id::new("cha-power-card");
-        let name = if v.title.is_empty() {
-            "the app"
-        } else {
-            v.title
-        };
         Area::new(card)
             .order(Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                let inner = egui::Frame::new()
+                egui::Frame::new()
                     .fill(p.panel)
                     .stroke(Stroke::new(1.0, p.line))
                     .corner_radius(RADIUS)
@@ -730,13 +736,10 @@ impl Toolbar {
                         ui.spacing_mut().item_spacing = vec2(0.0, 12.0);
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                RichText::new(format!(
-                                    "Powering off {name} in {}…",
-                                    power.left(now)
-                                ))
-                                .font(FontId::proportional(16.0))
-                                .strong()
-                                .color(p.ink),
+                                RichText::new(&count.title)
+                                    .font(FontId::proportional(16.0))
+                                    .strong()
+                                    .color(p.ink),
                             );
                             let (bar, _) = ui.allocate_exact_size(vec2(344.0, 4.0), Sense::hover());
                             ui.painter().rect_filled(bar, 2.0, p.line);
@@ -744,13 +747,11 @@ impl Toolbar {
                             full.set_width(bar.width() * power.fraction(now));
                             ui.painter().rect_filled(full, 2.0, p.danger);
                             ui.label(
-                                RichText::new(
-                                    "The app stops and its session ends. Saved data stays.",
-                                )
-                                .font(FontId::proportional(13.0))
-                                .color(look.ink2),
+                                RichText::new(&count.note)
+                                    .font(FontId::proportional(13.0))
+                                    .color(look.ink2),
                             );
-                            let w = Buttons::wide_width(ui, "Cancel");
+                            let w = Buttons::wide_width(ui, &count.cancel_label);
                             let (rect, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
                             let painter = ui.painter().clone();
                             let mut b = Buttons {
@@ -763,13 +764,12 @@ impl Toolbar {
                             cancel |= b.wide_button(
                                 rect,
                                 "cancel",
-                                "Cancel",
+                                &count.cancel_label,
                                 true,
-                                "Cancel the power off",
+                                count.cancel_tooltip.as_deref().unwrap_or_default(),
                             );
                         });
                     });
-                let _ = inner;
             });
         ctx.move_to_top(LayerId::new(Order::Foreground, card));
         if cancel {
@@ -792,22 +792,9 @@ impl Default for Toolbar {
 
 // ---- layout ----------------------------------------------------------------
 
-enum Item {
-    Back,
-    Power,
-    Title(String),
-    Watching(u32),
-    TakeBack,
-    Menu(Menu),
-    Capture,
-    Mouse,
-    Fullscreen,
-    Stats,
-}
-
-struct Layout {
+struct Layout<'m> {
     bar: Rect,
-    items: Vec<(Item, Rect)>,
+    items: Vec<(&'m ToolbarControl, Rect)>,
     /// The grade letter's width, for the stats button.
     letter_w: f32,
 }
@@ -816,54 +803,53 @@ fn galley(painter: &Painter, text: &str, size: f32, color: Color32) -> Arc<Galle
     painter.layout_no_wrap(text.to_string(), FontId::proportional(size), color)
 }
 
-impl Layout {
-    fn new(ctx: &Context, look: &Look, v: &ToolbarView, screen: Rect) -> Self {
+impl<'m> Layout<'m> {
+    fn new(ctx: &Context, look: &Look, model: &'m Model, screen: Rect) -> Self {
         let painter = ctx.layer_painter(LayerId::new(
             Order::Foreground,
             Id::new("cha-toolbar-measure"),
         ));
         let text_w = |s: &str| galley(&painter, s, TEXT, look.p.ink).size().x;
-        let grade = v.health.grade.map(|g| g.letter());
-        let letter_w = grade.map_or(0.0, |g| {
+        let stats = model.control("stats");
+        let letter_w = stats.and_then(|c| c.badge.as_ref()).map_or(0.0, |b| {
             painter
-                .layout_no_wrap(g.to_string(), FontId::monospace(TEXT), look.p.ink)
+                .layout_no_wrap(b.text.clone(), FontId::monospace(TEXT), look.p.ink)
                 .size()
                 .x
         });
-        let viewers = v.link.and_then(|l| l.viewers).filter(|n| *n > 1);
-        let viewing = v.link.is_some_and(|l| l.control == Some(false));
+        let width_of = |c: &ToolbarControl| -> f32 {
+            let label = c.label.as_deref().unwrap_or_default();
+            match (c.kind, c.id.as_str()) {
+                (ControlKind::Label, "name") => {
+                    galley(&painter, label, 13.0, look.p.ink)
+                        .size()
+                        .x
+                        .min(192.0)
+                        + 16.0
+                }
+                (ControlKind::Label, _) => text_w(label) + 16.0,
+                (_, "stats") => (8.0
+                    + 16.0
+                    + 8.0
+                    + if c.badge.is_some() {
+                        GAP + letter_w
+                    } else {
+                        0.0
+                    })
+                .max(BTN),
+                _ if c.icon.is_none() => text_w(label) + 24.0,
+                _ => BTN,
+            }
+        };
         let build = |with_labels: bool| {
-            let mut items: Vec<(Item, f32)> =
-                vec![(Item::Back, text_w("← Back") + 24.0), (Item::Power, BTN)];
-            if with_labels && !v.title.is_empty() {
-                let w = galley(&painter, v.title, 13.0, look.p.ink)
-                    .size()
-                    .x
-                    .min(192.0)
-                    + 16.0;
-                items.push((Item::Title(v.title.to_string()), w));
-            }
-            if with_labels && let Some(n) = viewers {
-                items.push((Item::Watching(n), text_w(&format!("{n} watching")) + 16.0));
-            }
-            if viewing {
-                items.push((Item::TakeBack, text_w("Viewing · Take back") + 24.0));
-            }
-            items.extend([
-                (Item::Menu(Menu::Stream), BTN),
-                (Item::Capture, BTN),
-                (Item::Mouse, BTN),
-                (Item::Menu(Menu::Sound), BTN),
-                (Item::Menu(Menu::Controllers), BTN),
-                (Item::Fullscreen, BTN),
-                (
-                    Item::Stats,
-                    (8.0 + 16.0 + 8.0 + if grade.is_some() { GAP + letter_w } else { 0.0 })
-                        .max(BTN),
-                ),
-            ]);
+            let items: Vec<(&ToolbarControl, f32)> = model
+                .controls
+                .iter()
+                .filter(|c| with_labels || !c.droppable)
+                .map(|c| (c, width_of(c)))
+                .collect();
             let width: f32 = items.iter().map(|(_, w)| w).sum::<f32>()
-                + GAP * (items.len() - 1) as f32
+                + GAP * (items.len().saturating_sub(1)) as f32
                 + 2.0 * PAD;
             (items, width)
         };
@@ -890,12 +876,11 @@ impl Layout {
     }
 }
 
-/// Where a menu's top left goes: under its button, the sound and stream ones
-/// from its left edge and the controllers one from its right edge.
-fn menu_origin(kind: Menu, button: Rect, screen: Rect) -> Pos2 {
-    let x = match kind {
-        Menu::Stream | Menu::Sound => button.left(),
-        Menu::Controllers => button.right() - MENU_W,
+/// Where a menu's top left goes: under its button, from its left edge or its right edge.
+fn menu_origin(align: MenuAlign, button: Rect, screen: Rect) -> Pos2 {
+    let x = match align {
+        MenuAlign::Left => button.left(),
+        MenuAlign::Right => button.right() - MENU_W,
     };
     let x = x.clamp(
         screen.left() + 8.0,
@@ -905,31 +890,6 @@ fn menu_origin(kind: Menu, button: Rect, screen: Rect) -> Pos2 {
 }
 
 // ---- buttons ---------------------------------------------------------------
-
-#[derive(Clone, Copy)]
-struct Style {
-    /// The icon's colour at rest (ink-2 if none).
-    color: Option<Color32>,
-    /// The icon's colour under the pointer (ink if none).
-    hover: Option<Color32>,
-    /// The button's menu is open, or it is switched on: a lit background.
-    active: bool,
-    enabled: bool,
-    /// A count in a dot at the corner.
-    badge: Option<usize>,
-}
-
-impl Default for Style {
-    fn default() -> Self {
-        Self {
-            color: None,
-            hover: None,
-            active: false,
-            enabled: true,
-            badge: None,
-        }
-    }
-}
 
 struct Buttons<'a, 'u> {
     ui: &'a mut Ui,
@@ -945,35 +905,34 @@ impl Buttons<'_, '_> {
         self.ui.id().with(("tb", name))
     }
 
-    fn lit(&self, rect: Rect) {
-        self.painter
-            .rect_filled(rect, 6.0, self.look.p.line.gamma_multiply(0.6));
-    }
-
-    fn icon_button(&mut self, rect: Rect, name: &str, icon: Icon, tip: &str, style: Style) -> bool {
-        let resp = self.ui.interact(rect, self.id(name), Sense::click());
-        let live = self.live && style.enabled;
-        let hot = live && resp.hovered();
-        if hot || style.active {
-            self.lit(rect);
-        }
+    /// An icon button for a control: its icon, tone, lit state and tooltip from the model.
+    fn control_button(&mut self, rect: Rect, c: &ToolbarControl) -> bool {
         let look = self.look;
-        let color = if !style.enabled {
-            look.p.ink_3
-        } else if hot {
-            style.hover.unwrap_or(look.p.ink)
-        } else {
-            style.color.unwrap_or(look.ink2)
+        let style = IconStyle {
+            color: look.toolbar_tone(c.tone),
+            hover: look.toolbar_tone(c.hover_tone),
+            active: c.active,
+            enabled: !c.disabled,
+            live: self.live,
+            ..IconStyle::new(16.0, 6.0)
         };
-        icons::paint(
+        let icon = c
+            .icon
+            .as_deref()
+            .and_then(Icon::from_id)
+            .unwrap_or(Icon::Stats);
+        let resp = chrome::icon_button(
+            self.ui,
             self.painter,
-            Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+            look,
+            rect,
+            self.id(&c.id),
             icon,
-            color,
+            style,
         );
-        if let Some(n) = style.badge {
+        if let Some(badge) = &c.badge {
             let g = self.painter.layout_no_wrap(
-                n.to_string(),
+                badge.text.clone(),
                 FontId::proportional(9.0),
                 look.p.on_accent,
             );
@@ -986,31 +945,32 @@ impl Buttons<'_, '_> {
             self.painter
                 .galley(dot.center() - g.size() / 2.0, g, look.p.on_accent);
         }
-        resp.on_hover_text(tip).clicked() && live
+        let resp = resp.on_hover_text(c.tooltip.as_deref().unwrap_or_default());
+        style.fires(&resp)
     }
 
     /// A ghost button with text, like "← Back".
-    fn text_button(
-        &mut self,
-        rect: Rect,
-        name: &str,
-        text: &str,
-        tip: &str,
-        color: Option<Color32>,
-    ) -> bool {
-        let resp = self.ui.interact(rect, self.id(name), Sense::click());
+    fn text_button(&mut self, rect: Rect, c: &ToolbarControl) -> bool {
+        let resp = self.ui.interact(rect, self.id(&c.id), Sense::click());
         let hot = self.live && resp.hovered();
         if hot {
-            self.lit(rect);
+            chrome::lit(self.painter, self.look, rect, 6.0);
         }
         let ink = if hot {
             self.look.p.ink
         } else {
-            color.unwrap_or(self.look.p.ink)
+            self.look.toolbar_tone(c.tone).unwrap_or(self.look.p.ink)
         };
-        let g = galley(self.painter, text, TEXT, ink);
+        let g = galley(
+            self.painter,
+            c.label.as_deref().unwrap_or_default(),
+            TEXT,
+            ink,
+        );
         self.painter.galley(rect.center() - g.size() / 2.0, g, ink);
-        resp.on_hover_text(tip).clicked() && self.live
+        resp.on_hover_text(c.tooltip.as_deref().unwrap_or_default())
+            .clicked()
+            && self.live
     }
 
     fn label(&mut self, rect: Rect, text: &str, color: Color32) {
@@ -1041,14 +1001,15 @@ impl Buttons<'_, '_> {
     }
 
     /// The stats button: bars, and the health grade's letter in its colour.
-    fn stats_button(&mut self, rect: Rect, v: &ToolbarView, letter_w: f32) -> bool {
+    fn stats_button(&mut self, rect: Rect, c: &ToolbarControl, letter_w: f32) -> bool {
         let look = self.look;
         let resp = self.ui.interact(rect, self.id("stats"), Sense::click());
         let hot = self.live && resp.hovered();
-        if hot || v.stats_open {
-            self.lit(rect);
+        let on = c.pressed == Some(true);
+        if hot || on {
+            chrome::lit(self.painter, look, rect, 6.0);
         }
-        let ink = if v.stats_open {
+        let ink = if on {
             look.p.accent
         } else if hot {
             look.p.ink
@@ -1056,7 +1017,7 @@ impl Buttons<'_, '_> {
             look.ink2
         };
         let icon_at = pos2(
-            if v.health.grade.is_some() {
+            if c.badge.is_some() {
                 rect.left() + 8.0 + 8.0
             } else {
                 rect.center().x
@@ -1069,25 +1030,21 @@ impl Buttons<'_, '_> {
             Icon::Stats,
             ink,
         );
-        if let Some(grade) = v.health.grade {
-            let g = self.painter.layout_no_wrap(
-                grade.letter().to_string(),
-                FontId::monospace(TEXT),
-                look.grade_color(Some(grade)),
-            );
+        let mut tip = c.tooltip.clone().unwrap_or_default();
+        if let Some(badge) = &c.badge {
+            let color = look.toolbar_tone(badge.tone).unwrap_or(look.p.ink);
+            let g = self
+                .painter
+                .layout_no_wrap(badge.text.clone(), FontId::monospace(TEXT), color);
             let at = pos2(
                 rect.right() - 8.0 - letter_w,
                 rect.center().y - g.size().y / 2.0,
             );
-            self.painter.galley(at, g, look.grade_color(Some(grade)));
-        }
-        let mut tip = if v.stats_open {
-            "Hide the stats panel".to_string()
-        } else {
-            "Show the stats panel".to_string()
-        };
-        if v.health.grade.is_some() {
-            tip.push_str(&format!("\nStream health: {}", v.health.summary));
+            self.painter.galley(at, g, color);
+            if let Some(t) = &badge.tooltip {
+                tip.push('\n');
+                tip.push_str(t);
+            }
         }
         resp.on_hover_text(tip).clicked() && self.live
     }
@@ -1137,70 +1094,31 @@ fn draw_menu(
     ui: &mut Ui,
     look: &Look,
     v: &ToolbarView,
-    kind: Menu,
+    menu: &ToolbarMenu,
     at: Pos2,
     actions: &mut Vec<ToolbarAction>,
 ) -> Rect {
-    let p = look.p.clone();
-    let area = Rect::from_min_size(at, vec2(MENU_W, 600.0));
-    let mut child = ui.new_child(
-        UiBuilder::new()
-            .id_salt(("tb-menu", kind as u8))
-            .max_rect(area)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    let shape = child.painter().add(Shape::Noop);
-    let inner = egui::Frame::new()
-        .inner_margin(MENU_PAD)
-        .show(&mut child, |ui| {
-            ui.set_width(MENU_W - 2.0 * MENU_PAD);
-            style_menu(ui, &p);
-            match kind {
-                Menu::Stream => stream_menu(ui, look, v, actions),
-                Menu::Sound => sound_menu(ui, look, v, actions),
-                Menu::Controllers => controllers_menu(ui, look, v, actions),
+    chrome::menu_box(
+        ui,
+        look,
+        ("tb-menu", menu.id.clone()),
+        MenuFrame {
+            at,
+            width: MENU_W,
+            pad: MENU_PAD,
+            radius: RADIUS,
+        },
+        |ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            ui.spacing_mut().interact_size.y = 16.0;
+            ui.spacing_mut().slider_rail_height = 3.0;
+            ui.spacing_mut().slider_width = 112.0;
+            ui.style_mut().override_font_id = Some(FontId::proportional(TEXT));
+            for row in &menu.rows {
+                draw_row(ui, look, v, row, actions);
             }
-        });
-    let rect = inner.response.rect;
-    child.painter().set(
-        shape,
-        egui::epaint::RectShape::new(
-            rect,
-            RADIUS,
-            p.panel,
-            Stroke::new(1.0, p.line),
-            StrokeKind::Inside,
-        ),
-    );
-    child.painter().add(
-        Shadow {
-            offset: [0, 4],
-            blur: 14,
-            spread: 0,
-            color: Color32::from_black_alpha(60),
-        }
-        .as_shape(rect, RADIUS),
-    );
-    rect
-}
-
-/// The widgets' look inside a menu: the overlay palette.
-fn style_menu(ui: &mut Ui, p: &Palette) {
-    ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-    ui.spacing_mut().interact_size.y = 16.0;
-    ui.spacing_mut().slider_rail_height = 3.0;
-    ui.spacing_mut().slider_width = 112.0;
-    let v = ui.visuals_mut();
-    v.override_text_color = Some(p.ink);
-    v.widgets.inactive.bg_fill = p.line_strong;
-    v.widgets.inactive.weak_bg_fill = p.panel_2;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.ink);
-    v.widgets.hovered.bg_fill = p.panel_2;
-    v.widgets.hovered.weak_bg_fill = p.panel_2;
-    v.widgets.active.bg_fill = p.panel_2;
-    v.selection.bg_fill = p.accent;
-    v.selection.stroke = Stroke::new(1.0, p.ink);
-    ui.style_mut().override_font_id = Some(FontId::proportional(TEXT));
+        },
+    )
 }
 
 fn dim(look: &Look, text: &str) -> RichText {
@@ -1208,9 +1126,8 @@ fn dim(look: &Look, text: &str) -> RichText {
 }
 
 /// A paragraph of small print in a menu.
-fn note(ui: &mut Ui, look: &Look, text: &str, color: Color32) {
+fn note(ui: &mut Ui, text: &str, color: Color32) {
     ui.add(egui::Label::new(RichText::new(text).color(color).size(11.0)).wrap());
-    let _ = look;
 }
 
 /// A value that can't be changed here, in a box like the portal's select.
@@ -1232,15 +1149,15 @@ fn read_only(ui: &mut Ui, look: &Look, text: &str) {
 }
 
 /// Chips side by side, one lit: the picker for a few fixed choices.
-fn segmented<T: Copy + PartialEq>(
+fn segmented(
     ui: &mut Ui,
     look: &Look,
     name: &str,
-    options: &[(&str, T)],
-    selected: Option<T>,
+    options: &[(&str, &str)],
+    selected: Option<&str>,
     enabled: bool,
-    tip: &str,
-) -> Option<T> {
+    tip: Option<&str>,
+) -> Option<String> {
     let gap = 4.0;
     let w = (ui.available_width() - gap * (options.len() as f32 - 1.0)) / options.len() as f32;
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
@@ -1250,276 +1167,150 @@ fn segmented<T: Copy + PartialEq>(
             pos2(row.left() + i as f32 * (w + gap), row.top()),
             vec2(w, 24.0),
         );
-        let resp = ui.interact(rect, ui.id().with((name, i)), Sense::click());
-        let on = selected == Some(*value);
-        let hot = enabled && resp.hovered();
-        let (fill, border, ink) = if !enabled {
-            (look.p.canvas, look.p.line, look.p.ink_3)
-        } else if on {
-            (look.p.accent_soft, look.p.accent, look.p.ink)
-        } else if hot {
-            (look.p.panel_2, look.p.accent, look.p.ink)
-        } else {
-            (look.p.canvas, look.p.line_strong, look.ink2)
-        };
-        ui.painter().rect(
+        let resp = chrome::chip(
+            ui,
+            look,
             rect,
-            8.0,
-            fill,
-            Stroke::new(1.0, border),
-            StrokeKind::Inside,
+            ui.id().with((name, i)),
+            label,
+            selected == Some(*value),
+            enabled,
         );
-        let g = galley(ui.painter(), label, 10.5, ink);
-        ui.painter().galley(rect.center() - g.size() / 2.0, g, ink);
-        if resp.on_hover_text(tip).clicked() && enabled {
-            picked = Some(*value);
+        let resp = match tip {
+            Some(t) => resp.on_hover_text(t),
+            None => resp,
+        };
+        if resp.clicked() && enabled {
+            picked = Some((*value).to_string());
         }
     }
     picked
 }
 
-fn overlay_label(level: u8) -> &'static str {
-    match level {
-        0 => "Off",
-        1 => "FPS",
-        2 => "Bar",
-        3 => "Detailed",
-        _ => "Full",
-    }
-}
-
-/// How the stream travels, for the read-only line.
-pub fn transport_text(name: &str, tag: &str) -> String {
-    match tag {
-        "WT" => "WebTransport".into(),
-        "" if name == "Moonlight" => "GameStream (Moonlight)".into(),
-        "" => name.to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn stream_menu(ui: &mut Ui, look: &Look, v: &ToolbarView, actions: &mut Vec<ToolbarAction>) {
-    let link = v.link;
-    let has_floor = link.and_then(|l| l.control);
-    let can_change = has_floor == Some(true) && v.connected;
-    // The rate the streamer runs at now, else the one asked for.
-    let fps = link
-        .and_then(|l| l.target_fps)
-        .or(v.stats.target_fps)
-        .unwrap_or(0);
-
-    ui.label(dim(look, "Video codec"));
-    let codec = v.stats.codec.to_uppercase();
-    read_only(ui, look, if codec.is_empty() { "–" } else { &codec });
-
-    ui.label(dim(look, "Frame rate"));
-    if has_floor.is_some() && FRAME_RATES.contains(&fps) {
-        let options: Vec<(String, u32)> = FRAME_RATES
-            .iter()
-            .map(|r| (format!("{r} fps"), *r))
-            .collect();
-        let options: Vec<(&str, u32)> = options.iter().map(|(s, r)| (s.as_str(), *r)).collect();
-        let tip = if has_floor == Some(true) {
-            "Frame rate"
-        } else {
-            "Only the session with the controls changes the frame rate"
-        };
-        if let Some(rate) = segmented(ui, look, "fps", &options, Some(fps), can_change, tip) {
-            actions.push(ToolbarAction::SetFps(rate));
-        }
-    } else {
-        read_only(
-            ui,
-            look,
-            &if fps > 0 {
-                format!("{fps} fps")
+/// One row of an open menu, drawn by what kind of row the spec says it is; what a button or a
+/// choice does is by its id.
+fn draw_row(
+    ui: &mut Ui,
+    look: &Look,
+    v: &ToolbarView,
+    row: &ToolbarRow,
+    actions: &mut Vec<ToolbarAction>,
+) {
+    let tone = look.toolbar_tone(row.tone).unwrap_or(look.p.ink);
+    let text = row.text.as_deref().unwrap_or_default();
+    match row.kind {
+        RowKind::Note => note(ui, text, tone),
+        RowKind::Choice => {
+            ui.label(dim(look, row.label.as_deref().unwrap_or_default()));
+            let options = row.options.as_deref().unwrap_or_default();
+            if row.editable {
+                let chips: Vec<(&str, &str)> = options
+                    .iter()
+                    .map(|o| (o.label.as_str(), o.value.as_str()))
+                    .collect();
+                let picked = segmented(
+                    ui,
+                    look,
+                    &row.id,
+                    &chips,
+                    row.value.as_deref(),
+                    !row.disabled,
+                    row.tooltip.as_deref(),
+                );
+                match (row.id.as_str(), picked) {
+                    ("fps", Some(rate)) => {
+                        if let Ok(rate) = rate.parse() {
+                            actions.push(ToolbarAction::SetFps(rate));
+                        }
+                    }
+                    ("overlay", Some(level)) => {
+                        if let Ok(level) = level.parse() {
+                            actions.push(ToolbarAction::SetOverlay(level));
+                        }
+                    }
+                    _ => {}
+                }
             } else {
-                "–".into()
-            },
-        );
-    }
-
-    if let Some(overlay) = link.and_then(|l| l.overlay) {
-        ui.label(dim(look, "Steam Gamescope Overlay"));
-        let levels: Vec<(&str, u8)> = (0..=OVERLAY_MAX).map(|l| (overlay_label(l), l)).collect();
-        let selected = match overlay {
-            PerfOverlay::Preset(l) => Some(l),
-            PerfOverlay::Custom => None,
-        };
-        let tip = if has_floor == Some(true) {
-            "Steam Gamescope Overlay"
-        } else {
-            "Only the session with the controls changes the overlay"
-        };
-        if let Some(level) = segmented(ui, look, "overlay", &levels, selected, can_change, tip) {
-            actions.push(ToolbarAction::SetOverlay(level));
+                read_only(ui, look, row.read_only.as_deref().unwrap_or("–"));
+            }
         }
-        if overlay == PerfOverlay::Custom {
-            note(
+        RowKind::Button => {
+            let w = ui.available_width();
+            let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
+            let painter = ui.painter().clone();
+            let mut b = Buttons {
                 ui,
+                painter: &painter,
                 look,
-                "A hand-written overlay config is in use.",
-                look.ink2,
-            );
+                live: true,
+                actions,
+            };
+            let label = row.label.as_deref().unwrap_or_default();
+            let tip = row.tooltip.as_deref().unwrap_or_default();
+            if b.wide_button(rect, &row.id, label, !row.disabled, tip) {
+                match row.id.as_str() {
+                    "sound-toggle" => b.actions.push(ToolbarAction::SetMuted(!v.muted)),
+                    "restart" => b.actions.push(ToolbarAction::RestartSound),
+                    "input-settings" => b.actions.push(ToolbarAction::OpenInputSettings),
+                    _ => {}
+                }
+            }
         }
-    }
-
-    ui.label(dim(look, "Transport"));
-    read_only(
-        ui,
-        look,
-        &transport_text(v.transport, v.stats.transport_tag),
-    );
-
-    if has_floor.is_none() {
-        note(
-            ui,
-            look,
-            "The frame rate and codec are set in Settings and apply to the next launch.",
-            look.p.ink_3,
-        );
-    } else {
-        note(
-            ui,
-            look,
-            "The codec is chosen when the stream starts (Settings).",
-            look.p.ink_3,
-        );
-    }
-}
-
-fn sound_menu(ui: &mut Ui, look: &Look, v: &ToolbarView, actions: &mut Vec<ToolbarAction>) {
-    let p = &look.p;
-    let w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
-    let painter = ui.painter().clone();
-    let mut b = Buttons {
-        ui,
-        painter: &painter,
-        look,
-        live: true,
-        actions,
-    };
-    let text = if v.muted {
-        "Turn sound on"
-    } else {
-        "Turn sound off"
-    };
-    if b.wide_button(rect, "mute", text, true, "Sound on or off") {
-        b.actions.push(ToolbarAction::SetMuted(!v.muted));
-    }
-    let ui = b.ui;
-    let shown = if v.muted { 0 } else { v.volume };
-    let mut volume = u32::from(shown);
-    ui.horizontal(|ui| {
-        ui.label(dim(look, "Volume"));
-        ui.add(
-            egui::Slider::new(&mut volume, 0..=100)
-                .step_by(5.0)
-                .trailing_fill(true)
-                .show_value(false),
-        );
-        ui.add_sized(vec2(30.0, 16.0), egui::Label::new(format!("{volume}%")));
-    });
-    if volume != u32::from(shown) {
-        actions.push(ToolbarAction::SetVolume(volume as u8));
-    }
-    if !v.muted {
-        let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
-        let painter = ui.painter().clone();
-        let mut b = Buttons {
-            ui,
-            painter: &painter,
-            look,
-            live: true,
-            actions,
-        };
-        if b.wide_button(
-            rect,
-            "restart",
-            "Restart sound",
-            true,
-            "Sound went quiet? This opens the sound output again without reconnecting",
-        ) {
-            b.actions.push(ToolbarAction::RestartSound);
+        RowKind::Slider => {
+            let Some(slider) = &row.slider else { return };
+            let shown = slider.value as u32;
+            let mut volume = shown;
+            ui.horizontal(|ui| {
+                ui.label(dim(look, row.label.as_deref().unwrap_or_default()));
+                ui.add(
+                    egui::Slider::new(&mut volume, slider.min as u32..=slider.max as u32)
+                        .step_by(slider.step)
+                        .trailing_fill(true)
+                        .show_value(false),
+                );
+                ui.add_sized(vec2(30.0, 16.0), egui::Label::new(&slider.display));
+            });
+            if volume != shown {
+                actions.push(ToolbarAction::SetVolume(volume as u8));
+            }
         }
-    }
-    let _ = p;
-}
-
-fn controllers_menu(ui: &mut Ui, look: &Look, v: &ToolbarView, actions: &mut Vec<ToolbarAction>) {
-    let p = &look.p;
-    if v.pads.is_empty() {
-        note(
-            ui,
-            look,
-            "Press a button on a controller. If nothing shows, connect it in macOS (a cable, or Bluetooth in System Settings) and press again.",
-            look.ink2,
-        );
-    } else {
-        for pad in v.pads {
-            let (rect, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
-            let slot = format!("slot {}", pad.slot + 1);
-            let sg = galley(ui.painter(), &slot, TEXT, p.ink_3);
-            let sx = rect.right() - sg.size().x;
-            ui.painter()
-                .galley(pos2(sx, rect.center().y - sg.size().y / 2.0), sg, p.ink_3);
-            let mut job = egui::text::LayoutJob::single_section(
-                pad.name.clone(),
-                egui::TextFormat::simple(FontId::proportional(TEXT), p.ink),
-            );
-            job.wrap.max_width = sx - rect.left() - 8.0;
-            job.wrap.max_rows = 1;
-            job.wrap.break_anywhere = true;
-            job.wrap.overflow_character = Some('…');
-            let g = ui.painter().layout_job(job);
-            ui.painter().galley(
-                pos2(rect.left(), rect.center().y - g.size().y / 2.0),
-                g,
-                p.ink,
-            );
+        RowKind::List => {
+            for item in row.items.as_deref().unwrap_or_default() {
+                let (rect, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
+                let slot = item.detail.as_deref().unwrap_or_default();
+                let sg = galley(ui.painter(), slot, TEXT, look.p.ink_3);
+                let sx = rect.right() - sg.size().x;
+                ui.painter().galley(
+                    pos2(sx, rect.center().y - sg.size().y / 2.0),
+                    sg,
+                    look.p.ink_3,
+                );
+                let mut job = egui::text::LayoutJob::single_section(
+                    item.text.clone(),
+                    egui::TextFormat::simple(FontId::proportional(TEXT), look.p.ink),
+                );
+                job.wrap.max_width = sx - rect.left() - 8.0;
+                job.wrap.max_rows = 1;
+                job.wrap.break_anywhere = true;
+                job.wrap.overflow_character = Some('…');
+                let g = ui.painter().layout_job(job);
+                ui.painter().galley(
+                    pos2(rect.left(), rect.center().y - g.size().y / 2.0),
+                    g,
+                    look.p.ink,
+                );
+            }
         }
-        note(
-            ui,
-            look,
-            "Every controller shown here is sending input to the stream.",
-            look.p.ink_3,
-        );
-    }
-    if v.input_access == InputAccess::Denied && v.pads.is_empty() {
-        note(
-            ui,
-            look,
-            "Some controllers (Steam Controller) need Input Monitoring: allow Cha Player in System Settings → Privacy & Security → Input Monitoring, then reopen it.",
-            p.warn,
-        );
-        let w = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
-        let painter = ui.painter().clone();
-        let mut b = Buttons {
-            ui,
-            painter: &painter,
-            look,
-            live: true,
-            actions,
-        };
-        if b.wide_button(
-            rect,
-            "input-settings",
-            "Open Settings",
-            true,
-            "Open System Settings at Input Monitoring",
-        ) {
-            b.actions.push(ToolbarAction::OpenInputSettings);
-        }
+        // The browser's link to its controllers page.
+        RowKind::Link => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{DeviceId, MouseButton};
+    use winit::event::{DeviceId, ElementState, MouseButton};
 
     fn click(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
@@ -1584,6 +1375,13 @@ mod tests {
         assert!(t.expanded, "not yet");
         t.tick(t0 + Duration::from_millis(1200));
         assert!(!t.expanded);
+    }
+
+    #[test]
+    fn the_timing_is_the_specs() {
+        assert_eq!(collapse_after(), Duration::from_millis(1200));
+        assert_eq!(near_top(), 72.0);
+        assert_eq!(PowerOff::total(), Duration::from_secs(5));
     }
 
     #[test]
@@ -1730,9 +1528,203 @@ mod tests {
     }
 
     #[test]
-    fn the_transport_reads_as_a_person_would_say_it() {
-        assert_eq!(transport_text("Cha Portal", "WT"), "WebTransport");
-        assert_eq!(transport_text("Moonlight", ""), "GameStream (Moonlight)");
-        assert_eq!(transport_text("Other", ""), "Other");
+    fn capabilities_follow_what_the_link_reports() {
+        // Moonlight says nothing: only the local sound restart.
+        assert_eq!(capabilities(None), ["sound-restart"]);
+        // The portal's streamer: a floor, viewers and an overlay.
+        let link = TransportStats {
+            control: Some(true),
+            viewers: Some(2),
+            overlay: Some(PerfOverlay::Preset(1)),
+            ..Default::default()
+        };
+        let caps = capabilities(Some(&link));
+        for cap in [
+            "viewers",
+            "control-handoff",
+            "fps-change",
+            "steam-overlay",
+            "sound-restart",
+        ] {
+            assert!(caps.iter().any(|c| c == cap), "{cap}");
+        }
+        // Whatever it reports is a capability the native side can ever report.
+        let reports = spec().reports.for_platform(Platform::Native);
+        assert!(caps.iter().all(|c| reports.contains(c)));
+        // A stream with no overlay and no floor has neither.
+        let bare = TransportStats::default();
+        assert_eq!(capabilities(Some(&bare)), ["sound-restart"]);
+    }
+
+    /// A link with everything on, for the draw test.
+    fn full_link() -> TransportStats {
+        TransportStats {
+            tag: "WT",
+            target_fps: Some(120),
+            control: Some(true),
+            viewers: Some(2),
+            can_take: false,
+            overlay: Some(PerfOverlay::Preset(2)),
+            ..Default::default()
+        }
+    }
+
+    /// Draws the toolbar headless, as the player does, with each menu and kind of session the spec
+    /// has rows for, and checks that nothing the spec shows for the native player went undrawn:
+    /// every control and row the shared native cases expect is among what came up.
+    #[test]
+    fn every_control_and_row_the_spec_has_for_native_is_drawn() {
+        use crate::health::{Assessment, Grade};
+        use cha_ui_spec::toolbar_cases::toolbar_cases;
+        let stats = StatsSnapshot::default();
+        let health = Assessment {
+            grade: Some(Grade::B),
+            ..Assessment::default()
+        };
+        let pad = [PadInfo {
+            slot: 0,
+            name: "Pad".into(),
+        }];
+        let full = full_link();
+        let viewing = TransportStats {
+            control: Some(false),
+            ..full_link()
+        };
+        let custom = TransportStats {
+            overlay: Some(PerfOverlay::Custom),
+            ..full_link()
+        };
+        let ctx = Context::default();
+        let mut seen: std::collections::BTreeSet<String> = Default::default();
+        let sessions: [(&str, Option<&TransportStats>, bool, &[PadInfo]); 9] = [
+            ("", Some(&full), false, &pad),
+            ("stream", Some(&full), false, &pad),
+            ("sound", Some(&full), false, &pad),
+            ("controllers", Some(&full), false, &pad),
+            ("controllers", Some(&full), true, &[]),
+            ("stream", Some(&viewing), false, &[]),
+            ("stream", Some(&custom), false, &[]),
+            ("stream", None, false, &[]),
+            ("sound", None, false, &[]),
+        ];
+        for (menu, link, denied, pads) in sessions {
+            let mut t = Toolbar::new();
+            t.open_menu_for_test(menu);
+            let v = ToolbarView {
+                title: "Chrome",
+                transport: "Cha Portal",
+                stats: &stats,
+                health: &health,
+                link,
+                connected: true,
+                locked: false,
+                mouse: true,
+                muted: false,
+                volume: 60,
+                fullscreen: false,
+                stats_open: true,
+                opacity: 90,
+                pads,
+                input_access: if denied {
+                    InputAccess::Denied
+                } else {
+                    InputAccess::Granted
+                },
+            };
+            for c in &t.model(&v, None).controls {
+                seen.insert(c.id.clone());
+                seen.extend(
+                    c.menu
+                        .iter()
+                        .flat_map(|m| m.rows.iter().map(|r| r.id.clone())),
+                );
+            }
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 720.0))),
+                    ..Default::default()
+                };
+                let _ = ctx.run_ui(input, |ui| {
+                    t.show_at(ui.ctx(), &v, Instant::now());
+                });
+            }
+            assert!(t.unhandled.is_empty(), "not drawn: {:?}", t.unhandled);
+        }
+        for case in toolbar_cases()
+            .iter()
+            .filter(|c| c.runs_on(Platform::Native))
+        {
+            let want = case.expected(Platform::Native);
+            let ids = want["controls"].as_array().into_iter().flatten();
+            let rows = want["menu"]["rows"].as_array().into_iter().flatten();
+            for id in ids.chain(rows).filter_map(|v| v.as_str()) {
+                assert!(
+                    seen.contains(id),
+                    "case {:?}: {id} was never drawn",
+                    case.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_state_comes_from_the_view() {
+        use crate::health::Assessment;
+        let stats = StatsSnapshot {
+            codec: "hevc".into(),
+            ..StatsSnapshot::default()
+        };
+        let health = Assessment::default();
+        let link = TransportStats {
+            tag: "WT",
+            target_fps: Some(90),
+            control: Some(false),
+            viewers: Some(3),
+            overlay: Some(PerfOverlay::Custom),
+            ..Default::default()
+        };
+        let v = ToolbarView {
+            title: "Desktop",
+            transport: "Cha Portal",
+            stats: &stats,
+            health: &health,
+            link: Some(&link),
+            connected: true,
+            locked: false,
+            mouse: false,
+            muted: true,
+            volume: 40,
+            fullscreen: true,
+            stats_open: false,
+            opacity: 90,
+            pads: &[],
+            input_access: InputAccess::Granted,
+        };
+        let model = Toolbar::new().model(&v, None);
+        assert_eq!(
+            model.control("viewers").unwrap().label.as_deref(),
+            Some("3 watching")
+        );
+        assert!(
+            model.control("take-control").is_some(),
+            "another session has the controls"
+        );
+        assert_eq!(
+            model.control("mouse").unwrap().icon.as_deref(),
+            Some("mouse-off")
+        );
+        assert_eq!(
+            model.control("sound").unwrap().icon.as_deref(),
+            Some("sound-muted")
+        );
+        assert_eq!(
+            model.control("fullscreen").unwrap().icon.as_deref(),
+            Some("fullscreen-exit")
+        );
+        assert_eq!(model.control("stats").unwrap().pressed, Some(false));
+        assert!(
+            model.control("stats").unwrap().badge.is_none(),
+            "no grade yet"
+        );
     }
 }

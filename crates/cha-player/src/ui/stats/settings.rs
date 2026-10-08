@@ -4,6 +4,7 @@ use egui::{Stroke, Ui, vec2};
 
 use super::{Cmd, PAD, View};
 use crate::overlay_prefs::OPACITY_MIN;
+use crate::ui::chrome;
 
 impl View<'_> {
     pub(super) fn menu_strip(&self, ui: &mut Ui, inner_w: f32, cmds: &mut Vec<Cmd>) {
@@ -17,16 +18,7 @@ impl View<'_> {
             ui.spacing_mut().interact_size.y = 16.0;
             ui.spacing_mut().slider_rail_height = 3.0;
             ui.spacing_mut().slider_width = inner_w - 2.0 * PAD - 8.0 - 8.0 - 62.0 - 32.0;
-            let v = ui.visuals_mut();
-            v.override_text_color = Some(p.ink);
-            v.widgets.inactive.bg_fill = p.line_strong;
-            v.widgets.inactive.weak_bg_fill = p.panel_2;
-            v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.ink);
-            v.widgets.hovered.bg_fill = p.panel_2;
-            v.widgets.hovered.weak_bg_fill = p.panel_2;
-            v.widgets.active.bg_fill = p.panel_2;
-            v.selection.bg_fill = p.accent;
-            v.selection.stroke = Stroke::new(1.0, p.ink);
+            chrome::style_widgets(ui, p);
             ui.style_mut().override_font_id = Some(look.font.clone());
             ui.add_space(6.0);
             let mut opacity = self.prefs.opacity;

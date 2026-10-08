@@ -7,6 +7,7 @@
 // Signing in to portals is only wired up with the `portal` feature.
 #![cfg_attr(not(feature = "portal"), allow(dead_code))]
 
+mod chrome;
 mod settings;
 mod stats;
 mod toolbar;
@@ -175,6 +176,8 @@ pub struct Launcher {
     settings_open: bool,
     /// Input Monitoring, checked now and then: a user may grant it meanwhile.
     input_access: (InputAccess, Instant),
+    /// The brand logo beside the title, uploaded on the first frame.
+    logo: Option<egui::TextureHandle>,
 }
 
 impl Launcher {
@@ -194,6 +197,7 @@ impl Launcher {
             info: None,
             settings_open: false,
             input_access: (input_access(), Instant::now()),
+            logo: None,
         }
     }
 
@@ -412,6 +416,19 @@ impl Launcher {
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
+                // The logo at the heading's height, from the spec's raw pixels.
+                let logo = self.logo.get_or_insert_with(|| {
+                    ui.ctx().load_texture(
+                        "cha-logo",
+                        egui::ColorImage::from_rgba_unmultiplied(
+                            [cha_ui_spec::LOGO_SIZE; 2],
+                            cha_ui_spec::LOGO_RGBA,
+                        ),
+                        egui::TextureOptions::LINEAR,
+                    )
+                });
+                let side = ui.text_style_height(&egui::TextStyle::Heading);
+                ui.add(egui::Image::new((logo.id(), egui::vec2(side, side))));
                 ui.heading("Cha Player");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Settings").clicked() {

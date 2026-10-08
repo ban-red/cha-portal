@@ -2,7 +2,8 @@
 # Makes every logo and icon file from the one master,
 # web/packages/ui-spec/brand/logo.png (1024x1024, transparent):
 #   the portal's favicon (PNG and ICO), Apple touch icon and in-page logo,
-#   and Cha Player's macOS app icon (AppIcon.icns).
+#   Cha Player's macOS app icon (AppIcon.icns), and the launcher's logo as raw pixels
+#   (web/packages/ui-spec/brand/logo-64.rgba: 64x64, 8 bits, straight alpha, no header).
 # Needs ImageMagick (`brew install imagemagick`) and, for the .icns, macOS's
 # iconutil. Run from anywhere: sh scripts/export-brand.sh
 set -eu
@@ -25,6 +26,10 @@ magick "$tmp/ico-16.png" "$tmp/ico-32.png" "$tmp/ico-48.png" "$public/favicon.ic
 # give it the logo's background and some margin.
 magick -size 180x180 "xc:$tile" \( "$master" -filter Lanczos -resize 144x144 \) \
   -gravity center -compose over -composite -strip "PNG24:$public/apple-touch-icon.png"
+
+# Cha Player's launcher draws the logo from raw pixels: egui needs pixels, and a decoder would be a
+# dependency. 64x64 RGBA, 8 bits a channel, straight (not premultiplied) alpha.
+magick "$master" -filter Lanczos -resize 64x64 -strip -alpha set -depth 8 RGBA:web/packages/ui-spec/brand/logo-64.rgba
 
 # Cha Player: a macOS icon on Apple's grid (an 824 pt rounded tile in 1024).
 if command -v iconutil >/dev/null 2>&1; then

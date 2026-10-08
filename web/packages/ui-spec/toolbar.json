@@ -1,0 +1,544 @@
+{
+  "notes": "The in-stream toolbar: the controls in order, the menus they open, and what each says. buildToolbar (toolbar.ts) and build_toolbar (cha-ui-spec's toolbar.rs) turn this, the session's state and the capabilities it reports into the controls to draw. A condition is a state key that must be present (not null, false, empty or an empty list; a number, even 0, is present), '!key' (absent), 'key=value', 'key!=value' or 'key>number'. A text is a template ({name} for a string, {name:int} for a number; a missing value reads the dash) or { web, native } where the words differ; a platform left out has none. A variant ({ when, platforms, ...fields }) overrides fields of its control, row or option while its conditions hold; every matching variant applies, in order, so a later one wins. A row or control shows when its platform is listed, its needs are all reported, none of its lacks is, and its when conditions hold.",
+  "timing": {
+    "fold_after_ms": 1200,
+    "near_top_px": 72
+  },
+  "power_off": {
+    "seconds": 5,
+    "default_name": "the app",
+    "title": "Powering off {name} in {seconds:int}…",
+    "stopping": "Powering off {name}…",
+    "failed": "Couldn't power off {name}",
+    "note": "The app stops and its session ends. Saved data stays.",
+    "cancel": { "label": "Cancel", "tooltip": { "native": "Cancel the power off" } },
+    "close": "Close"
+  },
+  "folded": {
+    "bar": { "aria_label": "Show the toolbar", "tooltip": "Show the toolbar" },
+    "tab": {
+      "aria_label": "Hide the toolbar",
+      "tooltip": "Hide the toolbar (hover the thin bar at the top to bring it back)",
+      "disabled": ["!connected"]
+    }
+  },
+  "visibility": {
+    "hide": [{ "platforms": ["native"], "when": ["captured"] }],
+    "show": [
+      { "when": ["!connected"] },
+      { "when": ["expanded"] },
+      { "when": ["hover"] },
+      { "when": ["menu_open"] },
+      { "platforms": ["native"], "when": ["countdown"] }
+    ]
+  },
+  "capabilities": {
+    "share": { "doc": "The portal can invite others to the session (the Share dialog)." },
+    "gpu-badge": { "doc": "The session knows the device the app runs on, and shows its GPU or CPU badge." },
+    "viewers": { "doc": "The session reports how many sessions watch it." },
+    "control-handoff": { "doc": "The session has a keyboard and mouse that another session can hold, and can ask for them back." },
+    "hand-controls": { "doc": "The session lists who else watches and can hand a guest the controls." },
+    "fps-change": { "doc": "The host can change its frame rate while the stream runs, for the session that has the controls." },
+    "steam-overlay": { "doc": "The app has a performance overlay (Steam's Gamescope one) whose level the host reports and changes." },
+    "codec-switch": { "doc": "The video codec can be changed from the toolbar, with the stream restarting or switching in place." },
+    "transport-switch": { "doc": "The transport (WebTransport or WebRTC) can be picked from the toolbar." },
+    "probe": { "doc": "The environment is the test pattern, which times a synthetic click to the screen." },
+    "sound-restart": { "doc": "Sound can be rebuilt without reconnecting." },
+    "controllers-connect": { "doc": "A controller can be connected from the toolbar (WebHID asks for it with a click)." }
+  },
+  "reports": {
+    "web": ["share", "gpu-badge", "viewers", "control-handoff", "hand-controls", "fps-change", "steam-overlay", "codec-switch", "transport-switch", "probe", "sound-restart", "controllers-connect"],
+    "native": ["viewers", "control-handoff", "fps-change", "steam-overlay", "sound-restart"]
+  },
+  "state": {
+    "connected": { "kind": "bool", "platforms": ["web", "native"], "doc": "The stream is up (false while it reconnects)." },
+    "captured": { "kind": "bool", "platforms": ["native"], "doc": "The pointer is captured: the toolbar folds and takes no input." },
+    "expanded": { "kind": "bool", "platforms": ["web", "native"], "doc": "The toolbar is open rather than folded to its thin bar." },
+    "hover": { "kind": "bool", "platforms": ["web", "native"], "doc": "The pointer is on the toolbar, its folded bar or an open menu." },
+    "menu_open": { "kind": "enum", "values": ["", "stream", "sound", "controllers"], "platforms": ["web", "native"], "doc": "The open dropdown; empty when none." },
+    "countdown": { "kind": "number", "platforms": ["web", "native"], "doc": "Whole seconds left before the app is powered off; null when no countdown runs." },
+    "title": { "kind": "string", "platforms": ["web", "native"], "doc": "The app's name; empty while it is not known." },
+    "gpu_kind": { "kind": "string", "platforms": ["web"], "doc": "The environment's device kind (the GPU badge's); empty when not known." },
+    "viewers": { "kind": "number", "platforms": ["web", "native"], "doc": "Sessions watching this stream, ours included; null when not reported." },
+    "has_control": { "kind": "bool", "platforms": ["web", "native"], "doc": "This session has the keyboard and mouse." },
+    "watchers": { "kind": "list", "platforms": ["web"], "doc": "The other sessions while this one has the controls: { id, label, can_hand }." },
+    "codec": { "kind": "string", "platforms": ["web", "native"], "doc": "The codec in use: the choice (web) or the stream's, upper case (native); empty until known." },
+    "codecs": { "kind": "list", "platforms": ["web"], "doc": "The codecs to offer, as ids." },
+    "pyrowave": { "kind": "bool", "platforms": ["web"], "doc": "The codec is a PyroWave one, which travels over WebTransport only." },
+    "fps": { "kind": "number", "platforms": ["web", "native"], "doc": "The frame rate the host encodes at; null until known." },
+    "fixed_size": { "kind": "bool", "platforms": ["web"], "doc": "The app's display has a fixed size, so its refresh rate cannot change while it runs." },
+    "fps_switching": { "kind": "bool", "platforms": ["web"], "doc": "A frame rate change is under way." },
+    "overlay": { "kind": "string", "platforms": ["web", "native"], "doc": "The app's performance overlay: '0'..'4', 'custom', or null when it has none." },
+    "overlay_switching": { "kind": "bool", "platforms": ["web"], "doc": "An overlay change is under way." },
+    "transport_choice": { "kind": "string", "platforms": ["web"], "doc": "The transport picked: auto, webtransport or webrtc." },
+    "transport_via": { "kind": "enum", "values": ["", "webtransport", "webrtc"], "platforms": ["web"], "doc": "The transport the connection ended up on; empty before it connects." },
+    "transport_name": { "kind": "string", "platforms": ["native"], "doc": "The transport's name (Cha Portal, Moonlight)." },
+    "transport_tag": { "kind": "string", "platforms": ["native"], "doc": "How the stream travels in a few letters (WT for WebTransport); empty when the transport has none." },
+    "probing": { "kind": "bool", "platforms": ["web"], "doc": "The click probe is running." },
+    "mouse_on": { "kind": "bool", "platforms": ["web", "native"], "doc": "The mouse is sent to the app." },
+    "recapture": { "kind": "bool", "platforms": ["web"], "doc": "Exclusive input is on: a click on the picture captures the mouse again after the browser let go." },
+    "muted": { "kind": "bool", "platforms": ["web", "native"], "doc": "Sound is off." },
+    "volume": { "kind": "number", "platforms": ["web", "native"], "doc": "Sound level, 0 to 100." },
+    "audio_blocked": { "kind": "bool", "platforms": ["web"], "doc": "The browser holds sound back until a click or key press." },
+    "controllers": { "kind": "list", "platforms": ["web", "native"], "doc": "The controllers sending input: { name, slot }, slot counted from 0 or null when it has none." },
+    "hid_reason": { "kind": "string", "platforms": ["web"], "doc": "Why WebHID is unavailable; empty when it is." },
+    "note": { "kind": "string", "platforms": ["web"], "doc": "What the last attempt to connect a controller said; empty when nothing." },
+    "input_denied": { "kind": "bool", "platforms": ["native"], "doc": "Controller input is blocked until the user allows it in System Settings." },
+    "fullscreen": { "kind": "bool", "platforms": ["web", "native"], "doc": "The window is full screen." },
+    "stats_open": { "kind": "bool", "platforms": ["web", "native"], "doc": "The stats panel is shown." },
+    "grade": { "kind": "string", "platforms": ["web", "native"], "doc": "The stream's health grade letter; empty while it is not judged." },
+    "grade_summary": { "kind": "string", "platforms": ["web", "native"], "doc": "The health grade's one-line summary." },
+    "controllers_count": { "kind": "number", "derived": true, "doc": "How many controllers are sending input." },
+    "power_off_seconds": { "kind": "number", "derived": true, "doc": "The power-off countdown's length." }
+  },
+  "codec_labels": {
+    "pyrowave444": "LAN quality (PyroWave 4:4:4)",
+    "pyrowave420": "PyroWave 4:2:0"
+  },
+  "controls": [
+    {
+      "id": "back",
+      "kind": "button",
+      "group": "left",
+      "label": "← Back",
+      "tooltip": "Back to the dashboard (it keeps running)"
+    },
+    {
+      "id": "power",
+      "kind": "button",
+      "group": "left",
+      "icon": "power",
+      "aria_label": "Power off",
+      "tooltip": "Power off this app (a {power_off_seconds:int} second countdown, which you can cancel)",
+      "hover_tone": "danger"
+    },
+    {
+      "id": "share",
+      "kind": "button",
+      "group": "left",
+      "platforms": ["web"],
+      "needs": ["share"],
+      "icon": "share",
+      "aria_label": "Share",
+      "tooltip": "Invite a friend to watch, play or use the controls"
+    },
+    {
+      "id": "name",
+      "kind": "label",
+      "group": "left",
+      "droppable": true,
+      "when": ["title"],
+      "label": "{title}"
+    },
+    {
+      "id": "name-pending",
+      "kind": "label",
+      "group": "left",
+      "platforms": ["web"],
+      "droppable": true,
+      "when": ["!title"],
+      "label": "…"
+    },
+    {
+      "id": "gpu",
+      "kind": "badge",
+      "group": "left",
+      "platforms": ["web"],
+      "needs": ["gpu-badge"],
+      "when": ["gpu_kind"]
+    },
+    {
+      "id": "viewers",
+      "kind": "label",
+      "group": "left",
+      "droppable": true,
+      "needs": ["viewers"],
+      "when": ["viewers>1"],
+      "label": "{viewers:int} watching",
+      "tooltip": { "web": "{viewers:int} sessions are watching this environment", "native": "{viewers:int} sessions are watching this app" }
+    },
+    {
+      "id": "take-control",
+      "kind": "button",
+      "group": "left",
+      "needs": ["control-handoff"],
+      "when": ["!has_control"],
+      "label": "Viewing · Take back",
+      "tone": "accent",
+      "tooltip": "Someone else has the keyboard and mouse; take them back"
+    },
+    {
+      "id": "watchers",
+      "kind": "list",
+      "group": "left",
+      "platforms": ["web"],
+      "needs": ["hand-controls"],
+      "when": ["has_control", "watchers"],
+      "aria_label": "Who is watching",
+      "from": "watchers",
+      "item_action": {
+        "label": "Hand controls",
+        "tooltip": "Hand this guest the keyboard and mouse. You can take them back."
+      }
+    },
+    {
+      "id": "stream",
+      "kind": "menu",
+      "group": "right",
+      "icon": "stream-settings",
+      "aria_label": "Stream settings",
+      "tooltip": "Stream settings: codec, frame rate, transport",
+      "states": [{ "when": ["menu_open=stream"], "tone": "accent" }],
+      "menu": {
+        "id": "stream",
+        "dom_id": "stream-menu",
+        "align": "left",
+        "rows": [
+          {
+            "id": "codec",
+            "kind": "choice",
+            "label": "Video codec",
+            "value": "codec",
+            "options": { "from": "codecs" },
+            "edit_needs": ["codec-switch"],
+            "read_only": "{codec}"
+          },
+          {
+            "id": "fps",
+            "kind": "choice",
+            "label": "Frame rate",
+            "when": ["fps", "!fixed_size"],
+            "value": "fps",
+            "options": {
+              "items": [
+                { "value": "60", "label": "60 fps" },
+                { "value": "90", "label": "90 fps" },
+                { "value": "120", "label": "120 fps" }
+              ]
+            },
+            "edit_needs": ["fps-change"],
+            "read_only": "{fps:f0} fps",
+            "tooltip": "Frame rate",
+            "states": [
+              { "when": ["fps_switching"], "disabled": true },
+              { "when": ["!connected"], "disabled": true },
+              { "when": ["!has_control"], "disabled": true, "tooltip": "Only the session with the controls changes the frame rate" }
+            ]
+          },
+          {
+            "id": "overlay",
+            "kind": "choice",
+            "label": "Steam Gamescope Overlay",
+            "needs": ["steam-overlay"],
+            "when": ["overlay"],
+            "value": "overlay",
+            "options": {
+              "items": [
+                { "value": "custom", "label": "Custom", "platforms": ["web"], "when": ["overlay=custom"], "disabled": true },
+                { "value": "0", "label": "Off" },
+                { "value": "1", "label": "FPS" },
+                { "value": "2", "label": "Bar" },
+                { "value": "3", "label": "Detailed" },
+                { "value": "4", "label": "Full" }
+              ]
+            },
+            "tooltip": "Steam Gamescope Overlay",
+            "states": [
+              { "when": ["overlay_switching"], "disabled": true },
+              { "when": ["!connected"], "disabled": true },
+              { "when": ["!has_control"], "disabled": true, "tooltip": "Only the session with the controls changes the overlay" }
+            ]
+          },
+          {
+            "id": "overlay-custom",
+            "kind": "note",
+            "platforms": ["native"],
+            "needs": ["steam-overlay"],
+            "when": ["overlay=custom"],
+            "text": "A hand-written overlay config is in use.",
+            "tone": "dim"
+          },
+          {
+            "id": "transport",
+            "kind": "choice",
+            "label": "Transport",
+            "value": "transport_choice",
+            "options": {
+              "items": [
+                {
+                  "value": "auto",
+                  "label": "Auto",
+                  "states": [
+                    { "when": ["transport_via=webtransport"], "label": "Auto (WT)" },
+                    { "when": ["transport_via=webrtc"], "label": "Auto (RTC)" }
+                  ]
+                },
+                { "value": "webtransport", "label": "WebTransport" },
+                { "value": "webrtc", "label": "WebRTC" }
+              ]
+            },
+            "edit_needs": ["transport-switch"],
+            "read_only": { "native": "{transport_name}" },
+            "tooltip": { "web": "Transport" },
+            "states": [
+              { "when": ["pyrowave"], "disabled": true },
+              { "when": ["transport_via=webtransport"], "tooltip": "Connected over WebTransport" },
+              { "when": ["transport_via=webrtc"], "tooltip": "Connected over WebRTC" },
+              { "when": ["transport_tag=WT"], "read_only": "WebTransport" },
+              { "when": ["transport_name=Moonlight", "!transport_tag"], "read_only": "GameStream (Moonlight)" }
+            ]
+          },
+          {
+            "id": "probe",
+            "kind": "button",
+            "platforms": ["web"],
+            "needs": ["probe"],
+            "label": "Run the click probe",
+            "tooltip": "25 synthetic clicks; times click → flash on screen",
+            "states": [
+              { "when": ["probing"], "label": "Probing…", "disabled": true },
+              { "when": ["!connected"], "disabled": true }
+            ]
+          },
+          {
+            "id": "settings-note",
+            "kind": "note",
+            "platforms": ["native"],
+            "lacks": ["fps-change"],
+            "text": "The frame rate and codec are set in Settings and apply to the next launch.",
+            "tone": "faint"
+          },
+          {
+            "id": "codec-note",
+            "kind": "note",
+            "platforms": ["native"],
+            "needs": ["fps-change"],
+            "text": "The codec is chosen when the stream starts (Settings).",
+            "tone": "faint"
+          }
+        ]
+      }
+    },
+    {
+      "id": "capture",
+      "kind": "toggle",
+      "group": "right",
+      "icon": "exclusive-input",
+      "aria_label": "Exclusive input",
+      "tooltip": {
+        "web": "Exclusive input: the mouse is captured for games; Esc releases it (hold Esc in full screen on Chrome)",
+        "native": "Exclusive input: capture the mouse for games. Ctrl+Alt+Shift+T lets it go"
+      },
+      "pressed": ["recapture"],
+      "states": [
+        {
+          "when": ["recapture"],
+          "icon": "exclusive-input-on",
+          "aria_label": "Exclusive input on",
+          "tone": "accent",
+          "tooltip": "Exclusive input on: clicking the picture captures the mouse; click here to turn that off"
+        },
+        { "when": ["!mouse_on"], "disabled": true, "tooltip": "Turn the mouse on to use exclusive input" }
+      ]
+    },
+    {
+      "id": "mouse",
+      "kind": "toggle",
+      "group": "right",
+      "icon": "mouse-on",
+      "aria_label": "Turn the mouse off",
+      "tooltip": "Mouse on: click to stop sending the mouse (the keyboard still works)",
+      "pressed": ["!mouse_on"],
+      "states": [
+        {
+          "when": ["!mouse_on"],
+          "icon": "mouse-off",
+          "aria_label": "Turn the mouse on",
+          "tone": "warn",
+          "tooltip": "Mouse off: click to send the mouse again"
+        }
+      ]
+    },
+    {
+      "id": "sound",
+      "kind": "menu",
+      "group": "right",
+      "icon": "sound-on",
+      "aria_label": "Sound on",
+      "tooltip": "Sound on, volume {volume:int}%",
+      "states": [
+        {
+          "when": ["audio_blocked", "!muted"],
+          "aria_label": "Enable sound",
+          "tone": "accent",
+          "tooltip": "The browser is blocking sound: open this and click Enable sound"
+        },
+        { "when": ["muted"], "icon": "sound-muted", "aria_label": "Sound off", "tone": "dim", "tooltip": "Sound off" }
+      ],
+      "menu": {
+        "id": "sound",
+        "dom_id": "sound-menu",
+        "align": "left",
+        "rows": [
+          {
+            "id": "sound-toggle",
+            "kind": "button",
+            "label": "Turn sound off",
+            "tooltip": "Sound on or off",
+            "states": [
+              { "when": ["audio_blocked", "!muted"], "label": "Enable sound", "tone": "accent", "tooltip": "Click to let the browser play sound" },
+              { "when": ["muted"], "label": "Turn sound on" }
+            ]
+          },
+          {
+            "id": "volume",
+            "kind": "slider",
+            "label": "Volume",
+            "value": "volume",
+            "zero_when": ["muted"],
+            "min": 0,
+            "max": 100,
+            "step": 5,
+            "display": "{shown:int}%",
+            "aria_text": "{shown:int}%",
+            "states": [{ "when": ["muted"], "aria_text": "Sound off" }]
+          },
+          {
+            "id": "restart",
+            "kind": "button",
+            "needs": ["sound-restart"],
+            "when": ["!muted"],
+            "label": "Restart sound",
+            "tooltip": {
+              "web": "Sound went quiet? This rebuilds the page's sound decoder and playback without reconnecting",
+              "native": "Sound went quiet? This opens the sound output again without reconnecting"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "controllers",
+      "kind": "menu",
+      "group": "right",
+      "icon": "controllers",
+      "aria_label": "Controllers",
+      "tooltip": "No controller yet",
+      "states": [
+        {
+          "when": ["controllers"],
+          "aria_label": "Controllers, {controllers_count:int} sending input",
+          "tone": "accent",
+          "tooltip": "{controllers_count:int} controller(s) sending input"
+        }
+      ],
+      "badge": { "when": ["controllers"], "text": "{controllers_count:int}", "tone": "accent" },
+      "menu": {
+        "id": "controllers",
+        "dom_id": "controller-menu",
+        "align": "right",
+        "rows": [
+          {
+            "id": "list",
+            "kind": "list",
+            "when": ["controllers"],
+            "from": "controllers",
+            "item_detail": "slot {n:int}",
+            "item_detail_none": "no slot"
+          },
+          {
+            "id": "empty-note",
+            "kind": "note",
+            "when": ["!controllers"],
+            "text": {
+              "web": "Press a button on a controller. If nothing shows, connect it below.",
+              "native": "Press a button on a controller. If nothing shows, connect it in macOS (a cable, or Bluetooth in System Settings) and press again."
+            },
+            "tone": "dim"
+          },
+          {
+            "id": "connect",
+            "kind": "button",
+            "platforms": ["web"],
+            "needs": ["controllers-connect"],
+            "group": "actions",
+            "label": "Connect a controller…",
+            "states": [
+              { "when": ["hid_reason"], "disabled": true },
+              { "when": ["!connected"], "disabled": true }
+            ]
+          },
+          {
+            "id": "controllers-page",
+            "kind": "link",
+            "platforms": ["web"],
+            "group": "actions",
+            "label": "Controllers page",
+            "to": "/controllers"
+          },
+          {
+            "id": "hid-reason",
+            "kind": "note",
+            "platforms": ["web"],
+            "dom_id": "controller-reason",
+            "when": ["hid_reason"],
+            "text": "{hid_reason}",
+            "tone": "faint"
+          },
+          {
+            "id": "connect-note",
+            "kind": "note",
+            "platforms": ["web"],
+            "when": ["note"],
+            "role": "status",
+            "text": "{note}",
+            "tone": "warn"
+          },
+          {
+            "id": "input-denied",
+            "kind": "note",
+            "platforms": ["native"],
+            "when": ["input_denied", "!controllers"],
+            "text": "Some controllers (Steam Controller) need Input Monitoring: allow Cha Player in System Settings → Privacy & Security → Input Monitoring, then reopen it.",
+            "tone": "warn"
+          },
+          {
+            "id": "input-settings",
+            "kind": "button",
+            "platforms": ["native"],
+            "when": ["input_denied", "!controllers"],
+            "label": "Open Settings",
+            "tooltip": "Open System Settings at Input Monitoring"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fullscreen",
+      "kind": "button",
+      "group": "right",
+      "icon": "fullscreen-enter",
+      "aria_label": "Full screen",
+      "tooltip": { "web": "Full screen", "native": "Full screen (Cmd+Ctrl+F)" },
+      "states": [
+        {
+          "when": ["fullscreen"],
+          "icon": "fullscreen-exit",
+          "aria_label": "Exit full screen",
+          "tooltip": { "web": "Exit full screen", "native": "Exit full screen (Cmd+Ctrl+F)" }
+        }
+      ]
+    },
+    {
+      "id": "stats",
+      "kind": "toggle",
+      "group": "right",
+      "icon": "stats",
+      "aria_label": "Stats",
+      "tooltip": "Show the stats panel",
+      "pressed": ["stats_open"],
+      "states": [{ "when": ["stats_open"], "tone": "accent", "tooltip": "Hide the stats panel" }],
+      "badge": { "when": ["grade"], "text": "{grade}", "tone_from": "grade", "tooltip": "Stream health: {grade_summary}" }
+    }
+  ]
+}

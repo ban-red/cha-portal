@@ -17,6 +17,10 @@ The in-stream UI's spec, shared by the browser player (`web/apps/portal`) and Ch
 | `prefs.json` | The saved settings: the stats panel's and the toolbar's fields, each with its type, default (or `optional`), limits, rounding, platforms and a doc line. |
 | `prefs-cases.json` | Shared cases for the saved settings: the defaults, then raw saved values and what each side must hold after parsing them. |
 | `prefs.ts`, `prefs-cases.ts` | The schema's types, the validator (`parsePrefsGroup`, `parsePrefsText`); and the cases' types and helper (`@cha/ui-spec/prefs-cases`). |
+| `toolbar.json` | The toolbar: the controls in order and their groups, the menus and their rows, the capability vocabulary and what each side can report, the neutral state, the power-off countdown, the folded bar and the timing. |
+| `toolbar-cases.json` | Shared cases for the toolbar model: capabilities and state in, which controls show and their words out, per platform. |
+| `toolbar.ts`, `toolbar-cases.ts` | `buildToolbar` and the spec's and the model's types; and the cases' types and helpers (`@cha/ui-spec/toolbar-cases`). |
+| `brand/logo-64.rgba` | The logo as 64 x 64 raw RGBA (straight alpha), for the native launcher; written by `scripts/export-brand.sh`. |
 | `index.ts` | Types for the JSON, `ICONS`, `HEALTH`, `fill` and the formatters. |
 
 TypeScript imports this package (`import { ICONS, HEALTH, fill, buildPanel } from "@cha/ui-spec"`); `crates/cha-ui-spec` compiles the same files in with `include_str!` and gives them types (`cha_ui_spec::health::spec()`, parsed once), and its `build.rs` turns the icon ids into a Rust enum, so a misspelt id is a compile error.
@@ -106,6 +110,28 @@ As a row, plus the section: add its id to `SECTIONS` (`statsOverlay.ts`) and `Se
 3. Add the default to `defaults` in `prefs-cases.json` (the cases pin it, so changing a default in `prefs.json` fails them), and cases that show the field accepted and rejected, at its limits and, for a list or object, malformed. `expect` holds only the fields that differ from the defaults. Mark a case `platforms` when only one side can run it.
 4. Run `bun scripts/check-ui-spec.ts`, `bun run --cwd web/apps/portal test` and `cargo test -p cha-ui-spec -p cha-player`. The script checks every default against its limits, every case's `expect` against the schema, and that each field has a case that keeps it and one that falls back.
 
+## The toolbar
+
+`toolbar.json` says what the in-stream toolbar shows; `buildToolbar(spec, state, capabilities, platform)` (`toolbar.ts`) and `build_toolbar` (`crates/cha-ui-spec/src/toolbar.rs`) turn the session's state and what it can do into the controls to draw. The renderers draw only what that returns: `SessionToolbar.vue` (with `StreamMenu.vue`, `SoundMenu.vue`, `ControllerMenu.vue`) loops over `model.controls` and a menu's `rows`, and `crates/cha-player/src/ui/toolbar.rs` does the same in egui. `SessionView.vue` and the native `ToolbarView` map their own state to the model's state keys; that mapping is the only translation.
+
+- **Controls** have `id`, `kind` (`button`, `toggle`, `menu`, `label`, `badge`, `list`), `group` (`left` or `right`, in order), `platforms`, `needs` (capabilities the session must report), `when` (conditions on the state), an `icon` (a spec icon id), `label`, `aria_label`, `tooltip`, `tone`, and for a toggle `pressed`. A `menu` control opens the menu it holds. `droppable` controls (the name, the viewer count) go first on a narrow bar.
+- **Conditions** are state keys: `key` (present: not null, false, empty or an empty list; a number, even 0, counts), `!key`, `key=value`, `key!=value` or `key>number`. A text is a template (`{name}`, `{n:int}`) or `{ web, native }` where the words differ; a platform left out has none.
+- **Variants.** `states` is a list of `{ when, platforms?, ...fields }`. While its conditions hold, its icon, label, aria label, tooltip, tone or `disabled` lay over the control's, row's or option's own; every matching variant applies, in order, so a later one wins. A button that looks different muted, off or blocked is one control with variants, not three.
+- **Menus** have rows of kind `choice` (chips or a select: `value` is a state key, `options` a list or `{ from: "codecs" }`, `edit_needs` the capabilities that make it changeable, `read_only` what it says when it isn't), `button`, `slider`, `list`, `note` and `link`. A row shows when its platform, `needs`, `lacks` and `when` allow it.
+- **Capabilities** are what the session reports: `fps-change`, `steam-overlay`, `share`, `control-handoff`, `hand-controls`, `viewers`, `gpu-badge`, `codec-switch`, `transport-switch`, `probe`, `sound-restart`, `controllers-connect`. `capabilities` declares each with a doc line; `reports` lists, per platform, the ones it can ever report. The browser reports its from the transport and the app (`SessionView.vue`'s `capabilities`); the native player from `TransportStats` (`toolbar::capabilities`).
+- **State** is a neutral map, declared in `state` with a kind, the platforms that fill it and a doc line. A key a platform doesn't have is absent there. `controllers_count` and `power_off_seconds` are derived by the model.
+- **Also in the spec:** `power_off` (the countdown's length and words: `PowerOffDialog.vue` and the native card read them), `folded` (the thin bar's and the hide tab's labels), `visibility` (when the bar is up) and `timing` (`fold_after_ms`, `near_top_px`).
+
+### Adding a control
+
+1. Add it to `controls` in `toolbar.json`: id (kebab-case, unique), kind, group, icon and `aria_label` (or a label), tooltip, `platforms`, `needs`, and `states` for what changes with the state. A new state key goes in `state` (kind, platforms, doc) and in both mappings (`toolbarState` in `SessionView.vue`, `ToolbarView::state` in `toolbar.rs`).
+2. Draw it on each side that shows it: a branch in `SessionToolbar.vue` and in the `match` in `Toolbar::draw_bar`, with what a click does in `SessionView.vue`'s `onControl` and `ToolbarAction`. The browser's `sessionToolbar.test.ts` fails when the model has something the markup doesn't show, and the native `every_control_and_row_the_spec_has_for_native_is_drawn` does for egui.
+3. Add cases to `toolbar-cases.json` that show it, hide it and give each state its words. Work the expected values out by hand, or run a scratch script over `buildToolbar`, then read them before pasting. Run `bun scripts/check-ui-spec.ts` (every control, row and capability needs a case, every icon must exist), `bun run --cwd web/apps/portal test` and `cargo test -p cha-ui-spec -p cha-player`; the two runners must agree.
+
+### Adding a capability
+
+Declare it in `capabilities` (one doc line), list it in `reports` for each side that can ever report it, give a control or row `needs` it (or `lacks`, or `edit_needs`), and report it from each side's session (`SessionView.vue`'s `capabilities`, `toolbar::capabilities`). The check fails on a capability that is declared and never needed, or needed and never declared, and on one with no case that reports it and none that doesn't.
+
 ## The logo
 
 `brand/logo.png` is the master logo: 1024×1024, transparent, cut out of the original artwork's dark background. Every other logo file is made from it by `sh scripts/export-brand.sh` (ImageMagick, and `iconutil` on macOS):
@@ -116,5 +142,6 @@ As a row, plus the section: add its id to `SECTIONS` (`statsOverlay.ts`) and `Se
 | `web/apps/portal/public/apple-touch-icon.png` | Home-screen icon, on the logo's own dark tile |
 | `web/apps/portal/public/logo.png` | `BrandMark.vue`, beside the product name |
 | `crates/cha-player/macos/AppIcon.icns` | Cha Player's app icon, on Apple's 824-in-1024 rounded tile |
+| `web/packages/ui-spec/brand/logo-64.rgba` | The native launcher's header logo: 64 x 64 raw RGBA, straight alpha (`cha_ui_spec::LOGO_RGBA`) |
 
 To change the logo, replace `brand/logo.png`, run the script and commit what it writes.

@@ -13,6 +13,9 @@
 //!   [`panel_cases`], its shared cases (feature `cases`).
 //! - [`prefs`]: the saved settings' schema and the validator the native player's config runs through;
 //!   and [`prefs_cases`], its shared cases (feature `cases`).
+//! - [`toolbar`]: the toolbar's spec and `build_toolbar`, the model both players draw; and
+//!   [`toolbar_cases`], its shared cases (feature `cases`).
+//! - [`LOGO_RGBA`]: the brand logo as raw pixels, for the launcher's header.
 //! - [`THEMES`]: the generated built-in themes, as text.
 
 pub mod fill;
@@ -26,6 +29,9 @@ pub mod path;
 pub mod prefs;
 #[cfg(any(test, feature = "cases"))]
 pub mod prefs_cases;
+pub mod toolbar;
+#[cfg(any(test, feature = "cases"))]
+pub mod toolbar_cases;
 
 use std::sync::LazyLock;
 
@@ -47,6 +53,13 @@ pub const THEMES: [(&str, &str); 2] = [
         include_str!("../../../web/packages/ui-spec/themes/cha-jade.json"),
     ),
 ];
+
+/// The logo as raw pixels for the launcher: 64 x 64, RGBA, 8 bits a channel, straight (not
+/// premultiplied) alpha, no header. `scripts/export-brand.sh` writes it from `brand/logo.png`.
+pub const LOGO_RGBA: &[u8] = include_bytes!("../../../web/packages/ui-spec/brand/logo-64.rgba");
+
+/// The logo's side in pixels.
+pub const LOGO_SIZE: usize = 64;
 
 const ICONS_JSON: &str = include_str!("../../../web/packages/ui-spec/icons.json");
 
@@ -181,6 +194,15 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_logo_is_raw_rgba_of_the_size_it_says() {
+        assert_eq!(LOGO_RGBA.len(), LOGO_SIZE * LOGO_SIZE * 4);
+        // Cut out of its background: the corner is clear and the middle is not.
+        assert_eq!(LOGO_RGBA[3], 0, "the corner is transparent");
+        let middle = (LOGO_SIZE / 2 * LOGO_SIZE + LOGO_SIZE / 2) * 4;
+        assert!(LOGO_RGBA[middle..middle + 4].iter().any(|b| *b != 0));
     }
 
     #[test]

@@ -2,7 +2,9 @@
 // icons it holds. The native side's coverage is compile-time: crates/cha-ui-spec generates an `Icon`
 // enum from icons.json, so a misspelt icon in Rust does not build. For health.json it checks the
 // issues (ids, platforms, wording, template placeholders) and health-cases.json (known issue ids,
-// severities and fields); the checks' own coverage is in each player's tests.
+// severities and fields); the checks' own coverage is in each player's tests. For toolbar.json it checks the
+// controls, menus and rows (unique ids, icons that exist, declared capabilities and state keys, platforms,
+// conditions, templates) and toolbar-cases.json (every control, row and capability has a case).
 //
 //   bun scripts/check-ui-spec.ts
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -21,6 +23,8 @@ const FORMAT_CASES = join(ROOT, "web/packages/ui-spec/format-cases.json");
 const STATS_OVERLAY = join(ROOT, "web/apps/portal/src/statsOverlay.ts");
 const PREFS = join(ROOT, "web/packages/ui-spec/prefs.json");
 const PREFS_CASES = join(ROOT, "web/packages/ui-spec/prefs-cases.json");
+const TOOLBAR = join(ROOT, "web/packages/ui-spec/toolbar.json");
+const TOOLBAR_CASES = join(ROOT, "web/packages/ui-spec/toolbar-cases.json");
 const THEMES_INDEX = join(ROOT, "web/apps/portal/src/themes/index.ts");
 const PORTAL_SRC = join(ROOT, "web/apps/portal/src");
 const errors: string[] = [];
@@ -688,6 +692,457 @@ for (const [k, v] of prefCover) {
 }
 if (prefCases.length < 20) fail("prefs-cases.json: at least 20 cases");
 
+
+// --- toolbar.json and its cases ---
+
+const toolbar = JSON.parse(readFileSync(TOOLBAR, "utf8")) as Obj;
+const toolbarCases = JSON.parse(readFileSync(TOOLBAR_CASES, "utf8")) as Obj;
+const TB_FIELDS = ["icon", "label", "aria_label", "tooltip", "tone", "disabled", "read_only", "aria_text"];
+const TB_TONES = ["none", "ok", "accent", "warn", "danger", "dim", "faint"];
+const TB_CONTROL_KINDS = ["button", "toggle", "menu", "label", "badge", "list"];
+const TB_ROW_KINDS = ["choice", "button", "slider", "list", "note", "link"];
+const TB_STATE_KINDS = ["bool", "number", "string", "enum", "list"];
+const TB_CONTROL_KEYS = ["id", "kind", "group", "platforms", "needs", "when", "droppable", "hover_tone", "pressed", "states", "badge", "menu", "from", "item_action", ...TB_FIELDS];
+const TB_ROW_KEYS = ["id", "kind", "platforms", "needs", "lacks", "when", "states", "group", "dom_id", "role", "text", "value", "options", "edit_needs", "zero_when", "min", "max", "step", "display", "from", "item_detail", "item_detail_none", "to", ...TB_FIELDS];
+const TB_VARIANT_KEYS = ["when", "platforms", ...TB_FIELDS];
+const TB_OPTION_KEYS = ["value", "platforms", "when", "states", ...TB_FIELDS];
+const tbState = (isObj(toolbar.state) ? toolbar.state : {}) as Record<string, Obj>;
+const tbCaps = (isObj(toolbar.capabilities) ? toolbar.capabilities : {}) as Record<string, Obj>;
+const tbReports = (isObj(toolbar.reports) ? toolbar.reports : {}) as Record<string, string[]>;
+const tbControls = (Array.isArray(toolbar.controls) ? toolbar.controls : []) as Obj[];
+const tbIds = new Set<string>();
+const tbUsedCaps = new Set<string>();
+let tbTemplates = 0;
+let tbRows = 0;
+
+const unknownKeys = (o: Obj, allowed: string[], at: string) => {
+  for (const k of Object.keys(o)) if (!allowed.includes(k)) fail(`${at}: unknown key "${k}"`);
+};
+const isPlatforms = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((p) => PLATFORMS.includes(p as string));
+/** A list's entries must be unique strings. */
+const stringList = (v: unknown, at: string): string[] => {
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) {
+    fail(`${at}: a list of strings`);
+    return [];
+  }
+  return v as string[];
+};
+
+for (const [k, v] of Object.entries(tbState)) {
+  const at = `toolbar.json state "${k}"`;
+  if (!/^[a-z][a-z0-9_]*$/.test(k)) fail(`${at}: snake_case`);
+  if (!TB_STATE_KINDS.includes(v.kind as string)) fail(`${at}: kind is one of ${TB_STATE_KINDS.join(", ")}`);
+  if (typeof v.doc !== "string" || !v.doc) fail(`${at}: needs a doc line`);
+  if (v.kind === "enum" && !(Array.isArray(v.values) && v.values.length)) fail(`${at}: an enum lists its values`);
+  if (v.derived === true) {
+    if (v.platforms !== undefined) fail(`${at}: a derived key has no platforms (the model makes it)`);
+  } else if (!isPlatforms(v.platforms)) fail(`${at}: platforms is a non-empty list of ${PLATFORMS.join(", ")}`);
+}
+const stateFilledOn = (key: string, platform: string): boolean => {
+  const v = tbState[key];
+  return !!v && (v.derived === true || (Array.isArray(v.platforms) && (v.platforms as string[]).includes(platform)));
+};
+
+/** A condition: `key`, `!key`, `key=value`, `key!=value` or `key>number`, over a declared state key. */
+function checkCond(cond: unknown, platforms: string[], at: string) {
+  if (typeof cond !== "string") return fail(`${at}: a condition is a string`);
+  let key: string;
+  const m = /^([a-z][a-z0-9_]*)(!=|=|>)(.+)$/.exec(cond);
+  if (m) {
+    key = m[1]!;
+    const spec = tbState[key];
+    if (spec && m[2] === ">" && (spec.kind !== "number" || !Number.isFinite(Number(m[3])))) fail(`${at}: "${cond}" compares a number key with a number`);
+    if (spec && m[2] !== ">" && spec.kind === "enum" && !(spec.values as string[]).includes(m[3]!)) fail(`${at}: "${cond}": "${m[3]}" is not one of ${key}'s values`);
+  } else {
+    const n = /^!?([a-z][a-z0-9_]*)$/.exec(cond);
+    if (!n) return fail(`${at}: "${cond}" is not key, !key, key=value, key!=value or key>number`);
+    key = n[1]!;
+  }
+  if (!tbState[key]) return fail(`${at}: "${key}" is not a declared state key`);
+  // A key the platform never fills is simply absent there (a web-only variant on a shared control is fine), but a
+  // condition that needs a key none of its platforms fills can never hold.
+  const positive = !cond.startsWith("!") && !cond.includes("!=");
+  if (positive && platforms.length && !platforms.some((p) => stateFilledOn(key, p))) fail(`${at}: "${cond}" can never hold: ${key} is not filled on ${platforms.join(" or ")}`);
+}
+const checkConds = (conds: unknown, platforms: string[], at: string) => {
+  for (const c of stringList(conds, at)) checkCond(c, platforms, at);
+};
+
+/** Every placeholder in a template is a declared state key (or one of the context's own), of the right kind. */
+function checkTbTemplate(text: string, platforms: string[], at: string, extra: Record<string, "number" | "string"> = {}) {
+  tbTemplates++;
+  for (const m of text.matchAll(PLACEHOLDER)) {
+    const [, name, fmt] = m as unknown as [string, string, string | undefined];
+    const own = extra[name!];
+    const spec = tbState[name!];
+    const kind = own ?? (spec ? (spec.kind === "number" ? "number" : "string") : undefined);
+    if (!kind) {
+      fail(`${at}: {${name}} is not a declared state key`);
+      continue;
+    }
+    if (fmt && !FORMATTERS.includes(fmt)) fail(`${at}: unknown formatter "${fmt}"`);
+    if (kind === "number" && !fmt) fail(`${at}: {${name}} is a number and needs a formatter`);
+    if (kind === "string" && fmt) fail(`${at}: {${name}:${fmt}} is a string and takes no formatter`);
+    if (!own) for (const p of platforms) if (!stateFilledOn(name!, p)) fail(`${at}: {${name}} is not filled on ${p}`);
+  }
+  if (/[{}]/.test(text.replace(PLACEHOLDER, ""))) fail(`${at}: a stray brace in ${JSON.stringify(text)}`);
+}
+
+/** A text: a template, or { web?, native? } of templates, shown on `platforms`. */
+function checkTbText(t: unknown, platforms: string[], at: string, extra: Record<string, "number" | "string"> = {}) {
+  if (typeof t === "string") return checkTbTemplate(t, platforms, at, extra);
+  if (!isObj(t)) return fail(`${at}: a string or { web?, native? }`);
+  for (const [p, text] of Object.entries(t)) {
+    if (!PLATFORMS.includes(p) || typeof text !== "string") fail(`${at}: "${p}" must be web or native with a string`);
+    else checkTbTemplate(text, platforms.filter((x) => x === p), `${at}.${p}`, extra);
+  }
+}
+
+const checkIcon = (id: unknown, at: string) => {
+  if (typeof id !== "string" || !Object.hasOwn(icons, id)) fail(`${at}: icon "${String(id)}" is not in icons.json`);
+};
+
+function useCaps(list: unknown, at: string) {
+  for (const c of stringList(list, at)) {
+    if (!tbCaps[c]) fail(`${at}: capability "${c}" is not declared`);
+    tbUsedCaps.add(c);
+  }
+}
+
+/** The fields shared by a control, row, option and variant. */
+function checkFields(o: Obj, platforms: string[], at: string, extra: Record<string, "number" | "string"> = {}) {
+  if (o.icon !== undefined) checkIcon(o.icon, at);
+  for (const f of ["label", "aria_label", "tooltip", "read_only", "aria_text"]) if (o[f] !== undefined) checkTbText(o[f], platforms, `${at} ${f}`, extra);
+  if (o.tone !== undefined && !TB_TONES.includes(o.tone as string)) fail(`${at}: tone is one of ${TB_TONES.join(", ")}`);
+  if (o.disabled !== undefined && o.disabled !== true) fail(`${at}: disabled is true`);
+}
+
+function checkVariants(states: unknown, platforms: string[], at: string, extra: Record<string, "number" | "string"> = {}) {
+  if (states === undefined) return;
+  if (!Array.isArray(states)) return fail(`${at}: states is a list`);
+  (states as Obj[]).forEach((v, n) => {
+    const a = `${at} states[${n}]`;
+    if (!isObj(v)) return fail(`${a}: an object`);
+    unknownKeys(v, TB_VARIANT_KEYS, a);
+    if (!Array.isArray(v.when) || !v.when.length) fail(`${a}: needs when`);
+    let ps = platforms;
+    if (v.platforms !== undefined) {
+      if (!isPlatforms(v.platforms)) fail(`${a}: platforms`);
+      else ps = platforms.filter((p) => (v.platforms as string[]).includes(p));
+    }
+    checkConds(v.when, ps, `${a} when`);
+    checkFields(v, ps, a, extra);
+  });
+}
+
+function checkRow(r: Obj, menuId: string, platforms: string[], at: string) {
+  tbRows++;
+  const id = String(r.id);
+  unknownKeys(r, TB_ROW_KEYS, at);
+  if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(id)) fail(`${at}: ids are kebab-case`);
+  if (tbIds.has(id)) fail(`${at}: id appears twice`);
+  tbIds.add(id);
+  if (!TB_ROW_KINDS.includes(r.kind as string)) return fail(`${at}: kind is one of ${TB_ROW_KINDS.join(", ")}`);
+  let ps = platforms;
+  if (r.platforms !== undefined) {
+    if (!isPlatforms(r.platforms)) return fail(`${at}: platforms`);
+    ps = platforms.filter((p) => (r.platforms as string[]).includes(p));
+    if (!ps.length) fail(`${at}: platforms leave the row nowhere to show (its control is on ${platforms.join(", ")})`);
+  }
+  useCaps(r.needs, `${at} needs`);
+  useCaps(r.lacks, `${at} lacks`);
+  useCaps(r.edit_needs, `${at} edit_needs`);
+  checkConds(r.when, ps, `${at} when`);
+  const extra: Record<string, "number" | "string"> = r.kind === "slider" ? { shown: "number" } : r.kind === "list" ? { n: "number" } : {};
+  checkFields(r, ps, at, extra);
+  checkVariants(r.states, ps, at, extra);
+  if (r.text !== undefined) checkTbText(r.text, ps, `${at} text`);
+  const stateKey = (key: unknown, kinds: string[], what: string) => {
+    const spec = typeof key === "string" ? tbState[key] : undefined;
+    if (!spec) return fail(`${at}: ${what} "${String(key)}" is not a declared state key`);
+    if (!kinds.includes(spec.kind as string)) fail(`${at}: ${what} "${String(key)}" is ${spec.kind}, want ${kinds.join(" or ")}`);
+    if (!ps.some((p) => stateFilledOn(key as string, p))) fail(`${at}: ${what} "${String(key)}" is not filled on ${ps.join(" or ")}`);
+  };
+  switch (r.kind) {
+    case "choice": {
+      stateKey(r.value, ["string", "number", "enum"], "value");
+      const o = r.options;
+      if (isObj(o) && Array.isArray(o.items)) {
+        const values = new Set<string>();
+        (o.items as Obj[]).forEach((it, n) => {
+          const a = `${at} option[${n}]`;
+          unknownKeys(it, TB_OPTION_KEYS, a);
+          if (typeof it.value !== "string") fail(`${a}: needs a value`);
+          if (values.has(String(it.value)) && !it.when) fail(`${a}: value "${String(it.value)}" appears twice`);
+          values.add(String(it.value));
+          if (it.label === undefined) fail(`${a}: needs a label`);
+          let ops = ps;
+          if (it.platforms !== undefined) {
+            if (!isPlatforms(it.platforms)) fail(`${a}: platforms`);
+            else ops = ps.filter((p) => (it.platforms as string[]).includes(p));
+          }
+          checkConds(it.when, ops, `${a} when`);
+          checkFields(it, ops, a);
+          checkVariants(it.states, ops, a);
+        });
+      } else if (isObj(o) && o.from === "codecs") stateKey("codecs", ["list"], "options.from");
+      else fail(`${at}: a choice has options.items or options.from "codecs"`);
+      if (r.label === undefined) fail(`${at}: a choice needs a label`);
+      break;
+    }
+    case "slider":
+      stateKey(r.value, ["number"], "value");
+      for (const k of ["min", "max", "step"]) if (!isNum(r[k])) fail(`${at}: a slider needs ${k}`);
+      if (typeof r.display !== "string") fail(`${at}: a slider needs display`);
+      else checkTbTemplate(r.display, ps, `${at} display`, { shown: "number" });
+      checkConds(r.zero_when, ps, `${at} zero_when`);
+      break;
+    case "list":
+      stateKey(r.from, ["list"], "from");
+      break;
+    case "note":
+      if (r.text === undefined) fail(`${at}: a note needs text`);
+      break;
+    case "link":
+      if (typeof r.to !== "string" || !r.to.startsWith("/")) fail(`${at}: a link needs a path in to`);
+      if (r.label === undefined) fail(`${at}: a link needs a label`);
+      break;
+    case "button":
+      if (r.label === undefined) fail(`${at}: a button needs a label`);
+      break;
+  }
+  if (r.dom_id !== undefined && (typeof r.dom_id !== "string" || tbIds.has(`dom:${r.dom_id}`))) fail(`${at}: dom_id must be a unique string`);
+  if (typeof r.dom_id === "string") tbIds.add(`dom:${r.dom_id}`);
+  void menuId;
+}
+
+if (!isNum(toolbar.timing && (toolbar.timing as Obj).fold_after_ms) || !isNum(toolbar.timing && (toolbar.timing as Obj).near_top_px)) fail("toolbar.json: timing needs numbers fold_after_ms and near_top_px");
+{
+  const p = (isObj(toolbar.power_off) ? toolbar.power_off : {}) as Obj;
+  if (!isNum(p.seconds) || (p.seconds as number) <= 0) fail("toolbar.json: power_off.seconds is a positive number");
+  for (const [k, names] of [["title", ["name", "seconds"]], ["stopping", ["name"]], ["failed", ["name"]], ["note", []], ["close", []], ["default_name", []]] as const) {
+    if (typeof p[k] !== "string" || !p[k]) fail(`toolbar.json: power_off.${k} is a string`);
+    else {
+      const extra: Record<string, "number" | "string"> = { name: "string", seconds: "number" };
+      for (const m of (p[k] as string).matchAll(PLACEHOLDER)) if (!(names as readonly string[]).includes(m[1]!)) fail(`toolbar.json: power_off.${k} cannot use {${m[1]}}`);
+      checkTbTemplate(p[k] as string, [], `toolbar.json power_off.${k}`, extra);
+    }
+  }
+  const cancel = (isObj(p.cancel) ? p.cancel : {}) as Obj;
+  if (typeof cancel.label !== "string") fail("toolbar.json: power_off.cancel.label is a string");
+  checkTbText(cancel.tooltip, [], "toolbar.json power_off.cancel.tooltip");
+}
+{
+  const f = (isObj(toolbar.folded) ? toolbar.folded : {}) as Obj;
+  for (const part of ["bar", "tab"]) {
+    const o = (isObj(f[part]) ? f[part] : {}) as Obj;
+    for (const k of ["aria_label", "tooltip"]) if (typeof o[k] !== "string" || !o[k]) fail(`toolbar.json: folded.${part}.${k} is a string`);
+  }
+  checkConds(((f.tab as Obj | undefined)?.disabled), PLATFORMS, "toolbar.json folded.tab.disabled");
+  const vis = (isObj(toolbar.visibility) ? toolbar.visibility : {}) as Obj;
+  for (const group of ["hide", "show"]) {
+    const rules = (Array.isArray(vis[group]) ? vis[group] : []) as Obj[];
+    if (!rules.length) fail(`toolbar.json: visibility.${group} needs rules`);
+    rules.forEach((r, n) => {
+      const ps = r.platforms === undefined ? PLATFORMS : isPlatforms(r.platforms) ? r.platforms : [];
+      checkConds(r.when, ps, `toolbar.json visibility.${group}[${n}] when`);
+    });
+  }
+}
+for (const [id, c] of Object.entries(tbCaps)) if (typeof c.doc !== "string" || !c.doc) fail(`toolbar.json capability "${id}": needs a doc line`);
+for (const p of PLATFORMS) {
+  const list = tbReports[p];
+  if (!Array.isArray(list)) fail(`toolbar.json: reports.${p} lists the capabilities ${p} can report`);
+  else {
+    if (new Set(list).size !== list.length) fail(`toolbar.json: reports.${p} lists a capability twice`);
+    for (const c of list) if (!tbCaps[c]) fail(`toolbar.json: reports.${p} names "${c}", which is not a declared capability`);
+  }
+}
+
+const tbControlPlatforms = new Map<string, string[]>();
+const tbRowPlatforms = new Map<string, string[]>();
+const tbNeeds = new Map<string, string[]>();
+for (const c of tbControls) {
+  const id = String(c.id);
+  const at = `toolbar.json control "${id}"`;
+  unknownKeys(c, TB_CONTROL_KEYS, at);
+  if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(id)) fail(`${at}: ids are kebab-case`);
+  if (tbIds.has(id)) fail(`${at}: id appears twice`);
+  tbIds.add(id);
+  if (!TB_CONTROL_KINDS.includes(c.kind as string)) fail(`${at}: kind is one of ${TB_CONTROL_KINDS.join(", ")}`);
+  if (c.group !== "left" && c.group !== "right") fail(`${at}: group is left or right`);
+  let ps = PLATFORMS;
+  if (c.platforms !== undefined) {
+    if (!isPlatforms(c.platforms)) fail(`${at}: platforms`);
+    else ps = c.platforms;
+  }
+  tbControlPlatforms.set(id, ps);
+  tbNeeds.set(id, stringList(c.needs, `${at} needs`));
+  useCaps(c.needs, `${at} needs`);
+  checkConds(c.when, ps, `${at} when`);
+  checkFields(c, ps, at);
+  checkVariants(c.states, ps, at);
+  if (["button", "toggle", "menu"].includes(c.kind as string) && c.icon === undefined && c.label === undefined) fail(`${at}: a ${c.kind} needs an icon or a label`);
+  if (["button", "toggle", "menu"].includes(c.kind as string) && c.icon !== undefined && c.aria_label === undefined) fail(`${at}: an icon button needs an aria_label`);
+  if (c.kind === "toggle") {
+    if (!Array.isArray(c.pressed) || !c.pressed.length) fail(`${at}: a toggle needs pressed`);
+    checkConds(c.pressed, ps, `${at} pressed`);
+  } else if (c.pressed !== undefined) fail(`${at}: only a toggle has pressed`);
+  if (c.hover_tone !== undefined && !TB_TONES.includes(c.hover_tone as string)) fail(`${at}: hover_tone`);
+  if (c.badge !== undefined) {
+    const b = (isObj(c.badge) ? c.badge : {}) as Obj;
+    unknownKeys(b, ["when", "text", "tone", "tone_from", "tooltip"], `${at} badge`);
+    checkConds(b.when, ps, `${at} badge when`);
+    if (typeof b.text !== "string") fail(`${at}: badge needs text`);
+    else checkTbTemplate(b.text, ps, `${at} badge text`);
+    if (b.tooltip !== undefined) checkTbText(b.tooltip, ps, `${at} badge tooltip`);
+    if ((b.tone === undefined) === (b.tone_from === undefined)) fail(`${at}: a badge has one of tone and tone_from`);
+    if (b.tone !== undefined && !TB_TONES.includes(b.tone as string)) fail(`${at}: badge tone`);
+    if (b.tone_from !== undefined && b.tone_from !== "grade") fail(`${at}: tone_from is "grade"`);
+  }
+  if (c.kind === "menu") {
+    const m = (isObj(c.menu) ? c.menu : undefined) as Obj | undefined;
+    if (!m) fail(`${at}: a menu control needs a menu`);
+    else {
+      unknownKeys(m, ["id", "dom_id", "align", "rows"], `${at} menu`);
+      if (m.id !== id) fail(`${at}: menu.id is the control's id`);
+      if (!((tbState.menu_open?.values as string[] | undefined) ?? []).includes(id)) fail(`${at}: state menu_open does not list "${id}"`);
+      if (m.align !== "left" && m.align !== "right") fail(`${at}: menu.align is left or right`);
+      if (typeof m.dom_id !== "string" || tbIds.has(`dom:${m.dom_id}`)) fail(`${at}: menu.dom_id must be a unique string`);
+      tbIds.add(`dom:${String(m.dom_id)}`);
+      (Array.isArray(m.rows) ? (m.rows as Obj[]) : []).forEach((r) => {
+        checkRow(r, id, ps, `toolbar.json menu "${id}" row "${String(r.id)}"`);
+        const rp = r.platforms === undefined ? ps : ps.filter((p) => (r.platforms as string[]).includes(p));
+        tbRowPlatforms.set(String(r.id), rp);
+        tbNeeds.set(String(r.id), stringList(r.needs, ""));
+      });
+    }
+  } else if (c.menu !== undefined) fail(`${at}: only a menu control has a menu`);
+  if (c.kind === "list") {
+    const spec = typeof c.from === "string" ? tbState[c.from] : undefined;
+    if (!spec || spec.kind !== "list") fail(`${at}: a list control's from is a declared list state key`);
+    const a = (isObj(c.item_action) ? c.item_action : {}) as Obj;
+    if (typeof a.label !== "string" || typeof a.tooltip !== "string") fail(`${at}: item_action needs label and tooltip`);
+  }
+}
+for (const [cap] of Object.entries(tbCaps)) if (!tbUsedCaps.has(cap)) fail(`toolbar.json: capability "${cap}" is declared but no control or row needs it`);
+
+// Coverage per platform: a control or row for a platform either can show (every capability it needs is one the platform can
+// report) or is gated by one it never reports. Either way it must be sound: a gated one is a spec mistake only if
+// nothing on that side could ever show it AND it was meant to (its platforms list says so).
+const tbRenderable = { web: [] as string[], native: [] as string[] } as Record<string, string[]>;
+const tbGated = { web: [] as string[], native: [] as string[] } as Record<string, string[]>;
+for (const [id, ps] of [...tbControlPlatforms, ...tbRowPlatforms]) {
+  for (const p of ps) {
+    const reported = tbReports[p] ?? [];
+    const needs = tbNeeds.get(id) ?? [];
+    (needs.every((n) => reported.includes(n)) ? tbRenderable : tbGated)[p]!.push(id);
+  }
+}
+for (const [id, ps] of tbRowPlatforms) if (!ps.length) fail(`toolbar.json row "${id}" shows on no platform`);
+
+// The cases.
+const tbCaseList = (Array.isArray(toolbarCases.cases) ? toolbarCases.cases : []) as Obj[];
+const tbCaseCaps = (isObj(toolbarCases.caps) ? toolbarCases.caps : {}) as Record<string, string[]>;
+const tbDefaults = (isObj(toolbarCases.defaults) ? toolbarCases.defaults : {}) as Record<string, Obj>;
+const PIN_FIELDS = ["id", "kind", "group", "droppable", "icon", "label", "aria_label", "tooltip", "pressed", "active", "disabled", "tone", "hover_tone", "badge", "menu", "menu_dom_id", "items"];
+const PIN_ROW_FIELDS = ["id", "kind", "group", "dom_id", "role", "label", "tooltip", "text", "tone", "disabled", "value", "options", "editable", "read_only", "slider", "items", "to"];
+const tbSeenControls = new Map<string, Set<string>>([["web", new Set()], ["native", new Set()]]);
+const tbSeenRows = new Map<string, Set<string>>([["web", new Set()], ["native", new Set()]]);
+const capsShown = new Set<string>();
+const capsHidden = new Set<string>();
+
+const checkStateValue = (key: string, v: unknown, at: string) => {
+  const spec = tbState[key];
+  if (!spec) return fail(`${at}: "${key}" is not a declared state key`);
+  if (spec.derived === true) return fail(`${at}: "${key}" is derived, the model makes it`);
+  const kind = spec.kind;
+  if (v === null) return;
+  const ok =
+    kind === "bool" ? typeof v === "boolean"
+    : kind === "number" ? isNum(v)
+    : kind === "string" ? typeof v === "string"
+    : kind === "enum" ? typeof v === "string" && (spec.values as string[]).includes(v)
+    : Array.isArray(v);
+  if (!ok) fail(`${at}: ${key} = ${JSON.stringify(v)} is not a ${kind}${kind === "enum" ? ` of ${(spec.values as string[]).join(", ")}` : ""}`);
+};
+for (const [group, st] of Object.entries(tbDefaults)) {
+  if (!["state", "web", "native"].includes(group)) fail(`toolbar-cases.json: defaults.${group} is state, web or native`);
+  for (const [k, v] of Object.entries(isObj(st) ? st : {})) {
+    checkStateValue(k, v, `toolbar-cases.json defaults.${group}`);
+    if (group !== "state" && tbState[k] && !(tbState[k]!.platforms as string[] | undefined)?.includes(group)) fail(`toolbar-cases.json defaults.${group}: "${k}" is not filled on ${group}`);
+  }
+}
+for (const [name, list] of Object.entries(tbCaseCaps)) for (const c of list) if (!tbCaps[c]) fail(`toolbar-cases.json caps "${name}": "${c}" is not declared`);
+
+const tbNames = new Set<string>();
+for (const c of tbCaseList) {
+  const at = `toolbar-cases.json "${String(c.name)}"`;
+  unknownKeys(c, ["name", "platforms", "caps", "state", "expect"], at);
+  if (typeof c.name !== "string" || !c.name || tbNames.has(c.name)) fail(`${at}: names are unique`);
+  tbNames.add(String(c.name));
+  const ps = c.platforms === undefined ? PLATFORMS : isPlatforms(c.platforms) ? c.platforms : (fail(`${at}: platforms`), []);
+  const caps = typeof c.caps === "string" ? tbCaseCaps[c.caps] : c.caps;
+  if (!Array.isArray(caps)) fail(`${at}: caps is a name from caps or a list`);
+  else for (const cap of caps as string[]) if (!tbCaps[cap]) fail(`${at}: capability "${cap}" is not declared`);
+  for (const [k, v] of Object.entries(isObj(c.state) ? c.state : {})) {
+    checkStateValue(k, v, `${at} state`);
+  }
+  const expect = c.expect as Obj;
+  const per: [string, Obj][] = isObj(expect) && "visible" in expect ? ps.map((p) => [p, expect] as [string, Obj]) : PLATFORMS.filter((p) => ps.includes(p)).map((p) => [p, (expect as Obj)[p] as Obj] as [string, Obj]);
+  for (const [p, e] of per) {
+    const a = `${at} (${p})`;
+    if (!isObj(e)) {
+      fail(`${a}: no expectation`);
+      continue;
+    }
+    unknownKeys(e, ["visible", "controls", "pin", "menu", "countdown", "folded_bar", "hide_tab"], a);
+    if (typeof e.visible !== "boolean") fail(`${a}: visible is true or false`);
+    const ids = stringList(e.controls, `${a} controls`);
+    for (const id of ids) {
+      if (!tbControlPlatforms.has(id)) fail(`${a}: control "${id}" is not in toolbar.json`);
+      else if (!tbControlPlatforms.get(id)!.includes(p)) fail(`${a}: control "${id}" is not a ${p} control`);
+      tbSeenControls.get(p)!.add(id);
+    }
+    for (const [id, fields] of Object.entries(isObj(e.pin) ? e.pin : {})) {
+      if (!ids.includes(id)) fail(`${a}: pin "${id}" is not among the controls shown`);
+      for (const f of Object.keys(isObj(fields) ? fields : {})) if (!PIN_FIELDS.includes(f)) fail(`${a}: pin "${id}" has no field "${f}"`);
+    }
+    if (isObj(e.menu)) {
+      const menuControl = tbControls.find((x) => x.id === (e.menu as Obj).control);
+      if (!menuControl || menuControl.kind !== "menu") fail(`${a}: menu.control "${String((e.menu as Obj).control)}" is not a menu control`);
+      for (const id of stringList((e.menu as Obj).rows, `${a} menu rows`)) {
+        if (!tbRowPlatforms.has(id)) fail(`${a}: row "${id}" is not in toolbar.json`);
+        else if (!tbRowPlatforms.get(id)!.includes(p)) fail(`${a}: row "${id}" is not a ${p} row`);
+        tbSeenRows.get(p)!.add(id);
+      }
+      for (const [id, fields] of Object.entries(isObj((e.menu as Obj).pin) ? ((e.menu as Obj).pin as Obj) : {})) {
+        if (!stringList((e.menu as Obj).rows, "").includes(id)) fail(`${a}: menu pin "${id}" is not among the rows shown`);
+        for (const f of Object.keys(isObj(fields) ? fields : {})) if (!PIN_ROW_FIELDS.includes(f)) fail(`${a}: menu pin "${id}" has no field "${f}"`);
+      }
+    }
+  }
+  if (Array.isArray(caps)) {
+    // A capability counts as shown when a case reports it and hidden when one does not.
+    for (const cap of Object.keys(tbCaps)) (caps.includes(cap) ? capsShown : capsHidden).add(cap);
+  }
+}
+for (const p of PLATFORMS) {
+  for (const id of tbRenderable[p]!) {
+    if (tbControlPlatforms.has(id) && !tbSeenControls.get(p)!.has(id)) fail(`toolbar-cases.json: no case shows the control "${id}" on ${p}`);
+    if (tbRowPlatforms.has(id) && !tbSeenRows.get(p)!.has(id)) fail(`toolbar-cases.json: no case shows the row "${id}" on ${p}`);
+  }
+  for (const id of tbGated[p]!) {
+    if (tbSeenControls.get(p)!.has(id) || tbSeenRows.get(p)!.has(id)) fail(`toolbar-cases.json: "${id}" needs a capability ${p} never reports, yet a ${p} case shows it`);
+  }
+}
+for (const cap of Object.keys(tbCaps)) {
+  if (!capsShown.has(cap)) fail(`toolbar-cases.json: no case reports the capability "${cap}"`);
+  if (!capsHidden.has(cap)) fail(`toolbar-cases.json: no case leaves out the capability "${cap}"`);
+}
+if (tbCaseList.length < 20) fail("toolbar-cases.json: at least 20 cases");
+
 // --- every <Icon name="..."> in the portal exists ---
 
 function* files(dir: string): Generator<string> {
@@ -709,6 +1164,8 @@ for (const file of files(PORTAL_SRC)) {
     const lit = attrs.match(/(?:^|\s)name="([^"]+)"/);
     const dyn = attrs.match(/:name="([^"]+)"/);
     const ids = lit ? [lit[1]!] : dyn ? [...dyn[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!) : [];
+    // The toolbar draws the icons toolbar.json names (checked above), through iconName(control).
+    if (!ids.length && dyn && /^iconName\([a-z]+\)$/.test(dyn[1]!)) continue;
     if (!ids.length) fail(`${rel}: <Icon> without a readable name`);
     for (const id of ids) {
       used++;
@@ -725,5 +1182,6 @@ if (errors.length) {
 console.log(
   `ui-spec ok: ${Object.keys(icons).length} icons, ${used} uses in the portal; ${issueSpecs.length} health issues ` +
     `(${placeholderUses} placeholders), ${cases.length} health cases (${caseCount.shared} shared, ${caseCount.web} web-only, ${caseCount.native} native-only), ${fillCases.length} fill cases; ` +
-    `saved settings: ${[...prefCover.keys()].length} fields, ${prefCases.length} cases; stats panel: ${seenSections.size} sections, ${panelRows} rows, ${panelTemplates} templates, ${panelCases.length} cases, ${formatNames.size} format cases`,
+    `saved settings: ${[...prefCover.keys()].length} fields, ${prefCases.length} cases; stats panel: ${seenSections.size} sections, ${panelRows} rows, ${panelTemplates} templates, ${panelCases.length} cases, ${formatNames.size} format cases; ` +
+    `toolbar: ${tbControls.length} controls, ${tbRows} menu rows, ${Object.keys(tbCaps).length} capabilities, ${tbTemplates} templates, ${tbCaseList.length} cases`,
 );

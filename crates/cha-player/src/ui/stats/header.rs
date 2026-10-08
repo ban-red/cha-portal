@@ -1,10 +1,11 @@
 //! The header: the grade, the summary word (or the compact line when collapsed), and the four
 //! buttons (compact/full, collapse, settings, hide).
 
-use egui::{Align, Rect, Sense, Ui, Vec2, pos2, vec2};
+use egui::{Align, Rect, Sense, Ui, pos2, vec2};
 
 use super::{BTN, Cmd, GAP, HEADER_H, PAD, View};
-use crate::theme::icons::{self, Icon};
+use crate::theme::icons::Icon;
+use crate::ui::chrome::{self, IconStyle};
 
 impl View<'_> {
     pub(super) fn word(&self) -> &str {
@@ -80,18 +81,12 @@ impl View<'_> {
         let mut button = |ui: &mut Ui, id: &str, tip: &str, icon: Icon, active: bool, cmd: Cmd| {
             let b = Rect::from_min_size(pos2(bx, cy - BTN / 2.0), vec2(BTN, BTN));
             bx += BTN + GAP;
-            let resp = ui.interact(b, ui.id().with(id), Sense::click());
-            let hot = resp.hovered() || active;
-            if hot {
-                painter.rect_filled(b, 4.0, look.p.line.gamma_multiply(0.6));
-            }
-            let color = if hot { look.p.ink } else { look.ink2 };
-            icons::paint(
-                &painter,
-                Rect::from_center_size(b.center(), Vec2::splat(12.0)),
-                icon,
-                color,
-            );
+            let style = IconStyle {
+                active,
+                ink_when_active: true,
+                ..IconStyle::new(12.0, 4.0)
+            };
+            let resp = chrome::icon_button(ui, &painter, look, b, ui.id().with(id), icon, style);
             if resp.on_hover_text(tip).clicked() {
                 cmds.push(cmd);
             }

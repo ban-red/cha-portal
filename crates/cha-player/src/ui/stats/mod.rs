@@ -21,7 +21,6 @@
 mod chip;
 mod compact;
 mod header;
-mod look;
 mod placement;
 mod report;
 mod sections;
@@ -33,7 +32,9 @@ use std::time::{Duration, Instant};
 use cha_ui_spec::health::Platform;
 use cha_ui_spec::panel::{Panel, PanelHealth, Severity as PanelSeverity, build_panel, spec};
 use egui::{Align2, Area, Context, FontId, Frame, Id, Order, Pos2, Rect, Stroke, Ui, Vec2, vec2};
-use winit::event::{ElementState, WindowEvent};
+#[cfg(test)]
+use winit::event::ElementState;
+use winit::event::WindowEvent;
 
 use crate::health::{Assessment, Severity};
 use crate::overlay_prefs::{OPACITY_MIN, OverlayPrefs, Section};
@@ -41,7 +42,7 @@ use crate::theme::{OverlayStyle, ThemeExt};
 use placement::{Drag, INSET};
 use report::{Copied, issue_report, player_line};
 
-pub(super) use look::Look;
+use super::chrome::{self, Hold, Look, Press};
 pub use snapshot::StatsSnapshot;
 
 const HEADER_H: f32 = 24.0;
@@ -70,7 +71,7 @@ pub struct StatsPanel {
     rect: Option<Rect>,
     dragging: Option<Drag>,
     /// A press began on the panel and its release hasn't come yet.
-    pressed: bool,
+    press: Press,
     menu_until: Option<Instant>,
     copied: Option<(Copied, Instant)>,
 }
@@ -131,7 +132,7 @@ impl StatsPanel {
             changed: None,
             rect: None,
             dragging: None,
-            pressed: false,
+            press: Press::default(),
             menu_until: None,
             copied: None,
         }
@@ -156,7 +157,7 @@ impl StatsPanel {
             return None;
         }
         let settled = self.changed.is_none_or(|t| t.elapsed() >= SAVE_AFTER);
-        if !(force || settled && self.dragging.is_none() && !self.pressed) {
+        if !(force || settled && self.dragging.is_none() && !self.press.is_down()) {
             return None;
         }
         self.saved = self.prefs.clone();
@@ -177,17 +178,12 @@ impl StatsPanel {
     /// host, and a click there doesn't capture the pointer.
     pub fn consumes(&mut self, pos: Option<Pos2>, event: &WindowEvent) -> bool {
         let over = pos.is_some_and(|p| self.rect.is_some_and(|r| r.contains(p)));
-        match event {
-            WindowEvent::MouseInput { state, .. } => match state {
-                ElementState::Pressed => {
-                    self.pressed |= over;
-                    over
-                }
-                ElementState::Released => std::mem::take(&mut self.pressed) || over,
-            },
-            WindowEvent::MouseWheel { .. } => over,
-            _ => self.pressed || self.dragging.is_some() || over,
-        }
+        let hold = if self.dragging.is_some() {
+            Hold::Moves
+        } else {
+            Hold::Nothing
+        };
+        self.press.claims(event, over, hold)
     }
 
     /// Opens the settings strip, for the snapshots.
@@ -364,52 +360,48 @@ impl View<'_> {
         } else {
             self.style.width - 2.0
         };
-        Frame::new()
-            .fill(look.fill)
-            .stroke(Stroke::new(1.0, p.line))
-            .corner_radius(self.style.radius)
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = Vec2::ZERO;
-                ui.set_width(inner_w);
-                // The area is as tall as it was last frame, so lift that
-                // limit: the body scrolls only past `max_body`.
-                ui.set_max_height(self.max_body + HEADER_H + 2.0);
-                self.header(ui, inner_w, compact_like.then_some(handle_content), cmds);
-                if self.menu {
-                    self.menu_strip(ui, inner_w, cmds);
-                }
-                if self.prefs.collapsed {
-                    return;
-                }
-                // The line between the header and the body.
-                let y = ui.cursor().top();
-                ui.painter()
-                    .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, p.line));
-                ui.add_space(1.0);
-                egui::ScrollArea::vertical()
-                    .max_height(self.max_body - if self.menu { MENU_H } else { 0.0 })
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = Vec2::ZERO;
-                        let w = inner_w - 2.0 * PAD - 6.0;
-                        Frame::new()
-                            .inner_margin(egui::Margin {
-                                left: PAD as i8,
-                                right: (PAD + 6.0) as i8,
-                                top: 4,
-                                bottom: 6,
-                            })
-                            .show(ui, |ui| {
-                                ui.spacing_mut().item_spacing = Vec2::ZERO;
-                                ui.set_width(w);
-                                if self.prefs.compact {
-                                    self.compact_body(ui, w, cmds);
-                                } else {
-                                    self.full_body(ui, w, cmds);
-                                }
-                            });
-                    });
-            });
+        chrome::overlay_frame(look, self.style.radius).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            ui.set_width(inner_w);
+            // The area is as tall as it was last frame, so lift that
+            // limit: the body scrolls only past `max_body`.
+            ui.set_max_height(self.max_body + HEADER_H + 2.0);
+            self.header(ui, inner_w, compact_like.then_some(handle_content), cmds);
+            if self.menu {
+                self.menu_strip(ui, inner_w, cmds);
+            }
+            if self.prefs.collapsed {
+                return;
+            }
+            // The line between the header and the body.
+            let y = ui.cursor().top();
+            ui.painter()
+                .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, p.line));
+            ui.add_space(1.0);
+            egui::ScrollArea::vertical()
+                .max_height(self.max_body - if self.menu { MENU_H } else { 0.0 })
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = Vec2::ZERO;
+                    let w = inner_w - 2.0 * PAD - 6.0;
+                    Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: PAD as i8,
+                            right: (PAD + 6.0) as i8,
+                            top: 4,
+                            bottom: 6,
+                        })
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::ZERO;
+                            ui.set_width(w);
+                            if self.prefs.compact {
+                                self.compact_body(ui, w, cmds);
+                            } else {
+                                self.full_body(ui, w, cmds);
+                            }
+                        });
+                });
+        });
     }
 }
 

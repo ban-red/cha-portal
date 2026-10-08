@@ -7,6 +7,7 @@ use egui::{Rect, Sense, Ui, Vec2, pos2};
 use super::{Cmd, View};
 use crate::health::Issue;
 use crate::theme::icons::{self, Icon};
+use crate::ui::chrome;
 
 /// What a copy button copies.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,8 +71,7 @@ impl View<'_> {
         let resp = ui.interact(b, ui.id().with(("copy", what.key())), Sense::click());
         let done = self.copied == Some(what);
         if resp.hovered() {
-            ui.painter()
-                .rect_filled(b, 4.0, look.p.line.gamma_multiply(0.6));
+            chrome::lit(ui.painter(), look, b, 4.0);
         }
         let color = if resp.hovered() {
             look.p.ink

@@ -1,0 +1,1238 @@
+{
+  "notes": "Shared toolbar cases. Each gives the capabilities a session reports (a name from caps, or a list), the state laid over defaults.state, and what both players must build: whether the bar is up, exactly which controls show, some fields of the ones named in pin, the open menu's rows, the countdown. A case with no platforms runs on both players; where their wording differs, expect is { web, native }.",
+  "caps": {
+    "web-portal": [
+      "share", "gpu-badge", "viewers", "control-handoff", "hand-controls", "fps-change", "steam-overlay",
+      "codec-switch", "transport-switch", "probe", "sound-restart", "controllers-connect"
+    ],
+    "web-no-webtransport": [
+      "share", "gpu-badge", "viewers", "control-handoff", "hand-controls", "fps-change", "codec-switch",
+      "sound-restart", "controllers-connect"
+    ],
+    "native-portal": ["viewers", "control-handoff", "fps-change", "steam-overlay", "sound-restart"],
+    "native-moonlight": ["sound-restart"]
+  },
+  "defaults": {
+    "state": {
+      "connected": true,
+      "captured": false,
+      "expanded": true,
+      "hover": false,
+      "menu_open": "",
+      "countdown": null,
+      "title": "Google Chrome",
+      "viewers": 1,
+      "has_control": true,
+      "fps": 60,
+      "overlay": null,
+      "mouse_on": true,
+      "muted": false,
+      "volume": 100,
+      "controllers": [],
+      "fullscreen": false,
+      "stats_open": true,
+      "grade": "A",
+      "grade_summary": "Smooth"
+    },
+    "web": {
+      "gpu_kind": "nvidia",
+      "watchers": [],
+      "codecs": ["h264", "hevc", "av1"],
+      "codec": "h264",
+      "pyrowave": false,
+      "fixed_size": false,
+      "fps_switching": false,
+      "overlay_switching": false,
+      "transport_choice": "auto",
+      "transport_via": "webtransport",
+      "probing": false,
+      "recapture": false,
+      "audio_blocked": false,
+      "hid_reason": "",
+      "note": ""
+    },
+    "native": { "codec": "HEVC", "transport_name": "Cha Portal", "transport_tag": "WT", "input_denied": false }
+  },
+  "cases": [
+    {
+      "name": "web: a full portal session shows every control",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": {
+        "viewers": 3,
+        "overlay": "2",
+        "watchers": [
+          { "id": "a", "label": "Guest controller", "can_hand": true },
+          { "id": "b", "label": "Guest viewer", "can_hand": false }
+        ],
+        "controllers": [{ "name": "DualSense Wireless Controller", "slot": 0 }],
+        "grade": "B",
+        "grade_summary": "Minor stutter"
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "viewers", "watchers", "stream", "capture", "mouse", "sound",
+          "controllers", "fullscreen", "stats"
+        ],
+        "pin": {
+          "back": { "label": "← Back", "tooltip": "Back to the dashboard (it keeps running)" },
+          "power": {
+            "icon": "power",
+            "aria_label": "Power off",
+            "tooltip": "Power off this app (a 5 second countdown, which you can cancel)",
+            "hover_tone": "danger"
+          },
+          "share": {
+            "icon": "share",
+            "aria_label": "Share",
+            "tooltip": "Invite a friend to watch, play or use the controls"
+          },
+          "name": { "label": "Google Chrome" },
+          "gpu": { "droppable": false },
+          "viewers": { "label": "3 watching", "tooltip": "3 sessions are watching this environment" },
+          "watchers": {
+            "aria_label": "Who is watching",
+            "items": [
+              {
+                "text": "Guest controller",
+                "detail": null,
+                "id": "a",
+                "action": {
+                  "label": "Hand controls",
+                  "tooltip": "Hand this guest the keyboard and mouse. You can take them back."
+                }
+              },
+              { "text": "Guest viewer", "detail": null, "id": "b", "action": null }
+            ]
+          },
+          "stream": {
+            "icon": "stream-settings",
+            "aria_label": "Stream settings",
+            "tooltip": "Stream settings: codec, frame rate, transport",
+            "active": false,
+            "menu_dom_id": "stream-menu"
+          },
+          "capture": {
+            "icon": "exclusive-input",
+            "aria_label": "Exclusive input",
+            "tooltip": "Exclusive input: the mouse is captured for games; Esc releases it (hold Esc in full screen on Chrome)",
+            "pressed": false,
+            "disabled": false
+          },
+          "mouse": {
+            "icon": "mouse-on",
+            "aria_label": "Turn the mouse off",
+            "tooltip": "Mouse on: click to stop sending the mouse (the keyboard still works)",
+            "pressed": false
+          },
+          "sound": { "icon": "sound-on", "aria_label": "Sound on", "tooltip": "Sound on, volume 100%", "tone": "none" },
+          "controllers": {
+            "aria_label": "Controllers, 1 sending input",
+            "tooltip": "1 controller(s) sending input",
+            "tone": "accent",
+            "badge": { "text": "1", "tone": "accent", "tooltip": null }
+          },
+          "fullscreen": { "icon": "fullscreen-enter", "aria_label": "Full screen", "tooltip": "Full screen" },
+          "stats": {
+            "icon": "stats",
+            "aria_label": "Stats",
+            "tooltip": "Hide the stats panel",
+            "pressed": true,
+            "tone": "accent",
+            "badge": { "text": "B", "tone": "ok", "tooltip": "Stream health: Minor stutter" }
+          }
+        }
+      }
+    },
+    {
+      "name": "native: a full portal session",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": {
+        "viewers": 2,
+        "overlay": "2",
+        "controllers": [{ "name": "DualSense Wireless Controller", "slot": 0 }, { "name": "Steam Controller", "slot": 1 }],
+        "grade": "B",
+        "grade_summary": "Minor stutter"
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "name", "viewers", "stream", "capture", "mouse", "sound", "controllers", "fullscreen",
+          "stats"
+        ],
+        "pin": {
+          "back": { "label": "← Back", "tooltip": "Back to the dashboard (it keeps running)" },
+          "power": {
+            "icon": "power",
+            "aria_label": "Power off",
+            "tooltip": "Power off this app (a 5 second countdown, which you can cancel)",
+            "hover_tone": "danger"
+          },
+          "name": { "label": "Google Chrome", "droppable": true },
+          "viewers": { "label": "2 watching", "tooltip": "2 sessions are watching this app", "droppable": true },
+          "stream": { "icon": "stream-settings", "tooltip": "Stream settings: codec, frame rate, transport" },
+          "capture": {
+            "icon": "exclusive-input",
+            "tooltip": "Exclusive input: capture the mouse for games. Ctrl+Alt+Shift+T lets it go"
+          },
+          "mouse": {
+            "icon": "mouse-on",
+            "tooltip": "Mouse on: click to stop sending the mouse (the keyboard still works)"
+          },
+          "sound": { "icon": "sound-on", "tooltip": "Sound on, volume 100%" },
+          "controllers": {
+            "tooltip": "2 controller(s) sending input",
+            "tone": "accent",
+            "badge": { "text": "2", "tone": "accent", "tooltip": null }
+          },
+          "fullscreen": { "icon": "fullscreen-enter", "tooltip": "Full screen (Cmd+Ctrl+F)" },
+          "stats": {
+            "tooltip": "Hide the stats panel",
+            "badge": { "text": "B", "tone": "ok", "tooltip": "Stream health: Minor stutter" }
+          }
+        }
+      }
+    },
+    {
+      "name": "native: Moonlight reports few capabilities",
+      "platforms": ["native"],
+      "caps": "native-moonlight",
+      "state": { "viewers": null, "has_control": true, "fps": 60, "grade": "", "grade_summary": "" },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": { "stats": { "badge": null } }
+      }
+    },
+    {
+      "name": "web: a session viewing, without the controls",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": {
+        "has_control": false,
+        "viewers": 2,
+        "watchers": [{ "id": "a", "label": "Guest controller", "can_hand": true }]
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "viewers", "take-control", "stream", "capture", "mouse",
+          "sound", "controllers", "fullscreen", "stats"
+        ],
+        "pin": {
+          "take-control": {
+            "label": "Viewing · Take back",
+            "tooltip": "Someone else has the keyboard and mouse; take them back",
+            "tone": "accent"
+          }
+        }
+      }
+    },
+    {
+      "name": "native: a session viewing, with its stream settings open",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "has_control": false, "viewers": 2, "menu_open": "stream", "overlay": "1" },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "name", "viewers", "take-control", "stream", "capture", "mouse", "sound",
+          "controllers", "fullscreen", "stats"
+        ],
+        "pin": {
+          "take-control": {
+            "label": "Viewing · Take back",
+            "tooltip": "Someone else has the keyboard and mouse; take them back",
+            "tone": "accent"
+          },
+          "stream": { "active": true, "tone": "accent" }
+        },
+        "menu": {
+          "control": "stream",
+          "rows": ["codec", "fps", "overlay", "transport", "codec-note"],
+          "pin": {
+            "fps": {
+              "value": "60",
+              "options": [
+                { "value": "60", "label": "60 fps", "disabled": false },
+                { "value": "90", "label": "90 fps", "disabled": false },
+                { "value": "120", "label": "120 fps", "disabled": false }
+              ],
+              "editable": true,
+              "disabled": true,
+              "tooltip": "Only the session with the controls changes the frame rate"
+            },
+            "overlay": {
+              "value": "1",
+              "disabled": true,
+              "tooltip": "Only the session with the controls changes the overlay"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: sound muted",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "muted": true },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": { "sound": { "icon": "sound-muted", "aria_label": "Sound off", "tooltip": "Sound off", "tone": "dim" } }
+      }
+    },
+    {
+      "name": "web: sound blocked by the browser",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "audio_blocked": true, "volume": 80 },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": {
+          "sound": {
+            "icon": "sound-on",
+            "aria_label": "Enable sound",
+            "tooltip": "The browser is blocking sound: open this and click Enable sound",
+            "tone": "accent"
+          }
+        }
+      }
+    },
+    {
+      "name": "web: sound on at 80%",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "volume": 80 },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": {
+          "sound": { "icon": "sound-on", "aria_label": "Sound on", "tooltip": "Sound on, volume 80%", "tone": "none" }
+        }
+      }
+    },
+    {
+      "name": "native: sound muted",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "muted": true },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": { "sound": { "icon": "sound-muted", "aria_label": "Sound off", "tooltip": "Sound off", "tone": "dim" } }
+      }
+    },
+    {
+      "name": "web: mouse off disables exclusive input",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "mouse_on": false },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": {
+          "mouse": {
+            "icon": "mouse-off",
+            "aria_label": "Turn the mouse on",
+            "tooltip": "Mouse off: click to send the mouse again",
+            "pressed": true,
+            "tone": "warn"
+          },
+          "capture": {
+            "icon": "exclusive-input",
+            "tooltip": "Turn the mouse on to use exclusive input",
+            "pressed": false,
+            "disabled": true,
+            "tone": "none"
+          }
+        }
+      }
+    },
+    {
+      "name": "web: exclusive input on after the browser let go",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "recapture": true },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": {
+          "capture": {
+            "icon": "exclusive-input-on",
+            "aria_label": "Exclusive input on",
+            "tooltip": "Exclusive input on: clicking the picture captures the mouse; click here to turn that off",
+            "pressed": true,
+            "disabled": false,
+            "tone": "accent"
+          }
+        }
+      }
+    },
+    {
+      "name": "native: mouse off",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "mouse_on": false },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": {
+          "mouse": {
+            "icon": "mouse-off",
+            "aria_label": "Turn the mouse on",
+            "tooltip": "Mouse off: click to send the mouse again",
+            "pressed": true,
+            "tone": "warn"
+          },
+          "capture": { "tooltip": "Turn the mouse on to use exclusive input", "disabled": true }
+        }
+      }
+    },
+    {
+      "name": "native: the pointer is captured",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "captured": true },
+      "expect": {
+        "visible": false,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"]
+      }
+    },
+    {
+      "name": "web: stream settings with every row",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "menu_open": "stream", "overlay": "3", "fps": 120, "viewers": 2 },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "viewers", "stream", "capture", "mouse", "sound",
+          "controllers", "fullscreen", "stats"
+        ],
+        "pin": { "stream": { "active": true, "tone": "accent" } },
+        "menu": {
+          "control": "stream",
+          "rows": ["codec", "fps", "overlay", "transport", "probe"],
+          "pin": {
+            "codec": {
+              "value": "h264",
+              "options": [
+                { "value": "h264", "label": "H264", "disabled": false },
+                { "value": "hevc", "label": "HEVC", "disabled": false },
+                { "value": "av1", "label": "AV1", "disabled": false }
+              ],
+              "editable": true,
+              "read_only": "h264"
+            },
+            "fps": {
+              "value": "120",
+              "options": [
+                { "value": "60", "label": "60 fps", "disabled": false },
+                { "value": "90", "label": "90 fps", "disabled": false },
+                { "value": "120", "label": "120 fps", "disabled": false }
+              ],
+              "editable": true,
+              "disabled": false,
+              "tooltip": "Frame rate"
+            },
+            "overlay": {
+              "value": "3",
+              "options": [
+                { "value": "0", "label": "Off", "disabled": false },
+                { "value": "1", "label": "FPS", "disabled": false },
+                { "value": "2", "label": "Bar", "disabled": false },
+                { "value": "3", "label": "Detailed", "disabled": false },
+                { "value": "4", "label": "Full", "disabled": false }
+              ],
+              "disabled": false,
+              "tooltip": "Steam Gamescope Overlay"
+            },
+            "transport": {
+              "value": "auto",
+              "options": [
+                { "value": "auto", "label": "Auto (WT)", "disabled": false },
+                { "value": "webtransport", "label": "WebTransport", "disabled": false },
+                { "value": "webrtc", "label": "WebRTC", "disabled": false }
+              ],
+              "editable": true,
+              "disabled": false,
+              "tooltip": "Connected over WebTransport"
+            },
+            "probe": {
+              "label": "Run the click probe",
+              "tooltip": "25 synthetic clicks; times click → flash on screen",
+              "disabled": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: a fixed-size app, a PyroWave codec, a custom overlay, a change under way",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": {
+        "menu_open": "stream",
+        "fixed_size": true,
+        "pyrowave": true,
+        "codec": "pyrowave444",
+        "codecs": ["h264", "pyrowave444", "pyrowave420"],
+        "overlay": "custom",
+        "overlay_switching": true,
+        "transport_via": "",
+        "probing": true
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "menu": {
+          "control": "stream",
+          "rows": ["codec", "overlay", "transport", "probe"],
+          "pin": {
+            "codec": {
+              "value": "pyrowave444",
+              "options": [
+                { "value": "h264", "label": "H264", "disabled": false },
+                { "value": "pyrowave444", "label": "LAN quality (PyroWave 4:4:4)", "disabled": false },
+                { "value": "pyrowave420", "label": "PyroWave 4:2:0", "disabled": false }
+              ]
+            },
+            "overlay": {
+              "value": "custom",
+              "options": [
+                { "value": "custom", "label": "Custom", "disabled": true },
+                { "value": "0", "label": "Off", "disabled": false },
+                { "value": "1", "label": "FPS", "disabled": false },
+                { "value": "2", "label": "Bar", "disabled": false },
+                { "value": "3", "label": "Detailed", "disabled": false },
+                { "value": "4", "label": "Full", "disabled": false }
+              ],
+              "disabled": true
+            },
+            "transport": {
+              "disabled": true,
+              "options": [
+                { "value": "auto", "label": "Auto", "disabled": false },
+                { "value": "webtransport", "label": "WebTransport", "disabled": false },
+                { "value": "webrtc", "label": "WebRTC", "disabled": false }
+              ],
+              "tooltip": "Transport"
+            },
+            "probe": { "label": "Probing…", "disabled": true }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: viewing, so the frame rate is not theirs to change",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "menu_open": "stream", "has_control": false, "overlay": "1", "fps_switching": false },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "take-control", "stream", "capture", "mouse", "sound",
+          "controllers", "fullscreen", "stats"
+        ],
+        "menu": {
+          "control": "stream",
+          "rows": ["codec", "fps", "overlay", "transport", "probe"],
+          "pin": {
+            "fps": {
+              "editable": true,
+              "disabled": true,
+              "tooltip": "Only the session with the controls changes the frame rate"
+            },
+            "overlay": { "disabled": true, "tooltip": "Only the session with the controls changes the overlay" }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: no WebTransport and no test pattern",
+      "platforms": ["web"],
+      "caps": "web-no-webtransport",
+      "state": { "menu_open": "stream", "transport_via": "webrtc" },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "menu": { "control": "stream", "rows": ["codec", "fps"] }
+      }
+    },
+    {
+      "name": "native: stream settings on the portal",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "menu_open": "stream", "overlay": "2", "fps": 120 },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": {
+          "control": "stream",
+          "rows": ["codec", "fps", "overlay", "transport", "codec-note"],
+          "pin": {
+            "codec": { "editable": false, "read_only": "HEVC" },
+            "fps": {
+              "value": "120",
+              "options": [
+                { "value": "60", "label": "60 fps", "disabled": false },
+                { "value": "90", "label": "90 fps", "disabled": false },
+                { "value": "120", "label": "120 fps", "disabled": false }
+              ],
+              "editable": true,
+              "disabled": false,
+              "read_only": "120 fps"
+            },
+            "overlay": {
+              "value": "2",
+              "options": [
+                { "value": "0", "label": "Off", "disabled": false },
+                { "value": "1", "label": "FPS", "disabled": false },
+                { "value": "2", "label": "Bar", "disabled": false },
+                { "value": "3", "label": "Detailed", "disabled": false },
+                { "value": "4", "label": "Full", "disabled": false }
+              ],
+              "disabled": false
+            },
+            "transport": { "editable": false, "read_only": "WebTransport" },
+            "codec-note": { "text": "The codec is chosen when the stream starts (Settings).", "tone": "faint" }
+          }
+        }
+      }
+    },
+    {
+      "name": "native: stream settings on Moonlight",
+      "platforms": ["native"],
+      "caps": "native-moonlight",
+      "state": {
+        "menu_open": "stream",
+        "viewers": null,
+        "transport_name": "Moonlight",
+        "transport_tag": "",
+        "codec": "H264"
+      },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": {
+          "control": "stream",
+          "rows": ["codec", "fps", "transport", "settings-note"],
+          "pin": {
+            "codec": { "read_only": "H264" },
+            "fps": { "editable": false, "read_only": "60 fps" },
+            "transport": { "read_only": "GameStream (Moonlight)" },
+            "settings-note": {
+              "text": "The frame rate and codec are set in Settings and apply to the next launch.",
+              "tone": "faint"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "native: a hand-written overlay config",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "menu_open": "stream", "overlay": "custom" },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": {
+          "control": "stream",
+          "rows": ["codec", "fps", "overlay", "overlay-custom", "transport", "codec-note"],
+          "pin": {
+            "overlay": {
+              "value": "custom",
+              "options": [
+                { "value": "0", "label": "Off", "disabled": false },
+                { "value": "1", "label": "FPS", "disabled": false },
+                { "value": "2", "label": "Bar", "disabled": false },
+                { "value": "3", "label": "Detailed", "disabled": false },
+                { "value": "4", "label": "Full", "disabled": false }
+              ]
+            },
+            "overlay-custom": { "text": "A hand-written overlay config is in use.", "tone": "dim" }
+          }
+        }
+      }
+    },
+    {
+      "name": "native: the frame rate is not known yet",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "menu_open": "stream", "fps": null },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": { "control": "stream", "rows": ["codec", "transport", "codec-note"] }
+      }
+    },
+    {
+      "name": "web: sound menu, sound on",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "menu_open": "sound", "volume": 65 },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": { "sound": { "active": true, "menu_dom_id": "sound-menu" } },
+        "menu": {
+          "control": "sound",
+          "rows": ["sound-toggle", "volume", "restart"],
+          "pin": {
+            "sound-toggle": { "label": "Turn sound off", "tooltip": "Sound on or off", "tone": "none" },
+            "volume": { "slider": { "min": 0, "max": 100, "step": 5, "value": 65, "display": "65%", "aria_text": "65%" } },
+            "restart": {
+              "label": "Restart sound",
+              "tooltip": "Sound went quiet? This rebuilds the page's sound decoder and playback without reconnecting"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: sound menu, muted",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "menu_open": "sound", "muted": true, "volume": 65 },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "menu": {
+          "control": "sound",
+          "rows": ["sound-toggle", "volume"],
+          "pin": {
+            "sound-toggle": { "label": "Turn sound on", "tooltip": "Sound on or off" },
+            "volume": {
+              "slider": { "min": 0, "max": 100, "step": 5, "value": 0, "display": "0%", "aria_text": "Sound off" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: sound menu, blocked by the browser",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "menu_open": "sound", "audio_blocked": true },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "menu": {
+          "control": "sound",
+          "rows": ["sound-toggle", "volume", "restart"],
+          "pin": {
+            "sound-toggle": { "label": "Enable sound", "tooltip": "Click to let the browser play sound", "tone": "accent" }
+          }
+        }
+      }
+    },
+    {
+      "name": "native: sound menu",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "menu_open": "sound", "volume": 65 },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": {
+          "control": "sound",
+          "rows": ["sound-toggle", "volume", "restart"],
+          "pin": {
+            "sound-toggle": { "label": "Turn sound off", "tooltip": "Sound on or off" },
+            "volume": { "slider": { "min": 0, "max": 100, "step": 5, "value": 65, "display": "65%", "aria_text": "65%" } },
+            "restart": { "tooltip": "Sound went quiet? This opens the sound output again without reconnecting" }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: controllers menu with no controller",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "menu_open": "controllers" },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": {
+          "controllers": {
+            "aria_label": "Controllers",
+            "tooltip": "No controller yet",
+            "tone": "none",
+            "badge": null,
+            "active": true
+          }
+        },
+        "menu": {
+          "control": "controllers",
+          "rows": ["empty-note", "connect", "controllers-page"],
+          "pin": {
+            "empty-note": { "text": "Press a button on a controller. If nothing shows, connect it below.", "tone": "dim" },
+            "connect": { "label": "Connect a controller…", "disabled": false, "group": "actions" },
+            "controllers-page": { "label": "Controllers page", "to": "/controllers", "group": "actions" }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: controllers menu with several, one without a slot",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": {
+        "menu_open": "controllers",
+        "controllers": [
+          { "name": "DualSense Wireless Controller", "slot": 0 },
+          { "name": "Xbox Wireless Controller", "slot": 1 },
+          { "name": "Keyboard Gamepad", "slot": null }
+        ]
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": {
+          "controllers": {
+            "aria_label": "Controllers, 3 sending input",
+            "tooltip": "3 controller(s) sending input",
+            "tone": "accent",
+            "badge": { "text": "3", "tone": "accent", "tooltip": null }
+          }
+        },
+        "menu": {
+          "control": "controllers",
+          "rows": ["list", "connect", "controllers-page"],
+          "pin": {
+            "list": {
+              "items": [
+                { "text": "DualSense Wireless Controller", "detail": "slot 1", "id": null, "action": null },
+                { "text": "Xbox Wireless Controller", "detail": "slot 2", "id": null, "action": null },
+                { "text": "Keyboard Gamepad", "detail": "no slot", "id": null, "action": null }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: WebHID is unavailable and a connect failed",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": {
+        "menu_open": "controllers",
+        "hid_reason": "This browser has no WebHID. Use Chrome or Edge.",
+        "note": "No controller was added."
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "menu": {
+          "control": "controllers",
+          "rows": ["empty-note", "connect", "controllers-page", "hid-reason", "connect-note"],
+          "pin": {
+            "connect": { "disabled": true },
+            "hid-reason": {
+              "text": "This browser has no WebHID. Use Chrome or Edge.",
+              "dom_id": "controller-reason",
+              "tone": "faint"
+            },
+            "connect-note": { "text": "No controller was added.", "role": "status", "tone": "warn" }
+          }
+        }
+      }
+    },
+    {
+      "name": "native: controllers menu with none and input blocked",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "menu_open": "controllers", "input_denied": true },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": {
+          "control": "controllers",
+          "rows": ["empty-note", "input-denied", "input-settings"],
+          "pin": {
+            "empty-note": {
+              "text": "Press a button on a controller. If nothing shows, connect it in macOS (a cable, or Bluetooth in System Settings) and press again."
+            },
+            "input-denied": {
+              "text": "Some controllers (Steam Controller) need Input Monitoring: allow Cha Player in System Settings → Privacy & Security → Input Monitoring, then reopen it.",
+              "tone": "warn"
+            },
+            "input-settings": { "label": "Open Settings", "tooltip": "Open System Settings at Input Monitoring" }
+          }
+        }
+      }
+    },
+    {
+      "name": "native: controllers menu with several",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": {
+        "menu_open": "controllers",
+        "input_denied": true,
+        "controllers": [{ "name": "DualSense Wireless Controller", "slot": 0 }, { "name": "Steam Controller", "slot": 1 }]
+      },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": {
+          "control": "controllers",
+          "rows": ["list"],
+          "pin": {
+            "list": {
+              "items": [
+                { "text": "DualSense Wireless Controller", "detail": "slot 1", "id": null, "action": null },
+                { "text": "Steam Controller", "detail": "slot 2", "id": null, "action": null }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "the power-off countdown at 5",
+      "caps": [],
+      "state": { "countdown": 5, "expanded": false, "title": "Google Chrome" },
+      "expect": {
+        "web": {
+          "visible": false,
+          "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+          "countdown": {
+            "seconds": 5,
+            "fraction": 1,
+            "title": "Powering off Google Chrome in 5…",
+            "note": "The app stops and its session ends. Saved data stays.",
+            "cancel_label": "Cancel",
+            "cancel_tooltip": null
+          }
+        },
+        "native": {
+          "visible": true,
+          "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+          "countdown": {
+            "seconds": 5,
+            "fraction": 1,
+            "title": "Powering off Google Chrome in 5…",
+            "note": "The app stops and its session ends. Saved data stays.",
+            "cancel_label": "Cancel",
+            "cancel_tooltip": "Cancel the power off"
+          }
+        }
+      }
+    },
+    {
+      "name": "the power-off countdown at 3",
+      "caps": [],
+      "state": { "countdown": 3, "expanded": false, "title": "Google Chrome" },
+      "expect": {
+        "web": {
+          "visible": false,
+          "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+          "countdown": {
+            "seconds": 3,
+            "fraction": 0.6,
+            "title": "Powering off Google Chrome in 3…",
+            "note": "The app stops and its session ends. Saved data stays.",
+            "cancel_label": "Cancel",
+            "cancel_tooltip": null
+          }
+        },
+        "native": {
+          "visible": true,
+          "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+          "countdown": {
+            "seconds": 3,
+            "fraction": 0.6,
+            "title": "Powering off Google Chrome in 3…",
+            "note": "The app stops and its session ends. Saved data stays.",
+            "cancel_label": "Cancel",
+            "cancel_tooltip": "Cancel the power off"
+          }
+        }
+      }
+    },
+    {
+      "name": "the power-off countdown at 0",
+      "caps": [],
+      "state": { "countdown": 0, "expanded": false, "title": "Google Chrome" },
+      "expect": {
+        "web": {
+          "visible": false,
+          "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+          "countdown": {
+            "seconds": 0,
+            "fraction": 0,
+            "title": "Powering off Google Chrome in 0…",
+            "note": "The app stops and its session ends. Saved data stays.",
+            "cancel_label": "Cancel",
+            "cancel_tooltip": null
+          }
+        },
+        "native": {
+          "visible": true,
+          "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+          "countdown": {
+            "seconds": 0,
+            "fraction": 0,
+            "title": "Powering off Google Chrome in 0…",
+            "note": "The app stops and its session ends. Saved data stays.",
+            "cancel_label": "Cancel",
+            "cancel_tooltip": "Cancel the power off"
+          }
+        }
+      }
+    },
+    {
+      "name": "the stats button wears grade A",
+      "caps": [],
+      "state": { "grade": "A", "grade_summary": "Smooth", "stats_open": false },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": {
+          "stats": {
+            "pressed": false,
+            "tone": "none",
+            "tooltip": "Show the stats panel",
+            "badge": { "text": "A", "tone": "ok", "tooltip": "Stream health: Smooth" }
+          }
+        }
+      }
+    },
+    {
+      "name": "the stats button wears grade C",
+      "caps": [],
+      "state": { "grade": "C", "grade_summary": "High latency", "stats_open": false },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": {
+          "stats": {
+            "pressed": false,
+            "tone": "none",
+            "tooltip": "Show the stats panel",
+            "badge": { "text": "C", "tone": "warn", "tooltip": "Stream health: High latency" }
+          }
+        }
+      }
+    },
+    {
+      "name": "the stats button wears grade D",
+      "caps": [],
+      "state": { "grade": "D", "grade_summary": "Dropped frames", "stats_open": false },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": {
+          "stats": {
+            "pressed": false,
+            "tone": "none",
+            "tooltip": "Show the stats panel",
+            "badge": { "text": "D", "tone": "warn", "tooltip": "Stream health: Dropped frames" }
+          }
+        }
+      }
+    },
+    {
+      "name": "the stats button wears grade F",
+      "caps": [],
+      "state": { "grade": "F", "grade_summary": "Not coming through", "stats_open": false },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": {
+          "stats": {
+            "pressed": false,
+            "tone": "none",
+            "tooltip": "Show the stats panel",
+            "badge": { "text": "F", "tone": "danger", "tooltip": "Stream health: Not coming through" }
+          }
+        }
+      }
+    },
+    {
+      "name": "no grade yet: the stats button has no letter",
+      "caps": [],
+      "state": { "grade": "", "grade_summary": "Measuring…" },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": { "stats": { "badge": null } }
+      }
+    },
+    {
+      "name": "folded: only the thin bar shows",
+      "caps": [],
+      "state": { "expanded": false },
+      "expect": {
+        "visible": false,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "folded_bar": { "aria_label": "Show the toolbar", "tooltip": "Show the toolbar" },
+        "hide_tab": {
+          "aria_label": "Hide the toolbar",
+          "tooltip": "Hide the toolbar (hover the thin bar at the top to bring it back)",
+          "disabled": false
+        }
+      }
+    },
+    {
+      "name": "folded but the pointer is on it",
+      "caps": [],
+      "state": { "expanded": false, "hover": true },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"]
+      }
+    },
+    {
+      "name": "folded with a menu open",
+      "caps": [],
+      "state": { "expanded": false, "menu_open": "sound" },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"]
+      }
+    },
+    {
+      "name": "reconnecting: the bar stays up and cannot be hidden",
+      "caps": [],
+      "state": { "expanded": false, "connected": false },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "hide_tab": { "disabled": true }
+      }
+    },
+    {
+      "name": "web controls (Share, the GPU badge, Hand controls, Connect) are not on the native player",
+      "platforms": ["native"],
+      "caps": "web-portal",
+      "state": {
+        "gpu_kind": "nvidia",
+        "watchers": [{ "id": "a", "label": "Guest controller", "can_hand": true }],
+        "menu_open": "controllers"
+      },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": { "control": "controllers", "rows": ["empty-note"] }
+      }
+    },
+    {
+      "name": "a native session reporting nothing: the web's controls need their capabilities",
+      "platforms": ["web"],
+      "caps": [],
+      "state": {
+        "overlay": "2",
+        "viewers": 3,
+        "watchers": [{ "id": "a", "label": "G", "can_hand": true }],
+        "menu_open": "stream"
+      },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "menu": { "control": "stream", "rows": ["codec", "fps"] }
+      }
+    },
+    {
+      "name": "web: the app's name is not known yet",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "title": "" },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name-pending", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": { "name-pending": { "label": "…" } }
+      }
+    },
+    {
+      "name": "native: no name to show",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "title": "" },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"]
+      }
+    },
+    {
+      "name": "web: full screen",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": { "fullscreen": true },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": {
+          "fullscreen": { "icon": "fullscreen-exit", "aria_label": "Exit full screen", "tooltip": "Exit full screen" }
+        }
+      }
+    },
+    {
+      "name": "native: full screen",
+      "platforms": ["native"],
+      "caps": "native-portal",
+      "state": { "fullscreen": true },
+      "expect": {
+        "visible": true,
+        "controls": ["back", "power", "name", "stream", "capture", "mouse", "sound", "controllers", "fullscreen", "stats"],
+        "pin": {
+          "fullscreen": {
+            "icon": "fullscreen-exit",
+            "aria_label": "Exit full screen",
+            "tooltip": "Exit full screen (Cmd+Ctrl+F)"
+          }
+        }
+      }
+    }
+  ]
+}

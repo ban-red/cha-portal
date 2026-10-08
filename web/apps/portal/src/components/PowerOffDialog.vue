@@ -1,14 +1,17 @@
 <script setup lang="ts">
+import { fillPanel, TOOLBAR } from "@cha/ui-spec";
 import { onBeforeUnmount, ref, useId, useTemplateRef, watch } from "vue";
 
 // "Powering off in 5…": a modal on the native <dialog> that stops the app when the countdown
-// reaches zero, unless it is cancelled (button, Esc, or a click outside) first.
+// reaches zero, unless it is cancelled (button, Esc, or a click outside) first. Its words and the
+// countdown's length are toolbar.json's `power_off`, which Cha Player's countdown reads too.
 const props = defineProps<{ open: boolean; name: string; seconds?: number; failed?: string | null }>();
 const emit = defineEmits<{ cancel: []; confirm: [] }>();
 
 const dialog = useTemplateRef<HTMLDialogElement>("dialog");
 const titleId = useId();
-const total = () => props.seconds ?? 5;
+const words = TOOLBAR.power_off;
+const total = () => props.seconds ?? words.seconds;
 const left = ref(total());
 /** Stopping has been asked for: the countdown is over and the answer is awaited. */
 const stopping = ref(false);
@@ -68,17 +71,17 @@ onBeforeUnmount(stopTimer);
   >
     <div class="space-y-4 p-5 text-center">
       <h2 :id="titleId" class="text-base font-semibold tracking-tight" role="status">
-        <template v-if="failed">Couldn't power off {{ name }}</template>
-        <template v-else-if="stopping">Powering off {{ name }}…</template>
-        <template v-else>Powering off {{ name }} in {{ left }}…</template>
+        <template v-if="failed">{{ fillPanel(words.failed, { name }) }}</template>
+        <template v-else-if="stopping">{{ fillPanel(words.stopping, { name }) }}</template>
+        <template v-else>{{ fillPanel(words.title, { name, seconds: left }) }}</template>
       </h2>
       <div v-if="!failed && !stopping" class="h-1 overflow-hidden rounded-full bg-line" aria-hidden="true">
         <div class="h-full bg-danger transition-[width] duration-1000 ease-linear" :style="{ width: `${(left / total()) * 100}%` }" />
       </div>
       <p v-if="failed" class="text-sm text-danger">{{ failed }}</p>
-      <p v-else class="text-sm text-ink-2">The app stops and its session ends. Saved data stays.</p>
+      <p v-else class="text-sm text-ink-2">{{ words.note }}</p>
       <div class="flex justify-center">
-        <button type="button" class="btn-ghost" :disabled="stopping && !failed" @click="cancel">{{ failed ? "Close" : "Cancel" }}</button>
+        <button type="button" class="btn-ghost" :disabled="stopping && !failed" @click="cancel">{{ failed ? words.close : words.cancel.label }}</button>
       </div>
     </div>
   </dialog>

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  FRAME_RATES,
   Player,
   supportedCodecs,
   supportsPyroWave,
@@ -26,23 +25,23 @@ import {
   type Watcher,
   watcherLabel,
 } from "@cha/player";
+import { buildToolbar, TOOLBAR, type ToolbarState } from "@cha/ui-spec";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, useTemplateRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { api } from "../api";
 import { backoffDelay, classifyConnectError } from "../reconnect";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
-import GpuBadge from "../components/GpuBadge.vue";
 import PowerOffDialog from "../components/PowerOffDialog.vue";
 import ShareDialog from "../components/ShareDialog.vue";
 import RecordingDialog from "../components/RecordingDialog.vue";
+import SessionToolbar from "../components/SessionToolbar.vue";
 import StatsOverlay from "../components/StatsOverlay.vue";
 import { useSession } from "../stores/session";
 import { setForcedDark } from "../themes/runtime";
 import { loadToolbarPrefs, saveToolbarPrefs, toolbarKey, type ToolbarPrefs } from "../toolbarPrefs";
 import { PREFS_KEY, parsePrefs, type OverlayPrefs } from "../statsOverlay";
-import Icon from "../components/Icon.vue";
 import WarningNote from "../components/WarningNote.vue";
 import LaunchProgress from "../components/LaunchProgress.vue";
 
@@ -86,11 +85,8 @@ const availableCodecs = computed(() =>
   deviceCodecs.value ? codecs.value.filter((c) => deviceCodecs.value!.includes(c)) : codecs.value,
 );
 // PyroWave 4:4:4 is the LAN quality mode: near-lossless text, but ~580 Mbit/s
-// and slower to the screen than the hardware codecs on 1 GbE (spike S6).
-const CODEC_LABEL: Partial<Record<Codec, string>> = {
-  pyrowave444: "LAN quality (PyroWave 4:4:4)",
-  pyrowave420: "PyroWave 4:2:0",
-};
+// and slower to the screen than the hardware codecs on 1 GbE (spike S6). The menu's labels for the
+// codecs are toolbar.json's.
 const CODEC_KEY = "cha.player.codec";
 const saved = (() => {
   try {
@@ -206,7 +202,6 @@ watch(fps, (rate) => {
   pendingFps = undefined;
   if (want !== rate && player && hasControl.value && !fixedSize.value) void player.setFps(want as FrameRate).catch(() => {});
 });
-const OVERLAY_LABEL: Record<OverlayLevel, string> = { 0: "Off", 1: "FPS", 2: "Bar", 3: "Detailed", 4: "Full" };
 const perfOverlay = ref<OverlayState | null>(null);
 const overlaySwitching = ref(false);
 watch(perfOverlay, (level) => {
@@ -275,9 +270,6 @@ const toggleMenu = (name: MenuName) => {
   menu.value = menu.value === name ? null : name;
   if (menu.value !== "controllers") controllerNote.value = null;
 };
-const ICON_BTN = "btn-ghost relative grid size-8 place-items-center border-0 p-0";
-const MENU_BOX = "absolute top-full z-20 mt-2 w-64 rounded-xl border border-line bg-panel p-3 text-left text-xs whitespace-normal shadow-lg";
-const SELECT = "w-full rounded-lg border border-line-strong bg-canvas px-2 py-1 text-xs text-ink-2 disabled:opacity-50";
 /** A click anywhere outside an open dropdown closes it. */
 function onDocPointerDown(e: PointerEvent) {
   if (menu.value && !(e.target as Element | null)?.closest("[data-menu]")) closeMenu();
@@ -609,7 +601,7 @@ const expanded = ref(true);
 let hideTimer: ReturnType<typeof setTimeout> | undefined;
 function collapseSoon() {
   clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => (expanded.value = false), 1200);
+  hideTimer = setTimeout(() => (expanded.value = false), TOOLBAR.timing.fold_after_ms);
 }
 function expand() {
   clearTimeout(hideTimer);
@@ -618,7 +610,7 @@ function expand() {
 function onPointerMove(e: PointerEvent) {
   if (document.pointerLockElement || !expanded.value || hover.value) return;
   // Near the top it stays; away from it, it folds up shortly.
-  if (e.clientY < 72) clearTimeout(hideTimer);
+  if (e.clientY < TOOLBAR.timing.near_top_px) clearTimeout(hideTimer);
   else collapseSoon();
 }
 /** Fold the toolbar now, without waiting for the pointer to leave. */
@@ -631,20 +623,8 @@ function hideToolbar() {
   video.value?.focus();
 }
 // Wrapped onto more rows on a narrow screen, the toolbar is taller; the stats panel sits below
-// whatever height it has.
-const toolbarEl = useTemplateRef<HTMLElement>("toolbarEl");
+// whatever height it has (the toolbar reports it).
 const toolbarHeight = ref(0);
-let toolbarWatch: ResizeObserver | null = null;
-watch(toolbarEl, (el) => {
-  toolbarWatch?.disconnect();
-  toolbarWatch = null;
-  if (!el) return;
-  toolbarHeight.value = el.offsetHeight;
-  toolbarWatch = new ResizeObserver(() => (toolbarHeight.value = el.offsetHeight));
-  toolbarWatch.observe(el);
-});
-onBeforeUnmount(() => toolbarWatch?.disconnect());
-const toolbar = computed(() => state.value !== "connected" || expanded.value || hover.value || menu.value !== null);
 
 const fullscreen = ref(false);
 async function toggleFullscreen() {
@@ -760,10 +740,6 @@ function cancelRecording() {
   recording = null;
   recordingLeft.value = null;
 }
-const GRADE_TEXT: Record<string, string> = { A: "text-ok", B: "text-ok", C: "text-warn", D: "text-warn", F: "text-danger" };
-const gradeText = (grade: string | null) => (grade ? GRADE_TEXT[grade] : "text-ink-3");
-
-
 const probing = ref(false);
 const probe = ref<ProbeResult | null>(null);
 async function runProbe() {
@@ -774,6 +750,125 @@ async function runProbe() {
     probe.value = await player.runProbe(25);
   } finally {
     probing.value = false;
+  }
+}
+
+// ---- The toolbar: the spec's model from this page's state ----
+
+/** What this browser's session can do: the portal brokers it, so everything but what the browser or the app lacks. */
+const capabilities = computed(() =>
+  TOOLBAR.reports.web.filter((cap) => {
+    if (cap === "transport-switch") return wtSupported;
+    if (cap === "probe") return env.data.value?.templateId === "test-pattern";
+    if (cap === "gpu-badge") return !!env.data.value?.device;
+    return true;
+  }),
+);
+
+const toolbarState = computed<ToolbarState>(() => ({
+  connected: state.value === "connected",
+  expanded: expanded.value,
+  hover: hover.value,
+  menu_open: menu.value ?? "",
+  countdown: null,
+  title: env.data.value?.templateName ?? "",
+  gpu_kind: env.data.value?.device?.kind ?? "",
+  viewers: viewers.value,
+  has_control: hasControl.value,
+  watchers: watchers.value.map((w) => ({ id: String(w.id), label: watcherLabel(w), can_hand: w.role === "controller" })),
+  codec: codec.value,
+  codecs: availableCodecs.value,
+  pyrowave: isPyroWave(codec.value),
+  fps: fps.value,
+  fixed_size: fixedSize.value,
+  fps_switching: fpsSwitching.value,
+  overlay: perfOverlay.value === null ? null : String(perfOverlay.value),
+  overlay_switching: overlaySwitching.value,
+  transport_choice: transportChoice.value,
+  transport_via: transport.value ?? "",
+  probing: probing.value,
+  mouse_on: mouseOn.value,
+  recapture: capture.value.recapture,
+  muted: muted.value,
+  volume: volume.value,
+  audio_blocked: audioBlocked.value,
+  controllers: controllers.value.map((c) => ({ name: c.info.name, slot: c.slot })),
+  hid_reason: hidReason ?? "",
+  note: controllerNote.value ?? "",
+  fullscreen: fullscreen.value,
+  stats_open: overlay.value.open,
+  grade: health.value.grade ?? "",
+  grade_summary: health.value.summary,
+}));
+const toolbarModel = computed(() => buildToolbar(TOOLBAR, toolbarState.value, capabilities.value, "web"));
+
+function giveControl(watcherId: string) {
+  player?.giveControl(Number(watcherId));
+}
+
+/** A control in the toolbar was clicked. */
+function onControl(controlId: string) {
+  switch (controlId) {
+    case "power":
+      askPowerOff();
+      break;
+    case "share":
+      sharing.value = true;
+      break;
+    case "take-control":
+      player?.takeControl();
+      break;
+    case "capture":
+      onCaptureButton();
+      break;
+    case "mouse":
+      toggleMouse();
+      break;
+    case "fullscreen":
+      void toggleFullscreen();
+      break;
+    case "stats":
+      overlay.value = { ...overlay.value, open: !overlay.value.open };
+      break;
+    case "stream":
+    case "sound":
+    case "controllers":
+      toggleMenu(controlId);
+      break;
+  }
+}
+
+/** A row in an open menu was used. */
+function onRow(menuId: string, rowId: string, value?: string | Event, el?: HTMLSelectElement) {
+  const picked = typeof value === "string" ? value : "";
+  switch (`${menuId}/${rowId}`) {
+    case "stream/codec":
+      void setCodec(picked as Codec);
+      break;
+    case "stream/fps":
+      if (el) void setFps(Number(picked) as FrameRate, el);
+      break;
+    case "stream/overlay":
+      if (el) void setOverlay(Number(picked) as OverlayLevel, el);
+      break;
+    case "stream/transport":
+      setTransport(picked as TransportChoice);
+      break;
+    case "stream/probe":
+      void runProbe();
+      break;
+    case "sound/sound-toggle":
+      onSoundButton();
+      break;
+    case "sound/volume":
+      if (value && typeof value !== "string") onVolume(value);
+      break;
+    case "sound/restart":
+      player?.restartAudio();
+      break;
+    case "controllers/connect":
+      void connectController();
+      break;
   }
 }
 
@@ -828,297 +923,27 @@ const STATUS: Record<PlayerState, string> = {
       Click for exclusive input
     </div>
 
-    <!-- The toolbar, folded: a thin bar to hover or click -->
-    <button
-      type="button"
-      class="absolute top-0 left-1/2 z-30 -translate-x-1/2 px-6 pt-1.5 pb-3 transition-opacity duration-200"
-      :class="toolbar ? 'pointer-events-none opacity-0' : 'opacity-100'"
-      :tabindex="toolbar ? -1 : 0"
-      aria-label="Show the toolbar"
-      title="Show the toolbar"
-      @pointerenter="expand"
-      @click="expand"
-      @focus="expand"
-    >
-      <span class="block h-1.5 w-24 rounded-full border border-line bg-panel/80 shadow backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none" />
-    </button>
-
-    <!-- Toolbar -->
-    <div
-      ref="toolbarEl"
-      class="absolute inset-x-2 top-3 z-30 mx-auto flex w-max max-w-[calc(100%-1rem)] origin-top flex-wrap items-center justify-center gap-1 rounded-xl border border-line bg-panel/90 p-1.5 shadow-lg backdrop-blur transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none transition duration-200"
-      :class="toolbar ? 'opacity-100' : 'pointer-events-none -translate-y-3 scale-y-50 opacity-0'"
-      :inert="!toolbar"
-      @pointerenter="hover = true"
-      @pointerleave="
+    <!-- The toolbar (and its folded bar): what it shows is toolbar.json's, built into `toolbarModel` -->
+    <SessionToolbar
+      :model="toolbarModel"
+      :gpu="env.data.value?.device ? { kind: env.data.value.device.kind, name: env.data.value.device.name } : null"
+      @control="onControl"
+      @hand="giveControl"
+      @row="onRow"
+      @close-menu="closeMenu"
+      @expand="expand"
+      @pointer-enter="hover = true"
+      @pointer-leave="
         hover = false;
         collapseSoon();
       "
-      @focusin="expand"
-    >
-      <RouterLink to="/" class="btn-ghost border-0 px-3 py-1.5 text-xs" title="Back to the dashboard (it keeps running)">← Back</RouterLink>
-      <button
-        :class="[ICON_BTN, 'hover:text-danger']"
-        aria-label="Power off"
-        title="Power off this app (a 5 second countdown, which you can cancel)"
-        @click="askPowerOff"
-      >
-        <Icon name="power" class="size-4" />
-      </button>
-      <button
-        :class="ICON_BTN"
-        aria-label="Share"
-        title="Invite a friend to watch, play or use the controls"
-        @click="sharing = true"
-      >
-        <Icon name="share" class="size-4" />
-      </button>
-      <span class="max-w-48 truncate px-2 text-sm font-medium">{{ env.data.value?.templateName ?? "…" }}</span>
-      <GpuBadge v-if="env.data.value?.device" :kind="env.data.value.device.kind" :name="env.data.value.device.name" tense="is" />
-      <span v-if="viewers > 1" class="px-2 text-xs text-ink-2" :title="`${viewers} sessions are watching this environment`">
-        {{ viewers }} watching
-      </span>
-      <button
-        v-if="!hasControl"
-        class="btn-ghost border-0 px-3 py-1.5 text-xs text-accent"
-        title="Someone else has the keyboard and mouse; take them back"
-        @click="player?.takeControl()"
-      >
-        Viewing · Take back
-      </button>
-      <ul v-if="hasControl && watchers.length" class="flex flex-wrap items-center gap-x-1" aria-label="Who is watching">
-        <li v-for="w in watchers" :key="w.id" class="flex items-center gap-1 px-2 text-xs text-ink-2">
-          {{ watcherLabel(w) }}
-          <button
-            v-if="w.role === 'controller'"
-            type="button"
-            class="btn-ghost min-h-7 border-0 px-2 py-0.5 text-xs text-accent"
-            title="Hand this guest the keyboard and mouse. You can take them back."
-            @click="player?.giveControl(w.id)"
-          >
-            Hand controls
-          </button>
-        </li>
-      </ul>
-
-      <!-- Stream settings -->
-      <div class="relative" data-menu @keydown.esc="closeMenu">
-        <button
-          :class="[ICON_BTN, menu === 'stream' && 'bg-line/60 text-accent']"
-          aria-haspopup="true"
-          :aria-expanded="menu === 'stream'"
-          aria-controls="stream-menu"
-          aria-label="Stream settings"
-          title="Stream settings: codec, frame rate, transport"
-          @click="toggleMenu('stream')"
-        >
-          <Icon name="stream-settings" class="size-4" />
-        </button>
-        <div v-if="menu === 'stream'" id="stream-menu" :class="[MENU_BOX, 'left-0 space-y-2']">
-          <label class="block">
-            <span class="mb-0.5 block text-ink-2">Video codec</span>
-            <select :class="SELECT" :value="codec" @change="setCodec(($event.target as HTMLSelectElement).value as Codec)">
-              <option v-for="c in availableCodecs" :key="c" :value="c">{{ CODEC_LABEL[c] ?? c.toUpperCase() }}</option>
-            </select>
-          </label>
-          <label v-if="!fixedSize && fps !== null" class="block">
-            <span class="mb-0.5 block text-ink-2">Frame rate</span>
-            <select
-              :class="SELECT"
-              :disabled="fpsSwitching || !hasControl || state !== 'connected'"
-              :value="fps"
-              :title="hasControl ? 'Frame rate' : 'Only the session with the controls changes the frame rate'"
-              @change="setFps(Number(($event.target as HTMLSelectElement).value) as FrameRate, $event.target as HTMLSelectElement)"
-            >
-              <option v-for="rate in FRAME_RATES" :key="rate" :value="rate">{{ rate }} fps</option>
-            </select>
-          </label>
-          <label v-if="perfOverlay !== null" class="block">
-            <span class="mb-0.5 block text-ink-2">Steam Gamescope Overlay</span>
-            <select
-              :class="SELECT"
-              :disabled="overlaySwitching || !hasControl || state !== 'connected'"
-              :value="perfOverlay"
-              :title="hasControl ? 'Steam Gamescope Overlay' : 'Only the session with the controls changes the overlay'"
-              @change="setOverlay(Number(($event.target as HTMLSelectElement).value) as OverlayLevel, $event.target as HTMLSelectElement)"
-            >
-              <option v-if="perfOverlay === 'custom'" value="custom" disabled>Custom</option>
-              <option v-for="(label, level) in OVERLAY_LABEL" :key="level" :value="level">{{ label }}</option>
-            </select>
-          </label>
-          <label v-if="wtSupported" class="block">
-            <span class="mb-0.5 block text-ink-2">Transport</span>
-            <select
-              :class="SELECT"
-              :disabled="isPyroWave(codec)"
-              :value="transportChoice"
-              :title="transport ? `Connected over ${transport === 'webtransport' ? 'WebTransport' : 'WebRTC'}` : 'Transport'"
-              @change="setTransport(($event.target as HTMLSelectElement).value as TransportChoice)"
-            >
-              <option value="auto">Auto{{ transport ? ` (${transport === "webtransport" ? "WT" : "RTC"})` : "" }}</option>
-              <option value="webtransport">WebTransport</option>
-              <option value="webrtc">WebRTC</option>
-            </select>
-          </label>
-          <button
-            v-if="env.data.value?.templateId === 'test-pattern'"
-            class="btn-ghost w-full px-3 py-1 text-xs"
-            :disabled="probing || state !== 'connected'"
-            title="25 synthetic clicks; times click → flash on screen"
-            @click="runProbe"
-          >
-            {{ probing ? "Probing…" : "Run the click probe" }}
-          </button>
-        </div>
-      </div>
-
-      <!-- Input -->
-      <button
-        :class="[ICON_BTN, capture.recapture && 'text-accent']"
-        :disabled="!mouseOn"
-        :aria-pressed="capture.recapture"
-        :aria-label="capture.recapture ? 'Exclusive input on' : 'Exclusive input'"
-        :title="
-          !mouseOn
-            ? 'Turn the mouse on to use exclusive input'
-            : capture.recapture
-              ? 'Exclusive input on: clicking the picture captures the mouse; click here to turn that off'
-              : 'Exclusive input: the mouse is captured for games; Esc releases it (hold Esc in full screen on Chrome)'
-        "
-        @click="onCaptureButton"
-      >
-        <Icon :name="capture.recapture ? 'exclusive-input-on' : 'exclusive-input'" class="size-4" />
-      </button>
-      <button
-        :class="[ICON_BTN, !mouseOn && 'text-warn']"
-        :aria-pressed="!mouseOn"
-        :aria-label="mouseOn ? 'Turn the mouse off' : 'Turn the mouse on'"
-        :title="mouseOn ? 'Mouse on: click to stop sending the mouse (the keyboard still works)' : 'Mouse off: click to send the mouse again'"
-        @click="toggleMouse"
-      >
-        <Icon :name="mouseOn ? 'mouse-on' : 'mouse-off'" class="size-4" />
-      </button>
-
-      <!-- Sound -->
-      <div class="relative" data-menu @keydown.esc="closeMenu">
-        <button
-          :class="[ICON_BTN, menu === 'sound' && 'bg-line/60', audioBlocked && !muted ? 'text-accent' : muted && 'text-ink-2']"
-          aria-haspopup="true"
-          :aria-expanded="menu === 'sound'"
-          aria-controls="sound-menu"
-          :aria-label="muted ? 'Sound off' : audioBlocked ? 'Enable sound' : 'Sound on'"
-          :title="audioBlocked && !muted ? 'The browser is blocking sound: open this and click Enable sound' : muted ? 'Sound off' : `Sound on, volume ${volume}%`"
-          @click="toggleMenu('sound')"
-        >
-          <Icon :name="muted ? 'sound-muted' : 'sound-on'" class="size-4" />
-        </button>
-        <div v-if="menu === 'sound'" id="sound-menu" :class="[MENU_BOX, 'left-0 space-y-2']">
-          <button
-            class="btn-ghost w-full px-3 py-1 text-xs"
-            :class="audioBlocked && !muted && 'text-accent'"
-            :title="audioBlocked && !muted ? 'Click to let the browser play sound' : 'Sound on or off'"
-            @click="onSoundButton"
-          >
-            {{ muted ? "Turn sound on" : audioBlocked ? "Enable sound" : "Turn sound off" }}
-          </button>
-          <label class="flex items-center gap-2">
-            <span class="text-ink-2">Volume</span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="5"
-              class="min-w-0 flex-1 accent-accent"
-              :value="muted ? 0 : volume"
-              :aria-valuetext="muted ? 'Sound off' : `${volume}%`"
-              @input="onVolume"
-            />
-            <span class="w-8 text-right">{{ muted ? 0 : volume }}%</span>
-          </label>
-          <button
-            v-if="!muted"
-            class="btn-ghost w-full px-3 py-1 text-xs"
-            title="Sound went quiet? This rebuilds the page's sound decoder and playback without reconnecting"
-            @click="player?.restartAudio()"
-          >
-            Restart sound
-          </button>
-        </div>
-      </div>
-
-      <!-- Controllers -->
-      <div class="relative" data-menu @keydown.esc="closeMenu">
-        <button
-          :class="[ICON_BTN, controllers.length > 0 && 'text-accent', menu === 'controllers' && 'bg-line/60']"
-          aria-haspopup="true"
-          :aria-expanded="menu === 'controllers'"
-          aria-controls="controller-menu"
-          :aria-label="`Controllers${controllers.length ? `, ${controllers.length} sending input` : ''}`"
-          :title="controllers.length ? `${controllers.length} controller(s) sending input` : 'No controller yet'"
-          @click="toggleMenu('controllers')"
-        >
-          <Icon name="controllers" class="size-4" />
-          <span v-if="controllers.length" class="absolute -top-0.5 -right-0.5 grid min-w-3.5 place-items-center rounded-full bg-accent px-1 text-[9px] leading-3.5 font-semibold text-accent-ink">{{ controllers.length }}</span>
-        </button>
-        <div v-if="menu === 'controllers'" id="controller-menu" :class="[MENU_BOX, 'right-0 p-3']">
-          <ul v-if="controllers.length" class="mb-3 space-y-1">
-            <li v-for="c in controllers" :key="c.id" class="flex justify-between gap-2">
-              <span class="truncate">{{ c.info.name }}</span>
-              <span class="shrink-0 text-ink-3">{{ c.slot === null ? "no slot" : `slot ${c.slot + 1}` }}</span>
-            </li>
-          </ul>
-          <p v-else class="mb-3 text-ink-2">Press a button on a controller. If nothing shows, connect it below.</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <button
-              class="btn-ghost px-3 py-1 text-xs"
-              :disabled="!!hidReason || state !== 'connected'"
-              :aria-describedby="hidReason ? 'controller-reason' : undefined"
-              @click="connectController"
-            >
-              Connect a controller…
-            </button>
-            <RouterLink to="/controllers" class="text-accent hover:underline">Controllers page</RouterLink>
-          </div>
-          <p v-if="hidReason" id="controller-reason" class="mt-2 text-ink-3">{{ hidReason }}</p>
-          <p v-if="controllerNote" role="status" class="mt-2 text-warn">{{ controllerNote }}</p>
-        </div>
-      </div>
-
-      <!-- View -->
-      <button
-        :class="ICON_BTN"
-        :aria-label="fullscreen ? 'Exit full screen' : 'Full screen'"
-        :title="fullscreen ? 'Exit full screen' : 'Full screen'"
-        @click="toggleFullscreen"
-      >
-        <Icon :name="fullscreen ? 'fullscreen-exit' : 'fullscreen-enter'" class="size-4" />
-      </button>
-      <button
-        :class="[ICON_BTN, 'w-auto gap-1 px-2', overlay.open && 'text-accent']"
-        :aria-pressed="overlay.open"
-        aria-label="Stats"
-        :title="overlay.open ? 'Hide the stats panel' : 'Show the stats panel'"
-        @click="overlay = { ...overlay, open: !overlay.open }"
-      >
-        <Icon name="stats" class="size-4" />
-        <span v-if="health.grade" class="font-mono text-xs font-semibold" :class="gradeText(health.grade)" :title="`Stream health: ${health.summary}`">{{ health.grade }}</span>
-      </button>
-      <!-- Floats on the toolbar's lower edge, in the middle -->
-      <button
-        type="button"
-        class="absolute top-full left-1/2 grid h-5 w-9 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-line bg-panel text-ink-2 shadow transition hover:text-ink focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-50"
-        :disabled="state !== 'connected'"
-        aria-label="Hide the toolbar"
-        title="Hide the toolbar (hover the thin bar at the top to bring it back)"
-        @click="hideToolbar"
-      >
-        <Icon name="toolbar-fold" class="size-3.5" />
-      </button>
-    </div>
+      @hide="hideToolbar"
+      @height="(px) => (toolbarHeight = px)"
+    />
 
     <PowerOffDialog
       :open="powerOff"
-      :name="env.data.value?.templateName ?? 'the app'"
+      :name="env.data.value?.templateName ?? TOOLBAR.power_off.default_name"
       :failed="powerOffError"
       @cancel="powerOff = false"
       @confirm="confirmPowerOff"
@@ -1138,7 +963,7 @@ const STATUS: Record<PlayerState, string> = {
       :recording-left="recordingLeft"
       :reconnects="reconnects"
       :probe="probe"
-      :toolbar-inset="toolbar ? toolbarHeight : 0"
+      :toolbar-inset="toolbarModel.visible ? toolbarHeight : 0"
       @record="startRecording"
     />
 

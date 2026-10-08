@@ -3,8 +3,9 @@
 use cha_ui_spec::panel::Panel;
 use egui::{Sense, Stroke, Ui, vec2};
 
-use super::{Cmd, look::Look};
+use super::Cmd;
 use crate::health::{Assessment, Grade};
+use crate::ui::chrome::Look;
 
 pub(super) fn chip(
     ui: &mut Ui,

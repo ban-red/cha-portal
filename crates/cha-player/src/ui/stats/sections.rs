@@ -12,6 +12,7 @@ use super::{Cmd, View};
 use crate::health::Issue;
 use crate::overlay_prefs::Section;
 use crate::theme::icons::{self, Icon};
+use crate::ui::chrome;
 
 /// A section's id in the spec as the prefs name it. The spec check and a test keep them equal.
 pub(super) fn section_of(id: &str) -> Section {
@@ -48,11 +49,7 @@ impl View<'_> {
             );
             let resp = ui.interact(b, ui.id().with("copy-all"), Sense::click());
             let color = if resp.hovered() {
-                painter.rect_filled(
-                    b.shrink2(vec2(0.0, 2.0)),
-                    4.0,
-                    look.p.line.gamma_multiply(0.6),
-                );
+                chrome::lit(&painter, look, b.shrink2(vec2(0.0, 2.0)), 4.0);
                 look.p.ink
             } else {
                 look.ink2

@@ -4,6 +4,7 @@ import iconsJson from "./icons.json";
 
 export * from "./panel";
 export * from "./prefs";
+export * from "./toolbar";
 
 /** One drawn part of an icon: an SVG path, stroked at `stroke` units wide, or filled. */
 export type IconPart = { d: string; stroke: number; fill?: undefined } | { d: string; fill: true; stroke?: undefined };

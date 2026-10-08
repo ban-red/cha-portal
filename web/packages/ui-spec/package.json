@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "The in-stream UI's spec, shared by the browser player and Cha Player: icons, themes, the health grade, the stats panel (ADR 0016)",
+  "description": "The in-stream UI's spec, shared by the browser player and Cha Player: icons, themes, the health grade, the stats panel, the toolbar (ADR 0016)",
   "exports": {
     ".": "./index.ts",
     "./icons.json": "./icons.json",
@@ -15,6 +15,9 @@
     "./prefs.json": "./prefs.json",
     "./prefs-cases": "./prefs-cases.ts",
     "./prefs-cases.json": "./prefs-cases.json",
+    "./toolbar-cases": "./toolbar-cases.ts",
+    "./toolbar-cases.json": "./toolbar-cases.json",
+    "./toolbar.json": "./toolbar.json",
     "./fill-cases.json": "./fill-cases.json",
     "./format-cases.json": "./format-cases.json",
     "./stats-panel.json": "./stats-panel.json",
