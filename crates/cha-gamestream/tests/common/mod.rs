@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 mod rig;
+pub mod synthetic_pyrowave;
 
 pub use rig::*;
 

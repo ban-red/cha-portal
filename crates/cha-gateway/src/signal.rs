@@ -83,10 +83,11 @@ async fn streams_handler(State(state): State<Arc<AppState>>) -> Json<Vec<Value>>
         "codecString": match stream.codec {
             Codec::H264 => "avc1.640033",
             Codec::Hevc => "hev1.1.6.L153.B0",
+            Codec::Pyrowave420 | Codec::Pyrowave444 => "pyrowave",
         },
         "width": stream.width,
         "height": stream.height,
-        "chroma": "420",
+        "chroma": if stream.codec == Codec::Pyrowave444 { "444" } else { "420" },
         "fps": stream.fps,
         "frames": 0,
         "content": "cha-gateway (Moonlight host)",
@@ -108,7 +109,13 @@ async fn media_offer_handler(
     let wanted = name
         .strip_prefix("live-")
         .filter(|c| matches!(*c, "h264" | "hevc" | "av1"))
-        .ok_or_else(|| bad_request(anyhow!("unknown stream {name}")))?;
+        .ok_or_else(|| {
+            if name.starts_with("live-pyrowave") {
+                bad_request(anyhow!("{name} is carried over WebTransport, not WebRTC"))
+            } else {
+                bad_request(anyhow!("unknown stream {name}"))
+            }
+        })?;
     let stream = state.link.wait_for_info(STREAM_WAIT).await.ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,

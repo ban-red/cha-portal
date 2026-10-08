@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes128Gcm, Key, Nonce, Tag};
 use bytes::Bytes;
+use cha_gamestream::client::media::pyrowave::{StreamShape, block_counts};
 use cha_gamestream::client::media::{Ended, Media, MediaClient, MediaOptions, VideoTiming};
 use cha_gamestream::client::{StreamSetup, VideoFrame};
 use cha_gamestream::handoff::Chroma;
@@ -22,6 +23,7 @@ use cha_gamestream::input::{
 use cha_gamestream::{
     EncodedVideo, EndReason, Feedback, HdrMetadata, InputEvent, MediaConfig, OpusPacket, VideoCodec,
 };
+use common::synthetic_pyrowave::{Laid, lay_out};
 use common::{KEY, MediaRig, PING_PAYLOAD, handoff};
 use tokio::net::UdpSocket;
 
@@ -189,6 +191,8 @@ struct Harness {
     next_index: u64,
     /// Frames the test has pushed, so each gets a fresh seed.
     pushed: u8,
+    /// Set for a PyroWave stream (of this picture).
+    pyrowave: Option<StreamShape>,
 }
 
 async fn harness(video_encrypted: bool, audio_encrypted: bool) -> Harness {
@@ -214,6 +218,15 @@ async fn harness_with(
     video_encrypted: bool,
     audio_encrypted: bool,
     options: MediaOptions,
+) -> Harness {
+    harness_for(video_encrypted, audio_encrypted, options, None).await
+}
+
+async fn harness_for(
+    video_encrypted: bool,
+    audio_encrypted: bool,
+    options: MediaOptions,
+    pyrowave: Option<StreamShape>,
 ) -> Harness {
     common::init();
     let mut h = handoff(LOOPBACK);
@@ -243,6 +256,19 @@ async fn harness_with(
         hdr: false,
         chroma: Chroma::Yuv420,
         audio: h.params.audio.clone(),
+        pyrowave: pyrowave.map(|_| cha_gamestream::client::PyrowaveSetup {
+            bitstream: "186f0393".into(),
+            record_framing: true,
+        }),
+    };
+    let setup = match pyrowave {
+        Some(shape) => StreamSetup {
+            width: shape.width,
+            height: shape.height,
+            chroma: shape.chroma,
+            ..setup
+        },
+        None => setup,
     };
     let media = MediaClient::start_with(&setup, options).await.unwrap();
     let mut h = Harness {
@@ -253,6 +279,7 @@ async fn harness_with(
         video_key: video_encrypted.then_some(KEY),
         next_index: 1,
         pushed: 0,
+        pyrowave,
     };
     h.warm_up().await;
     h
@@ -269,19 +296,23 @@ impl Harness {
     async fn push(&mut self, key: bool, len: usize) -> Vec<u8> {
         self.pushed = self.pushed.wrapping_add(1);
         let au = access_unit(len, self.pushed);
+        self.push_au(key, au.clone()).await;
+        au
+    }
+
+    async fn push_au(&mut self, key: bool, au: Vec<u8>) {
         self.next_index += 1;
         self.rig
             .stream
             .video
             .send(EncodedVideo {
-                data: Bytes::from(au.clone()),
+                data: Bytes::from(au),
                 key,
                 index: self.next_index,
                 captured: Instant::now(),
             })
             .await
             .unwrap();
-        au
     }
 
     /// Keyframes until the first one gets through (the host waits for the
@@ -289,7 +320,13 @@ impl Harness {
     async fn warm_up(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            self.push(true, 500).await;
+            match self.pyrowave {
+                // A PyroWave stream refuses anything that isn't a PyroWave frame.
+                Some(shape) => self.push_au(true, pyro_frame(shape, 4, 60).bytes).await,
+                None => {
+                    self.push(true, 500).await;
+                }
+            }
             if let Ok(Some(_)) =
                 tokio::time::timeout(Duration::from_millis(100), self.media.video.recv()).await
             {
@@ -332,6 +369,247 @@ impl Harness {
     fn keyframe_requests(&self) -> usize {
         self.rig.stream.log.lock().unwrap().keyframes
     }
+}
+
+// ---------------------------------------------------------------------------
+// PyroWave (synthetic frames: no real Vibepollo host has produced any of this)
+
+const PYRO_SHAPE: StreamShape = StreamShape {
+    width: 1280,
+    height: 720,
+    chroma: Chroma::Yuv420,
+};
+/// Payload of a video packet at `PACKET_SIZE`.
+const PAYLOAD: usize = PACKET_SIZE - 16;
+
+/// A record frame of the picture: its coarse blocks, then `fine` more blocks
+/// of about `words` words each (varied), laid out for the stream's packets.
+fn pyro_frame(shape: StreamShape, fine: usize, words: usize) -> Laid {
+    let (_, coarse) = block_counts(shape).unwrap();
+    let blocks: Vec<(u32, usize)> = (0..coarse + fine as u32)
+        .map(|i| {
+            let w = if i < coarse {
+                30
+            } else {
+                words + (i as usize * 29) % 40
+            };
+            (i, w)
+        })
+        .collect();
+    lay_out(shape, 1, &blocks, PAYLOAD)
+}
+
+/// The bytes a decoder should get: the sequence header and the records not touching `lost` stream ranges.
+fn pyro_expected(laid: &Laid, lost: &[std::ops::Range<usize>]) -> Vec<u8> {
+    let mut out = laid.bytes[..8].to_vec();
+    for &(offset, len, _) in &laid.records {
+        if !lost
+            .iter()
+            .any(|r| offset < r.end && offset + len > r.start)
+        {
+            out.extend_from_slice(&laid.bytes[offset..offset + len]);
+        }
+    }
+    out
+}
+
+/// Video packet `k`'s span of the record stream.
+fn packet_span(laid: &Laid, k: usize) -> std::ops::Range<usize> {
+    laid.payload_starts[k]
+        ..laid
+            .payload_starts
+            .get(k + 1)
+            .copied()
+            .unwrap_or(laid.bytes.len())
+}
+
+fn pyro_options() -> MediaOptions {
+    MediaOptions {
+        video_timing: VideoTiming {
+            reorder_window: Duration::from_millis(150),
+            stall: Duration::from_millis(1500),
+            request_gap: Duration::from_secs(5),
+            request_retry: Duration::from_secs(20),
+        },
+        ..Default::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn synthetic_pyrowave_frames_arrive_whole_and_lossless_up_to_the_fec() {
+    for encrypted in [false, true] {
+        let mut h = harness_for(encrypted, false, pyro_options(), Some(PYRO_SHAPE)).await;
+        let key = h.video_key;
+        let baseline = h.keyframe_requests();
+        for fine in [3usize, 300, 1000] {
+            let laid = pyro_frame(PYRO_SHAPE, fine, 90);
+            for (name, drop) in LOSS_PATTERNS {
+                h.video.set(move |d| match shard(d, key) {
+                    Some(s) if drop(&s) => Action::Drop,
+                    _ => Action::Forward,
+                });
+                println!(
+                    "{} B, encrypted {encrypted}, losing {name}",
+                    laid.bytes.len()
+                );
+                h.push_au(true, laid.bytes.clone()).await;
+                let got = h.frame().await;
+                let info = got.pyrowave.as_ref().expect("a PyroWave frame");
+                assert!(got.key);
+                assert_eq!(info.packets_lost, 0, "{name}");
+                assert_eq!(info.records_skipped, 0);
+                assert_eq!(got.data.as_ref(), &pyro_expected(&laid, &[])[..], "{name}");
+                assert!(info.coarse_complete);
+            }
+        }
+        h.video.forward_all();
+        let stats = h.media.control.stats().video;
+        assert_eq!(stats.frames_lost, 0, "{stats:?}");
+        assert_eq!(
+            h.keyframe_requests(),
+            baseline,
+            "nothing was asked of the host"
+        );
+        assert_eq!((stats.idr_requests, stats.invalidations), (0, 0));
+        h.media.control.stop();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn synthetic_pyrowave_frame_beyond_the_fec_is_zero_filled_not_dropped() {
+    for encrypted in [false, true] {
+        let mut h = harness_for(encrypted, false, pyro_options(), Some(PYRO_SHAPE)).await;
+        let key = h.video_key;
+        let baseline = h.keyframe_requests();
+        let laid = pyro_frame(PYRO_SHAPE, 300, 90);
+
+        // One shard more than the first block's parity, from the fifth data shard on.
+        let mut victim = None;
+        let mut lost_packets: Vec<usize> = Vec::new();
+        h.video.set(move |d| match shard(d, key) {
+            Some(s) if *victim.get_or_insert(s.frame) == s.frame => {
+                if s.block == 0 && s.index >= 5 && s.index <= 5 + s.parity {
+                    Action::Drop
+                } else {
+                    Action::Forward
+                }
+            }
+            _ => Action::Forward,
+        });
+        h.push_au(true, laid.bytes.clone()).await;
+        // Nothing newer arrives: the frame waits out the stall, then comes with holes.
+        let got = h.frame().await;
+        let info = got.pyrowave.as_ref().expect("a PyroWave frame");
+        assert!(info.packets_lost >= 2, "{info:?}");
+        lost_packets.extend(5..5 + info.packets_lost as usize);
+        let lost: Vec<_> = lost_packets
+            .iter()
+            .map(|&k| packet_span(&laid, k))
+            .collect();
+        assert_eq!(
+            got.data.as_ref(),
+            &pyro_expected(&laid, &lost)[..],
+            "every record outside the lost packets, and none inside"
+        );
+        assert!(info.records_skipped >= 1);
+        assert!(
+            info.coarse_complete,
+            "the coarse blocks are in the first packets"
+        );
+        assert!(info.blocks_received < info.total_blocks);
+
+        // The frame after it flows, and the host was never asked for anything.
+        h.video.forward_all();
+        let next = pyro_frame(PYRO_SHAPE, 50, 70);
+        h.push_au(true, next.bytes.clone()).await;
+        let got = h.frame().await;
+        assert_eq!(got.data.as_ref(), &pyro_expected(&next, &[])[..]);
+        let stats = h.media.control.stats().video;
+        assert_eq!(stats.pyrowave_partial_frames, 1, "{stats:?}");
+        assert!(stats.pyrowave_packets_zero_filled >= 2);
+        assert_eq!(stats.frames_lost, 0);
+        assert_eq!((stats.idr_requests, stats.invalidations), (0, 0));
+        assert_eq!(h.keyframe_requests(), baseline);
+        h.media.control.stop();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn synthetic_pyrowave_frame_missing_its_first_packet_or_a_whole_block_is_dropped() {
+    let mut h = harness_for(false, false, pyro_options(), Some(PYRO_SHAPE)).await;
+    let baseline = h.keyframe_requests();
+
+    // The first packet and more than the parity after it: the sequence header is gone.
+    let big = pyro_frame(PYRO_SHAPE, 300, 90);
+    let mut victim = None;
+    h.video.set(move |d| match shard(d, None) {
+        Some(s) if *victim.get_or_insert(s.frame) == s.frame => {
+            if s.block == 0 && s.index <= s.parity {
+                Action::Drop
+            } else {
+                Action::Forward
+            }
+        }
+        _ => Action::Forward,
+    });
+    h.push_au(true, big.bytes.clone()).await;
+    h.no_frame(Duration::from_millis(2500)).await;
+    assert_eq!(h.media.control.stats().video.frames_lost, 1);
+
+    // A whole FEC block of a multi-block frame: dropped, though the rest is fine.
+    let huge = pyro_frame(PYRO_SHAPE, 1400, 120);
+    let mut victim = None;
+    h.video.set(move |d| match shard(d, None) {
+        Some(s) if *victim.get_or_insert(s.frame) == s.frame => {
+            if s.block == 1 {
+                Action::Drop
+            } else {
+                Action::Forward
+            }
+        }
+        _ => Action::Forward,
+    });
+    h.push_au(true, huge.bytes.clone()).await;
+    h.no_frame(Duration::from_millis(2500)).await;
+    assert_eq!(h.media.control.stats().video.frames_lost, 2);
+
+    // Neither asked the host for a keyframe, and the next frame flows.
+    h.video.forward_all();
+    let next = pyro_frame(PYRO_SHAPE, 20, 70);
+    h.push_au(true, next.bytes.clone()).await;
+    let got = h.frame().await;
+    assert_eq!(got.data.as_ref(), &pyro_expected(&next, &[])[..]);
+    let stats = h.media.control.stats().video;
+    assert_eq!(
+        (stats.idr_requests, stats.invalidations),
+        (0, 0),
+        "{stats:?}"
+    );
+    assert_eq!(h.keyframe_requests(), baseline);
+    h.media.control.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn synthetic_pyrowave_frame_with_a_foreign_sequence_header_is_refused() {
+    // A host streaming another picture size than we negotiated: every frame is
+    // refused by the receiver's rules, and nothing is asked of the host.
+    let mut h = harness_for(false, false, pyro_options(), Some(PYRO_SHAPE)).await;
+    let baseline = h.keyframe_requests();
+    let other = StreamShape {
+        width: 1920,
+        height: 1080,
+        chroma: Chroma::Yuv420,
+    };
+    let (_, coarse) = block_counts(other).unwrap();
+    let blocks: Vec<(u32, usize)> = (0..coarse + 5).map(|i| (i, 40)).collect();
+    h.push_au(true, lay_out(other, 1, &blocks, PAYLOAD).bytes)
+        .await;
+    h.no_frame(Duration::from_millis(2500)).await;
+    let stats = h.media.control.stats().video;
+    assert_eq!(stats.pyrowave_frames_rejected, 1, "{stats:?}");
+    assert_eq!(stats.frames_lost, 1);
+    assert_eq!(h.keyframe_requests(), baseline);
+    h.media.control.stop();
 }
 
 // ---------------------------------------------------------------------------
@@ -920,6 +1198,7 @@ async fn no_answer_from_the_host_is_an_error_not_a_hang() {
         hdr: false,
         chroma: Chroma::Yuv420,
         audio: h.params.audio.clone(),
+        pyrowave: None,
     };
     let started = Instant::now();
     let err = MediaClient::start_with(

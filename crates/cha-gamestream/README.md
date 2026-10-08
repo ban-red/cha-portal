@@ -77,9 +77,12 @@ One stream's media as a Moonlight client receives it ([ADR 0011](../../docs/adr/
 |---|---|
 | `client/media/mod.rs` | the API and the three tasks: video and audio sockets (`PING` every 500 ms, Sunshine's with the session payload or the legacy four bytes), the ENet control peer (start A and B, a ping every 100 ms, requests, input, feedback, termination) |
 | `client/media/video.rs` | `VideoReceiver`, sans-IO: AES-GCM per shard, FEC blocks, whole-packet Reed-Solomon recovery, frame assembly, loss handling |
+| `client/media/pyrowave.rs` | PyroWave frames from a Vibepollo host (never automatic; built from `docs/plans/vibepollo-pyrowave.md`, untested against a real host): the record and length-prefixed framings, the receiver's rejection rules, resync after a lost record, block counts of the layout |
 | `client/media/audio.rs` | `AudioReceiver`: RS(4,2) with the host's parity matrix, AES-CBC, in order |
 | `client/media/control.rs` | the client's control messages, the host's decoded into `Feedback` and terminations |
 | `client/media/input.rs` | `InputEvent` to packets (the inverse of `input::parse`), channels as Moonlight uses them, and the batching queue |
+
+**PyroWave** (`StreamRequest { pyrowave: true, .. }`, 8-bit 4:2:0 or 4:4:4): `HostInfo` reads the four `SCM_PYROWAVE*` bits and `PyroWaveHostLinkMbps`, the ANNOUNCE carries `bitStreamFormat=3` with record framing, and RTSP DESCRIBE's `x-ss-pyrowave.bitstream` must be in `PYROWAVE_BITSTREAMS` (`186f0393`) or the launch is refused. The video receiver then recovers each FEC block as usual but never drops a frame for an incomplete one: missing data packets are zero-filled, the record parser skips the records that lost bytes, and `VideoFrame::pyrowave` says what arrived (`data` is the sequence header and the whole block records). Only a missing first packet or a whole missing FEC block drops a frame. No keyframe or invalidation is ever requested. See the plan's "As built" for what a real host must still confirm.
 
 **Video recovery is over whole packets.** FEC covers each shard from the RTP header on, and a lost shard is a full-size buffer, as the host's packetizer does it. A recovered packet has its headers rebuilt from what the client knows and its start and end flags checked against its position, so a nonsense recovery is refused. (`moonlight-common-rust` ran the maths over payloads with empty buffers for the missing shards and failed with `IncorrectShardSize`.)
 

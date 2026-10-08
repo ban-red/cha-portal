@@ -36,6 +36,8 @@ Used as libraries, unmodified, under their own licences. `Cargo.lock` and `bun.l
 
 The client half (`cha-gamestream/src/client`) is written for this project. It uses Moonlight's wire formats, constants and some of its compatibility tuning values (bitrate and audio settings a host expects from a Moonlight client), each cited where it's used, but not its code. An independent side-by-side review against moonlight-common-c, moonlight-qt and moonlight-common-rust found two places adapted from moonlight-common-c (parsing the host's audio configuration, and a check on packets rebuilt by error correction); both were rewritten clean-room, from our own host's output and packetizer, before the client was committed.
 
+PyroWave over GameStream (`cha-gamestream`'s `client/media/pyrowave.rs`, the PyroWave parts of `client/front` and `client/media/video.rs`, and `cha-gateway/src/pyrowave.rs`) is written from [`docs/plans/vibepollo-pyrowave.md`](plans/vibepollo-pyrowave.md), which summarises Vibepollo's own prose protocol document (negotiation attributes, the `SCM_PYROWAVE*` bits, the two framings, the receiver's rules). Vibepollo, Apollo, Sunshine and moonlight-qt's PyroWave fork are GPL-3.0 and none of their source was read; the bitstream's header layout and block counts come from upstream PyroWave (MIT) through our own `pyrowave-webgpu` and `cha-pyrowave-wgpu`.
+
 ## Not used
 
 Some projects are named in the docs because we compared approaches or decided against them ([ADR 0004](adr/0004-own-engine-no-wolf.md)). No code from them is in this repository:

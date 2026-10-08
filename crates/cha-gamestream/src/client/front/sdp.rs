@@ -17,6 +17,19 @@ use crate::handoff::{AudioParams, Chroma, OPUS_LAYOUTS, OpusLayout, VideoCodec};
 const HEVC_MARKER: &str = "sprop-parameter-sets=AAAAAU";
 const AV1_MARKER: &str = "AV1/90000";
 
+/// The PyroWave bitstreams this client decodes, by the id a host advertises in
+/// `a=x-ss-pyrowave.bitstream:` (the first 8 hex digits of the upstream
+/// commit it vendors; there is no version field). `186f0393` is Vibepollo's
+/// pin and bit-identical to the `89f7e47` our decoders are built on
+/// (`docs/plans/vibepollo-pyrowave.md` section 3.6). Anything else is refused,
+/// not warned about: a different bitstream decodes to garbage.
+pub const PYROWAVE_BITSTREAMS: &[&str] = &["186f0393"];
+
+/// `bitStreamFormat` of a PyroWave stream (0, 1 and 2 are H.264, HEVC, AV1).
+const BITSTREAM_FORMAT_PYROWAVE: u8 = 3;
+/// `pyrowaveFeatures` bit 0: record framing.
+pub(super) const PYROWAVE_FEATURE_RECORD_FRAMING: u32 = 0x1;
+
 /// Above this video bitrate (kbps) surround audio asks for the high-quality
 /// layout (the threshold Moonlight clients use).
 const HIGH_AUDIO_BITRATE_KBPS: u32 = 15_000;
@@ -35,6 +48,10 @@ pub(super) struct Describe {
     pub av1: bool,
     pub hevc: bool,
     pub ref_invalidation: bool,
+    /// `a=rtpmap:99 PYROWAVE/90000`: the capability marker (no RTP payload type 99 is ever sent).
+    pub pyrowave_marker: bool,
+    /// `a=x-ss-pyrowave.bitstream:` as the host wrote it.
+    pub pyrowave_bitstream: Option<String>,
     pub enc_supported: u32,
     pub enc_requested: u32,
     /// `(normal, high quality)` for the channel count we asked for.
@@ -151,6 +168,10 @@ impl Describe {
             av1: payload.contains(AV1_MARKER),
             hevc: payload.contains(HEVC_MARKER),
             ref_invalidation: payload.contains("x-nv-video[0].refPicInvalidation"),
+            pyrowave_marker: payload.contains("PYROWAVE/90000"),
+            pyrowave_bitstream: attribute(payload, "x-ss-pyrowave.bitstream")
+                .map(str::to_owned)
+                .filter(|v| !v.is_empty()),
             enc_supported: uint("x-ss-general.encryptionSupported"),
             enc_requested: uint("x-ss-general.encryptionRequested"),
             ..Self::default()
@@ -192,6 +213,26 @@ impl Describe {
             )));
         }
         Ok(d)
+    }
+
+    /// The bitstream id to speak PyroWave with, or why not: the host must
+    /// advertise one, and it must be one we decode (case-insensitive hex).
+    pub fn pyrowave_bitstream_allowed(&self) -> Result<&'static str, ClientError> {
+        let Some(id) = self.pyrowave_bitstream.as_deref() else {
+            return Err(ClientError::Unsupported(
+                "the host's RTSP doesn't say which PyroWave bitstream it encodes".into(),
+            ));
+        };
+        PYROWAVE_BITSTREAMS
+            .iter()
+            .copied()
+            .find(|known| known.eq_ignore_ascii_case(id.trim()))
+            .ok_or_else(|| {
+                ClientError::Unsupported(format!(
+                    "the host's PyroWave bitstream {id:?} isn't one we decode ({})",
+                    PYROWAVE_BITSTREAMS.join(", ")
+                ))
+            })
     }
 
     /// Whether the host offers `codec`.
@@ -305,6 +346,8 @@ pub(super) struct Announce<'a> {
     pub request: &'a StreamRequest,
     pub sunshine: bool,
     pub codec: VideoCodec,
+    /// A PyroWave stream (8-bit): `codec` is then not consulted.
+    pub pyrowave: bool,
     pub hdr: bool,
     pub chroma: Chroma,
     pub encryption: u32,
@@ -360,15 +403,31 @@ impl Announce<'_> {
         );
         add("x-nv-video[0].packetSize", self.packet_size.to_string());
         add("x-nv-video[0].videoEncoderSlicesPerFrame", "1".into());
-        match self.codec {
-            VideoCodec::Av1 => add("x-nv-vqos[0].bitStreamFormat", "2".into()),
-            VideoCodec::Hevc => {
-                add("x-nv-clientSupportHevc", "1".into());
-                add("x-nv-vqos[0].bitStreamFormat", "1".into());
-            }
-            VideoCodec::H264 => {
-                add("x-nv-clientSupportHevc", "0".into());
-                add("x-nv-vqos[0].bitStreamFormat", "0".into());
+        if self.pyrowave {
+            // PyroWave (Vibepollo's contract, section 2.4): no HEVC, bitstream
+            // format 3, 8-bit only, record framing, no adaptive extras.
+            add("x-nv-clientSupportHevc", "0".into());
+            add(
+                "x-nv-vqos[0].bitStreamFormat",
+                BITSTREAM_FORMAT_PYROWAVE.to_string(),
+            );
+            add("x-ss-video[0].pyrowaveAdaptiveFec", "0".into());
+            add("x-ss-video[0].pyrowaveAdaptiveBitrate", "0".into());
+            add(
+                "x-ss-video[0].pyrowaveFeatures",
+                PYROWAVE_FEATURE_RECORD_FRAMING.to_string(),
+            );
+        } else {
+            match self.codec {
+                VideoCodec::Av1 => add("x-nv-vqos[0].bitStreamFormat", "2".into()),
+                VideoCodec::Hevc => {
+                    add("x-nv-clientSupportHevc", "1".into());
+                    add("x-nv-vqos[0].bitStreamFormat", "1".into());
+                }
+                VideoCodec::H264 => {
+                    add("x-nv-clientSupportHevc", "0".into());
+                    add("x-nv-vqos[0].bitStreamFormat", "0".into());
+                }
             }
         }
         add(
@@ -394,11 +453,23 @@ impl Announce<'_> {
         // Bitrate: 80% of the configured rate, 500 kbps less on remote
         // links, capped at 100 Mbps; initial, peak, minimum and maximum
         // all carry the same figure.
-        let mut kbps = (u64::from(r.bitrate_kbps) * 80 / 100) as u32;
-        if r.remote && kbps > 500 {
+        // PyroWave takes `configuredBitrateKbps` as given and has no 100 Mbps
+        // ceiling (800 Mbps at 120 fps is ordinary); the stock figures below
+        // carry the configured rate unscaled for it.
+        let mut kbps = if self.pyrowave {
+            r.bitrate_kbps
+        } else {
+            (u64::from(r.bitrate_kbps) * 80 / 100) as u32
+        };
+        if r.remote && kbps > 500 && !self.pyrowave {
             kbps -= 500;
         }
-        let kbps = kbps.min(100_000).to_string();
+        let kbps = if self.pyrowave {
+            kbps
+        } else {
+            kbps.min(100_000)
+        }
+        .to_string();
         for key in [
             "x-nv-video[0].initialBitrateKbps",
             "x-nv-video[0].initialPeakBitrateKbps",
@@ -614,6 +685,7 @@ mod tests {
             request: r,
             sunshine: true,
             codec,
+            pyrowave: false,
             hdr: r.hdr,
             chroma: r.chroma,
             encryption,
@@ -743,6 +815,117 @@ mod tests {
         assert!(
             !wants_high_quality(&r, &d),
             "stereo stays normal unless asked"
+        );
+    }
+
+    fn synthetic_pyrowave_announce<'a>(
+        r: &'a StreamRequest,
+        audio: &'a AudioParams,
+        chroma: Chroma,
+    ) -> Announce<'a> {
+        Announce {
+            pyrowave: true,
+            chroma,
+            hdr: false,
+            ..announce(r, audio, VideoCodec::H264, enc::CONTROL_V2)
+        }
+    }
+
+    /// Golden, from the spec's table (section 2.4): the ANNOUNCE lines a PyroWave stream carries.
+    #[test]
+    fn synthetic_pyrowave_announce_has_exactly_the_documented_attributes() {
+        let mut r = request();
+        r.bitrate_kbps = 800_000;
+        r.packet_size = 1392;
+        let audio = AudioParams::select(2, 3, false, 5);
+        for (chroma, sampling) in [(Chroma::Yuv420, "0"), (Chroma::Yuv444, "1")] {
+            let text = synthetic_pyrowave_announce(&r, &audio, chroma).sdp();
+            let has = |line: &str| text.contains(&format!("a={line} \r\n"));
+            assert!(has("x-nv-vqos[0].bitStreamFormat:3"), "{text}");
+            assert!(has(&format!("x-ss-video[0].chromaSamplingType:{sampling}")));
+            assert!(has("x-nv-video[0].dynamicRangeMode:0"));
+            assert!(has("x-ss-video[0].pyrowaveAdaptiveFec:0"));
+            assert!(has("x-ss-video[0].pyrowaveAdaptiveBitrate:0"));
+            assert!(has("x-ss-video[0].pyrowaveFeatures:1"));
+            // The configured rate as given, and no stock H.264/HEVC/AV1 format.
+            assert!(has("x-ml-video.configuredBitrateKbps:800000"));
+            assert!(has("x-nv-video[0].initialBitrateKbps:800000"));
+            assert!(!text.contains("bitStreamFormat:0") && !text.contains("bitStreamFormat:1"));
+            assert!(!text.contains("bitStreamFormat:2"));
+            // No reference invalidation is announced.
+            assert!(has("x-nv-video[0].maxNumReferenceFrames:1"));
+            assert!(text.starts_with("v=0\r\n") && text.ends_with("m=video 47998  \r\n"));
+        }
+        // A stock stream carries none of the PyroWave attributes.
+        let text = announce(&r, &audio, VideoCodec::Hevc, enc::CONTROL_V2).sdp();
+        assert!(!text.contains("pyrowave"));
+    }
+
+    /// The host's own parser, which doesn't know PyroWave, still reads the rest of our ANNOUNCE.
+    #[test]
+    fn synthetic_pyrowave_announce_is_a_valid_stock_announce_otherwise() {
+        let cfg = host_config();
+        let r = request();
+        let audio = AudioParams::select(2, 3, false, 5);
+        let a = synthetic_pyrowave_announce(&r, &audio, Chroma::Yuv444);
+        // bitStreamFormat 3 is outside what our host parses; it must say so rather than guess.
+        assert!(parse_announce(&a.sdp(), &cfg, peer()).is_err());
+    }
+
+    fn synthetic_pyrowave_describe(extra: &str) -> String {
+        format!(
+            "{}\n{extra}",
+            describe(&host_config()).replace("\r\n", "\n")
+        )
+    }
+
+    /// Golden: DESCRIBE's bitstream id is allowed or refused, never merely warned about.
+    #[test]
+    fn synthetic_pyrowave_describe_bitstream_is_checked_against_the_allow_list() {
+        assert_eq!(PYROWAVE_BITSTREAMS, ["186f0393"]);
+        let parse = |extra: &str| Describe::parse(&synthetic_pyrowave_describe(extra), 2).unwrap();
+
+        let ok = parse("a=rtpmap:99 PYROWAVE/90000\na=x-ss-pyrowave.bitstream:186f0393\n");
+        assert!(ok.pyrowave_marker);
+        assert_eq!(ok.pyrowave_bitstream.as_deref(), Some("186f0393"));
+        assert_eq!(ok.pyrowave_bitstream_allowed().unwrap(), "186f0393");
+        // Hex case and spacing don't matter.
+        let upper = parse("a=x-ss-pyrowave.bitstream: 186F0393 \n");
+        assert_eq!(upper.pyrowave_bitstream_allowed().unwrap(), "186f0393");
+
+        // Another bitstream (say, upstream's frozen v1 after a Vibepollo bump): refused.
+        let other = parse("a=rtpmap:99 PYROWAVE/90000\na=x-ss-pyrowave.bitstream:34c0ffee\n");
+        let err = other.pyrowave_bitstream_allowed().unwrap_err().to_string();
+        assert!(
+            err.contains("34c0ffee") && err.contains("186f0393"),
+            "{err}"
+        );
+        // Our own pin's id is not what hosts advertise (they advertise their pin), so it isn't allowed.
+        assert!(
+            parse("a=x-ss-pyrowave.bitstream:89f7e47\n")
+                .pyrowave_bitstream_allowed()
+                .is_err()
+        );
+        // Prefix and empty ids don't pass.
+        assert!(
+            parse("a=x-ss-pyrowave.bitstream:186f039\n")
+                .pyrowave_bitstream_allowed()
+                .is_err()
+        );
+        assert!(
+            parse("a=x-ss-pyrowave.bitstream:\n")
+                .pyrowave_bitstream_allowed()
+                .is_err()
+        );
+
+        // No line at all: refused, with or without the marker.
+        let none = parse("");
+        assert!(!none.pyrowave_marker && none.pyrowave_bitstream.is_none());
+        assert!(none.pyrowave_bitstream_allowed().is_err());
+        assert!(
+            parse("a=rtpmap:99 PYROWAVE/90000\n")
+                .pyrowave_bitstream_allowed()
+                .is_err()
         );
     }
 

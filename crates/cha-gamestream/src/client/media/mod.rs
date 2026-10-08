@@ -38,6 +38,7 @@ use super::{AudioPacket, StreamSetup, VideoFrame};
 mod audio;
 mod control;
 mod input;
+pub mod pyrowave;
 mod video;
 
 pub use audio::AudioStats;
@@ -46,7 +47,7 @@ pub use video::{VideoStats, VideoTiming};
 use audio::{AudioConfig, AudioReceiver};
 use control::{HostMessage, Sealer};
 use input::InputQueue;
-use video::{VideoConfig, VideoEvent, VideoReceiver};
+use video::{PyrowaveConfig, VideoConfig, VideoEvent, VideoReceiver};
 
 /// ENet channels (numbers per moonlight-common-c's `CTRL_CHANNEL_*`): `0` for
 /// everything generic, `1` for the urgent requests.
@@ -344,6 +345,14 @@ impl MediaClient {
                     key: setup.encryption.video.then_some(setup.keys.key),
                     codec: setup.codec,
                     invalidate_refs: options.invalidate_refs,
+                    pyrowave: setup.pyrowave.is_some().then_some(PyrowaveConfig {
+                        shape: pyrowave::StreamShape {
+                            width: setup.width,
+                            height: setup.height,
+                            chroma: setup.chroma,
+                        },
+                        record_start: pyrowave::RECORD_START_FLAG,
+                    }),
                 },
                 Instant::now(),
             ),
@@ -383,6 +392,8 @@ impl MediaClient {
             commands: commands_rx,
             feedback: feedback_tx,
             shared,
+            // PyroWave frames stand alone and the host ignores these.
+            ignore_refresh_requests: setup.pyrowave.is_some(),
         }));
         Ok(media)
     }
@@ -664,6 +675,8 @@ struct ControlTask {
     commands: mpsc::UnboundedReceiver<Command>,
     feedback: mpsc::Sender<Feedback>,
     shared: Arc<Shared>,
+    /// A PyroWave stream: no keyframe or invalidation request ever goes out.
+    ignore_refresh_requests: bool,
 }
 
 /// The connection to send on.
@@ -705,6 +718,7 @@ async fn control_task(task: ControlTask) {
         mut commands,
         feedback,
         shared,
+        ignore_refresh_requests,
     } = task;
     let mut link = Link {
         enet,
@@ -733,6 +747,7 @@ async fn control_task(task: ControlTask) {
         let sent = tokio::select! {
             () = flagged(&mut stop) => break 'run,
             Some(command) = commands.recv() => match command {
+                Command::Idr | Command::Invalidate { .. } if ignore_refresh_requests => Ok(()),
                 Command::Idr => link.reliable(&control::request_idr(), CHANNEL_URGENT),
                 Command::Invalidate { first, last } => {
                     link.reliable(&control::invalidate_refs(first, last), CHANNEL_URGENT)

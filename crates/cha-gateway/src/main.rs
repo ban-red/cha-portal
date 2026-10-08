@@ -12,6 +12,9 @@ mod host;
 mod hub;
 mod input;
 mod net;
+// Not served until the gateway has a WebTransport endpoint (docs/plans/vibepollo-pyrowave.md, "As built").
+#[allow(dead_code)]
+mod pyrowave;
 mod session;
 mod signal;
 mod viewers;
@@ -23,6 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use cha_gamestream::handoff::Chroma;
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
@@ -93,7 +97,9 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     mbps: u32,
     /// The codec to ask the host for: HEVC if it can encode it, else H.264
-    /// (`auto`), or one of them.
+    /// (`auto`), or one of them. `pyrowave420` and `pyrowave444` (a Vibepollo
+    /// host) are never chosen by `auto`, and need WebTransport, which the
+    /// gateway doesn't serve yet.
     #[arg(long, value_enum, default_value_t = CodecChoice::Auto)]
     codec: CodecChoice,
     /// Addresses browsers may reach WebRTC on (host candidates). Default:
@@ -177,9 +183,15 @@ async fn run(args: Args) -> Result<ExitCode> {
     );
     let server = tokio::spawn(axum::serve(listener, signal::router(state)).into_future());
 
-    let bitrate_kbps = match args.mbps {
-        0 => host::auto_bitrate_kbps(args.width, args.height, args.fps),
-        mbps => mbps * 1000,
+    let bitrate_kbps = match (args.mbps, args.codec) {
+        (0, CodecChoice::Pyrowave420) => {
+            host::auto_pyrowave_bitrate_kbps(args.width, args.height, args.fps, Chroma::Yuv420)
+        }
+        (0, CodecChoice::Pyrowave444) => {
+            host::auto_pyrowave_bitrate_kbps(args.width, args.height, args.fps, Chroma::Yuv444)
+        }
+        (0, _) => host::auto_bitrate_kbps(args.width, args.height, args.fps),
+        (mbps, _) => mbps * 1000,
     };
     let (stop, stopped) = watch::channel(false);
     let mut stream = tokio::spawn(host::run(

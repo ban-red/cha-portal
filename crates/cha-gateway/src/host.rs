@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
-use cha_gamestream::client::front::{ClientIdentity, Encrypt, HostClient, StreamRequest};
+use cha_gamestream::client::front::{ClientIdentity, Encrypt, HostClient, HostInfo, StreamRequest};
 use cha_gamestream::client::media::{Ended, Media, MediaClient, MediaOptions};
-use cha_gamestream::client::{AudioPacket, VideoFrame};
+use cha_gamestream::client::{AudioPacket, PyrowaveFrame, VideoFrame};
+use cha_gamestream::handoff::Chroma;
 use cha_gamestream::{Feedback, InputEvent, VideoCodec};
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{info, warn};
@@ -32,21 +33,41 @@ const CLIENT_NAME: &str = "cha-gateway";
 pub enum Codec {
     H264,
     Hevc,
+    /// PyroWave from a Vibepollo host (8-bit 4:2:0). Reaches browsers over
+    /// WebTransport only, as intra frames; never chosen automatically.
+    Pyrowave420,
+    /// The same at 4:4:4.
+    Pyrowave444,
 }
 
 impl Codec {
-    /// The name the page and `/webrtc/media?name=live-<codec>` use.
+    /// The name the page and `/webrtc/media?name=live-<codec>` use (the
+    /// streamer's own names for PyroWave).
     pub fn name(self) -> &'static str {
         match self {
             Codec::H264 => "h264",
             Codec::Hevc => "hevc",
+            Codec::Pyrowave420 => "pyrowave420",
+            Codec::Pyrowave444 => "pyrowave444",
         }
     }
 
-    fn wire(self) -> VideoCodec {
+    /// The host-side codec of a classic one; PyroWave is not one of
+    /// `VideoCodec`s (it is its own negotiation).
+    fn wire(self) -> Option<VideoCodec> {
         match self {
-            Codec::H264 => VideoCodec::H264,
-            Codec::Hevc => VideoCodec::Hevc,
+            Codec::H264 => Some(VideoCodec::H264),
+            Codec::Hevc => Some(VideoCodec::Hevc),
+            Codec::Pyrowave420 | Codec::Pyrowave444 => None,
+        }
+    }
+
+    /// The chroma format of a PyroWave codec.
+    pub fn pyrowave_chroma(self) -> Option<Chroma> {
+        match self {
+            Codec::Pyrowave420 => Some(Chroma::Yuv420),
+            Codec::Pyrowave444 => Some(Chroma::Yuv444),
+            Codec::H264 | Codec::Hevc => None,
         }
     }
 }
@@ -54,10 +75,15 @@ impl Codec {
 /// Which codec to ask the host for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum CodecChoice {
-    /// HEVC if the host can, else H.264.
+    /// HEVC if the host can, else H.264. Never PyroWave.
     Auto,
     H264,
     Hevc,
+    /// PyroWave, 8-bit 4:2:0 (a Vibepollo host's `SCM_PYROWAVE`). Only by
+    /// asking: it needs a wired link and a browser with WebGPU.
+    Pyrowave420,
+    /// PyroWave, 8-bit 4:4:4.
+    Pyrowave444,
 }
 
 impl CodecChoice {
@@ -66,6 +92,9 @@ impl CodecChoice {
         let hevc = host.contains(&VideoCodec::Hevc);
         let h264 = host.contains(&VideoCodec::H264);
         match self {
+            CodecChoice::Pyrowave420 | CodecChoice::Pyrowave444 => {
+                bail!("PyroWave is picked from the host's serverinfo, not from its codec list")
+            }
             CodecChoice::Auto if hevc => Ok(Codec::Hevc),
             CodecChoice::Auto | CodecChoice::H264 if h264 => Ok(Codec::H264),
             CodecChoice::Hevc if hevc => Ok(Codec::Hevc),
@@ -75,10 +104,30 @@ impl CodecChoice {
     }
 }
 
+impl CodecChoice {
+    /// The codec to launch with, given what the host says it can encode.
+    /// PyroWave only when asked for and the host's `serverinfo` offers it.
+    pub fn pick_for(self, info: &HostInfo) -> Result<Codec> {
+        let (codec, chroma) = match self {
+            CodecChoice::Pyrowave420 => (Codec::Pyrowave420, Chroma::Yuv420),
+            CodecChoice::Pyrowave444 => (Codec::Pyrowave444, Chroma::Yuv444),
+            classic => return classic.pick(&info.codecs()),
+        };
+        if !info.supports_pyrowave(chroma) {
+            bail!("the host doesn't offer 8-bit PyroWave at {chroma:?}");
+        }
+        Ok(codec)
+    }
+}
+
 /// One encoded frame from the host, as received.
 pub struct HostFrame {
-    /// The whole access unit (Annex-B).
+    /// The whole access unit (Annex-B). For PyroWave, the sequence header and
+    /// the block records that arrived, back to back (see [`HostFrame::pyrowave`]).
     pub data: Bytes,
+    /// Set on PyroWave frames: where the records are and what was lost.
+    #[allow(dead_code)] // read once the WebTransport endpoint serves PyroWave
+    pub pyrowave: Option<PyrowaveFrame>,
     pub key: bool,
     /// The host's frame number; gaps are frames lost between host and gateway.
     #[allow(dead_code)]
@@ -262,6 +311,22 @@ pub fn load_identity(dir: &Path, unique_id: &str) -> Result<Identity> {
     })
 }
 
+/// A PyroWave bitrate for the picture size: about 1.6 bits per pixel at 4:2:0
+/// (clean for SDR, per Vibepollo's guidance) and 1.6 times that at 4:4:4,
+/// 50 to 1500 Mbit/s (about 354 for 1440p60 4:2:0).
+pub fn auto_pyrowave_bitrate_kbps(width: u32, height: u32, fps: u32, chroma: Chroma) -> u32 {
+    let per_pixel = if chroma == Chroma::Yuv444 { 2.56 } else { 1.6 };
+    let bits_per_second = f64::from(width) * f64::from(height) * f64::from(fps) * per_pixel;
+    ((bits_per_second / 1000.0) as u32).clamp(50_000, 1_500_000)
+}
+
+/// The most of the host's own link speed (`PyroWaveHostLinkMbps`, 0 when not
+/// known) a PyroWave stream may ask for, in kbps: 80%, leaving room for audio,
+/// control and bursts. `None` when the host doesn't say.
+pub fn pyrowave_link_cap_kbps(host_link_mbps: u32) -> Option<u32> {
+    (host_link_mbps > 0).then(|| host_link_mbps.saturating_mul(800))
+}
+
 /// A bitrate for the picture size: about 0.18 bit per pixel, 8 to 100 Mbit/s
 /// (40 for 1440p60).
 pub fn auto_bitrate_kbps(width: u32, height: u32, fps: u32) -> u32 {
@@ -349,7 +414,7 @@ async fn stream(
         .server_info()
         .await
         .map_err(|e| anyhow!("reading the host's state: {e}"))?;
-    let codec = config.codec.pick(&info.codecs())?;
+    let codec = config.codec.pick_for(&info)?;
 
     // The host runs one app at a time. Resume ours if it is the one running
     // (a node restart, say); anything else running goes first.
@@ -363,7 +428,28 @@ async fn stream(
 
     let mut request = StreamRequest::new(config.app_id, config.width, config.height, config.fps);
     request.bitrate_kbps = config.bitrate_kbps;
-    request.codecs = vec![codec.wire()];
+    match (codec.wire(), codec.pyrowave_chroma()) {
+        (Some(wire), _) => request.codecs = vec![wire],
+        (None, Some(chroma)) => {
+            request.pyrowave = true;
+            request.chroma = chroma;
+            request.codecs = Vec::new();
+            // The host says how fast its own link is; asking for more than that
+            // only builds a queue in front of the NIC.
+            if let Some(cap) = pyrowave_link_cap_kbps(info.pyrowave_host_link_mbps)
+                && request.bitrate_kbps > cap
+            {
+                warn!(
+                    asked_kbps = request.bitrate_kbps,
+                    cap_kbps = cap,
+                    host_link_mbps = info.pyrowave_host_link_mbps,
+                    "the PyroWave bitrate is above the host's link: capping it"
+                );
+                request.bitrate_kbps = cap;
+            }
+        }
+        (None, None) => unreachable!("every codec is classic or PyroWave"),
+    }
     request.audio_channels = 2;
     // The browser leg is WebRTC's DTLS; the leg to the host is encrypted
     // wherever the host can, so the whole path is.
@@ -381,18 +467,32 @@ async fn stream(
         .await
         .map_err(|e| anyhow!("connecting the stream: {e}"))?;
     info!(
-        codec = ?setup.codec,
+        codec = codec.name(),
         width = setup.width,
         height = setup.height,
         encrypted = ?setup.encryption,
         launch_ms = started.elapsed().as_millis(),
         "moonlight stream up"
     );
-    if setup.codec != codec.wire() {
+    let came_up_as_asked = match codec.wire() {
+        Some(wire) => !setup.is_pyrowave() && setup.codec == wire,
+        None => setup.is_pyrowave(),
+    };
+    if !came_up_as_asked {
         close(&mut media).await;
         bail!(
             "asked for {codec:?}, but the stream came up as {:?}",
-            setup.codec
+            if setup.is_pyrowave() {
+                "PyroWave".to_owned()
+            } else {
+                format!("{:?}", setup.codec)
+            }
+        );
+    }
+    if codec.pyrowave_chroma().is_some() {
+        warn!(
+            "PyroWave frames reach browsers over WebTransport only, which this gateway \
+             doesn't serve yet: the stream runs, and nobody can watch it"
         );
     }
     // The browser plays one Opus stream of two channels. A surround mix
@@ -468,6 +568,7 @@ async fn stream(
 fn host_frame(frame: VideoFrame) -> HostFrame {
     HostFrame {
         data: frame.data,
+        pyrowave: frame.pyrowave,
         key: frame.key,
         index: frame.number,
         received: frame.received,
@@ -522,6 +623,82 @@ mod tests {
         // The browser can't play AV1 from here.
         assert!(CodecChoice::Auto.pick(&[VideoCodec::Av1]).is_err());
         assert!(CodecChoice::Auto.pick(&[]).is_err());
+    }
+
+    fn synthetic_info(mask: u32) -> HostInfo {
+        HostInfo {
+            name: "Synthetic".into(),
+            unique_id: "ABCDEF".into(),
+            app_version: "7.1.431.-1".into(),
+            gfe_version: String::new(),
+            http_port: 47989,
+            https_port: 47984,
+            mac: String::new(),
+            local_ip: String::new(),
+            codec_mode_support: mask,
+            max_luma_pixels_hevc: 0,
+            paired: true,
+            current_game: 0,
+            state: "SUNSHINE_SERVER_FREE".into(),
+            pyrowave_host_link_mbps: 0,
+            pyrowave_bandwidth_probe_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn synthetic_pyrowave_is_only_ever_asked_for() {
+        use cha_gamestream::client::front::pyrowave_bits::{SCM_PYROWAVE, SCM_PYROWAVE_444};
+        // A host that offers PyroWave and the classics: `auto` still takes HEVC.
+        let both = synthetic_info(0x0001 | 0x0100 | SCM_PYROWAVE | SCM_PYROWAVE_444);
+        assert_eq!(CodecChoice::Auto.pick_for(&both).unwrap(), Codec::Hevc);
+        assert_eq!(CodecChoice::H264.pick_for(&both).unwrap(), Codec::H264);
+        assert_eq!(
+            CodecChoice::Pyrowave420.pick_for(&both).unwrap(),
+            Codec::Pyrowave420
+        );
+        assert_eq!(
+            CodecChoice::Pyrowave444.pick_for(&both).unwrap(),
+            Codec::Pyrowave444
+        );
+        // Only PyroWave on offer: `auto` has nothing, instead of picking it.
+        let only = synthetic_info(SCM_PYROWAVE);
+        assert!(CodecChoice::Auto.pick_for(&only).is_err());
+        assert!(CodecChoice::Pyrowave420.pick_for(&only).is_ok());
+        // 4:4:4 only when the host's bit says so; a host without PyroWave refuses it.
+        assert!(CodecChoice::Pyrowave444.pick_for(&only).is_err());
+        let classic = synthetic_info(0x0001 | 0x0100);
+        assert!(CodecChoice::Pyrowave420.pick_for(&classic).is_err());
+        // It isn't picked from a codec list either.
+        assert!(CodecChoice::Pyrowave420.pick(&[VideoCodec::Hevc]).is_err());
+        // The names are the streamer's.
+        assert_eq!(Codec::Pyrowave420.name(), "pyrowave420");
+        assert_eq!(Codec::Pyrowave444.name(), "pyrowave444");
+        assert_eq!(Codec::Pyrowave444.pyrowave_chroma(), Some(Chroma::Yuv444));
+        assert_eq!(Codec::Hevc.pyrowave_chroma(), None);
+    }
+
+    #[test]
+    fn synthetic_pyrowave_bitrates_follow_the_picture_and_the_hosts_link() {
+        // About 1.6 bits per pixel at 4:2:0 (354 Mbit/s for 1440p60), 1.6 times that at 4:4:4.
+        assert_eq!(
+            auto_pyrowave_bitrate_kbps(2560, 1440, 60, Chroma::Yuv420),
+            353_894
+        );
+        assert_eq!(
+            auto_pyrowave_bitrate_kbps(2560, 1440, 60, Chroma::Yuv444),
+            566_231
+        );
+        assert_eq!(
+            auto_pyrowave_bitrate_kbps(640, 360, 30, Chroma::Yuv420),
+            50_000
+        );
+        assert_eq!(
+            auto_pyrowave_bitrate_kbps(7680, 4320, 120, Chroma::Yuv444),
+            1_500_000
+        );
+        // The host's link caps it at 80%, when it says what it is.
+        assert_eq!(pyrowave_link_cap_kbps(1000), Some(800_000));
+        assert_eq!(pyrowave_link_cap_kbps(0), None);
     }
 
     #[test]

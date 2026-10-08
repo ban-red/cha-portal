@@ -297,3 +297,65 @@ Optional and low priority. Only do this if we want Moonlight-style clients to pl
 3. Gateway re-framing to `cha-stream/1` with `CRITICAL`/`INTRA`.
 4. A browser integration test with a recorded synthetic stream.
 5. Capture a real stream the moment a Windows host exists, and resolve the open questions in section 6 against it. Nothing here has been seen on a real host.
+
+---
+
+## 8. As built (2026-10-07, untested against a real host)
+
+Built from this document alone, in the order of section 7.4. No Vibepollo host was available: every test uses frames made from the rules above and says "synthetic" in its name. The tests check our reading of the document, not the host.
+
+### What exists
+
+**`cha-gamestream` client negotiation** (`client/front/`):
+
+- `info.rs`: `pyrowave_bits::SCM_PYROWAVE`, `_444`, `_HDR10`, `_HDR10_444`; `HostInfo::{supports_pyrowave, offers_pyrowave}` and the fields `pyrowave_host_link_mbps` and `pyrowave_bandwidth_probe_bytes`. The probe itself (`GET /pyrowave-bandwidth-probe`) is not run.
+- `launch.rs`: `StreamRequest::pyrowave` (default false, so never automatic; `codecs` is ignored when set; `hdr` must be off). The host must be Sunshine-family and offer the profile in `serverinfo`. `StreamSetup::pyrowave: Option<PyrowaveSetup>` carries the result; `StreamSetup::codec` is then an unread H.264 placeholder (the host's shared `VideoCodec` enum has no PyroWave, and adding one would break `cha-streamer` and `cha-client-gamestream`).
+- `sdp.rs`: ANNOUNCE as in 2.4 (`bitStreamFormat=3`, `chromaSamplingType`, `dynamicRangeMode=0`, `pyrowaveAdaptiveFec=0`, `pyrowaveAdaptiveBitrate=0`, `pyrowaveFeatures=1`). DESCRIBE must carry `PYROWAVE/90000` and an `x-ss-pyrowave.bitstream` in `PYROWAVE_BITSTREAMS` (`["186f0393"]`, compared case-insensitively); anything else is `ClientError::Unsupported`, after `/launch` (the app runs on, as for any RTSP failure).
+
+**The media client** (`client/media/video.rs`, `client/media/pyrowave.rs`):
+
+- PyroWave mode in `VideoReceiver`: per-block RS recovery as for H.264. A frame still short when any packet of a newer frame has arrived and 10 ms (`reorder_window`) have passed, or after the 100 ms stall, is delivered anyway. Missing data packets are zero-filled and mapped. A frame is dropped only if its first packet or a whole FEC block (no data packet, none recoverable) is missing, or the record rules refuse it. A recovered packet's flags are not checked (the record-start flag lives among them); its stream index still is.
+- Nothing is ever asked of the host: no initial keyframe request, no retry, no invalidation. The control task also drops `request_idr()` and `invalidate()` calls on a PyroWave stream. The ENet "start A" handshake message is still sent (our own host reads it as a keyframe request; a real host ignores keyframe requests on PyroWave anyway).
+- `pyrowave::parse_frame` (public): record framing and length-prefixed framing, told apart by bit 31 of the first word; the sequence header, block records (`payload_words` counts header words) and padding; every rejection in 3.2; skipping of records that lost bytes, and resync after a record whose header is lost (see "Open questions"). It returns the sequence header and the whole block records back to back, which is exactly what `BitstreamParser.pushPacket` (TypeScript) and `BitstreamParser` (`cha-pyrowave-wgpu`) take: **a record is exactly an upstream packet of one block**, so no conversion is needed.
+- `VideoFrame::pyrowave: Option<PyrowaveFrame>` says where each record is, which are in the coarsest level (`critical`), how many blocks arrived, whether the coarse level is whole, and the packets and records lost. `VideoStats` counts partial frames, zero-filled packets, skipped records and rejected frames.
+
+**`cha-gateway`** (`host.rs`, `pyrowave.rs`):
+
+- `--codec pyrowave420` and `pyrowave444`; `auto` never picks them (tested, even on a host that offers only PyroWave). The stream is named `live-pyrowave420` and `live-pyrowave444`, as on the streamer. The default bitrate is 1.6 bits per pixel (1.6 times that at 4:4:4), capped at 80% of `PyroWaveHostLinkMbps` when the host gives it.
+- `pyrowave::datagrams` re-emits a frame as `cha-stream/1` datagrams the way `cha-streamer/src/wt.rs` does: `KEYFRAME | INTRA` on every datagram, no FEC, records packed into packets up to the datagram's room, an oversized packet split with `CONTINUES` and `CONTINUED`. Coarse-level records (and the sequence header) never share a packet with finer ones, and their packets also carry `CRITICAL`. The streamer sets no `CRITICAL` and the page doesn't read it, so this is harmless today.
+- **Step 3 stops here.** The gateway has no WebTransport path: `/info` reports `wt_port: 0` and `signal.rs` only mentions it in a comment. A WebRTC offer for a PyroWave stream is refused with a message saying so. Nothing is sent to browsers; the stream runs and the gateway warns.
+
+### What the WebTransport path needs (not built)
+
+A `wtransport` endpoint in the gateway on its own UDP port with a certificate and its hash in `/info` (`wt_port`, `cert_hash_hex`); the media token check on connect; the streamer's control stream (`hello`, `floor`, `pong`, `stats`, JSON lines, `docs/plans/c2-transport.md` sections 5 and 8); the datagram budget check before sending a frame (`datagram_send_buffer_space`) and the page's loss reports; audio datagrams; the viewers fan-out and input. Then the port has to reach the browser: `cha-node` (publishing the gateway's UDP port) and `cha-control` (handing out the address and hash) are other work. The browser needs no change if the gateway speaks the streamer's WebTransport protocol: `@cha/player` already decodes `INTRA` frames from whole packets with `partial = true`, and the sequence header leads the first packet.
+
+### Differences from this document
+
+- **Coarse-group formula.** 3.2 says the coarsest group is "block indices below `12 * ceil(W/32) * ceil(H/32)`, with W and H rounded up to 32 pixels and a minimum of 128". Read literally that is far more blocks than a picture has (1080p would be 24480 of 3261). We take W and H as the coarsest level's own size (the aligned picture over 32): `12 * ceil((aligned_w/32)/32) * ceil((aligned_h/32)/32)`, which is level 4 of the upstream layout and agrees with `cha-pyrowave-wgpu`'s `BlockLayout` (checked: 48 at 1080p, 72 at 1440p, 144 at 2160p).
+- **Critical packet count.** The host announces a "critical packets" count we haven't found on the wire, so it isn't used. `coarse_complete` is computed from which blocks arrived instead.
+- **`x-nv-clientSupportHevc:0`** is sent as for H.264. 2.4 doesn't say.
+- **Bitrate attributes.** Stock ANNOUNCE sends 80% of the configured bitrate (less 500 kbps remote, capped at 100 Mbps) in the initial, peak, minimum and maximum bitrate attributes. For PyroWave they carry the configured rate unchanged and uncapped, since 2.4 says the host uses `configuredBitrateKbps` as given and 100 Mbps would be absurd.
+- **Both** the `PYROWAVE/90000` marker and the bitstream line are required.
+- **Frame header.** The first payload's 8-byte (or 44-byte, `0x81`) stock frame header is assumed to apply, with the last-packet length at bytes 4 to 5, as for any frame (open question 3).
+- **Block recovery.** A block that is too short to recover is zero-filled, not dropped. A frame arriving with fewer than 90% of its records is still delivered; whether to decode it is the page's call (`isReady`).
+- **Zero-fill timing.** 3.4 says "once the next block or frame arrives". We wait for the next *frame* (not block), after the reorder window.
+- Not done: the bandwidth probe, the bitrate calibration, HDR10 (profiles and the `x-ss-pyrowave` HDR extras), `SCM_PYROWAVE_HDR10*` is read but never requested.
+
+### Open questions a first run needs to settle
+
+Numbered as in section 6 where they are the same.
+
+1. **The record-start flag (6.1).** `client::media::pyrowave::RECORD_START_FLAG` is `None`. When a capture shows which byte of the 16-byte NV video header carries `0x80`, set it (`RecordStartFlag { nv_header_byte, mask }`); the receiver then collects flagged packets and the parser resyncs there. It is probably the NV header's flags byte (offset 8), but that is a guess. Until then the fallback runs: after a record whose header was lost, resume at the next payload start whose first record is a finer one (not coarsest level) of the right sequence that fits a payload with 8 bytes to spare. **Is that the rule 3.4 means?** The wording ("resumes only after a finer record that fits in one payload with 8 bytes to spare") is ambiguous. A wrong resync would feed a block garbage coefficients, so watch for visible blocks.
+2. **The discriminator (6.2).** We use bit 31 of the first word (`extended`); the bit layout we parse matches upstream, so this should hold. A capture should show `0x80xxxxxx`-style first words on record-framed frames.
+3. **The frame header (6.3).** Does the 8-byte header precede the records, does the record layout count it in the first payload's room (we assume the first payload holds `payload - 8` bytes of records), and does bytes 4 to 5 give the last payload's length? The test layout assumes yes to all three. If the first payload's alignment is different, only resync is affected.
+4. **Features omitted (6.4).** We always send `pyrowaveFeatures=1` and never test the length-prefixed fallback against a host.
+5. **Link fields over HTTP (6.5).** We read `PyroWaveHostLinkMbps` from whatever `serverinfo` we get; the gateway asks over paired HTTPS.
+6. **Refusals (6.6).** 4:4:4 against a GPU that can't: we check the `SCM_PYROWAVE_444` bit first, then expect `400 BAD REQUEST` at ANNOUNCE from a host that offers it anyway.
+7. **Is `start A` safe to keep, and does the host need `x-nv-clientSupportHevc`?** Try without both.
+8. **Bitrate attributes.** Does the host read `configuredBitrateKbps` only, or the stock initial, peak and minimum attributes too? Do the unscaled numbers pass its checks (800000 kbps)?
+9. **FEC block shape.** Do critical-FEC frames arrive as a first FEC block of the coarse packets with its own percentage in the header (what the receiver reads per block), or some other way? A block whose shard count differs from `data + ceil(data * percent / 100)` would be dropped as malformed.
+10. **Packet size.** Payloads must be a multiple of 4 and at least 24 bytes for the aligned layout. We ask for `1392` (1360 with encryption), as stock; the first run shows whether the host applies the record layout at our packet size.
+11. **The pin (6.9).** Whether Vibepollo moves to upstream's frozen v1 and advertises another id: add it to `PYROWAVE_BITSTREAMS` only after checking the per-frame bitstream is unchanged, then run the decoder against a capture.
+12. **Real sequence header values.** `total_blocks`, the colour flags, the picture size when `sops` changes it: a size other than the launch size is refused as `SequenceMismatch` (the stream's size is the launch size).
+13. **Static content.** The host re-encodes the last image every frame interval; check the receiver and the gateway handle a stream that repeats identical frames, and a send queue that replaces an in-flight frame (a skipped frame number is not a loss here).
+14. **Timing.** `reorder_window` (10 ms) and `stall` (100 ms) are defaults tuned for 60 fps H.264. At 120 fps with a 0.8 MB frame, check how often a frame is delivered short only because the next one started first.

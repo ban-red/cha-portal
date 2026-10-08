@@ -21,12 +21,21 @@
 //! can't complete is dropped, never fatal; it asks for a keyframe (or a
 //! reference-frame invalidation) and resumes at the next frame that can start
 //! a picture.
+//!
+//! **PyroWave mode** ([`VideoConfig::pyrowave`]) changes that: every frame
+//! stands alone, so the receiver never asks the host for anything. Blocks are
+//! recovered as usual, but a frame that is still short when a newer one has
+//! arrived (or after the stall) is delivered anyway: its missing data packets
+//! are zero-filled and noted, and the record parser
+//! ([`super::pyrowave`]) skips the records that lost bytes. Only a frame
+//! missing its first packet or a whole FEC block is dropped.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
+use super::pyrowave::{self, RecordInput, RecordStartFlag, StreamShape};
 use crate::client::VideoFrame;
 use crate::crypto::{GCM_TAG_LEN, gcm_decrypt};
 use crate::handoff::VideoCodec;
@@ -99,6 +108,18 @@ pub(crate) struct VideoConfig {
     /// Whether to ask the host to invalidate references after a loss instead
     /// of asking for a keyframe.
     pub invalidate_refs: bool,
+    /// Set for a PyroWave stream.
+    pub pyrowave: Option<PyrowaveConfig>,
+}
+
+/// What the receiver needs to read PyroWave frames.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PyrowaveConfig {
+    /// The negotiated picture: a sequence header that differs is refused.
+    pub shape: StreamShape,
+    /// Where packets say they start a record, if known (see
+    /// [`pyrowave::RECORD_START_FLAG`]).
+    pub record_start: Option<RecordStartFlag>,
 }
 
 /// What the receiver hands on.
@@ -138,6 +159,14 @@ pub struct VideoStats {
     pub idr_requests: u64,
     /// Reference-frame invalidations asked for.
     pub invalidations: u64,
+    /// PyroWave frames delivered with data packets missing.
+    pub pyrowave_partial_frames: u64,
+    /// Data packets zero-filled in PyroWave frames.
+    pub pyrowave_packets_zero_filled: u64,
+    /// Block records skipped for lost bytes.
+    pub pyrowave_records_skipped: u64,
+    /// PyroWave frames refused by the record rules (counted in `frames_lost` too).
+    pub pyrowave_frames_rejected: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +186,9 @@ struct Block {
     got_data: usize,
     got_parity: usize,
     state: BlockState,
+    /// PyroWave: recovery was tried and gave nonsense; the shards it filled
+    /// were taken back, and it is not tried again.
+    recovery_failed: bool,
 }
 
 impl Block {
@@ -170,6 +202,7 @@ impl Block {
             got_data: 0,
             got_parity: 0,
             state: BlockState::Open,
+            recovery_failed: false,
         }
     }
 }
@@ -230,6 +263,12 @@ impl VideoReceiver {
     /// `now` stands for the request the control stream's start already made.
     pub fn new(cfg: VideoConfig, now: Instant) -> Self {
         let shard_len = RTP_HEADER_SIZE + 4 + cfg.packet_size;
+        // PyroWave frames stand alone: nothing is ever asked for.
+        let need = if cfg.pyrowave.is_some() {
+            Need::Nothing
+        } else {
+            Need::Key
+        };
         Self {
             cfg,
             shard_len,
@@ -237,7 +276,7 @@ impl VideoReceiver {
             frames: BTreeMap::new(),
             next: None,
             last_good: None,
-            need: Need::Key,
+            need,
             last_request: now,
             events: Vec::new(),
             stats: VideoStats::default(),
@@ -397,12 +436,14 @@ impl VideoReceiver {
         if block.got_data == block.data {
             block.state = BlockState::Done;
         } else if block.got_data + block.got_parity >= block.data
+            && !block.recovery_failed
             && recover(
                 block,
                 frame,
                 block_no as u8,
                 last_block as u8,
                 &mut self.codecs,
+                self.cfg.pyrowave.is_some(),
             )
         {
             self.stats.blocks_recovered += 1;
@@ -421,13 +462,28 @@ impl VideoReceiver {
                 }
                 Some(f) if f.failed() => self.lose_next(now),
                 Some(f) => {
+                    let pyrowave = self.cfg.pyrowave.is_some();
                     // Only a newer frame that has completed says this one isn't coming
                     // (a client that is merely slow has none): else wait out the stall.
-                    let newer = self.frames.range(next + 1..).any(|(_, n)| n.complete());
+                    // PyroWave settles for any packet of a newer frame: the host sends
+                    // one frame at a time, so what is missing now is not coming, and
+                    // what is there is worth more than waiting.
+                    let newer = if pyrowave {
+                        self.frames.range(next + 1..).next().is_some()
+                    } else {
+                        self.frames.range(next + 1..).any(|(_, n)| n.complete())
+                    };
                     let idle = now.saturating_duration_since(f.last_activity);
                     let t = self.cfg.timing;
                     if (newer && idle >= t.reorder_window) || idle >= t.stall {
-                        self.lose_next(now);
+                        if pyrowave {
+                            // Deliver what there is, zero-filled where it isn't.
+                            let f = self.frames.remove(&next).expect("just found");
+                            self.deliver(next, &f, now);
+                            self.next = Some(next + 1);
+                        } else {
+                            self.lose_next(now);
+                        }
                     } else {
                         return;
                     }
@@ -463,6 +519,10 @@ impl VideoReceiver {
     /// once for a burst.
     fn lose(&mut self, first: i64, last: i64, now: Instant) {
         self.stats.frames_lost += (last - first + 1) as u64;
+        if self.cfg.pyrowave.is_some() {
+            // Every frame stands alone: no keyframe, no invalidation.
+            return;
+        }
         if self.need == Need::Nothing {
             self.last_request = now;
             if self.cfg.invalidate_refs {
@@ -484,6 +544,9 @@ impl VideoReceiver {
     }
 
     fn request_idr(&mut self, now: Instant) {
+        if self.cfg.pyrowave.is_some() {
+            return;
+        }
         self.need = Need::Key;
         self.last_request = now;
         self.stats.idr_requests += 1;
@@ -498,6 +561,10 @@ impl VideoReceiver {
 
     /// A completed frame: hand it on if it can start or continue a picture.
     fn deliver(&mut self, number: i64, pending: &Pending, now: Instant) {
+        if let Some(config) = self.cfg.pyrowave {
+            self.deliver_pyrowave(number, pending, now, config);
+            return;
+        }
         let Some((data, kind)) = assemble(pending, self.cfg.codec) else {
             // Recovered or sent as nonsense: as good as lost.
             self.lose(number, number, now);
@@ -527,7 +594,56 @@ impl VideoReceiver {
             key: kind == frame_type::IDR,
             number: number as u32,
             received: now,
+            pyrowave: None,
         }));
+    }
+
+    /// A PyroWave frame, whole or not: zero-filled where packets are missing,
+    /// parsed into its records, delivered unless the rules refuse it.
+    fn deliver_pyrowave(
+        &mut self,
+        number: i64,
+        pending: &Pending,
+        now: Instant,
+        config: PyrowaveConfig,
+    ) {
+        let Some(frame) = assemble_pyrowave(pending, config.record_start) else {
+            // The first packet or a whole FEC block never came.
+            self.lose(number, number, now);
+            return;
+        };
+        let input = RecordInput {
+            bytes: &frame.bytes,
+            lost: &frame.lost,
+            payload_starts: &frame.payload_starts,
+            record_starts: frame.record_starts.as_deref(),
+            payload_size: frame.payload_size,
+            packets: frame.packets,
+            packets_lost: frame.packets_lost,
+        };
+        match pyrowave::parse_frame(&input, config.shape) {
+            Ok((data, info)) => {
+                if info.packets_lost > 0 {
+                    self.stats.pyrowave_partial_frames += 1;
+                    self.stats.pyrowave_packets_zero_filled += u64::from(info.packets_lost);
+                }
+                self.stats.pyrowave_records_skipped += u64::from(info.records_skipped);
+                self.last_good = Some(number);
+                self.stats.frames_delivered += 1;
+                self.events.push(VideoEvent::Frame(VideoFrame {
+                    data: Bytes::from(data),
+                    key: true,
+                    number: number as u32,
+                    received: now,
+                    pyrowave: Some(info),
+                }));
+            }
+            Err(reason) => {
+                tracing::debug!(frame = number, %reason, "a PyroWave frame was refused");
+                self.stats.pyrowave_frames_rejected += 1;
+                self.lose(number, number, now);
+            }
+        }
     }
 }
 
@@ -539,6 +655,7 @@ fn recover(
     block_no: u8,
     last_block: u8,
     codecs: &mut Codecs,
+    pyrowave: bool,
 ) -> bool {
     let parity = block.shards.len() - block.data;
     let missing: Vec<usize> = (0..block.data)
@@ -557,13 +674,11 @@ fn recover(
         .and_then(|codec| codec.reconstruct_data(&mut block.shards))
         .is_ok();
     if !ok {
-        block.state = BlockState::Failed;
-        return false;
+        return recovery_failed(block, &missing, pyrowave);
     }
     for &i in &missing {
         let Some(shard) = block.shards[i].as_mut() else {
-            block.state = BlockState::Failed;
-            return false;
+            return recovery_failed(block, &missing, pyrowave);
         };
         // What the code returns is the packet the host protected. The fields the
         // client knows are written from that, and the start and end flags are
@@ -594,16 +709,33 @@ fn recover(
             };
         let stream_index = u32::from_le_bytes(shard[header..header + 4].try_into().expect("4"));
         let sequence = block.base_seq.wrapping_add(i as u16);
-        let sane = shard[header + 8] == expected_flags
+        // PyroWave's packets carry a record-start flag among the flags, whose
+        // place isn't known yet (see `pyrowave::RECORD_START_FLAG`): only the
+        // stream index is checked for them.
+        let sane = (pyrowave || shard[header + 8] == expected_flags)
             && stream_index & 0xFF == 0
             && (stream_index >> 8) as u16 == sequence;
         if !sane {
-            block.state = BlockState::Failed;
-            return false;
+            return recovery_failed(block, &missing, pyrowave);
         }
     }
     block.state = BlockState::Done;
     true
+}
+
+/// A recovery that didn't work. Ordinary frames are given up on; a PyroWave
+/// block takes back the shards recovery filled in (they are lost packets, to
+/// be zero-filled) and stays open.
+fn recovery_failed(block: &mut Block, filled: &[usize], pyrowave: bool) -> bool {
+    if pyrowave {
+        for &i in filled {
+            block.shards[i] = None;
+        }
+        block.recovery_failed = true;
+    } else {
+        block.state = BlockState::Failed;
+    }
+    false
 }
 
 /// The payload of a shard: after the RTP and NV headers.
@@ -614,6 +746,109 @@ fn payload(shard: &[u8]) -> &[u8] {
         RTP_HEADER_SIZE
     };
     &shard[header + NV_VIDEO_PACKET_SIZE..]
+}
+
+/// A PyroWave frame laid out for the record parser.
+struct PyrowaveBytes {
+    bytes: Vec<u8>,
+    lost: Vec<std::ops::Range<usize>>,
+    payload_starts: Vec<usize>,
+    record_starts: Option<Vec<usize>>,
+    payload_size: usize,
+    packets: u32,
+    packets_lost: u32,
+}
+
+/// The frame's payload bytes in order, the frame header off, the last packet
+/// cut to its declared length and lost data packets as zeros. `None` when the
+/// frame can't be read at all: a block that never came (or holds no data
+/// packet we have or could rebuild), or no first packet.
+fn assemble_pyrowave(frame: &Pending, flag: Option<RecordStartFlag>) -> Option<PyrowaveBytes> {
+    // Every block must have shown at least one data packet.
+    let mut blocks = Vec::with_capacity(frame.blocks.len());
+    for block in &frame.blocks {
+        let block = block.as_ref()?;
+        if block.state != BlockState::Done && block.got_data == 0 {
+            return None;
+        }
+        blocks.push(block);
+    }
+    let first = blocks.first()?.shards.first()?.as_deref()?;
+    let first_payload = payload(first);
+    let payload_size = first_payload.len();
+    // The frame header: 8 bytes, or 44 (`0x81`), as for any frame.
+    let header_len = match first_payload.first()? {
+        0x01 if payload_size >= 8 => 8,
+        0x81 if payload_size >= 44 => 44,
+        _ => return None,
+    };
+    let declared = usize::from(u16::from_le_bytes([first_payload[4], first_payload[5]]));
+
+    let packets: Vec<Option<&[u8]>> = blocks
+        .iter()
+        .flat_map(|b| b.shards[..b.data].iter().map(|s| s.as_deref()))
+        .collect();
+    let count = packets.len();
+    let mut bytes = Vec::with_capacity(count * payload_size);
+    let mut lost: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut payload_starts = Vec::with_capacity(count);
+    let mut record_starts = flag.map(|_| Vec::new());
+    let mut packets_lost = 0u32;
+    for (i, shard) in packets.iter().enumerate() {
+        let start = bytes.len();
+        payload_starts.push(start);
+        // The first packet's frame header is not part of the stream.
+        let skip = if i == 0 { header_len } else { 0 };
+        match shard {
+            Some(shard) => {
+                let p = payload(shard);
+                let p = &p[..p.len().min(payload_size)];
+                bytes.extend_from_slice(&p[skip.min(p.len())..]);
+                if let (Some(flag), Some(starts)) = (flag, record_starts.as_mut()) {
+                    let header = if shard[0] & RTP_EXTENSION_FLAG != 0 {
+                        RTP_HEADER_SIZE + RTP_EXTENSION_SIZE
+                    } else {
+                        RTP_HEADER_SIZE
+                    };
+                    if shard
+                        .get(header + flag.nv_header_byte)
+                        .is_some_and(|b| b & flag.mask != 0)
+                    {
+                        starts.push(start);
+                    }
+                }
+            }
+            None => {
+                packets_lost += 1;
+                bytes.resize(start + payload_size - skip, 0);
+                match lost.last_mut() {
+                    Some(last) if last.end == start => last.end = bytes.len(),
+                    _ => lost.push(start..bytes.len()),
+                }
+            }
+        }
+    }
+    // The last packet's declared length, when it is a plausible one.
+    let valid = declared >= 1 && declared <= payload_size && (count > 1 || declared > header_len);
+    if valid {
+        let total = (count - 1) * payload_size + declared - header_len;
+        if total < bytes.len() {
+            bytes.truncate(total);
+            for r in &mut lost {
+                r.end = r.end.min(total);
+            }
+            lost.retain(|r| r.start < r.end);
+        }
+    }
+    Some(PyrowaveBytes {
+        bytes,
+        lost,
+        payload_starts,
+        record_starts,
+        payload_size,
+        packets: count as u32,
+        packets_lost,
+    })
 }
 
 /// A complete frame's access unit and its type: the payloads in order, the
@@ -673,6 +908,7 @@ mod tests {
             key,
             codec: VideoCodec::H264,
             invalidate_refs: rfi,
+            pyrowave: None,
         }
     }
 

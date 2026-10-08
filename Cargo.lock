@@ -865,6 +865,7 @@ dependencies = [
  "cha-client",
  "cha-gamestream",
  "cha-moonlight-input",
+ "cha-proto",
  "cha-wire",
  "cha-workspace-hack",
  "clap",

@@ -10,7 +10,7 @@ use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use super::rtsp::Client as Rtsp;
 use super::sdp::{self, Announce, Describe};
 use super::{ClientError, HostClient, HostInfo};
-use crate::client::StreamSetup;
+use crate::client::{PyrowaveSetup, StreamSetup};
 use crate::front::rtsp::sdp::enc;
 use crate::handoff::{Chroma, Encryption, MediaPorts, SessionKeys, VideoCodec};
 
@@ -52,6 +52,13 @@ pub struct StreamRequest {
     /// Codecs we can decode, most wanted first. The stream uses the first
     /// the host offers in the dynamic range and chroma format asked for.
     pub codecs: Vec<VideoCodec>,
+    /// Stream PyroWave (Vibepollo's contract: 8-bit, 4:2:0 or 4:4:4 as
+    /// [`chroma`](Self::chroma) says) instead of any of `codecs`. Never
+    /// chosen for the caller: only an explicit request gets it, and `hdr`
+    /// must be off (HDR10 PyroWave isn't spoken yet). The host refuses
+    /// unless its `serverinfo` offers the profile and its DESCRIBE names a
+    /// bitstream in [`PYROWAVE_BITSTREAMS`](super::PYROWAVE_BITSTREAMS).
+    pub pyrowave: bool,
     pub hdr: bool,
     pub chroma: Chroma,
     pub full_range: bool,
@@ -95,6 +102,7 @@ impl StreamRequest {
             fps,
             bitrate_kbps: 20_000,
             codecs: vec![VideoCodec::Hevc, VideoCodec::H264],
+            pyrowave: false,
             hdr: false,
             chroma: Chroma::Yuv420,
             full_range: false,
@@ -135,7 +143,11 @@ impl StreamRequest {
         if !matches!(self.audio_channels, 2 | 6 | 8) {
             return bad("the audio channel count");
         }
-        if self.codecs.is_empty() {
+        if self.pyrowave {
+            if self.hdr {
+                return bad("HDR10 PyroWave isn't supported (8-bit only)");
+            }
+        } else if self.codecs.is_empty() {
             return bad("no codec");
         }
         Ok(())
@@ -247,8 +259,28 @@ impl HostClient {
                     .into(),
             ));
         }
-        let candidates = candidates(&info, request);
-        if candidates.is_empty() {
+        let candidates = if request.pyrowave {
+            if !info.is_sunshine() {
+                return Err(ClientError::Unsupported(
+                    "PyroWave needs a Sunshine-family host (its ANNOUNCE attributes are extensions)"
+                        .into(),
+                ));
+            }
+            if !info.supports_pyrowave(request.chroma) {
+                return Err(ClientError::Unsupported(format!(
+                    "the host doesn't offer 8-bit PyroWave in {}",
+                    if request.chroma == Chroma::Yuv444 {
+                        "4:4:4"
+                    } else {
+                        "4:2:0"
+                    }
+                )));
+            }
+            Vec::new()
+        } else {
+            candidates(&info, request)
+        };
+        if candidates.is_empty() && !request.pyrowave {
             return Err(ClientError::Unsupported(format!(
                 "the host can't encode {}{} with any codec we can decode",
                 if request.hdr { "HDR " } else { "" },
@@ -345,15 +377,32 @@ impl HostClient {
             )
             .await?;
         let describe = Describe::parse(&described.body_text(), request.audio_channels)?;
-        let codec = candidates
-            .iter()
-            .copied()
-            .find(|&c| describe.offers(c))
-            .ok_or_else(|| {
-                ClientError::Unsupported(
-                    "the host's RTSP offers none of the codecs we asked for".into(),
-                )
-            })?;
+        let pyrowave = if request.pyrowave {
+            if !describe.pyrowave_marker {
+                return Err(ClientError::Unsupported(
+                    "the host's RTSP doesn't offer PyroWave".into(),
+                ));
+            }
+            // The id decides: a host on another bitstream is refused before
+            // anything is announced.
+            Some(describe.pyrowave_bitstream_allowed()?)
+        } else {
+            None
+        };
+        let codec = if pyrowave.is_some() {
+            // Not consulted for PyroWave; see `StreamSetup::pyrowave`.
+            VideoCodec::H264
+        } else {
+            candidates
+                .iter()
+                .copied()
+                .find(|&c| describe.offers(c))
+                .ok_or_else(|| {
+                    ClientError::Unsupported(
+                        "the host's RTSP offers none of the codecs we asked for".into(),
+                    )
+                })?
+        };
         let sunshine = info.is_sunshine();
         let enabled = if sunshine {
             sdp::encryption_enabled(&describe, request)?
@@ -450,6 +499,7 @@ impl HostClient {
             request,
             sunshine,
             codec,
+            pyrowave: pyrowave.is_some(),
             hdr: request.hdr,
             chroma: request.chroma,
             encryption: enabled,
@@ -460,7 +510,10 @@ impl HostClient {
             address: &address,
             ip_version: if rtsp_addr.is_ipv6() { "IPv6" } else { "IPv4" },
             rtsp_client_version: RTSP_CLIENT_VERSION,
-            ref_invalidation: request.reference_frame_invalidation && describe.ref_invalidation,
+            // Never for PyroWave: every frame stands alone.
+            ref_invalidation: pyrowave.is_none()
+                && request.reference_frame_invalidation
+                && describe.ref_invalidation,
         };
         let sdp_text = announce.sdp();
         rtsp.request(
@@ -492,6 +545,10 @@ impl HostClient {
             hdr: request.hdr,
             chroma: request.chroma,
             audio,
+            pyrowave: pyrowave.map(|bitstream| PyrowaveSetup {
+                bitstream: bitstream.to_owned(),
+                record_framing: true,
+            }),
         })
     }
 }
@@ -564,6 +621,18 @@ mod tests {
         ] {
             assert!(r.validate().is_err());
         }
+        // PyroWave: needs no codec list, never HDR (10-bit isn't spoken).
+        let pyro = StreamRequest {
+            pyrowave: true,
+            codecs: vec![],
+            ..StreamRequest::new(1, 1920, 1080, 60)
+        };
+        assert!(pyro.validate().is_ok());
+        assert!(StreamRequest { hdr: true, ..pyro }.validate().is_err());
+        assert!(
+            !StreamRequest::new(1, 1920, 1080, 60).pyrowave,
+            "never the default"
+        );
         let r = StreamRequest {
             audio_channels: 6,
             ..StreamRequest::new(1, 1920, 1080, 60)

@@ -33,9 +33,10 @@ mod xml;
 pub use error::{ClientError, PairingError};
 pub use http::Timeouts;
 pub use identity::ClientIdentity;
-pub use info::HostInfo;
+pub use info::{HostInfo, pyrowave_bits};
 pub use launch::{ColorSpace, Encrypt, StreamRequest};
 pub use pair::random_pin;
+pub use sdp::PYROWAVE_BITSTREAMS;
 
 const DEFAULT_HTTP_PORT: u16 = 47989;
 const DEFAULT_HTTPS_PORT: u16 = 47984;

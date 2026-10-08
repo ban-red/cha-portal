@@ -101,6 +101,11 @@ fn build_rtc(
     let (builder, rtp_codec) = match codec {
         Codec::H264 => (builder.enable_h264(true), RtpCodec::H264),
         Codec::Hevc => (builder.enable_h265(true), RtpCodec::H265),
+        Codec::Pyrowave420 | Codec::Pyrowave444 => {
+            return Err(anyhow::anyhow!(
+                "PyroWave is carried over WebTransport, not WebRTC"
+            ));
+        }
     };
     let builder = builder.enable_opus(audio, false);
     let mut rtc = builder.build(Instant::now());

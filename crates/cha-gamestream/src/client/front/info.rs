@@ -5,6 +5,19 @@ use super::xml::Node;
 use crate::front::nvhttp::xml::codec_support as bits;
 use crate::handoff::{Chroma, VideoCodec};
 
+/// The `ServerCodecModeSupport` bits Vibepollo adds for PyroWave (named as its
+/// protocol document names them, `docs/plans/vibepollo-pyrowave.md` section 2.1).
+pub mod pyrowave_bits {
+    /// 8-bit 4:2:0.
+    pub const SCM_PYROWAVE: u32 = 0x0080_0000;
+    /// 8-bit 4:4:4.
+    pub const SCM_PYROWAVE_444: u32 = 0x0100_0000;
+    /// 10-bit 4:2:0 (not spoken yet).
+    pub const SCM_PYROWAVE_HDR10: u32 = 0x0200_0000;
+    /// 10-bit 4:4:4 (not spoken yet).
+    pub const SCM_PYROWAVE_HDR10_444: u32 = 0x0400_0000;
+}
+
 /// `serverinfo`, parsed. Only `appversion` is required; a host that leaves
 /// out the rest (old GFE) gets empty or zero values.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +42,13 @@ pub struct HostInfo {
     pub current_game: u32,
     /// The host's `state`, e.g. `SUNSHINE_SERVER_BUSY`.
     pub state: String,
+    /// `PyroWaveHostLinkMbps` (paired HTTPS answers of a PyroWave host): the
+    /// host's transmit speed on its route to us, 0 if absent or not a known
+    /// wired link. Not end-to-end throughput.
+    pub pyrowave_host_link_mbps: u32,
+    /// `PyroWaveBandwidthProbeBytes`: the size of `GET /pyrowave-bandwidth-probe`
+    /// (33554432 on Vibepollo), 0 if absent.
+    pub pyrowave_bandwidth_probe_bytes: u64,
 }
 
 impl HostInfo {
@@ -72,6 +92,11 @@ impl HostInfo {
             current_game,
             state,
             app_version,
+            pyrowave_host_link_mbps: number("PyroWaveHostLinkMbps"),
+            pyrowave_bandwidth_probe_bytes: root
+                .text_of("PyroWaveBandwidthProbeBytes")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(0),
         })
     }
 
@@ -107,6 +132,25 @@ impl HostInfo {
             .into_iter()
             .filter(|&c| self.supports(c, false, Chroma::Yuv420))
             .collect()
+    }
+
+    /// Whether the host encodes PyroWave at 8 bits in this chroma format. A
+    /// host that doesn't say (no mask) never does. HDR10 PyroWave is not
+    /// spoken by this client, so its bits are not asked about.
+    pub fn supports_pyrowave(&self, chroma: Chroma) -> bool {
+        let bit = match chroma {
+            Chroma::Yuv420 => pyrowave_bits::SCM_PYROWAVE,
+            Chroma::Yuv444 => pyrowave_bits::SCM_PYROWAVE_444,
+        };
+        self.codec_mode_support & bit != 0
+    }
+
+    /// Whether the host offers any PyroWave profile, HDR10 ones included.
+    pub fn offers_pyrowave(&self) -> bool {
+        use pyrowave_bits::*;
+        self.codec_mode_support
+            & (SCM_PYROWAVE | SCM_PYROWAVE_444 | SCM_PYROWAVE_HDR10 | SCM_PYROWAVE_HDR10_444)
+            != 0
     }
 
     pub fn supports_hdr(&self, codec: VideoCodec) -> bool {
@@ -197,5 +241,77 @@ mod tests {
         assert!(i.supports_yuv444(VideoCodec::Av1));
         assert!(!i.supports_hdr(VideoCodec::H264));
         assert!(!i.supports(VideoCodec::Av1, false, Chroma::Yuv420));
+    }
+
+    const SYNTHETIC_PYROWAVE_SERVERINFO: &str = "<root status_code=\"200\"><hostname>Synthetic</hostname>\
+        <appversion>7.1.431.-1</appversion><HttpsPort>47984</HttpsPort><ExternalPort>47989</ExternalPort>\
+        <ServerCodecModeSupport>{mask}</ServerCodecModeSupport><PairStatus>1</PairStatus>\
+        <PyroWaveHostLinkMbps>{link}</PyroWaveHostLinkMbps>\
+        <PyroWaveBandwidthProbeBytes>33554432</PyroWaveBandwidthProbeBytes></root>";
+
+    fn synthetic_pyrowave(mask: u32, link: u32) -> HostInfo {
+        info(
+            &SYNTHETIC_PYROWAVE_SERVERINFO
+                .replace("{mask}", &mask.to_string())
+                .replace("{link}", &link.to_string()),
+        )
+        .unwrap()
+    }
+
+    /// Golden, from the spec's table (section 2.1): the four bits' values and the two fields.
+    #[test]
+    fn synthetic_pyrowave_capability_bits_have_the_documented_values() {
+        assert_eq!(pyrowave_bits::SCM_PYROWAVE, 0x0080_0000);
+        assert_eq!(pyrowave_bits::SCM_PYROWAVE_444, 0x0100_0000);
+        assert_eq!(pyrowave_bits::SCM_PYROWAVE_HDR10, 0x0200_0000);
+        assert_eq!(pyrowave_bits::SCM_PYROWAVE_HDR10_444, 0x0400_0000);
+    }
+
+    #[test]
+    fn synthetic_pyrowave_serverinfo_is_read_into_support_and_link_fields() {
+        let h264_hevc = bits::H264 | bits::HEVC;
+        let i = synthetic_pyrowave(h264_hevc | pyrowave_bits::SCM_PYROWAVE, 2500);
+        assert!(i.supports_pyrowave(Chroma::Yuv420));
+        assert!(!i.supports_pyrowave(Chroma::Yuv444));
+        assert_eq!(i.pyrowave_host_link_mbps, 2500);
+        assert_eq!(i.pyrowave_bandwidth_probe_bytes, 33_554_432);
+        // PyroWave is not one of the codecs `codecs()` offers: it is never automatic.
+        assert_eq!(i.codecs(), [VideoCodec::Hevc, VideoCodec::H264]);
+
+        let i = synthetic_pyrowave(
+            pyrowave_bits::SCM_PYROWAVE | pyrowave_bits::SCM_PYROWAVE_444,
+            0,
+        );
+        assert!(i.supports_pyrowave(Chroma::Yuv420) && i.supports_pyrowave(Chroma::Yuv444));
+        assert_eq!(i.pyrowave_host_link_mbps, 0);
+
+        // HDR10 bits alone offer PyroWave but not a profile we speak.
+        let i = synthetic_pyrowave(
+            pyrowave_bits::SCM_PYROWAVE_HDR10 | pyrowave_bits::SCM_PYROWAVE_HDR10_444,
+            0,
+        );
+        assert!(i.offers_pyrowave());
+        assert!(!i.supports_pyrowave(Chroma::Yuv420) && !i.supports_pyrowave(Chroma::Yuv444));
+
+        // A host that says nothing, or that is not PyroWave: no PyroWave, zero fields.
+        let plain = info("<root><appversion>7.1.431.-1</appversion></root>").unwrap();
+        assert!(!plain.offers_pyrowave() && !plain.supports_pyrowave(Chroma::Yuv420));
+        assert_eq!(
+            (
+                plain.pyrowave_host_link_mbps,
+                plain.pyrowave_bandwidth_probe_bytes
+            ),
+            (0, 0)
+        );
+        let junk = info("<root><appversion>7.1.431.-1</appversion><PyroWaveHostLinkMbps>x</PyroWaveHostLinkMbps>\
+            <PyroWaveBandwidthProbeBytes>-1</PyroWaveBandwidthProbeBytes></root>")
+        .unwrap();
+        assert_eq!(
+            (
+                junk.pyrowave_host_link_mbps,
+                junk.pyrowave_bandwidth_probe_bytes
+            ),
+            (0, 0)
+        );
     }
 }
