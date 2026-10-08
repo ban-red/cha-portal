@@ -2,6 +2,8 @@
 
 The browser side of a session (plan §6.1). Framework-agnostic: give it a `<video>` element and a function that carries a WebRTC offer to the environment. In the portal, that is `POST /api/environments/{id}/connect`.
 
+The health grade's numbers and words come from `@cha/ui-spec` (`health.json`), shared with Cha Player; `health.ts` holds only the checks. See "Changing the in-stream UI" in `web/packages/ui-spec/README.md`.
+
 ```ts
 const player = new Player({
   video,

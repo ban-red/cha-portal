@@ -88,7 +88,7 @@ Each phase lands both sides together, with its cases, and leaves both players wo
    - Native: `ui/toolbar.rs` draws `build_toolbar`; the session's capabilities come from `TransportStats` (`toolbar::capabilities`) without a new method on `SessionControl`, because everything the toolbar needs is already there and the wrappers (`QuitsEnvironment`) would each have to forward another call. `ui/chrome.rs` holds what the panel and the toolbar share: the look, the lit background and icon button, the menu box and widget style, the chips and the pointer-routing rule (`Press`).
    - Disagreements settled in the browser's favour: the stream settings tooltip, the mouse tooltip (the keyboard still works), Back's tooltip, the sound tooltip carries the volume, the controllers button counts them, no footnote under the controller list, no frame rate row until the host reports one (it showed a dash), and the frame rate chips stay up when the host runs a rate outside 60, 90 and 120.
    - A launcher extra: `scripts/export-brand.sh` also writes `brand/logo-64.rgba` (64 x 64 raw RGBA), which the native launcher shows before "Cha Player".
-6. **Docs.**
+6. **Docs.** *Done: pointers in AGENTS.md, both players' READMEs and `docs/PLAN.md`.*
    - Add a short "Changing the in-stream UI" section in `web/packages/ui-spec/README.md`: edit the spec, run the cases on both sides, update both renderers if the structure changed.
    - Add a pointer to it in `AGENTS.md` and both players' READMEs.
    - Update `docs/PLAN.md` status lines.
