@@ -1078,14 +1078,15 @@ async fn placements_offer_every_device_and_launches_take_the_choice() {
         .iter()
         .map(|o| o["kind"].as_str().unwrap())
         .collect();
-    // VA-API is listed but not launchable until the streamer encodes on it.
-    assert_eq!(kinds, ["nvidia", "cpu", "vaapi"]);
+    // The streamer encodes on VA-API (f3d75ad): it ranks after NVIDIA and
+    // before the CPU, and every device is launchable.
+    assert_eq!(kinds, ["nvidia", "vaapi", "cpu"]);
     assert!(
         chrome["options"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|o| o["allowed"] == (o["kind"] != "vaapi"))
+            .all(|o| o["allowed"] == true)
     );
     assert_eq!(chrome["auto"]["device"], "nvidia:0");
     let node = chrome["auto"]["node"].as_str().unwrap().to_string();
@@ -1142,15 +1143,15 @@ async fn placements_offer_every_device_and_launches_take_the_choice() {
     assert_eq!(status, 200);
     assert_eq!(spec.unwrap().device.unwrap().id, "nvidia:0");
 
-    // Asking for VA-API is refused for now, with the reason.
-    let (status, env, _) = p
+    // Asking for VA-API launches there (f3d75ad).
+    let (status, env, spec) = p
         .launch_body(
             &runtime,
             json!({ "templateId": "xfce", "node": node, "device": "vaapi:renderD129" }),
         )
         .await;
-    assert_eq!(status, 400, "{env}");
-    assert_eq!(env["error"], "placement_not_allowed");
+    assert_eq!(status, 200, "{env}");
+    assert_eq!(spec.unwrap().device.unwrap().kind, DeviceKind::Vaapi);
     let (status, _, spec) = p
         .launch_body(
             &runtime,
