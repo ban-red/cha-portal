@@ -3,48 +3,41 @@
 //! is the transport, the host and the app id, and the settings live in
 //! `config.json` under `toolbar`.
 //!
-//! Every field is optional (never picked is not the same as picked), and one
-//! that is malformed is dropped on its own, so a hand edit can't lose the rest
-//! of the config.
+//! Every field is optional (never picked is not the same as picked). The fields and their limits
+//! are `prefs.json`'s `toolbar` group, shared with the browser; [`StreamPrefs::from_json`] reads
+//! them through the spec's validator, so a malformed field is dropped on its own and a hand edit
+//! can't lose the rest of the config.
 
 use std::collections::BTreeMap;
 
-use serde::de::DeserializeOwned;
+use cha_ui_spec::health::Platform;
+use cha_ui_spec::prefs::{self, GroupName, limits};
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 /// Frame rates the streamer offers (`FPS_CHOICES` in `cha-client-stream`).
 pub const FRAME_RATES: [u32; 3] = [60, 90, 120];
 /// The highest performance overlay level (4 is the full one).
-pub const OVERLAY_MAX: u8 = 4;
+pub const OVERLAY_MAX: u8 = limits::TOOLBAR_OVERLAY_MAX;
 
 /// One app's toolbar settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StreamPrefs {
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
     /// 0 to 100.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
     /// False: the mouse was switched off.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mouse: Option<bool>,
     /// The frame rate asked for at launch.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fps: Option<u32>,
     /// The Steam Gamescope overlay level, 0 to 4.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay: Option<u8>,
-}
-
-/// A field that fails to parse is `None`, not an error.
-fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value(value).ok())
 }
 
 /// The per-app map, keeping the entries that are objects.
@@ -52,26 +45,28 @@ pub fn lenient_map<'de, D>(d: D) -> Result<BTreeMap<String, StreamPrefs>, D::Err
 where
     D: Deserializer<'de>,
 {
-    let raw = serde_json::Value::deserialize(d)?;
-    let serde_json::Value::Object(raw) = raw else {
+    let Value::Object(raw) = Value::deserialize(d)? else {
         return Ok(BTreeMap::new());
     };
     Ok(raw
         .into_iter()
-        .filter_map(|(key, value)| {
-            let prefs: StreamPrefs = serde_json::from_value(value).ok()?;
-            Some((key, prefs.sanitized()))
-        })
+        .filter(|(_, value)| value.is_object())
+        .map(|(key, value)| (key, StreamPrefs::from_json(&value)))
         .collect())
 }
 
 impl StreamPrefs {
-    /// Values in a range the player can use; out of range ones are dropped.
-    pub fn sanitized(mut self) -> Self {
-        self.volume = self.volume.map(|v| v.min(100));
-        self.fps = self.fps.filter(|f| (1..=240).contains(f));
-        self.overlay = self.overlay.filter(|l| *l <= OVERLAY_MAX);
-        self
+    /// Saved settings from parsed JSON: each field kept only if it is valid (`prefs.json`).
+    pub fn from_json(saved: &Value) -> Self {
+        let valid = prefs::parse(GroupName::Toolbar, saved, Platform::Native);
+        serde_json::from_value(Value::Object(valid))
+            .expect("prefs.json's toolbar fields are StreamPrefs's")
+    }
+
+    /// Values in the spec's range: a volume is brought into it, a frame rate or overlay level
+    /// outside it is dropped.
+    pub fn sanitized(self) -> Self {
+        Self::from_json(&serde_json::to_value(&self).unwrap_or(Value::Null))
     }
 
     /// `patch`'s fields over these (a field it leaves `None` is kept).
@@ -102,9 +97,7 @@ mod tests {
     use super::*;
 
     fn parse(text: &str) -> StreamPrefs {
-        serde_json::from_str::<StreamPrefs>(text)
-            .unwrap()
-            .sanitized()
+        StreamPrefs::from_json(&serde_json::from_str(text).unwrap_or(Value::Null))
     }
 
     #[test]
@@ -116,9 +109,41 @@ mod tests {
         assert_eq!(p.fps, Some(90));
         assert_eq!(p.overlay, None, "past the full level");
         assert_eq!(parse(r#"{"volume": 250}"#).volume, Some(100));
-        assert_eq!(parse(r#"{"volume": -3}"#).volume, None);
+        // A volume is brought into 0..=100 (as the browser does), a rate is not.
+        assert_eq!(parse(r#"{"volume": -3}"#).volume, Some(0));
+        assert_eq!(parse(r#"{"volume": 33.6}"#).volume, Some(34));
         assert_eq!(parse(r#"{"fps": 0}"#).fps, None);
         assert!(parse("{}").is_empty());
+    }
+
+    #[test]
+    fn whatever_was_saved_loads() {
+        for text in ["", "{nope", "null", "[]", "7"] {
+            assert!(parse(text).is_empty(), "{text}");
+        }
+        // The browser's codec and transport aren't kept here.
+        assert!(parse(r#"{"codec": "hevc", "transport": "auto"}"#).is_empty());
+    }
+
+    #[test]
+    fn the_shared_cases() {
+        use cha_ui_spec::prefs_cases::{cases, normalised};
+        let mut run = 0;
+        for c in cases()
+            .iter()
+            .filter(|c| c.group == GroupName::Toolbar && c.runs_on(Platform::Native))
+        {
+            let saved = c.saved_text().unwrap_or_default();
+            let got = parse(&saved);
+            assert_eq!(
+                normalised(&serde_json::to_value(&got).unwrap()),
+                Value::Object(c.expected(Platform::Native)),
+                "{}: {saved}",
+                c.name
+            );
+            run += 1;
+        }
+        assert!(run >= 10);
     }
 
     #[test]

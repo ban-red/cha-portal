@@ -1,0 +1,46 @@
+{
+  "notes": "Saved settings, one group per place they are kept. Browser: localStorage (stats_panel under cha.statsOverlay, toolbar per user and template). Native: config.json (stats_panel under overlay, toolbar per transport, host and app). A field has either a default or is optional (absent until picked). An invalid field falls back on its own: to its default, or to absent. int and number need a finite JSON number; an int that is not whole is invalid unless round is set; a value outside min..max is invalid unless clamp is set. A list keeps the entries that are among values, once each, in the order of values. An object is valid only when every one of its fields is.",
+  "stats_panel": {
+    "doc": "The stats panel: shown or hidden, folded, where it sits, how opaque.",
+    "fields": {
+      "open": { "type": "bool", "default": true, "doc": "The panel is shown." },
+      "compact": { "type": "bool", "default": false, "doc": "The one-line view instead of the full one." },
+      "collapsed": { "type": "bool", "default": false, "doc": "Folded to its header." },
+      "corner": {
+        "type": "enum",
+        "values": ["top-left", "top-right", "bottom-right", "bottom-left"],
+        "default": "top-left",
+        "doc": "The corner it snaps to; the values run clockwise, the order the arrow keys walk."
+      },
+      "folded": {
+        "type": "list",
+        "values": ["stream", "latency", "network", "node"],
+        "default": [],
+        "doc": "Sections folded to their heading; the values are the full view's section ids, in the order shown."
+      },
+      "opacity": { "type": "int", "min": 30, "max": 100, "round": true, "clamp": true, "default": 90, "doc": "Panel background opacity, in percent." },
+      "snap": { "type": "bool", "default": true, "doc": "On: it snaps to the nearest corner. Off: it stays where it is dropped (pos)." },
+      "pos": {
+        "type": "object",
+        "fields": {
+          "left": { "type": "number", "doc": "Pixels (points natively) from the left of the video area." },
+          "top": { "type": "number", "doc": "Pixels (points natively) from the top of the video area." }
+        },
+        "default": null,
+        "doc": "Where free placement left the panel's top left; null until it is moved."
+      }
+    }
+  },
+  "toolbar": {
+    "doc": "What the toolbar last picked for an app. Never picked is not the same as picked, so every field is optional.",
+    "fields": {
+      "codec": { "type": "string", "nonempty": true, "optional": true, "platforms": ["web"], "doc": "The codec asked for at launch (the native player takes it from its settings)." },
+      "transport": { "type": "enum", "values": ["auto", "webrtc", "webtransport"], "optional": true, "platforms": ["web"], "doc": "The browser's transport choice (natively the transport is part of the key)." },
+      "muted": { "type": "bool", "optional": true, "doc": "Sound is muted." },
+      "volume": { "type": "int", "min": 0, "max": 100, "round": true, "clamp": true, "optional": true, "doc": "Volume, in percent." },
+      "mouse": { "type": "bool", "optional": true, "doc": "False: the mouse was switched off." },
+      "fps": { "type": "int", "min": 1, "max": 240, "optional": true, "doc": "The frame rate asked for at launch." },
+      "overlay": { "type": "int", "min": 0, "max": 4, "optional": true, "doc": "The Steam Gamescope overlay level; 4 is the full one." }
+    }
+  }
+}

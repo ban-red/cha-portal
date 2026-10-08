@@ -80,7 +80,9 @@ Each phase lands both sides together, with its cases, and leaves both players wo
    - Browser: `StatsOverlay.vue`'s four nearly identical `<dl>` blocks become one loop over the spec's sections, and the copy report is built from the spec's lines.
    - Native: split `ui/overlay.rs` into `ui/stats/{mod, header, sections, settings, placement, report}.rs`, with the sections drawn from the spec.
    - Both read prefs through phase 4's parsers, or keep theirs until then.
-4. **Prefs.** `prefs.json` and `prefs-cases.json`. The parsers in `statsOverlay.ts`, `toolbarPrefs.ts`, `overlay_prefs.rs` and the native toolbar prefs read their defaults and limits from the spec and pass the cases.
+4. **Prefs.** Done: `prefs.json` holds both groups' fields (`stats_panel`, `toolbar`: type, default or optional, limits, rounding and clamping, platforms, a doc line) and `prefs-cases.json` 96 shared cases (94 run on both platforms, 2 browser-only) with the defaults pinned in the file. One generic validator per side (`prefs.ts`, `cha-ui-spec`'s `prefs.rs`) replaces the four hand-written parsers; `statsOverlay.ts`, `toolbarPrefs.ts`, `overlay_prefs.rs` and `stream_prefs.rs` no longer hold a default, limit or id list, and `config.json` loads whatever it holds. `check-ui-spec.ts` validates the schema, the cases and that the section ids agree with the stats panel's. Disagreements settled in the browser's favour: one bad field in the panel's prefs used to lose them all natively, a volume out of range or fractional was dropped natively, an unknown folded section failed the load.
+   - `prefs.json` and `prefs-cases.json`.
+   - The parsers in `statsOverlay.ts`, `toolbarPrefs.ts`, `overlay_prefs.rs` and the native toolbar prefs read their defaults and limits from the spec and pass the cases.
 5. **Toolbar.**
    - Write `toolbar.json` with capabilities.
    - Browser: lift the toolbar out of `SessionView.vue` (1,242 lines) into `SessionToolbar.vue` and its menu components, rendering the spec's controls.

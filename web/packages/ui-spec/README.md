@@ -14,6 +14,9 @@ The in-stream UI's spec, shared by the browser player (`web/apps/portal`) and Ch
 | `stats-panel-cases.json` | Shared cases for the panel model: values and health in, the rows, summaries, compact line and report out, per platform. |
 | `format-cases.json` | The panel's number formatters (`fill` with "–" for a missing value) and the codec tag, run on both sides. |
 | `panel.ts`, `panel-cases.ts` | `buildPanel`, `panelReport`, `fillPanel` and the spec's types; and the cases' types and helper (`@cha/ui-spec/panel-cases`, kept out of the portal's bundle). |
+| `prefs.json` | The saved settings: the stats panel's and the toolbar's fields, each with its type, default (or `optional`), limits, rounding, platforms and a doc line. |
+| `prefs-cases.json` | Shared cases for the saved settings: the defaults, then raw saved values and what each side must hold after parsing them. |
+| `prefs.ts`, `prefs-cases.ts` | The schema's types, the validator (`parsePrefsGroup`, `parsePrefsText`); and the cases' types and helper (`@cha/ui-spec/prefs-cases`). |
 | `index.ts` | Types for the JSON, `ICONS`, `HEALTH`, `fill` and the formatters. |
 
 TypeScript imports this package (`import { ICONS, HEALTH, fill, buildPanel } from "@cha/ui-spec"`); `crates/cha-ui-spec` compiles the same files in with `include_str!` and gives them types (`cha_ui_spec::health::spec()`, parsed once), and its `build.rs` turns the icon ids into a Rust enum, so a misspelt id is a compile error.
@@ -87,6 +90,21 @@ Add an object to `cases` in `health-cases.json`:
 ### Adding a section
 
 As a row, plus the section: add its id to `SECTIONS` (`statsOverlay.ts`) and `Section` (`overlay_prefs.rs`, `section_of` in `ui/stats/sections.rs`) so it can be folded and saved, and a class for its colour in `COLOR_TEXT` in `StatsOverlay.vue` if it uses a new role.
+
+## Saved settings
+
+`prefs.json` says what each player remembers; one small validator per side (`parsePrefsText` in `prefs.ts`, `cha_ui_spec::prefs::parse` in `crates/cha-ui-spec/src/prefs.rs`) turns whatever was saved into the fields, so neither side has a default, limit or id list of its own. The browser keeps `stats_panel` under `cha.statsOverlay` and `toolbar` per user and template in localStorage; Cha Player keeps them in `config.json` (`overlay`, and `toolbar` per transport, host and app).
+
+- **A field** has `type` (`bool`, `int`, `number`, `string`, `enum` with `values`, `list` of the enum's `values`, or `object` with `fields`), `doc`, and either a `default` or `"optional": true` (absent until picked; an object may default to `null`). `min` and `max` bound an int or number; `round` lets an int take a fraction (a half rounds up); `clamp` moves a value outside the limits to the nearest one instead of dropping it; `nonempty` is for a string; `platforms` names a side that keeps the field alone (`codec` and `transport` are the browser's).
+- **Parsing.** A field that is missing or invalid falls back on its own, to its default or to absent, so a hand edit never loses the rest. Text that does not parse, or is not an object, gives the defaults. Unknown fields are ignored. A list keeps its entries that are among `values`, once each, in the order of `values`. An object is valid only when all its fields are.
+- **The renderers read it.** `statsOverlay.ts` takes `CORNERS`, `SECTIONS` and `OPACITY_MIN` from the `stats_panel` fields; `overlay_prefs.rs` and `stream_prefs.rs` build their structs from the validator's output (`from_json`), and `build.rs` turns int limits into constants (`cha_ui_spec::prefs::limits`) where a Rust range needs one. The section ids are the stats panel's: `check-ui-spec.ts` fails when `stats-panel.json` and `folded.values` differ.
+
+### Adding a field
+
+1. Add it to its group in `prefs.json`: type, `default` or `optional`, limits, `platforms`, `doc`.
+2. Add it to the typed struct on each side that keeps it: `OverlayPrefs`/`ToolbarPrefs` in `statsOverlay.ts`/`toolbarPrefs.ts`, and `OverlayPrefs`/`StreamPrefs` in Rust (a field the struct lacks makes `from_json` panic in its tests). A new section or corner also goes in the Rust enums (a test checks them against the spec).
+3. Add the default to `defaults` in `prefs-cases.json` (the cases pin it, so changing a default in `prefs.json` fails them), and cases that show the field accepted and rejected, at its limits and, for a list or object, malformed. `expect` holds only the fields that differ from the defaults. Mark a case `platforms` when only one side can run it.
+4. Run `bun scripts/check-ui-spec.ts`, `bun run --cwd web/apps/portal test` and `cargo test -p cha-ui-spec -p cha-player`. The script checks every default against its limits, every case's `expect` against the schema, and that each field has a case that keeps it and one that falls back.
 
 ## The logo
 

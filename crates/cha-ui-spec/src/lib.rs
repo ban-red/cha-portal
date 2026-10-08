@@ -11,6 +11,8 @@
 //! - [`health_cases`]: the shared test vectors (feature `cases`).
 //! - [`panel`]: the stats panel's spec and `build_panel`, the model both players draw; and
 //!   [`panel_cases`], its shared cases (feature `cases`).
+//! - [`prefs`]: the saved settings' schema and the validator the native player's config runs through;
+//!   and [`prefs_cases`], its shared cases (feature `cases`).
 //! - [`THEMES`]: the generated built-in themes, as text.
 
 pub mod fill;
@@ -21,6 +23,9 @@ pub mod panel;
 #[cfg(any(test, feature = "cases"))]
 pub mod panel_cases;
 pub mod path;
+pub mod prefs;
+#[cfg(any(test, feature = "cases"))]
+pub mod prefs_cases;
 
 use std::sync::LazyLock;
 

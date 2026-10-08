@@ -48,6 +48,7 @@ pub struct Config {
     /// Colours, appearance and UI scale.
     pub theme: ThemePrefs,
     /// The stats panel: shown or hidden, folded, where it sits, how opaque.
+    #[serde(deserialize_with = "crate::overlay_prefs::lenient")]
     pub overlay: OverlayPrefs,
     /// The toolbar's choices per app (see [`crate::stream_prefs::app_key`]).
     #[serde(deserialize_with = "crate::stream_prefs::lenient_map")]
@@ -172,6 +173,20 @@ mod tests {
         assert_eq!(config.theme.theme, "cha-magenta");
         assert_eq!(config.theme.scale, 1.0);
         assert!(!config.command_as_control);
+    }
+
+    #[test]
+    fn a_broken_overlay_or_toolbar_never_fails_the_load() {
+        let junk: Config = serde_json::from_str(r#"{"overlay": "junk", "toolbar": 5}"#).unwrap();
+        assert_eq!(junk.overlay, OverlayPrefs::default());
+        let partly: Config = serde_json::from_str(
+            r#"{"fps": 90, "overlay": {"corner": "middle", "compact": true, "opacity": 12}}"#,
+        )
+        .unwrap();
+        assert_eq!(partly.fps, 90);
+        assert!(partly.overlay.compact);
+        assert_eq!(partly.overlay.opacity, crate::overlay_prefs::OPACITY_MIN);
+        assert_eq!(partly.overlay.corner, OverlayPrefs::default().corner);
     }
 
     #[test]

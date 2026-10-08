@@ -19,6 +19,8 @@ const PANEL = join(ROOT, "web/packages/ui-spec/stats-panel.json");
 const PANEL_CASES = join(ROOT, "web/packages/ui-spec/stats-panel-cases.json");
 const FORMAT_CASES = join(ROOT, "web/packages/ui-spec/format-cases.json");
 const STATS_OVERLAY = join(ROOT, "web/apps/portal/src/statsOverlay.ts");
+const PREFS = join(ROOT, "web/packages/ui-spec/prefs.json");
+const PREFS_CASES = join(ROOT, "web/packages/ui-spec/prefs-cases.json");
 const THEMES_INDEX = join(ROOT, "web/apps/portal/src/themes/index.ts");
 const PORTAL_SRC = join(ROOT, "web/apps/portal/src");
 const errors: string[] = [];
@@ -325,8 +327,10 @@ for (const c of fillCases) {
 const panel = JSON.parse(readFileSync(PANEL, "utf8")) as Obj;
 const TONES = ["none", "ok", "warn", "danger", "dim"];
 const panelValues = (isObj(panel.values) ? panel.values : {}) as Record<string, Obj>;
-const sectionIds = [...readFileSync(STATS_OVERLAY, "utf8").matchAll(/SECTIONS = \[([^\]]*)\]/g)]
-  .flatMap((m) => [...m[1]!.matchAll(/"([^"]+)"/g)].map((x) => x[1]!));
+// The full view's section ids are the saved settings' `folded` entries (prefs.json): the one list the
+// panel's sections, the folded pref, statsOverlay.ts and overlay_prefs.rs's `Section` all follow.
+const prefsSpec = JSON.parse(readFileSync(PREFS, "utf8")) as Obj;
+const sectionIds = (((prefsSpec.stats_panel as Obj | undefined)?.fields as Obj | undefined)?.folded as Obj | undefined)?.values as string[] ?? [];
 const issueIds = new Set(issueSpecs.map((i) => String(i.id)));
 let panelRows = 0;
 let panelTemplates = 0;
@@ -440,7 +444,7 @@ for (const s of (Array.isArray(panel.sections) ? panel.sections : []) as Obj[]) 
   const at = `stats-panel.json section "${sid}"`;
   if (seenSections.has(sid)) fail(`${at}: id appears twice`);
   seenSections.add(sid);
-  if (!sectionIds.includes(sid)) fail(`${at}: not a SectionId in statsOverlay.ts (${sectionIds.join(", ")})`);
+  if (!sectionIds.includes(sid)) fail(`${at}: not one of prefs.json's folded values (${sectionIds.join(", ")})`);
   if (typeof s.heading !== "string" || !s.heading) fail(`${at}: needs a heading`);
   if (!(ROLES as readonly string[]).includes(s.color as string)) fail(`${at}: color "${s.color}" is not a theme role (${THEMES_INDEX.slice(ROOT.length + 1)})`);
   checkKeys(s.when, PLATFORMS, `${at} when`);
@@ -470,7 +474,7 @@ for (const s of (Array.isArray(panel.sections) ? panel.sections : []) as Obj[]) 
     checkBad(r.bad, ps, ra);
   }
 }
-if (sectionIds.join() !== [...seenSections].join()) fail(`stats-panel.json: sections are ${[...seenSections].join(", ")}, SECTIONS in statsOverlay.ts is ${sectionIds.join(", ")}`);
+if (sectionIds.join() !== [...seenSections].join()) fail(`stats-panel.json: sections are ${[...seenSections].join(", ")}, prefs.json's folded values are ${sectionIds.join(", ")}`);
 
 checkParts(panel.compact, PLATFORMS, "stats-panel.json compact");
 const report = (isObj(panel.report) ? panel.report : {}) as Obj;
@@ -530,6 +534,160 @@ for (const f of FORMATTERS) {
   if (!formatFile.fill.some((c) => new RegExp(`:${f}\\}`).test(String(c.template)))) fail(`format-cases.json: no case for the formatter "${f}"`);
 }
 
+// --- prefs.json and its cases ---
+
+const PREF_TYPES = ["bool", "int", "number", "string", "enum", "list", "object"];
+const prefsFile = prefsSpec;
+const PREF_GROUPS = ["stats_panel", "toolbar"];
+const prefFieldKeys = ["type", "doc", "default", "optional", "platforms", "min", "max", "round", "clamp", "nonempty", "values", "fields"];
+
+/** Why `v` is not a value `f` can hold (the saved form: what the parsers return), or null. */
+function prefProblem(f: Obj, v: unknown): string | null {
+  switch (f.type) {
+    case "bool":
+      return typeof v === "boolean" ? null : "not a boolean";
+    case "string":
+      return typeof v === "string" && (!f.nonempty || v) ? null : "not a (non-empty) string";
+    case "enum":
+      return typeof v === "string" && (f.values as string[]).includes(v) ? null : `not one of ${(f.values as string[]).join(", ")}`;
+    case "list": {
+      if (!Array.isArray(v)) return "not a list";
+      const order = (f.values as string[]);
+      if (v.some((x) => !order.includes(x as string))) return "has an entry outside the values";
+      const idx = v.map((x) => order.indexOf(x as string));
+      return idx.every((n, i) => i === 0 || n > idx[i - 1]!) ? null : "entries repeat or are out of the values' order";
+    }
+    case "object": {
+      if (!isObj(v)) return "not an object";
+      const subs = f.fields as Record<string, Obj>;
+      if (Object.keys(v).sort().join() !== Object.keys(subs).sort().join()) return `needs exactly ${Object.keys(subs).join(", ")}`;
+      for (const [k, sub] of Object.entries(subs)) {
+        const p = prefProblem(sub, v[k]);
+        if (p) return `${k}: ${p}`;
+      }
+      return null;
+    }
+    case "int":
+    case "number": {
+      if (!isNum(v)) return "not a finite number";
+      if (f.type === "int" && !Number.isInteger(v)) return "not a whole number";
+      if (isNum(f.min) && v < f.min) return `below the minimum ${f.min}`;
+      if (isNum(f.max) && v > f.max) return `above the maximum ${f.max}`;
+      return null;
+    }
+    default:
+      return "unknown type";
+  }
+}
+
+const prefFieldsOf = (g: string) => (isObj(prefsFile[g]) && isObj((prefsFile[g] as Obj).fields) ? ((prefsFile[g] as Obj).fields as Record<string, Obj>) : {});
+const prefPlatforms = (f: Obj) => (Array.isArray(f.platforms) ? (f.platforms as string[]) : PLATFORMS);
+
+function checkPrefField(f: Obj, at: string, top: boolean) {
+  const bad = Object.keys(f).filter((k) => !prefFieldKeys.includes(k));
+  if (bad.length) fail(`${at}: unknown keys ${bad.join(", ")}`);
+  if (!PREF_TYPES.includes(f.type as string)) return fail(`${at}: type is one of ${PREF_TYPES.join(", ")}`);
+  if (typeof f.doc !== "string" || !f.doc) fail(`${at}: needs a one-line doc`);
+  const hasDefault = "default" in f;
+  if (top && hasDefault === (f.optional === true)) fail(`${at}: has either a default or "optional": true`);
+  if (!top && (hasDefault || f.optional !== undefined || f.platforms !== undefined)) fail(`${at}: a field of an object has no default, optional or platforms`);
+  if (f.optional !== undefined && f.optional !== true) fail(`${at}: optional is true`);
+  if (f.platforms !== undefined && (!Array.isArray(f.platforms) || !f.platforms.length || f.platforms.some((p) => !PLATFORMS.includes(p as string)))) fail(`${at}: platforms is a non-empty list of ${PLATFORMS.join(", ")}`);
+  const numeric = f.type === "int" || f.type === "number";
+  for (const k of ["min", "max"]) if (f[k] !== undefined && (!numeric || !isNum(f[k]))) fail(`${at}: ${k} is a number on an int or number`);
+  if (isNum(f.min) && isNum(f.max) && f.min > f.max) fail(`${at}: min is above max`);
+  if (f.round !== undefined && (f.round !== true || f.type !== "int")) fail(`${at}: round is true, on an int`);
+  if (f.clamp !== undefined && (f.clamp !== true || !numeric || (f.min === undefined && f.max === undefined))) fail(`${at}: clamp is true, on a number with a limit`);
+  if (f.nonempty !== undefined && (f.nonempty !== true || f.type !== "string")) fail(`${at}: nonempty is true, on a string`);
+  if (f.type === "enum" || f.type === "list") {
+    const v = f.values;
+    if (!Array.isArray(v) || !v.length || v.some((x) => typeof x !== "string") || new Set(v).size !== v.length) fail(`${at}: values is a list of distinct strings`);
+  } else if (f.values !== undefined) fail(`${at}: values is for an enum or list`);
+  if (f.type === "object") {
+    if (!isObj(f.fields) || !Object.keys(f.fields).length) fail(`${at}: an object needs fields`);
+    else for (const [k, sub] of Object.entries(f.fields)) if (isObj(sub)) checkPrefField(sub, `${at}.${k}`, false);
+  } else if (f.fields !== undefined) fail(`${at}: fields is for an object`);
+  if (hasDefault && f.default !== null) {
+    const p = prefProblem(f, f.default);
+    if (p) fail(`${at}: default ${JSON.stringify(f.default)} is ${p}`);
+  }
+  if (hasDefault && f.default === null && f.type !== "object") fail(`${at}: only an object may default to null`);
+}
+
+if (Object.keys(prefsFile).filter((k) => k !== "notes").join() !== PREF_GROUPS.join()) fail(`prefs.json: groups are ${PREF_GROUPS.join(", ")}`);
+for (const g of PREF_GROUPS) {
+  for (const [name, f] of Object.entries(prefFieldsOf(g))) {
+    if (!/^[a-z][a-z0-9]*$/.test(name)) fail(`prefs.json ${g}.${name}: lowercase name`);
+    if (isObj(f)) checkPrefField(f, `prefs.json ${g}.${name}`, true);
+  }
+}
+
+// The panel's full view sections, its corner list and the opacity floor are read from the spec by statsOverlay.ts, not copied.
+const overlaySrc = readFileSync(STATS_OVERLAY, "utf8");
+for (const [what, re] of [["SECTIONS", /SECTIONS = FIELDS\.folded!\.values/], ["CORNERS", /CORNERS = FIELDS\.corner!\.values/], ["OPACITY_MIN", /OPACITY_MIN = FIELDS\.opacity!\.min!/]] as const) {
+  if (!re.test(overlaySrc)) fail(`statsOverlay.ts: ${what} must be read from prefs.json (stats_panel), not written out`);
+}
+for (const f of ["statsOverlay.ts", "toolbarPrefs.ts"]) {
+  const src = readFileSync(join(PORTAL_SRC, f), "utf8");
+  if (!/parsePrefsText\(/.test(src)) fail(`${f}: must parse through parsePrefsText (prefs.json)`);
+}
+
+const prefCaseFile = JSON.parse(readFileSync(PREFS_CASES, "utf8")) as { defaults: Record<string, Obj>; cases: Obj[] };
+const prefCases = prefCaseFile.cases;
+// The cases pin each group's defaults themselves (so a changed default fails them); they must agree with the spec.
+for (const g of PREF_GROUPS) {
+  const pinned = prefCaseFile.defaults?.[g];
+  const want = Object.fromEntries(Object.entries(prefFieldsOf(g)).filter(([, f]) => "default" in f).map(([n, f]) => [n, f.default]));
+  if (!isObj(pinned)) fail(`prefs-cases.json: defaults.${g} is an object`);
+  else if (JSON.stringify(Object.entries(pinned).sort()) !== JSON.stringify(Object.entries(want).sort())) {
+    fail(`prefs-cases.json: defaults.${g} is ${JSON.stringify(pinned)}, prefs.json's are ${JSON.stringify(want)}`);
+  }
+}
+const prefNames = new Set<string>();
+/** field -> { accepted: a case parsed it to something other than its default; rejected: a case gave it a value that fell back } */
+const prefCover = new Map<string, { accepted: boolean; rejected: boolean }>();
+for (const g of PREF_GROUPS) for (const n of Object.keys(prefFieldsOf(g))) prefCover.set(`${g}.${n}`, { accepted: false, rejected: false });
+for (const c of prefCases) {
+  const at = `prefs-cases.json "${c.name}"`;
+  const key = `${c.group}/${c.name}`;
+  if (typeof c.name !== "string" || prefNames.has(key)) fail(`${at}: names are unique strings within a group`);
+  prefNames.add(key);
+  const fields = prefFieldsOf(String(c.group));
+  if (!PREF_GROUPS.includes(c.group as string)) {
+    fail(`${at}: group is one of ${PREF_GROUPS.join(", ")}`);
+    continue;
+  }
+  if (c.platforms !== undefined && (!Array.isArray(c.platforms) || !c.platforms.length || c.platforms.some((p) => !PLATFORMS.includes(p as string)))) fail(`${at}: platforms`);
+  if (("text" in c) === ("value" in c)) fail(`${at}: exactly one of text and value`);
+  if ("text" in c && c.text !== null && typeof c.text !== "string") fail(`${at}: text is a string or null`);
+  if ("text" in c && c.text === null && !(Array.isArray(c.platforms) && c.platforms.join() === "web")) fail(`${at}: nothing saved (text null) only exists on web`);
+  if (!isObj(c.expect)) {
+    fail(`${at}: expect is an object`);
+    continue;
+  }
+  for (const [name, v] of Object.entries(c.expect)) {
+    const f = fields[name];
+    if (!f) fail(`${at}: expect "${name}" is not a field of ${c.group}`);
+    else {
+      const p = prefProblem(f, v);
+      if (p) fail(`${at}: expect ${name} = ${JSON.stringify(v)} is ${p}`);
+      else if (!("default" in f) || JSON.stringify(f.default) !== JSON.stringify(v)) prefCover.get(`${c.group}.${name}`)!.accepted ||= true;
+    }
+  }
+  // A field the input names but the result lacks (or holds as its default) is one that was rejected or ignored.
+  const input = "value" in c ? c.value : (() => { try { return JSON.parse(String(c.text)); } catch { return null; } })();
+  if (isObj(input)) {
+    for (const name of Object.keys(fields)) {
+      if (name in input && !(name in c.expect)) prefCover.get(`${c.group}.${name}`)!.rejected ||= true;
+    }
+  }
+}
+for (const [k, v] of prefCover) {
+  if (!v.accepted) fail(`prefs-cases.json: no case saves ${k} and sees it kept`);
+  if (!v.rejected) fail(`prefs-cases.json: no case gives ${k} a value that falls back`);
+}
+if (prefCases.length < 20) fail("prefs-cases.json: at least 20 cases");
+
 // --- every <Icon name="..."> in the portal exists ---
 
 function* files(dir: string): Generator<string> {
@@ -567,5 +725,5 @@ if (errors.length) {
 console.log(
   `ui-spec ok: ${Object.keys(icons).length} icons, ${used} uses in the portal; ${issueSpecs.length} health issues ` +
     `(${placeholderUses} placeholders), ${cases.length} health cases (${caseCount.shared} shared, ${caseCount.web} web-only, ${caseCount.native} native-only), ${fillCases.length} fill cases; ` +
-    `stats panel: ${seenSections.size} sections, ${panelRows} rows, ${panelTemplates} templates, ${panelCases.length} cases, ${formatNames.size} format cases`,
+    `saved settings: ${[...prefCover.keys()].length} fields, ${prefCases.length} cases; stats panel: ${seenSections.size} sections, ${panelRows} rows, ${panelTemplates} templates, ${panelCases.length} cases, ${formatNames.size} format cases`,
 );

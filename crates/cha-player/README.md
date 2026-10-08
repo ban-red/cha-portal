@@ -165,9 +165,9 @@ All of it lives in `src/theme/`: `palette.rs` (roles), `metrics.rs`, `fonts.rs`,
 | `src/app.rs` | the `winit` handler: Launcher and Streaming states, pointer lock, hotkeys, drawing |
 | `src/ui/` | egui launcher, settings, the toolbar (`toolbar.rs`) |
 | `src/ui/stats/` | the stats panel: `mod.rs` (state, drawing a frame), `snapshot.rs` (the reading and its value keys), `header.rs`, `settings.rs`, `compact.rs`, `sections.rs`, `chip.rs`, `placement.rs`, `report.rs`, `look.rs`; what it says comes from `cha-ui-spec`'s `build_panel` |
-| `src/stream_prefs.rs` | the toolbar's per-app choices |
+| `src/stream_prefs.rs` | the toolbar's per-app choices (fields and limits from `prefs.json`) |
 | `src/health.rs` | the stream's health grade, ported from the browser player |
-| `src/overlay_prefs.rs` | the stats panel's saved choices |
+| `src/overlay_prefs.rs` | the stats panel's saved choices (fields and limits from `prefs.json`) |
 | `src/theme/` | themes: palettes, user themes, fonts, the egui style (see Themes) |
 | `web/packages/ui-spec/themes/` | built-in palettes, generated from the portal's CSS (compiled in by `crates/cha-ui-spec`) |
 | `src/render/` | `wgpu` device and surface, the YCbCr video pipeline (aspect-fit, WGSL), egui layer |
