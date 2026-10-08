@@ -155,7 +155,6 @@ pub fn score(kind: DeviceKind, cpu: Option<f64>, gpu: Option<&GpuUsage>, running
     (base - load - f64::from(running) * PER_ENVIRONMENT).round() as i64
 }
 
-
 /// Every device of `nodes` as an option for an app with `needs`.
 pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
     let mut options = Vec::new();

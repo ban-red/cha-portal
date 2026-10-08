@@ -10,10 +10,10 @@ PALETTE='red|green|emerald|teal|amber|yellow|blue|sky|slate|zinc|gray|neutral|st
 # Tailwind colour utilities (with variants and an optional /alpha) on palette shades, white or black.
 PATTERN="(^|[^[:alnum:]_-])(text|bg|border|fill|stroke|ring|from|to|via|divide|outline|decoration|shadow|accent|caret)-(($PALETTE)-[0-9]+|white|black)([^[:alnum:]_-]|$)|#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?([0-9a-fA-F]{2})?([^[:alnum:]_-]|$)"
 
-# Allowed: the stream's own black background, which is theme-neutral by design.
+# Allowed: the stream's own black background (the session and the guest page), which is theme-neutral by design.
 hits=$(grep -rnE "$PATTERN" "$SRC" --include='*.vue' --include='*.ts' \
   --exclude-dir=themes --exclude=style.css \
-  | grep -vE '^web/apps/portal/src/views/SessionView\.vue:[0-9]+:.*fixed inset-0 bg-black select-none' || true)
+  | grep -vE '^web/apps/portal/src/views/(SessionView|JoinView)\.vue:[0-9]+:.*fixed inset-0 bg-black select-none' || true)
 
 if [ -n "$hits" ]; then
   echo "Raw colours found. Use a theme role (text-ink, bg-panel, text-ok, ...) instead:" >&2
