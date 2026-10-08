@@ -4,7 +4,9 @@
 //!   device, in Mesa's software renderer); the app is its client.
 //! - Composited frames go zero-copy into NVENC through our own binding
 //!   (`cha-nvenc`), or are read back and encoded by x264 or SVT-AV1 on the CPU device;
-//!   VA-API (Intel, AMD) is next (`device.rs`). There is no GStreamer or FFmpeg.
+//!   on the VA-API device (Intel, AMD) the compositor's dmabufs are imported as
+//!   VA surfaces and encoded as H.264 (`encoder/vaapi.rs`). There is no
+//!   GStreamer or FFmpeg.
 //! - Apps play sound into our PulseAudio-protocol server; it is mixed and
 //!   Opus-encoded every 10 ms (libopus, our binding).
 //! - Chromium can take the same media as `cha-stream/1` datagrams over

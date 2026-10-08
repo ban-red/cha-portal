@@ -4,13 +4,15 @@
 //!
 //! What a buffer is depends on the device:
 //! - `nvidia`: a GBM dmabuf, registered with CUDA once so NVENC reads it in place;
-//! - `vaapi`: a GBM dmabuf, for the encoder to import as a VA surface;
+//! - `vaapi`: a GBM dmabuf, for the encoder to import as a VA surface (the
+//!   format and modifier are ones the VA driver accepts: see `pick_format`);
 //! - `cpu`: planar YUV in memory. llvmpipe draws into one renderbuffer; each
 //!   composite reads it back and converts it into the free buffer.
 
 use std::ffi::c_void;
 use std::fs::File;
 use std::os::fd::OwnedFd;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,6 +35,7 @@ use tracing::{info, warn};
 use super::State;
 use crate::device::{Device, DeviceKind};
 use crate::encoder::i420::{I420, Order};
+use crate::encoder::vaapi;
 use crate::media::Frame;
 
 /// Buffers in flight: one being composited, one queued for each encoder, one
@@ -113,6 +116,9 @@ pub struct OutputPool {
     allocator: Option<GbmAllocator<DeviceFd>>,
     egl: Option<EGLDisplay>,
     cuda: Option<Arc<CudaContext>>,
+    /// The VA-API device's render node: buffers are checked against its
+    /// driver while the format is picked.
+    vaapi_node: Option<PathBuf>,
     /// The CPU device: what the scene is drawn into, and whether it holds a
     /// frame yet (the next composite then repaints only what changed).
     renderbuffer: Option<GlesRenderbuffer>,
@@ -152,6 +158,10 @@ impl OutputPool {
             allocator,
             egl,
             cuda: device.cuda(),
+            vaapi_node: device
+                .render_node()
+                .filter(|_| device.kind() == DeviceKind::Vaapi)
+                .map(PathBuf::from),
             renderbuffer: None,
             drawn: false,
             convert_threads: std::thread::available_parallelism()
@@ -233,7 +243,8 @@ impl OutputPool {
     }
 
     /// The first renderable format whose buffers the encoder can import (CUDA
-    /// on NVIDIA): the GPU's own tiling first, then linear.
+    /// on NVIDIA, a VA surface on VA-API: the driver is asked about a real
+    /// buffer): the GPU's own tiling first, then linear.
     fn pick_format(
         &mut self,
         formats: Vec<(Fourcc, Vec<Modifier>)>,
@@ -258,7 +269,18 @@ impl OutputPool {
             }
             for modifiers in candidates {
                 match self.allocate(fourcc, &modifiers) {
-                    Ok(_) => return Ok((fourcc, modifiers)),
+                    Ok(slot) => {
+                        // VA-API: the encoder says whether it takes this one.
+                        if let (Some(node), Some(dmabuf)) = (&self.vaapi_node, slot.dmabuf())
+                            && let Err(err) = vaapi::accepts_import(node, dmabuf)
+                        {
+                            tried.push(format!(
+                                "{fourcc:?} {modifiers:?}: VA-API won't import it: {err:#}"
+                            ));
+                            continue;
+                        }
+                        return Ok((fourcc, modifiers));
+                    }
                     Err(err) => tried.push(format!("{fourcc:?} {modifiers:?}: {err:#}")),
                 }
             }

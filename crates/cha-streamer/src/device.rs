@@ -4,7 +4,7 @@
 //! | kind | composites on | encodes with | codecs |
 //! |---|---|---|---|
 //! | `nvidia` | EGL on the render node | NVENC through CUDA, zero-copy | H.264, HEVC, AV1, PyroWave |
-//! | `vaapi` | EGL on the render node (Mesa) | VA-API (not built yet) | what the driver encodes |
+//! | `vaapi` | EGL on the render node (Mesa) | VA-API, zero-copy dmabuf import | H.264 (what the driver encodes, of what is written) |
 //! | `cpu` | Mesa's llvmpipe | x264, SVT-AV1 | H.264, AV1 (when SVT-AV1 loads) |
 //!
 //! `--probe-device <kind>[:<render node>]` prints what a device offers as JSON
@@ -121,7 +121,9 @@ impl Device {
                     render_node: Some(node.to_path_buf()),
                     name: caps.vendor,
                     vendor,
-                    codecs: caps.codecs,
+                    // Of what the driver encodes, the codecs we have an
+                    // encoder for.
+                    codecs: vaapi::built(caps.codecs),
                     cuda: None,
                 }
             }
@@ -168,7 +170,7 @@ impl Device {
         &self.codecs
     }
 
-    /// Whether an encoder is built for this device (not for VA-API yet).
+    /// Whether an encoder is built for this device.
     pub fn encodes(&self) -> bool {
         self.kind != DeviceKind::Vaapi || vaapi::ENCODER_BUILT
     }
@@ -182,7 +184,10 @@ impl Device {
             }
             Backend::X264 => Ok(Box::new(x264::X264::new(params)?)),
             Backend::SvtAv1 => Ok(Box::new(svtav1::SvtAv1::new(params)?)),
-            Backend::Vaapi => vaapi::open(params),
+            Backend::Vaapi => {
+                let node = self.render_node.as_deref().context("no render node")?;
+                vaapi::open(node, params)
+            }
         }
     }
 
@@ -256,9 +261,25 @@ pub fn parse_probe_spec(spec: &str) -> Result<(DeviceKind, Option<PathBuf>)> {
 }
 
 /// Opens the device and prints what it offers as JSON.
+///
+/// With `CHA_ENCODE_TEST=<frames>` set, a VA-API device also encodes that many
+/// generated pictures first and checks the stream (the result goes to stderr,
+/// a failure ends the probe with an error): the smoke test for a new GPU.
 pub fn probe(spec: &str, pyrowave: bool) -> Result<()> {
     let (kind, node) = parse_probe_spec(spec)?;
     let mut device = Device::open(kind, node.as_deref())?;
+    if let (DeviceKind::Vaapi, Some(node), Ok(frames)) = (
+        kind,
+        node.as_deref(),
+        std::env::var("CHA_ENCODE_TEST").map(|v| v.parse::<u32>()),
+    ) {
+        let frames = frames.context("CHA_ENCODE_TEST is a number of frames")?;
+        let result = vaapi::self_test(node, frames)?;
+        eprintln!(
+            "encode test passed: {} frames, {} IDR, {} bytes, {:.2} ms a frame (NAL types of the first: {:?})",
+            result.frames, result.keyframes, result.bytes, result.encode_ms_avg, result.first_nals
+        );
+    }
     if kind == DeviceKind::Nvidia {
         Arc::get_mut(&mut device)
             .expect("no other holder yet")
