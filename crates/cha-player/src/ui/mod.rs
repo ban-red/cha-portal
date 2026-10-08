@@ -442,7 +442,10 @@ impl Launcher {
         if self.input_access.1.elapsed() > INPUT_ACCESS_RECHECK {
             self.input_access = (input_access(), Instant::now());
         }
-        if self.input_access.0 == InputAccess::Denied {
+        // Only while no controller works: macOS's answer can be "denied" for
+        // a build it hasn't seen, or for the terminal that started the player,
+        // while the controller plays fine.
+        if self.input_access.0 == InputAccess::Denied && crate::input::pads::connected() == 0 {
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(
                     Color32::from_rgb(230, 180, 80),

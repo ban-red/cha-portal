@@ -5,6 +5,7 @@
 //! process, so a single thread owns it from startup; sessions attach to it.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
@@ -76,6 +77,16 @@ pub enum InputAccess {
     Denied,
     /// Not asked yet: macOS asks when the first device is opened.
     Unknown,
+}
+
+/// Gamepads open now, for the launcher: a controller that works says more
+/// than [`input_access`], which judges this exact build (an ad-hoc signed one
+/// is new to macOS after every rebuild) or, started from a terminal, the
+/// terminal.
+static CONNECTED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn connected() -> usize {
+    CONNECTED.load(Ordering::Relaxed)
 }
 
 pub fn input_access() -> InputAccess {
@@ -158,6 +169,8 @@ fn run(commands: Receiver<Command>) -> Result<()> {
                 _ => {}
             }
         }
+
+        CONNECTED.store(slots.iter().flatten().count(), Ordering::Relaxed);
 
         if let Some(c) = &control {
             for (index, slot) in slots.iter_mut().enumerate() {
