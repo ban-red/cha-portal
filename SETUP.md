@@ -25,12 +25,14 @@ The fastest way to a stream: the portal and a node together on one Linux machine
 - a free [Tailscale](https://tailscale.com) account, for HTTPS and for reaching the portal from your other devices. In its admin console, under **DNS**, enable **MagicDNS** and **HTTPS Certificates**;
 - the device you'll play from, with Tailscale and Google Chrome or Safari.
 
-The commands below use `0.1.0`; use the latest [release](https://github.com/ban-red/cha-portal/releases) instead, in both the clone and the setup step.
+On **Proxmox VE**, [`deploy/proxmox/`](deploy/proxmox/README.md) does all of this in an LXC container (Intel or AMD GPU) with one script, or explains the VM to use for NVIDIA.
+
+The commands below use `0.2.0`; use the latest [release](https://github.com/ban-red/cha-portal/releases) instead, in both the clone and the setup step.
 
 1. **Get the release:**
 
    ```bash
-   git clone --branch v0.1.0 --depth 1 https://github.com/ban-red/cha-portal.git
+   git clone --branch v0.2.0 --depth 1 https://github.com/ban-red/cha-portal.git
    ```
 
    ```bash
@@ -40,7 +42,7 @@ The commands below use `0.1.0`; use the latest [release](https://github.com/ban-
 2. **Set up the machine.** One script does the rest of the installing; it's safe to run again and says what it did at each step:
 
    ```bash
-   sudo deploy/quickstart/setup.sh --version 0.1.0 --tailscale
+   sudo deploy/quickstart/setup.sh --version 0.2.0 --tailscale
    ```
 
    <details>
@@ -52,10 +54,10 @@ The commands below use `0.1.0`; use the latest [release](https://github.com/ban-
    - installs the node's host files: udev rules, the Steam sandbox's AppArmor profile, the `uinput` and `uhid` modules;
    - makes the data root, `/srv/cha-portal`, owned by root with mode 0755 (the agent makes each user's directories in it);
    - writes `deploy/quickstart/.env`, readable only by you, with `CHA_VERSION` (which keeps every image on the same release) and `CHA_IMAGE_REGISTRY` (which makes the agent run the published environment images);
-   - pulls the environment images: Chrome, Firefox, XFCE, KDE, Steam and the test pattern;
+   - pulls the environment images: Chrome, Firefox, XFCE, KDE, Steam and the test pattern. With `--no-pull` it leaves them, and each downloads the first time it's launched, with a progress bar in the portal;
    - with `--tailscale`, installs Tailscale.
 
-   Options: `--check` reports what's left without changing anything; `--data-root DIR` keeps app data elsewhere; `--build` builds the environment images from the checkout instead of pulling them; `--no-nvidia` skips NVIDIA's toolkit. Leave out `--tailscale` if it's installed already.
+   Options: `--check` reports what's left without changing anything; `--data-root DIR` keeps app data elsewhere; `--no-pull` skips pulling the environment images; `--build` builds the environment images from the checkout instead of pulling them; `--no-nvidia` skips NVIDIA's toolkit. Leave out `--tailscale` if it's installed already.
 
    </details>
 
@@ -102,11 +104,11 @@ Now go to [First launch](#first-launch).
 - **To update**, get the new release and run the script with its version, then pull and restart:
 
   ```bash
-  git fetch --depth 1 origin tag v0.2.0 && git checkout v0.2.0
+  git fetch --depth 1 origin tag v0.3.0 && git checkout v0.3.0
   ```
 
   ```bash
-  sudo deploy/quickstart/setup.sh --version 0.2.0
+  sudo deploy/quickstart/setup.sh --version 0.3.0
   ```
 
   ```bash
@@ -185,7 +187,7 @@ The portal and the node on the same Linux machine, with the browser anywhere on 
 
 4. **Claim the portal.** Open its URL: a fresh portal shows **Claim this portal**, where you pick the first admin's username and password (at least 3 characters each). Whoever opens it first claims it, so do this right after it starts.
 
-5. **Build the images the node runs:** the streamer, and the environments (Chrome, Firefox, XFCE, KDE, Steam, the test pattern). This is the slow step:
+5. **Build the images the node runs:** the streamer, and the environments (Chrome, Firefox, XFCE, KDE, Steam, the test pattern). This is the slow step, and optional on a release tag: a node without its own builds downloads the release's published images the first time each is needed (the agent's version picks them, so a checkout between releases has none to download):
 
    ```bash
    docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
@@ -295,7 +297,9 @@ Put both `CHA_PORTAL_URL` and `CHA_ALLOW_INSECURE_PORTAL=true` in `deploy/node/.
 1. **Admin → Nodes** should show the node online, with its CPU, RAM and GPUs.
 2. Open **Environments** and launch the **Test pattern**. Connect, and open the stats overlay: a moving bar, a frame counter and low latency mean the path works. Clicks flash the screen and play a tone; a connected gamepad shows its state.
 3. Then try **Google Chrome**, or a desktop.
-4. **Steam** downloads about 500 MB on its first launch, and the page shows its progress. Sign in to Steam inside the stream. Your Steam home is kept between launches.
+4. **Steam** downloads about 500 MB on its first launch, and the page shows its progress.
+
+The first launch of an app on a node that doesn't have its image downloads it first, with a progress bar on the app's card and on the session's "Starting…" screen. Launch then prefers a node that already has it. Sign in to Steam inside the stream. Your Steam home is kept between launches.
 
 In Chrome, Esc goes to the environment; hold **Esc** to leave full screen. The environment keeps running when you close the tab; stop it from the dashboard.
 
@@ -351,6 +355,8 @@ Start with `--doctor` on the node: it covers most problems and says how to fix e
 | Steam won't start | The `cha-sandbox` AppArmor profile isn't loaded: run the host installer again |
 | Chrome asks to reach devices on your network | Chrome's Local Network Access prompt, from an HTTPS portal to a LAN or tailnet node. Allow it |
 | The stream connects but stutters, or the RTT is high | `tailscale ping <node>` goes through DERP rather than directly. See [the Tailscale guide](docs/guides/tailscale.md#check-the-path) |
+| A launch fails listing the images it tried | The node has none of them and couldn't pull one: check that it reaches `ghcr.io`, and that the agent's version is a published release (`docker pull` one of them by hand to see why) |
+| Chrome or a desktop shows black on an Intel or AMD node | The app can't open the GPU's render node: the agent's log says `can't tell the render node's group` |
 | An environment fails to start | The dashboard says why and has **Show log**. The agent also keeps the last log lines under `/var/lib/cha-node/logs/` ([details](deploy/README.md#when-an-environment-dies)) |
 
 If you're stuck, open an issue with the `--doctor` output and the agent's log.

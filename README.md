@@ -9,18 +9,21 @@ The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC,
 
 ## What works
 
-- **Environments:** Google Chrome, Firefox, XFCE, KDE Plasma 6, Steam Big Picture (inside gamescope, with Proton games) and a test pattern for measuring latency.
+- **Environments:** Google Chrome, Firefox, XFCE, KDE Plasma 6, Steam Big Picture (inside gamescope, with Proton games) and a test pattern for measuring latency. A node downloads an app's image the first time it's launched there, with a progress bar in the portal.
 - **Streaming:** H.264, HEVC and AV1 over WebRTC (tested in Chrome and Safari; Firefox gets H.264 only, and hasn't had a full test run); WebTransport as a faster path in Chromium; PyroWave, a low-latency wavelet codec, decoded on WebGPU for wired LANs. Measured send → shown latency is about 5 ms at the median on a wired LAN.
 - **WAN:** delay-based rate control, FEC and reference-frame invalidation, so a stream adapts to loss and throttling instead of stalling.
 - **Input:** keyboard (with keyboard lock), mouse with pointer lock, text clipboard both ways, and virtual Xbox 360, DualSense and Steam Controller pads fed from the browser's Gamepad API or WebHID.
 - **Sound:** stereo Opus from our own PulseAudio-protocol server.
-- **Portal:** local accounts, an audit log, nodes claimed in the portal with a pairing code when it finds them on the LAN (or enrolled with a one-time join token elsewhere), live CPU/RAM/GPU usage per node, placement across NVIDIA, Intel/AMD (VA-API) and CPU-only devices, per-user app data kept between launches, and a shared Steam library (optionally on a NAS).
+- **Portal:** local accounts, an audit log, nodes claimed in the portal with a pairing code when it finds them on the LAN (or enrolled with a one-time join token elsewhere), live CPU/RAM/GPU usage per node and per app, placement across NVIDIA, Intel/AMD (VA-API) and CPU-only devices that prefers a node already holding the app's image, per-user app data kept between launches, a shared Steam library (optionally on a NAS), and an idle shutoff.
+- **Sharing:** a link invites a friend, with no account, to play on a second, third or fourth gamepad, to watch, or to use the keyboard and mouse when you hand over the controls.
+- **Cha Player:** a native macOS app (built from source for now) that signs in to your portal and plays its apps over WebTransport, with VideoToolbox or PyroWave decoding, and plays Sunshine and Apollo PCs too. A dropped stream reconnects by itself.
 - **Remote access:** Tailscale or WireGuard, a port-forward, or your own TURN server. Nothing goes through a cha.sh service.
 
-- **Moonlight hosts:** a gaming PC running Sunshine or Apollo on the LAN is found by a node, adopted from the portal with a PIN, and its apps played in the browser through `cha-gateway` (new in Phase 3; not yet run against a real host).
-- **Moonlight clients:** stock Moonlight apps can play your environments: each node is one PC in Moonlight, its apps the catalog (picking one starts it), paired with a PIN typed into the portal (`CHA_GAMESTREAM`; new, not yet tried with a real client).
+- **Moonlight hosts:** a gaming PC running Sunshine or Apollo on the LAN is found by a node, adopted from the portal with a PIN, and its apps played in the browser through `cha-gateway` (not yet run against a real host).
+- **Moonlight clients:** stock Moonlight apps can play your environments: each node is one PC in Moonlight, its apps the catalog (picking one starts it), paired with a PIN typed into the portal (`CHA_GAMESTREAM`; not yet tried with a real client).
+- **Proxmox VE:** one script makes a node, or the whole quick start, in an LXC container that shares the host's Intel or AMD GPU ([`deploy/proxmox/`](deploy/proxmox/README.md)).
 
-Not yet: sharing a session with another user, our own native client. See the [roadmap](docs/PLAN.md#9-roadmap).
+Not yet: signed Cha Player builds, Windows and Linux players, catalogs from other sources, and hardening for streams over the internet. See the [roadmap](docs/PLAN.md#9-roadmap).
 
 ## How it works
 
@@ -42,10 +45,10 @@ The full design is in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Getting started
 
-[`SETUP.md`](SETUP.md) walks through a first install, including a quick start with the portal and node on one machine. In short: you need a machine for the portal (anything that runs Docker) and a Linux server with a GPU for the node (NVIDIA with the Container Toolkit's CDI spec, an Intel or AMD GPU, or none at all for a CPU-only node).
+[`SETUP.md`](SETUP.md) walks through a first install, starting with a quick start that runs the portal and a node on one machine from the release's published images. In short: you need a machine for the portal (anything that runs Docker) and a Linux server with a GPU for the node (NVIDIA with the Container Toolkit's CDI spec, an Intel or AMD GPU, or none at all for a CPU-only node). On Proxmox VE, see [`deploy/proxmox/`](deploy/proxmox/README.md).
 
-1. Start the portal with `docker compose -f deploy/portal/compose.yaml up -d --build`, and serve it over HTTPS (browsers only give gamepads, keyboard lock and audio worklets to secure pages).
-2. Build or pull the streamer and environment images on the node, start the agent, and claim it under **Admin → Nodes → Found on your network** with the code from its log (or use a join token from **Add node**).
+1. Start the portal, and serve it over HTTPS (browsers only give gamepads, keyboard lock and audio worklets to secure pages).
+2. Start the agent on the node, and claim it under **Admin → Nodes → Found on your network** with the code from its log (or use a join token from **Add node**). It pulls the images it needs as apps are launched.
 3. Install the node's host files (`sudo deploy/node/host/install.sh`) and check it with `--doctor`.
 
 [`deploy/README.md`](deploy/README.md) has every step, setting and option: HTTPS, Tailscale, TURN, app data, NAS libraries and devices.
@@ -102,12 +105,16 @@ To point a real node at a dev portal on your LAN, start the portal with `bun run
 | [`crates/cha-nvenc`](crates/cha-nvenc), [`cha-pyrowave`](crates/cha-pyrowave) | Our bindings to NVENC/CUDA and libpyrowave, loaded at runtime |
 | [`crates/cha-gamestream`](crates/cha-gamestream) | The GameStream (Moonlight) host protocol, ported from Moonshine: the node's host and each streamer's media, behind traits and a cargo feature |
 | [`crates/cha-gateway`](crates/cha-gateway) | Streams an adopted Moonlight host (Sunshine, Apollo) to the browser: GameStream in, WebRTC out, video and sound passed through |
+| [`crates/cha-player`](crates/cha-player) | Cha Player, the native client (macOS first): window, decoding, sound, gamepads, the launcher |
+| [`crates/cha-client`](crates/cha-client), [`cha-client-portal`](crates/cha-client-portal), [`cha-client-stream`](crates/cha-client-stream), [`cha-client-gamestream`](crates/cha-client-gamestream) | The native client's core and its transports: a portal's apps over `cha-stream/1` and WebTransport, and Moonlight hosts over GameStream |
+| [`crates/cha-pyrowave-wgpu`](crates/cha-pyrowave-wgpu), [`cha-moonlight-input`](crates/cha-moonlight-input) | PyroWave decoding on wgpu for Cha Player; browser input as Moonlight input events |
+| [`crates/cha-ui-spec`](crates/cha-ui-spec), [`web/packages/ui-spec`](web/packages/ui-spec) | The in-stream UI's icons, themes and stats panel, shared by the browser and Cha Player |
 | [`crates/cha-sysinfo`](crates/cha-sysinfo) | CPU, RAM and NVIDIA GPU use, from `/proc` and NVML |
 | [`crates/cha-testpattern`](crates/cha-testpattern), [`cha-x11-clipboard`](crates/cha-x11-clipboard) | The test-pattern environment; the X11 clipboard bridge for XFCE and Steam |
 | [`web/apps/portal`](web/apps/portal) | The portal web app: Vue 3, TypeScript, Tailwind 4 |
 | [`web/packages/player`](web/packages/player) | `@cha/player`: WebRTC and WebTransport, input, controllers, stats |
 | [`web/packages/pyrowave-webgpu`](web/packages/pyrowave-webgpu) | PyroWave decoding on WebGPU |
-| [`deploy/`](deploy) | Compose stacks for the portal, a node and the streamer, the node's host files, NAS helpers |
+| [`deploy/`](deploy) | Compose stacks for the portal, a node, the quick start and the streamer, the node's host files, the Proxmox script, NAS helpers |
 | [`images/`](images) | Environment images and the catalog |
 | [`spikes/`](spikes) | Phase 0–2 experiments (S1–S8), not product code |
 | [`docs/`](docs) | The plan, decisions, research, guides and benchmark results |
@@ -115,10 +122,11 @@ To point a real node at a dev portal on your LAN, start the portal with `bun run
 ## Documentation
 
 - [`deploy/README.md`](deploy/README.md): running a portal and nodes
+- [`deploy/proxmox/README.md`](deploy/proxmox/README.md): nodes on Proxmox VE, in a container or a VM
 - [`docs/guides/tailscale.md`](docs/guides/tailscale.md): remote access over Tailscale
 - [`images/README.md`](images/README.md): the environment images and the contract between an app and the streamer
 - [`docs/controllers.md`](docs/controllers.md), [`docs/devices.md`](docs/devices.md): gamepads; GPUs and placement
-- [`crates/cha-streamer/README.md`](crates/cha-streamer/README.md), [`web/packages/player/README.md`](web/packages/player/README.md), [`web/apps/portal/README.md`](web/apps/portal/README.md): the engine, the player, the web app and its themes
+- [`crates/cha-streamer/README.md`](crates/cha-streamer/README.md), [`web/packages/player/README.md`](web/packages/player/README.md), [`web/apps/portal/README.md`](web/apps/portal/README.md), [`crates/cha-player/README.md`](crates/cha-player/README.md): the engine, the browser player, the web app and its themes, Cha Player
 - [`docs/PLAN.md`](docs/PLAN.md): architecture and roadmap
 - [`docs/adr/`](docs/adr/README.md): architecture decisions
 - [`docs/PROVENANCE.md`](docs/PROVENANCE.md): ported code, its licences, and the main dependencies

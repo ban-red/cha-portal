@@ -5,6 +5,8 @@
 | [`portal/`](portal) | The portal's compose stack: `cha-control` (API, SPA, the nodes' WebSocket, SQLite), plus optional Caddy (HTTPS with public DNS) and coturn (TURN) profiles |
 | [`node/`](node) | A node's compose stack: the agent, which starts each environment's streamer and app containers through the Docker socket |
 | [`node/host/`](node/host) | Host files that need root, installed by the owner with `install.sh`: the `cha-sandbox` AppArmor profile (Steam environments need it), the udev rules that keep virtual gamepads (Xbox 360, DualSense, Steam Controller) out of a desktop host's own session, and the `uinput`/`uhid` module list |
+| [`quickstart/`](quickstart) | The portal and a node on one machine from the published images, and `setup.sh`, which prepares an Ubuntu or Debian machine for it ([SETUP.md](../SETUP.md#quick-start)) |
+| [`proxmox/`](proxmox) | `create-node.sh`: a node, or the quick start, in an LXC container on a Proxmox VE host, sharing its Intel or AMD GPU; and the VM to use for NVIDIA ([guide](proxmox/README.md)) |
 | [`streamer/`](streamer) | The streamer's image (`--target runtime`) and its dev loop on a node |
 
 ## A portal and one node
@@ -16,7 +18,7 @@
    ```
 
    It listens on `127.0.0.1:7676`. Serve it over HTTPS: browsers only give gamepads, keyboard lock and audio worklets to secure pages. On a tailnet, run `sudo tailscale serve --bg 7676` ([guide](../docs/guides/tailscale.md)). With public DNS, set `CHA_DOMAIN` and add `--profile tls` (Caddy). A fresh portal is open to claim: the first visitor creates the first admin, so open it right after the first start.
-2. **The node**, on the GPU server (NVIDIA with the Container Toolkit's CDI spec; or an Intel or AMD GPU, or no GPU at all: *Devices*, below). Build the images it runs:
+2. **The node**, on the GPU server (NVIDIA with the Container Toolkit's CDI spec; or an Intel or AMD GPU, or no GPU at all: *Devices*, below). From a release, it needs no builds: set the published images ([Published images](#published-images)) and it pulls the rest as apps are launched. From source, build the images it runs:
 
    ```bash
    docker build -f deploy/streamer/Dockerfile --target runtime -t cha/streamer:dev .
@@ -111,21 +113,21 @@ A friend can play on a second gamepad, watch, or use the controls without an acc
 
 ## Published images
 
-A release (a `v*` tag) publishes every image to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, the Moonlight gateway, `cha-gateway`, and the environments, `cha-env-test-pattern`, `-chrome`, `-firefox`, `-xfce`, `-kde` and `-steam` (with their base, `cha-env-base`). Each is tagged with the version (`0.1.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all of them, since they change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.1.0 --owner ban-red`). The Chrome and Steam images contain Google Chrome and Valve's Steam bootstrap, under their owners' terms.
+A release (a `v*` tag) publishes every image to GitHub's container registry, built by [`.github/workflows/publish.yml`](../.github/workflows/publish.yml): `ghcr.io/ban-red/cha-portal`, `cha-node` (the agent) and `cha-streamer`, the Moonlight gateway, `cha-gateway`, and the environments, `cha-env-test-pattern`, `-chrome`, `-firefox`, `-xfce`, `-kde` and `-steam` (with their base, `cha-env-base`). Each is tagged with the version (`0.2.0`) and the commit (`sha-1a2b3c4`). There is no `latest`: use one version for all of them, since they change together. Each image carries signed build provenance (`gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.2.0 --owner ban-red`). The Chrome and Steam images contain Google Chrome and Valve's Steam bootstrap, under their owners' terms.
 
 For a portal and a node on one machine, [`quickstart/compose.yaml`](quickstart/compose.yaml) runs both from these images ([SETUP.md](../SETUP.md#quick-start)). With the separate stacks, set the image variables and pull instead of building:
 
 ```bash
-CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.1.0 docker compose -f deploy/portal/compose.yaml pull
+CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.2.0 docker compose -f deploy/portal/compose.yaml pull
 ```
 
 ```bash
-CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.1.0 docker compose -f deploy/portal/compose.yaml up -d
+CHA_PORTAL_IMAGE=ghcr.io/ban-red/cha-portal:0.2.0 docker compose -f deploy/portal/compose.yaml up -d
 ```
 
-On a node, set `CHA_NODE_IMAGE` the same way, and `CHA_STREAMER_IMAGE=ghcr.io/ban-red/cha-streamer:0.1.0` (in `deploy/node/.env`, so every run gets them). The agent pulls the streamer image when it starts, if the node doesn't have it. It only ever pulls an image whose name includes its registry: a bare name like `cha/streamer:dev` is a local build, and pulling it would fetch whatever Docker Hub's `cha` namespace holds. To update, change the version and pull again; leave `--build` off, or compose builds from source instead.
+On a node, set `CHA_NODE_IMAGE` the same way, and `CHA_STREAMER_IMAGE=ghcr.io/ban-red/cha-streamer:0.2.0` (in `deploy/node/.env`, so every run gets them). The agent pulls the streamer image when it starts, if the node doesn't have it. It only ever pulls an image whose name includes its registry: a bare name like `cha/streamer:dev` is a local build, and pulling it would fetch whatever Docker Hub's `cha` namespace holds. To update, change the version and pull again; leave `--build` off, or compose builds from source instead.
 
-For the environments, set `CHA_IMAGE_REGISTRY=ghcr.io/ban-red` and `CHA_IMAGE_TAG=0.1.0` on the node. The agent then runs each catalog image from its published copy (`cha/env-chrome:dev` as `ghcr.io/ban-red/cha-env-chrome:0.1.0`), and pulls it on the first launch that needs it; pull them ahead of time to spare that first launch the download (Steam's is the largest). Without `CHA_IMAGE_REGISTRY` it runs the images built on the node.
+For the environments, set `CHA_IMAGE_REGISTRY=ghcr.io/ban-red` and `CHA_IMAGE_TAG=0.2.0` on the node. The agent then runs each catalog image from its published copy (`cha/env-chrome:dev` as `ghcr.io/ban-red/cha-env-chrome:0.2.0`), and pulls it on the first launch that needs it; pull them ahead of time to spare that first launch the download (Steam's is the largest). Without `CHA_IMAGE_REGISTRY` it runs the images built on the node, and when it has none, pulls the published ones for its own version ([Images](#images)).
 
 ### Images
 
@@ -172,7 +174,7 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_NODE_IMAGE` | `cha-node:dev` | The agent's image, for the compose file: the local build, or a published one ([Published images](#published-images)) |
 | `CHA_STREAMER_IMAGE` | `cha/streamer:dev` | The streamer image: the local build, or a published one, which the agent pulls when it starts |
 | `CHA_IMAGE_REGISTRY` | | Run the environments from published images, e.g. `ghcr.io/ban-red` ([Published images](#published-images)); empty runs the ones built on the node. Must name a registry's host |
-| `CHA_IMAGE_TAG` | | The release of those images, e.g. `0.1.0`; needed with `CHA_IMAGE_REGISTRY` |
+| `CHA_IMAGE_TAG` | | The release of those images, e.g. `0.2.0`; needed with `CHA_IMAGE_REGISTRY` |
 | `CHA_PLACEMENT` | `auto` | `auto` lets the portal pick this node for a launch; `manual` keeps it to launches that choose it by hand, for a test bed. Anything else stops the agent at start-up ([Images](#images)) |
 | `CHA_MOONLIGHT` | `true` | Look for Moonlight hosts (Sunshine, Apollo) on the LAN ([Moonlight hosts](#moonlight-hosts)) |
 | `CHA_GATEWAY_IMAGE` | `cha/gateway:dev` | The image that streams an adopted Moonlight host; mapped through `CHA_IMAGE_REGISTRY` like the environments |
@@ -204,14 +206,14 @@ The Nodes page shows each online node's CPU, RAM and GPUs, refreshed every few s
 An environment runs on one **device** of a node (`docs/devices.md`), and the user picks it from the Launch menu on the app's card; Launch itself takes the best one the nodes offer, naming it under the button ("on gpu-node · RTX 4090"). The agent reports what it finds, at start and every five minutes:
 
 - **`nvidia`**: an NVIDIA GPU with NVENC, through CDI as before. Nothing to set up beyond the Container Toolkit's CDI spec.
-- **`vaapi`**: an Intel GPU (an iGPU's QuickSync, or Arc) or an AMD one, composited on its render node with Mesa and encoded through VA-API. Nothing to install on the host but the kernel driver (`i915`/`xe`, `amdgpu`) and `/dev/dri/renderD*`; the streamer image carries the user-space drivers. The agent finds every render node whose driver isn't NVIDIA's from `/sys/class/drm` (which its container sees as it is, so the compose file needs no `/dev/dri` mount) and asks the streamer image what each can encode, in a throwaway container with no network that gets only that node (`cha-streamer --probe-device vaapi:/dev/dri/renderD129`). A node that encodes nothing (a virtual GPU, a driver the image lacks) isn't offered, and a streamer image that predates the probe offers no VA-API at all: rebuild it. The environment's streamer and app get that render node and its group, and nothing of NVIDIA's.
+- **`vaapi`**: an Intel GPU (an iGPU's QuickSync, or Arc) or an AMD one, composited on its render node with Mesa and encoded through VA-API. Nothing to install on the host but the kernel driver (`i915`/`xe`, `amdgpu`) and `/dev/dri/renderD*`; the streamer image carries the user-space drivers. The agent finds every render node whose driver isn't NVIDIA's from `/sys/class/drm` (which its container sees as it is, so the compose file needs no `/dev/dri` mount) and asks the streamer image what each can encode, in a throwaway container with no network that gets only that node (`cha-streamer --probe-device vaapi:/dev/dri/renderD129`). A node that encodes nothing (a virtual GPU, a driver the image lacks) isn't offered, and a streamer image that predates the probe offers no VA-API at all: rebuild it. The environment's streamer and app get that render node and its group, and nothing of NVIDIA's. The agent reads the group from the node itself where its container has it (NVIDIA's comes through CDI), and otherwise from a throwaway container of the streamer image given that node; if neither can tell, it logs `can't tell the render node's group`, and the app falls back to software rendering or shows black.
 - **`cpu`**: always there. Mesa's software renderer composites and x264 encodes, H.264 only, with no GPU for the streamer or the app. It suits a desktop or a browser at modest sizes and frame rates, and costs the node's cores while it runs (the portal counts that against the node); it can't run what needs 3D, so apps marked `needsGpu` in the catalog (Steam) never run on it.
 
 `--doctor` lists them, one line each, and says why a render node isn't one. A node whose agent predates devices is read as one `nvidia` device, so an older agent keeps working with a newer portal (and the reverse: it ignores the device a launch names and uses its NVIDIA GPU).
 
 ### Where a launch goes
 
-`GET /api/placements` (all apps, or `?template=<id>` for one) lists every device of every online node as an option, best first, with its score and a reason when it isn't allowed. A device scores by its kind (NVIDIA 100, VA-API 60, CPU 20), less for the node's live usage (the CPU's use, and for NVIDIA the GPU's utilisation and VRAM in use) and 10 for each environment already running on it. A GPU with under 2 GB of VRAM free stays choosable, with a warning, but is never picked automatically. Not allowed: the CPU for an app that needs a GPU, a device that offers no codec browsers play, and a node whose agent can't keep the app's data. `POST /api/environments` takes an optional `node` and `device` from that list (a node alone means its best device) and refuses a choice that isn't allowed with a 400 and the reason; without them it takes the best option, or answers 409 `no_node` saying what stood in each device's way.
+`GET /api/placements` (all apps, or `?template=<id>` for one) lists every device of every online node as an option, best first, with its score and a reason when it isn't allowed. A device scores by its kind (NVIDIA 100, VA-API 60, CPU 20), 15 more on a node that already holds the app's image, less for the node's live usage (the CPU's use, and for NVIDIA the GPU's utilisation and VRAM in use) and 10 for each environment already running on it. A GPU with under 2 GB of VRAM free stays choosable, with a warning, but is never picked automatically. Not allowed: the CPU for an app that needs a GPU, a device that offers no codec browsers play, and a node whose agent can't keep the app's data. `POST /api/environments` takes an optional `node` and `device` from that list (a node alone means its best device) and refuses a choice that isn't allowed with a 400 and the reason. A node with `CHA_PLACEMENT=manual` is listed and can be chosen, but is never the automatic pick; without them it takes the best option, or answers 409 `no_node` saying what stood in each device's way.
 
 ## Portal settings
 
@@ -270,4 +272,5 @@ and bind it into the agent read-only at the same path, next to the data root in 
 - Behind a proxy, the audit log records the proxy's address, not the client's.
 - Users' app data lives on the node that made it. Nothing backs it up, limits its size or moves it to another node yet; the portal's reset deletes it on every connected node.
 - TURN over TLS on 443 comes later.
-- Steam environments need the `cha-sandbox` AppArmor profile on the node: installed by `sudo deploy/node/host/install.sh` (step 3). `--doctor` checks it.
+- Steam environments need the `cha-sandbox` AppArmor profile on the node: installed by `sudo deploy/node/host/install.sh` (step 3). `--doctor` checks it. An LXC container can't load AppArmor profiles, so Steam doesn't run on a node in one ([Proxmox](proxmox/README.md)).
+- The portal reads only its own catalog, `images/catalog.json`. The entry shape is ready for catalogs from elsewhere ([ADR 0017](../docs/adr/0017-images-pulled-on-demand.md)), but loading them comes later.
