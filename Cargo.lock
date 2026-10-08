@@ -711,7 +711,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "cha-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "cha-client-gamestream"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "cha-client-portal"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -764,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "cha-client-stream"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "cha-control"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "cha-gamestream"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -857,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "cha-gateway"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "cha-moonlight-input"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cha-client",
  "cha-gamestream",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "cha-node"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "cha-nvenc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cha-workspace-hack",
  "libc",
@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "cha-player"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -976,7 +976,7 @@ version = "0.0.1"
 
 [[package]]
 name = "cha-pyrowave"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cha-workspace-hack",
  "libc",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "cha-pyrowave-wgpu"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "cha-workspace-hack",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "cha-streamer"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "cha-sysinfo"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cha-workspace-hack",
  "libc",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "cha-testpattern"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pulseaudio",
  "rustix 1.1.5",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "cha-ui-spec"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cha-workspace-hack",
  "serde",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "cha-wire"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "cha-workspace-hack",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "cha-x11-clipboard"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cha-proto",
  "rustix 1.1.5",

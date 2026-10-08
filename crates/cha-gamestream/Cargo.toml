@@ -1,6 +1,6 @@
 [package]
 name = "cha-gamestream"
-version = "0.2.0"
+version = "0.2.1"
 description = "GameStream (Moonlight protocol) host: nvhttp, pairing, RTSP, mDNS and, separately, the control, video and audio streams of one session. Ported from Moonshine."
 edition.workspace = true
 license.workspace = true
