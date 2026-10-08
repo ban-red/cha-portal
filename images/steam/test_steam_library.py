@@ -229,6 +229,23 @@ class AddTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             steam_library.add_library("", SHARED)
 
+    def test_an_empty_label_is_named_and_a_set_one_is_kept(self):
+        def labels(text):
+            return [dict(v)["label"] for _, v in steam_library.find_root(steam_library.parse(text))]
+
+        # Steam's own folder is named, and the new entry takes the label given.
+        new = steam_library.add_library(FRESH, SHARED, "Shared library", None, HOME_LIBRARY)
+        self.assertEqual(labels(new), ["Personal library", "Shared library"])
+        # Already listed with no label (a home from before): named in place.
+        old = steam_library.add_library(FRESH, SHARED)
+        self.assertEqual(labels(old), ["", ""])
+        named = steam_library.add_library(old, SHARED, "Shared library", None, HOME_LIBRARY)
+        self.assertEqual(labels(named), ["Personal library", "Shared library"])
+        # Then it stays put, and a name the user chose is never replaced.
+        self.assertEqual(steam_library.add_library(named, SHARED, "Other", None, HOME_LIBRARY), named)
+        mine = named.replace("Shared library", "Games NAS")
+        self.assertEqual(steam_library.add_library(mine, SHARED, "Shared library", None, HOME_LIBRARY), mine)
+
     def test_a_first_launchs_list_has_steams_folder_then_ours(self):
         text = steam_library.first_list(HOME_LIBRARY, SHARED, "games-remote", "6123876543210987654")
         entries = steam_library.find_root(steam_library.parse(text))

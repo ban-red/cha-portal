@@ -10,7 +10,13 @@ it runs, so a change is only kept if it is made before Steam starts: this runs
 first, from `start-steam`.
 
 - **Idempotent.** A folder that is already listed (by its path, whatever the
-  slashes at the end) leaves the file as it was: not rewritten at all.
+  slashes at the end) leaves the file as it was: not rewritten at all, unless
+  it still needs a name (next point).
+- **Names, so the two libraries differ.** Steam names a library with no label
+  after its device, and in a container that is `/usr/sbin/docker-init` for
+  both. An empty label becomes "Personal library" on Steam's own folder and
+  "Shared library" on ours (or the shared library's own label, if it has
+  one). A label that is set, by Steam's marker or the user, is kept.
 - **Only adds.** Every other library in the list, and everything else in the
   file, stays as it was. A new entry takes the next number.
 - **The shared directory is never written.** It isn't ours: other users, and
@@ -40,6 +46,10 @@ import sys
 STEAM_DIR = ".local/share/Steam"
 LISTS = ("steamapps/libraryfolders.vdf", "config/libraryfolders.vdf")
 MARKER = "libraryfolder.vdf"
+# Steam names a library after its device when it has no label, and in a
+# container that is `/usr/sbin/docker-init` for every one. These tell them apart.
+OWN_LABEL = "Personal library"
+SHARED_LABEL = "Shared library"
 
 
 # ---- Valve's KeyValues text format ----
@@ -156,6 +166,23 @@ def listed(entries):
     return paths
 
 
+def name_library(entries, path, label):
+    """Gives the library at `path` the `label` if it has none; True if that changed anything."""
+    for key, value in entries:
+        if not key.isdigit() or isinstance(value, str):
+            continue
+        fields = dict((k, v) for k, v in value if isinstance(v, str))
+        if "path" not in fields or not same_path(fields["path"], path) or fields.get("label"):
+            continue
+        for i, (k, _) in enumerate(value):
+            if k == "label":
+                value[i] = ("label", label)
+                return True
+        value.insert(1, ("label", label))
+        return True
+    return False
+
+
 def new_entry(path, label, contentid):
     entry = [("path", path), ("label", label)]
     if contentid:
@@ -163,12 +190,18 @@ def new_entry(path, label, contentid):
     return entry + [("totalsize", "0"), ("apps", [])]
 
 
-def add_library(text, path, label="", contentid=None):
-    """`text` (a list file) with `path` listed; the same text if it already is."""
+def add_library(text, path, label="", contentid=None, steam_dir=None):
+    """`text` (a list file) with `path` listed and Steam's own folder named.
+
+    The same text if there is nothing to change: the path is listed, and it
+    and Steam's folder (`steam_dir`, if given) each have a label already.
+    """
     pairs = parse(text)
     entries = find_root(pairs)
+    named = name_library(entries, steam_dir, OWN_LABEL) if steam_dir else False
     if any(same_path(p, path) for p in listed(entries)):
-        return text
+        named = (label and name_library(entries, path, label)) or named
+        return dump(pairs) if named else text
     numbers = [int(k) for k, _ in entries if k.isdigit()]
     key = str(max(numbers) + 1 if numbers else 1)
     old_format = any(k.isdigit() and isinstance(v, str) for k, v in entries)
@@ -178,7 +211,7 @@ def add_library(text, path, label="", contentid=None):
 
 def first_list(steam_dir, path, label="", contentid=None):
     """A list for a Steam that hasn't made its own yet: its folder, then ours."""
-    root = [("0", new_entry(steam_dir, "", None))]
+    root = [("0", new_entry(steam_dir, OWN_LABEL, None))]
     root.append(("1", new_entry(path, label, contentid)))
     return dump([("libraryfolders", root)])
 
@@ -231,6 +264,7 @@ def register(home, directory):
         )
         return []
     contentid, label = read_marker(directory)
+    label = label or SHARED_LABEL
     changed = []
     existing = [os.path.join(steam, name) for name in LISTS if os.path.exists(os.path.join(steam, name))]
     if not existing:
@@ -244,7 +278,7 @@ def register(home, directory):
         with open(path, encoding="utf-8", errors="replace") as f:
             text = f.read()
         try:
-            new = add_library(text, directory, label, contentid)
+            new = add_library(text, directory, label, contentid, steam)
         except ValueError as err:
             say(f"{path}: {err}; leaving it alone")
             continue
