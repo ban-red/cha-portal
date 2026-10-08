@@ -107,6 +107,8 @@ pub fn input_access() -> InputAccess {
 struct Slot {
     id: JoystickId,
     pad: Gamepad,
+    /// A Steam Controller: its trackpad clicks sit where SDL puts them.
+    steam: bool,
     last: Option<PadState>,
 }
 
@@ -175,7 +177,8 @@ fn run(commands: Receiver<Command>) -> Result<()> {
         if let Some(c) = &control {
             for (index, slot) in slots.iter_mut().enumerate() {
                 let Some(slot) = slot else { continue };
-                let state = standard_state(|b| slot.pad.button(b), |a| slot.pad.axis(a));
+                let state =
+                    standard_state(|b| slot.pad.button(b), |a| slot.pad.axis(a), slot.steam);
                 if slot.last.as_ref() != Some(&state) {
                     tracing::debug!(
                         index,
@@ -210,10 +213,12 @@ fn open(subsystem: &sdl3::GamepadSubsystem, slots: &mut [Option<Slot>; MAX_PADS]
     };
     match subsystem.open(id) {
         Ok(pad) => {
-            tracing::info!(index = free, name = ?pad.name(), "gamepad connected");
+            let steam = pad.name().is_some_and(|n| n.contains("Steam"));
+            tracing::info!(index = free, name = ?pad.name(), steam, "gamepad connected");
             slots[free] = Some(Slot {
                 id,
                 pad,
+                steam,
                 last: None,
             });
         }
@@ -239,7 +244,17 @@ fn feedback(slots: &mut [Option<Slot>; MAX_PADS], feedback: Feedback) {
 
 /// A pad's whole state in the W3C standard mapping: 17 buttons (6 and 7 the
 /// analog triggers) and 4 axes, Y down.
-pub fn standard_state(button: impl Fn(Button) -> bool, axis: impl Fn(Axis) -> i16) -> PadState {
+/// The browser player's 24 buttons: the W3C standard 17, then a trackpad or
+/// touchpad click (17), a Steam Controller's left trackpad click (18), the back
+/// paddles or grips L4, R4, L5, R5 (19-22), and a DualSense's mute or a Steam
+/// Controller's quick-access button (23) (`web/packages/player`, `EXTRA`).
+/// SDL names a Steam Controller's left trackpad click `touchpad` and its right
+/// one `misc2`; a DualSense's touchpad click is `touchpad`.
+pub fn standard_state(
+    button: impl Fn(Button) -> bool,
+    axis: impl Fn(Axis) -> i16,
+    steam: bool,
+) -> PadState {
     let digital = |b| if button(b) { 1.0 } else { 0.0 };
     let trigger = |a| (axis(a).max(0) as f32 / 32767.0).clamp(0.0, 1.0);
     let stick = |a| (axis(a) as f32 / 32767.0).clamp(-1.0, 1.0);
@@ -262,6 +277,22 @@ pub fn standard_state(button: impl Fn(Button) -> bool, axis: impl Fn(Axis) -> i1
             digital(Button::DPadLeft),
             digital(Button::DPadRight),
             digital(Button::Guide),
+            // Extras.
+            digital(if steam {
+                Button::Misc2
+            } else {
+                Button::Touchpad
+            }),
+            if steam {
+                digital(Button::Touchpad)
+            } else {
+                0.0
+            },
+            digital(Button::LeftPaddle1),
+            digital(Button::RightPaddle1),
+            digital(Button::LeftPaddle2),
+            digital(Button::RightPaddle2),
+            digital(Button::Misc1),
         ],
         axes: vec![
             stick(Axis::LeftX),
@@ -287,8 +318,9 @@ mod tests {
                 Axis::RightY => 16384,
                 _ => 0,
             },
+            false,
         );
-        assert_eq!(state.buttons.len(), 17);
+        assert_eq!(state.buttons.len(), 24);
         assert_eq!(state.axes.len(), 4);
         assert_eq!(state.buttons[0], 1.0, "A / South");
         assert_eq!(state.buttons[1], 0.0);
@@ -298,5 +330,23 @@ mod tests {
         assert_eq!(state.buttons[16], 1.0, "guide");
         assert_eq!(state.axes[0], -1.0);
         assert!((state.axes[3] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_steam_controllers_extras_go_where_the_browser_puts_them() {
+        let pressed = [
+            Button::Misc1,
+            Button::Misc2,
+            Button::Touchpad,
+            Button::LeftPaddle2,
+        ];
+        let steam = standard_state(|b| pressed.contains(&b), |_| 0, true);
+        let on: Vec<usize> = (0..24).filter(|&i| steam.buttons[i] > 0.5).collect();
+        // Right trackpad, left trackpad, L5, quick access.
+        assert_eq!(on, [17, 18, 21, 23]);
+        // A DualSense: touchpad click 17, mute 23, no 18.
+        let ds = standard_state(|b| pressed.contains(&b), |_| 0, false);
+        let on: Vec<usize> = (0..24).filter(|&i| ds.buttons[i] > 0.5).collect();
+        assert_eq!(on, [17, 21, 23]);
     }
 }
