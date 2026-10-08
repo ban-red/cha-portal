@@ -19,8 +19,7 @@
 #    from that checkout;
 # 5. in it: starts the quick start, or the node alone with --portal-url.
 # NVIDIA GPUs aren't passed to containers by this script: give a VM the GPU
-# instead (README). Steam needs AppArmor, which a container can't load, so
-# it doesn't run here either.
+# instead (README).
 set -eu
 
 usage() {

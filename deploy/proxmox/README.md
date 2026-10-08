@@ -5,10 +5,10 @@ There are two ways to run a Cha Node on a Proxmox VE host. Which one fits depend
 | | An LXC container ([`create-node.sh`](create-node.sh)) | A VM with the GPU passed through |
 |---|---|---|
 | GPU | Intel or AMD, shared with the host and other containers | NVIDIA (or any), given to the VM alone |
-| Apps | Chrome, Firefox, XFCE, KDE, the test pattern | Everything, Steam included |
+| Apps | Everything, Steam included (slow on an integrated GPU) | Everything, Steam included |
 | Encoding | VA-API H.264 (HEVC/AV1 where the GPU has them), or CPU H.264 | NVENC: H.264, HEVC, AV1, PyroWave |
 | Setup | One script on the host | Passthrough set up on the host, then the [Quick start](../../SETUP.md#quick-start) in the VM |
-| Tested | Intel UHD 630 on Proxmox 9.1: the script run end to end, `--doctor` clean but for Steam's profile; Chrome and the test pattern stream from a container set up the same way. Gamepads not yet | RTX 4090: everything |
+| Tested | Intel UHD 630 on Proxmox 9.1: the script ran end to end with `--doctor` clean; Chrome, the test pattern and Steam's Big Picture stream from a container set up the same way. Gamepads and playing a game not yet | RTX 4090: everything |
 
 Either can run the whole quick start (the portal and a node) or just a node for a portal you already have.
 
@@ -37,7 +37,7 @@ sh create-node.sh --version 0.2.0 --portal-url https://portal-host.your-tailnet.
 **What it does:**
 
 1. **On the host:** loads `uinput` and `uhid` (virtual gamepads) and lists them in `/etc/modules-load.d/cha.conf` for boot. A container can't load modules itself.
-2. **Creates the container:** Debian 13, privileged, with nesting on so it can run Docker. The host's Intel and AMD render nodes, `/dev/uinput` and `/dev/uhid` are passed in, and the input and hidraw devices the streamer makes are allowed. With `--tailscale`, `/dev/net/tun` too. The settings are appended to `/etc/pve/lxc/<id>.conf`, under a comment.
+2. **Creates the container:** Debian 13, privileged, with nesting on so it can run Docker. The host's Intel and AMD render nodes, each GPU's primary node (`card0`, which Steam's gamescope needs), `/dev/uinput` and `/dev/uhid` are passed in, and the input and hidraw devices the streamer makes are allowed. With `--tailscale`, `/dev/net/tun` too. The settings are appended to `/etc/pve/lxc/<id>.conf`, under a comment.
 3. **In the container:** installs git, clones the release to `/opt/cha-portal`, and runs [`deploy/quickstart/setup.sh`](../quickstart/setup.sh). That script installs Docker, writes the settings and pulls the images. It skips the host files, because inside a container they belong to the host.
 4. **On the host:** installs the udev rules that keep the virtual pads off the host's own seat (`/etc/udev/rules.d/72-cha-virtual-pads.rules`), copied from that checkout. The pads appear on the host's kernel, so the host's udev is the one that sees them.
 5. **Starts it:** the quick start, or with `--portal-url` the node alone, using the release's published images. A `compose.override.yaml` beside the compose file removes the NVIDIA device the agent would otherwise ask for.
@@ -63,7 +63,7 @@ For a node alone, the directory is `/opt/cha-portal/deploy/node`. Run compose fr
 **Good to know:**
 
 - **The container is privileged.** Root in it is root on the host. A Cha Node is root-equivalent on its machine anyway, since the agent drives Docker ([SECURITY.md](../../SECURITY.md)), and Docker and the passed-in devices need privileges an unprivileged container doesn't have. Run only Cha Portal in it.
-- **No Steam.** Steam's sandbox runs under an AppArmor profile, and a container can't load profiles. The portal still lists Steam, but launching it on such a node fails. Use a VM for it.
+- **Steam works without its AppArmor profile.** Docker in a container has no AppArmor, so there is nothing for the `cha-sandbox` profile to relax, and Steam's sandboxes (bubblewrap, pressure-vessel) work because Proxmox doesn't restrict user namespaces. Its other confinement stays: no capabilities, its seccomp filter and no-new-privileges. On an Intel or AMD GPU, Steam needs a release after 0.2.0, whose agent passes the GPU's primary node to it. An integrated GPU is slow for games.
 - **No NVIDIA.** The script never passes an NVIDIA GPU to a container: the container's driver would have to match the host's exactly, and CDI expects to own it. If the host has one, the script says so; give it to a VM.
 - **GPU sharing.** An Intel or AMD GPU passed into a container is still the host's. Other containers, Plex for example, can use it at the same time, and they compete for its encoder.
 - **Gamepads haven't been tried in a container yet.** The devices they need are passed in and allowed, but no pad has been played there yet.
@@ -72,7 +72,7 @@ For a node alone, the directory is `/opt/cha-portal/deploy/node`. Run compose fr
 
 ## A VM with the GPU passed through
 
-This is the way to run NVIDIA and Steam on Proxmox. The VM owns the GPU, so it behaves like any other machine, and the [Quick start](../../SETUP.md#quick-start) runs in it unchanged.
+This is the way to run an NVIDIA GPU on Proxmox. The VM owns the GPU, so it behaves like any other machine, and the [Quick start](../../SETUP.md#quick-start) runs in it unchanged.
 
 1. **On the host,** turn on IOMMU and pass the GPU through, as [Proxmox's PCI passthrough guide](https://pve.proxmox.com/wiki/PCI_Passthrough) describes: `intel_iommu=on` or `amd_iommu=on` on the kernel command line, the `vfio` modules, and the GPU's driver kept off the host.
 2. **Create the VM:** Ubuntu 24.04 or newer, machine type `q35`, BIOS `OVMF (UEFI)`, CPU type `host`. Give it at least 4 cores, 8 GB of memory and 100 GB of disk (more for Steam games). Add the GPU as a **PCI Device** with *All Functions* and *PCI-Express* ticked, and leave *Primary GPU* off. The streamer never needs a display.

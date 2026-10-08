@@ -272,5 +272,5 @@ and bind it into the agent read-only at the same path, next to the data root in 
 - Behind a proxy, the audit log records the proxy's address, not the client's.
 - Users' app data lives on the node that made it. Nothing backs it up, limits its size or moves it to another node yet; the portal's reset deletes it on every connected node.
 - TURN over TLS on 443 comes later.
-- Steam environments need the `cha-sandbox` AppArmor profile on the node: installed by `sudo deploy/node/host/install.sh` (step 3). `--doctor` checks it. An LXC container can't load AppArmor profiles, so Steam doesn't run on a node in one ([Proxmox](proxmox/README.md)).
+- Steam environments need the `cha-sandbox` AppArmor profile on the node: installed by `sudo deploy/node/host/install.sh` (step 3). `--doctor` checks it. A node whose Docker has no AppArmor, such as one in an LXC container, doesn't need it ([Proxmox](proxmox/README.md)).
 - The portal reads only its own catalog, `images/catalog.json`. The entry shape is ready for catalogs from elsewhere ([ADR 0017](../docs/adr/0017-images-pulled-on-demand.md)), but loading them comes later.
