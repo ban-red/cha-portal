@@ -50,6 +50,8 @@ pub struct Report {
     pub outdated: Vec<String>,
     /// Files whose directory isn't bound into the agent: not known either way.
     pub unknown: Vec<String>,
+    /// The engine has no AppArmor, so its profiles weren't looked for.
+    pub apparmor_skipped: bool,
 }
 
 impl Report {
@@ -72,9 +74,18 @@ impl Report {
 }
 
 /// Compares each file under `etc` (the host's `/etc` as bound in) with ours.
-pub fn compare(etc: &Path) -> Report {
-    let mut report = Report::default();
+/// `apparmor` is whether the Docker engine has AppArmor: when it hasn't (an
+/// LXC container, say), the profile can't be loaded and isn't needed, so it
+/// is left out.
+pub fn compare(etc: &Path, apparmor: bool) -> Report {
+    let mut report = Report {
+        apparmor_skipped: !apparmor,
+        ..Report::default()
+    };
     for file in &FILES {
+        if file.apparmor && !apparmor {
+            continue;
+        }
         let shown = format!("/etc/{}", file.path);
         let dir = Path::new(file.path).parent().unwrap_or(Path::new(""));
         let Ok(mut entries) = std::fs::read_dir(etc.join(dir)) else {
@@ -97,8 +108,8 @@ pub fn compare(etc: &Path) -> Report {
 
 /// At startup: one warning if the host's files are missing or outdated.
 /// Doesn't stop the agent, and says nothing when the binds aren't there.
-pub fn warn_if_stale() {
-    let report = compare(Path::new(HOST_ETC));
+pub fn warn_if_stale(apparmor: bool) {
+    let report = compare(Path::new(HOST_ETC), apparmor);
     if report.stale() {
         warn!("host files {} (run `{FIX}` on the node)", report.describe());
     }
@@ -126,7 +137,7 @@ mod tests {
     #[test]
     fn current_files_report_nothing() {
         let tmp = etc(true);
-        let report = compare(tmp.path());
+        let report = compare(tmp.path(), true);
         assert_eq!(report, Report::default());
         assert!(!report.stale());
     }
@@ -134,7 +145,7 @@ mod tests {
     #[test]
     fn files_that_were_never_installed_are_missing() {
         let tmp = etc(false);
-        let report = compare(tmp.path());
+        let report = compare(tmp.path(), true);
         assert_eq!(report.missing.len(), 3);
         assert!(report.stale());
         assert!(
@@ -152,7 +163,7 @@ mod tests {
             "old\n",
         )
         .unwrap();
-        let report = compare(tmp.path());
+        let report = compare(tmp.path(), true);
         assert_eq!(
             report.outdated,
             ["/etc/udev/rules.d/72-cha-virtual-pads.rules"]
@@ -164,7 +175,7 @@ mod tests {
     #[test]
     fn without_the_binds_nothing_is_known() {
         let tmp = tempfile::tempdir().unwrap();
-        let report = compare(tmp.path());
+        let report = compare(tmp.path(), true);
         assert_eq!(report.unknown.len(), 3);
         assert!(!report.stale());
     }
@@ -174,6 +185,19 @@ mod tests {
         let tmp = etc(true);
         std::fs::remove_file(tmp.path().join("apparmor.d/cha-sandbox")).unwrap();
         std::fs::remove_file(tmp.path().join("apparmor.d/docker-default")).unwrap();
-        assert_eq!(compare(tmp.path()), Report::default());
+        assert_eq!(compare(tmp.path(), true), Report::default());
+    }
+
+    #[test]
+    fn an_engine_without_apparmor_isnt_asked_for_the_profile() {
+        let tmp = etc(false);
+        let report = compare(tmp.path(), false);
+        assert_eq!(report.missing.len(), 2);
+        assert!(!report.missing.iter().any(|f| f.contains("apparmor")));
+        assert!(report.apparmor_skipped);
+        // The other files are still compared.
+        let tmp = etc(true);
+        let report = compare(tmp.path(), false);
+        assert!(!report.stale());
     }
 }

@@ -148,6 +148,13 @@ impl Docker {
         Ok(v["Version"].as_str().unwrap_or("?").to_string())
     }
 
+    /// Whether the engine has AppArmor (`GET /info`). Docker in an LXC
+    /// container has none.
+    pub async fn apparmor(&self) -> Result<bool> {
+        let info: Value = serde_json::from_slice(&self.call(Method::GET, "/info", None).await?)?;
+        Ok(has_apparmor(&info))
+    }
+
     /// Runs a short-lived container to its end and removes it: the exit code
     /// and its output (stdout and stderr). For checks (`--doctor`).
     pub async fn run(
@@ -749,9 +756,28 @@ fn image_names(body: &[u8]) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// Whether an `/info` reply lists AppArmor among the engine's security options.
+fn has_apparmor(info: &Value) -> bool {
+    info["SecurityOptions"].as_array().is_some_and(|opts| {
+        opts.iter()
+            .filter_map(Value::as_str)
+            .any(|o| o.starts_with("name=apparmor"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_apparmor_in_the_engines_security_options() {
+        use serde_json::json;
+        let with = json!({"SecurityOptions": ["name=apparmor", "name=seccomp,profile=builtin"]});
+        let without = json!({"SecurityOptions": ["name=seccomp,profile=builtin", "name=cgroupns"]});
+        assert!(has_apparmor(&with));
+        assert!(!has_apparmor(&without));
+        assert!(!has_apparmor(&json!({})));
+    }
 
     #[test]
     fn demuxes_logs() {

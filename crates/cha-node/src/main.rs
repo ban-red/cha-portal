@@ -261,7 +261,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    hostfiles::warn_if_stale();
+    // If the engine can't be asked, assume AppArmor: check everything.
+    hostfiles::warn_if_stale(docker.apparmor().await.unwrap_or(true));
     check_portal_transport(&identity.portal_url, args.allow_insecure_portal)?;
     if identity.portal_url.starts_with("http://") && args.allow_insecure_portal {
         warn!(portal = %identity.portal_url, "plain HTTP to the portal (CHA_ALLOW_INSECURE_PORTAL): for development only");

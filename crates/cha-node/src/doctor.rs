@@ -123,7 +123,10 @@ pub async fn run(
     checks.push(ports(config));
     checks.extend(gamestream_ports(config));
     checks.extend(more);
-    checks.push(host_files(Path::new(hostfiles::HOST_ETC)));
+    checks.push(host_files(
+        Path::new(hostfiles::HOST_ETC),
+        docker.apparmor().await.unwrap_or(true),
+    ));
 
     println!("cha-node doctor\n");
     for c in &checks {
@@ -529,9 +532,9 @@ fn module_loaded(proc_modules: &str, name: &str) -> bool {
 /// pads off the desktop's seat, the Steam sandbox's AppArmor profile, the
 /// module list), against the copies this agent was built with. Never a
 /// failure: the runtime checks above say whether things work.
-fn host_files(etc: &Path) -> Check {
+fn host_files(etc: &Path, apparmor: bool) -> Check {
     const NAME: &str = "Host files";
-    let report = hostfiles::compare(etc);
+    let report = hostfiles::compare(etc, apparmor);
     if report.stale() {
         return check(Level::Warn, NAME, report.describe()).fix(hostfiles::FIX);
     }
@@ -547,6 +550,14 @@ fn host_files(etc: &Path) -> Check {
              recreate the agent; to install: {}",
             hostfiles::FIX
         ));
+    }
+    if report.apparmor_skipped {
+        return check(
+            Level::Ok,
+            NAME,
+            "udev rules and module list are current (no AppArmor profile: Docker here has no \
+             AppArmor)",
+        );
     }
     check(
         Level::Ok,
@@ -1125,6 +1136,21 @@ fn gamestream_ports(config: &DockerConfig) -> Option<Check> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_files_without_engine_apparmor_say_so() {
+        // Only directories: the udev rules and module list are missing, the
+        // profile isn't asked for.
+        let tmp = tempfile::tempdir().unwrap();
+        for dir in ["udev/rules.d", "apparmor.d", "modules-load.d"] {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        std::fs::write(tmp.path().join("apparmor.d/docker-default"), "").unwrap();
+        let c = host_files(tmp.path(), false);
+        assert!(matches!(c.level, Level::Warn));
+        assert!(!c.detail.contains("apparmor"));
+        assert!(host_files(tmp.path(), true).detail.contains("cha-sandbox"));
+    }
 
     #[test]
     fn an_unclaimed_node_shows_its_code() {
