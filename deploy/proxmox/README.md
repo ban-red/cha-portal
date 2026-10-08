@@ -72,7 +72,7 @@ For a node alone, the directory is `/opt/cha-portal/deploy/node`. Run compose fr
 
 ### Intel GPUs: turn on the HuC
 
-On the GPUs of 6th to 10th generation Intel Core processors (Skylake to Comet Lake and Ice Lake: HD, UHD and Iris Plus Graphics), the low-power encoder's bitrate control runs on the GPU's HuC microcontroller, and Linux doesn't load its firmware there by default. Without it, the streamer falls back to the GPU's other encoder, which borrows the shader cores the apps also draw with. On a UHD 630 at 1440p60 that takes about 5 ms a frame for H.264 and 10 ms for HEVC. From 11th generation Core (Tiger Lake) on, and on Arc, the kernel loads the HuC by itself. HEVC on 6th to 9th generation has no low-power encoder at all, so it stays on the slower one either way.
+On the GPUs of 6th to 10th generation Intel Core processors (Skylake to Comet Lake and Ice Lake: HD, UHD and Iris Plus Graphics), the low-power encoder's bitrate control runs on the GPU's HuC microcontroller, and Linux doesn't load its firmware there by default. Without it, the streamer falls back to the GPU's other encoder, which borrows the shader cores the apps and the compositor also draw with. It isn't faster: on a UHD 630 at 1728×1440, H.264 took 4.6 ms a frame before and 4.9 ms after. What the low-power encoder saves is those shader cores, which matters when a game or a heavy page shares the GPU. From 11th generation Core (Tiger Lake) on, and on Arc, the kernel loads the HuC by itself. HEVC on 6th to 9th generation has no low-power encoder at all, so it stays on the slower one either way.
 
 Check on the host. `HuC disabled` means it isn't loaded:
 
@@ -90,7 +90,7 @@ echo "options i915 enable_guc=2" > /etc/modprobe.d/cha-i915-huc.conf
 update-initramfs -u -k all
 ```
 
-The firmware comes with Proxmox (`/lib/firmware/i915/kbl_huc_*.bin` and the like). After the reboot, `huc_info` should say the firmware is loaded and authenticated, and the streamer's log says `entrypoint="EncSliceLP"` for H.264. The reboot restarts every guest on the host, so pick its time.
+The firmware comes with Proxmox (`/lib/firmware/i915/kbl_huc_*.bin` and the like). After the reboot, `huc_info` says `status: RUNNING`, and the streamer's log says `entrypoint="EncSliceLP" rate_control="CBR"` for H.264 (checked on mars-2, a UHD 630). The reboot restarts every guest on the host, and guests not set to start on boot stay stopped, so pick its time. Check the host's clock after it too: `--doctor` compares it with the portal's, since media tokens last 60 seconds.
 
 ## A VM with the GPU passed through
 

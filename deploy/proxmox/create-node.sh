@@ -174,7 +174,8 @@ say "GPU: ${gpus:-none}${data_dir:+; app data: $data_dir}"
 say "runs: ${portal_url:+a node for $portal_url}${portal_url:-the quick start (portal and node)}, release $version"
 # Intel's HuC: on the GPUs of 6th to 10th generation Core (Skylake to Ice Lake) the
 # kernel doesn't load it by default, and without it the low-power encoder
-# offers no bitrate control, so the streamer uses the slower one. i915's
+# offers no bitrate control, so the streamer uses the one that runs on the
+# shader cores the apps draw with. i915's
 # enable_guc=2 loads the HuC alone; 11th generation and newer load it anyway.
 huc_info=$(cat /sys/kernel/debug/dri/*/gt0/uc/huc_info 2>/dev/null | head -1 || true)
 huc_conf=/etc/modprobe.d/cha-i915-huc.conf
@@ -191,7 +192,7 @@ if [ "$huc_info" = "HuC disabled" ] && [ -n "$gpus" ]; then
             echo "wrote $huc_conf and updated the initramfs: reboot the host to load the HuC"
         fi
     else
-        warn "this Intel GPU's HuC isn't loaded, so streams use its slower encoder. --enable-huc
+        warn "this Intel GPU's HuC isn't loaded, so streams encode on its shader cores. --enable-huc
          sets the host to load it (a reboot of the host is needed): deploy/proxmox/README.md"
     fi
 fi
