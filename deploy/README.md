@@ -218,6 +218,31 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_DATA_ROOT` | `/srv/cha-portal` | Where app data lives ([below](#app-data)): a host directory the compose file also mounts into the agent at the same path |
 | `CHA_NVIDIA_WINE_DIR` | `/usr/lib/x86_64-linux-gnu/nvidia/wine` | The driver's `nvngx.dll` and `_nvngx.dll`, which Proton copies into its prefixes for DLSS and the CDI spec leaves out. Bound read-only into apps at the same path when the host has it (the agent asks the engine; nothing to mount into the agent); empty goes without |
 | `CHA_SHARED_DIRS` | | Keeps an app's shared directory elsewhere, `app=/absolute/path`, comma-separated (`steam=/mnt/games/steam`, a NAS). Bind each into the agent read-only at that path |
+| `CHA_HOST_OPTIONS` | `off` | What custom environments may ask of this node: `off`, `allowlist` or `full` ([Host options](#host-options)). Anything else stops the agent at start-up |
+| `CHA_HOST_MOUNTS`, `CHA_HOST_PORTS`, `CHA_HOST_CAPS`, `CHA_HOST_DEVICES` | | The allowlist: folders, host ports, capabilities and devices ([Host options](#host-options)) |
+
+### Host options
+
+An admin can duplicate a template in the portal and change it (ADR 0021). Four things a custom environment may ask for reach this machine, so the node's owner decides them here, not the portal: mounts, published ports, capabilities and devices. `CHA_HOST_OPTIONS` sets how much of that is allowed:
+
+- `off` (the default): none. A custom environment that asks for any is refused on this node, and the portal doesn't place it here.
+- `allowlist`: only what the four settings below name. A name or value that isn't listed is refused.
+- `full`: anything the request can say. That includes host paths, `privileged`, the host's network, extra security options and NFS or CIFS shares mounted for the launch. **Custom environments from this portal can then run with root-equivalent access on this machine.** Turn it on only if every portal admin is trusted with that. The portal has no switch for it: changing it takes the shell on this machine and a restart of the agent.
+
+The allowlist settings, comma-separated. A value that doesn't parse stops the agent at start-up and the message names the variable:
+
+| Variable | Example | What |
+|---|---|---|
+| `CHA_HOST_MOUNTS` | `media=/mnt/media:ro,roms=/srv/roms` | Folders offered by name (lowercase letters, digits, `-`, `_`). A custom environment picks the name and where it appears in the app; the host path stays here, and isn't sent to the portal. `:ro` is a ceiling: a request for read-write gets read-only. The folder has to exist on the host (`--doctor` checks) |
+| `CHA_HOST_PORTS` | `27015-27030/udp,25565/tcp` | Host ports an app may publish, single ports or ranges, each with `tcp` or `udp`. An app that doesn't ask for a particular port gets the first one in a range of its protocol that no other environment on this node publishes |
+| `CHA_HOST_CAPS` | `SYS_NICE,NET_RAW` | Capabilities added to the app, which otherwise runs with none. Names are upper case, without `CAP_` |
+| `CHA_HOST_DEVICES` | `/dev/dri/card1` | Device files passed to the app (read, write and `mknod`) |
+
+In `full` mode the lists stay usable: apps can still mount a folder by name, and a port without a number is taken from your ranges (with no range for its protocol, Docker chooses). Only `full` also allows host paths as mount sources, network shares, `privileged`, the host's network, security options, and capabilities and devices that aren't listed.
+
+Whatever the mode, the agent refuses a mount that would cover something it mounts itself (`/run/cha`, `/dev/input`, `/home/cha`, the shared directories, the controllers' `hidraw` nodes), one over a shared directory kept elsewhere (`CHA_SHARED_DIRS`), and any folder that holds the agent's Docker socket. Published ports can't be one the agent gives streamers. Every refusal names the option. A share mounted for a launch (`full` only) is a Docker volume named `cha-hostvol-<environment>-<n>`, removed when the environment stops.
+
+The node tells the portal its mode and what it names (mount names and whether each is read-only, port ranges, capabilities, devices; never host paths). The portal places a custom environment only on a node that allows everything it asks for, and the agent checks again before it starts anything. `cha-node --doctor` shows the mode, warns on `full`, and in allowlist mode warns about mounts and devices that aren't on the host. Edit `deploy/node/.env` (the compose file passes the five variables through) and recreate the agent for a change.
 
 ### When an environment dies
 

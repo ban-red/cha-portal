@@ -1,0 +1,37 @@
+# 0021: Custom environments, and host options the node owner allows
+
+- **Status:** accepted (2026-10-08). Extends [0019](0019-catalogs-loaded-by-the-admin.md) and [0020](0020-vm-environments.md).
+- **Context:** an environment is a catalog template, and the only way to get a different one is to write a catalog. Owners want to take Steam, change a few things and save it under a new name: a bigger `/dev/shm`, another image tag, a variable, and on their own machines a media folder, a port for a game server, a capability an app needs. The image spec (sections 3 and 6.3) keeps devices, mounts and capabilities out of catalogs because the portal tells nodes what to run: whatever the portal may ask for, someone who takes over the portal gets on every node. That reasoning stays. What changes is who may widen it: the node's owner, on that node.
+- **Decision:**
+  - **Two layers.** *Custom environments* live in the portal and change only what a catalog may already say. *Host options* (mounts, ports, capabilities, devices) are a separate part of a custom environment that each node allows or not, from its own configuration. The portal can never grant a node more than its owner configured.
+
+  ### Custom environments (portal)
+
+  - **An admin duplicates any launchable template** (built-in or loaded) and saves it under a new name. It gets the id `custom.<slug>`; `custom` is reserved as a catalog slug. The slug follows `valid_catalog_app`, so nodes accept it for app data without a wire change.
+  - **It stores its base and only the fields it overrides** (a new table, `custom_templates`: id, base id, overrides as JSON, who and when). It is resolved at launch: base, then overrides. A base updated by a catalog refresh or a new release reaches every field the custom one didn't change. The editor shows each field as inherited or overridden, with a reset.
+  - **Fields it may override:** `name`, `description`, `icon` (an uploaded SVG, same checks as 0019), `image` (and drops `localImage`), `class`, `shmMb`, `fps`, `gamepad`, `fixedSize`, `needsGpu`, `persistent`, `shared.access`, and `env`: extra variables for the app. `env` refuses names that start with `CHA_` and the ones the node sets (`HOME`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `PULSE_SERVER`, `DISPLAY`), at most 64 entries and 16 KiB.
+  - **`security` may be any profile**, because only an admin makes a custom environment and an admin is who approves profiles. Choosing one that is wider than the base's is recorded in the audit log the way an approval is.
+  - **If its base goes away** (a catalog removed or refreshed without it), the custom environment is unavailable, with that reason, until it is rebased or deleted. Its overrides are kept.
+  - **App data: its own, or its base's.** Duplicating asks which. Its own is `users/<user>/custom.<slug>`, seeded from the image as any new app's is. Sharing uses the base's home and shared directory (a Steam variant that keeps the library and Proton prefixes), and the base's per-app data settings; the spec's storage then names the base in `dataTemplate`, and the node checks the storage paths against that instead of the spec's template. Two live environments must never write one home: the portal refuses a launch whose user already has a live environment on the same data (409 `data_in_use`, naming it), and the node refuses one too, from its own containers' labels. The choice can be changed later only while nothing of either is live.
+  - **Only admins make, change and delete them.** Everyone who sees its base sees it, as a card of its own. Audit events: `custom_template.created`, `.updated`, `.deleted`.
+  - **The spec gains `env`, `storage.dataTemplate` and `host`.** Serde ignores unknown fields in `ToNode`, but an older agent would start the app without them, silently. So the portal sends each only to a node whose inventory lists it in `specFeatures` (`env`, `data-template`, `host-options`), and placement says why the others are skipped.
+
+  ### Host options (node)
+
+  - **A custom environment may ask for:**
+    - `mounts`: `{ source, target, readOnly }`. `source` is a name the node defines; in `full` mode it may also be an absolute host path.
+    - `ports`: `{ container, protocol, host? }` (tcp or udp). The node picks the host port from its allowed range unless one is asked for.
+    - `capAdd`: capability names.
+    - `devices`: host device paths, as Docker's `Devices` takes them.
+    - in `full` mode only: `privileged`, `networkMode: host`, `securityOpt` entries, and mounts from a network share: an NFS or CIFS volume (Docker's `local` driver with its `type`, `device` and `o` options), made for the launch and removed with the environment.
+  - **The node decides, from `deploy/node/.env`:**
+    - `CHA_HOST_OPTIONS`: `off` (the default for a node that sets nothing), `allowlist` or `full`.
+    - `allowlist` reads `CHA_HOST_MOUNTS` (`media=/mnt/media:ro,roms=/srv/roms`), `CHA_HOST_PORTS` (`27015-27030/udp,25565/tcp`), `CHA_HOST_CAPS` (`SYS_NICE,NET_RAW`) and `CHA_HOST_DEVICES` (`/dev/dri/card1`).
+    - A `:ro` on a mount is a ceiling: a request for read-write gets read-only.
+    - `full` accepts anything in the shape above, including host paths, `privileged` and the host's network. The setting lives on the node so that turning it on takes shell access to that machine. The portal has no switch for it.
+  - **The node reports what it allows** (`Inventory.host_options`: the mode, mount names and whether each is read-only, port ranges, capabilities, devices). It does not report host paths in `allowlist` mode. The editor offers what at least one node allows. Placement sends a custom environment only to nodes that allow everything it asks for, and names what each other node lacks. A manual pick of another node is refused the same way.
+  - **The node checks again before it starts anything** and refuses a spec it doesn't allow, with a message that names the option. It never trusts the portal's filter.
+  - **Some things are refused even in `full`:** targets that cover what the agent mounts (`/run/cha`, `/dev/input`, `/home/cha` when data is kept, the shared directory, the hidraw paths), and the agent's own Docker socket. Without the first group the stream breaks. The second is the node agent itself.
+  - **Seen everywhere it matters:** the nodes page shows each node's mode, and `full` gets a warning badge. `--doctor` reports the mode and warns on `full`. Every launch that uses host options logs them in the audit entry. The card says it is custom and whether it shares its base's data, and lists the ports published for a running one.
+- **Consequences:** an owner can set up a game server, a media library or an app that needs `SYS_NICE` without writing a catalog or an image. For a node left at `off`, the risk stays where it is today. A node at `allowlist` exposes only what its owner named. A node at `full` trusts the portal's admins with root on that machine. That is the owner's choice to make, and it is visible on the nodes page, in `--doctor` and in the audit log. Catalog documents still can't name any host option: only an admin's custom environment can. Ports open a path from the network straight into an app container, past the portal. That is the point of them, and the owner allows the range.
+- **Not now:** custom environments for non-admins (private variants limited to the portal-side fields) would need a per-user scope and a decision on who sees them.
