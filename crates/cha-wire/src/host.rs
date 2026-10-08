@@ -165,12 +165,34 @@ pub enum NetworkFs {
 }
 
 impl NetworkFs {
-    /// The `type` option of Docker's `local` driver.
     pub fn as_str(self) -> &'static str {
         match self {
             NetworkFs::Nfs => "nfs",
             NetworkFs::Nfs4 => "nfs4",
             NetworkFs::Cifs => "cifs",
+        }
+    }
+
+    /// The `type` and `o` options of Docker's `local` driver for a share
+    /// with these `options`. The driver hands them to the kernel's mount
+    /// call, which doesn't negotiate a version: `type=nfs4` and `nfsvers=4`
+    /// fail with "protocol not supported" against a 4.2 server (Unraid,
+    /// measured on iolinux). So NFSv4 is `type=nfs` with `vers=4.2`, unless
+    /// the options name a version themselves.
+    pub fn driver_options(self, options: &str) -> (&'static str, String) {
+        match self {
+            NetworkFs::Nfs4 => {
+                let versioned = options
+                    .split(',')
+                    .any(|o| o.starts_with("vers=") || o.starts_with("nfsvers="));
+                let o = match (versioned, options.is_empty()) {
+                    (true, _) => options.to_string(),
+                    (false, true) => "vers=4.2".to_string(),
+                    (false, false) => format!("{options},vers=4.2"),
+                };
+                ("nfs", o)
+            }
+            other => (other.as_str(), options.to_string()),
         }
     }
 }
@@ -559,6 +581,22 @@ mod tests {
             ..Default::default()
         };
         assert!(full.allows(&wider));
+    }
+
+    #[test]
+    fn nfs4_is_nfs_with_a_version() {
+        assert_eq!(
+            NetworkFs::Nfs4.driver_options("addr=10.0.0.5,ro"),
+            ("nfs", "addr=10.0.0.5,ro,vers=4.2".to_string())
+        );
+        assert_eq!(
+            NetworkFs::Nfs4.driver_options("addr=10.0.0.5,vers=4.1"),
+            ("nfs", "addr=10.0.0.5,vers=4.1".to_string())
+        );
+        assert_eq!(
+            NetworkFs::Cifs.driver_options("username=a"),
+            ("cifs", "username=a".to_string())
+        );
     }
 
     #[test]

@@ -1931,10 +1931,11 @@ impl DockerRuntime {
             } => {
                 // The share is mounted by the engine's `local` driver when
                 // the container starts, and removed with the environment.
+                let (fs, o) = fs_type.driver_options(options);
                 let mut driver = serde_json::Map::new();
-                driver.insert("type".into(), json!(fs_type.as_str()));
+                driver.insert("type".into(), json!(fs));
                 driver.insert("device".into(), json!(device));
-                driver.insert("o".into(), json!(options));
+                driver.insert("o".into(), json!(o));
                 Ok(json!({
                     "Type": "volume",
                     "Source": format!("{HOST_VOLUME_PREFIX}{id}-{n}"),
