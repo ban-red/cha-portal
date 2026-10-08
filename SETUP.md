@@ -11,7 +11,8 @@ Cha Portal is pre-release, and updates can break things. Read the warning in the
 - [Without HTTPS (a trusted LAN only)](#without-https-a-trusted-lan-only)
 - [First launch](#first-launch)
 - [Optional extras](#optional-extras)
-- [Updating, backups and removal](#updating-backups-and-removal)
+- [Upgrading to a new release](#upgrading-to-a-new-release)
+- [Backups and removal](#backups-and-removal)
 - [Troubleshooting](#troubleshooting)
 
 ## Quick start
@@ -101,19 +102,7 @@ Now go to [First launch](#first-launch).
 - **No NVIDIA GPU?** Delete the agent's two `devices:` lines in `deploy/quickstart/compose.yaml` before step 5, or the agent won't start.
 - **The portal also answers on your LAN**, as plain HTTP on port 7676. Docker's published ports bypass ufw and firewalld, so on a machine with a public address, or to keep it to this machine, add `CHA_BIND=127.0.0.1:7676` to `deploy/quickstart/.env`; `tailscale serve` still reaches it. To skip Tailscale on a trusted LAN, see [Without HTTPS](#without-https-a-trusted-lan-only).
 - **Other settings** from [`deploy/README.md`](deploy/README.md) go in `deploy/quickstart/.env` too.
-- **To update**, get the new release and run the script with its version, then pull and restart:
-
-  ```bash
-  git fetch --depth 1 origin tag v0.3.0 && git checkout v0.3.0
-  ```
-
-  ```bash
-  sudo deploy/quickstart/setup.sh --version 0.3.0
-  ```
-
-  ```bash
-  docker compose -f deploy/quickstart/compose.yaml pull && docker compose -f deploy/quickstart/compose.yaml up -d
-  ```
+- **To upgrade** to a later release, see [Upgrading to a new release](#upgrading-to-a-new-release).
 
 - **Another distribution?** Follow [Before you start](#before-you-start) and [One machine, from source](#one-machine-from-source) by hand.
 
@@ -313,31 +302,128 @@ All of these are in [`deploy/README.md`](deploy/README.md):
 - **Intel, AMD or CPU-only nodes, and choosing where a launch goes:** [Devices](deploy/README.md#devices).
 - **Controllers:** Xbox, DualSense and Steam Controller, set per app on the **Controllers** page: [`docs/controllers.md`](docs/controllers.md).
 
-## Updating, backups and removal
+## Upgrading to a new release
 
-**To update**, pull on every machine, then update the nodes before the portal. A newer agent keeps working with an older portal:
+Every release's images share its version, and the portal, the agent, the streamer and the environments change together, so a whole installation moves to one version at a time. Skipping versions is fine: the portal applies every database migration in between when it starts.
+
+**Before you upgrade, every time:**
+
+- **Read the [release notes](https://github.com/ban-red/cha-portal/releases)** of each version you're skipping over, for anything that needs doing by hand.
+- **Back up the portal's database.** Migrations only go forward, so the backup is the only way back to the old version. Do it while nobody is playing, since it stops the portal for a moment.
+- **Pick a quiet moment.** Open streams drop while the portal and agent restart. Running environments keep going on the old images until they are stopped and launched again.
+
+The commands below upgrade to `0.2.0`; use the version you're moving to.
+
+### The quick start
+
+Run these from the checkout, on the machine that runs it.
+
+1. **Back up the database:** stop the portal, copy its data directory out, and start it again.
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml stop portal
+   ```
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml cp portal:/var/lib/cha ./portal-backup
+   ```
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml start portal
+   ```
+
+2. **Put your own edits aside.** Settings belong in `deploy/quickstart/.env`, which git leaves alone. If you edited a tracked file, for example deleting the `devices:` lines on a machine without NVIDIA, `git status` lists it. Stash it so the checkout can move:
+
+   ```bash
+   git stash
+   ```
+
+3. **Get the release:**
+
+   ```bash
+   git fetch --depth 1 origin tag v0.2.0 && git checkout v0.2.0
+   ```
+
+   If you stashed in step 2, put your edits back. Git says if one clashes with the release's change to the same lines; then make the edit again by hand.
+
+   ```bash
+   git stash pop
+   ```
+
+4. **Run the release's setup script** with its version. It updates `CHA_VERSION` in `deploy/quickstart/.env`, installs any changed host files, and pulls the new images (`--no-pull` leaves them to download as apps launch):
+
+   ```bash
+   sudo deploy/quickstart/setup.sh --version 0.2.0
+   ```
+
+5. **Restart on the new images:**
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml pull
+   ```
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml up -d
+   ```
+
+6. **Check it:** **Admin → Nodes** shows the node's agent at the new version (`v0.2.0`). Run the doctor too:
+
+   ```bash
+   docker compose -f deploy/quickstart/compose.yaml run --rm agent --doctor
+   ```
+
+7. **Free the space** the old version's images take, once the new one works. This removes every published Cha Portal image tagged with the old version (`0.1.0` here); one still in use by a running environment is kept:
+
+   ```bash
+   docker images --format '{{.Repository}}:{{.Tag}}' 'ghcr.io/ban-red/*' | grep ':0\.1\.0$' | xargs -r docker rmi
+   ```
+
+**Going back:** stop everything (`docker compose -f deploy/quickstart/compose.yaml down`), check out the old tag, run its `setup.sh --version` with the old version, and restore the database before starting. The `cp` in step 1 works the other way too (`docker compose ... cp ./portal-backup/. portal:/var/lib/cha`, with the portal stopped).
+
+### Separate portal and nodes, built from source
+
+Get the release on every machine, then upgrade the nodes before the portal: a newer agent keeps working with an older portal.
 
 ```bash
-git pull
+git fetch --tags && git checkout v0.2.0
 ```
 
-On each node, rebuild the images (steps 5 and 6) and restart the agent:
+On each node, rebuild the images ([steps 5 and 6](#one-machine-from-source)), install any changed host files, and restart the agent:
 
 ```bash
-CHA_PORTAL_URL=… docker compose -f deploy/node/compose.yaml up -d --build
+sudo deploy/node/host/install.sh
 ```
 
-Then on the portal's machine:
+```bash
+docker compose -f deploy/node/compose.yaml up -d --build
+```
+
+Then on the portal's machine, back up its database the same way as the quick start's step 1 (with `-f deploy/portal/compose.yaml`; the service is `portal` there too), and restart it on the new build:
 
 ```bash
 docker compose -f deploy/portal/compose.yaml up -d --build
 ```
 
-The portal migrates its database on start. Running environments keep the old images until they are stopped and launched again.
+Instead of building, a node can stay on the release's published images. Set `CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE` and `CHA_IMAGE_TAG` in `deploy/node/.env` ([Published images](deploy/README.md#published-images)), and upgrading is then changing the version in all three, then `docker compose -f deploy/node/compose.yaml pull` and `up -d`. Leave `--build` off, or compose builds from the checkout instead. The portal works the same way with `CHA_PORTAL_IMAGE`. Check out the release's tag either way, so the compose files and host files match the images.
+
+### A Proxmox container
+
+The same as the quick start, inside the container (`pct enter <id>`), from `/opt/cha-portal`: [`deploy/proxmox/README.md`](deploy/proxmox/README.md) has the commands.
+
+### From 0.1 to 0.2
+
+Nothing needs doing by hand beyond the steps above. What changes:
+
+- **The database** gains Moonlight hosts and devices, signed-in Cha Player devices and share links (migrations 0011–0015).
+- **Images download as they're needed.** A node that lacks an app's image pulls the published one at launch, with a progress bar in the portal, and placement prefers a node that already has it. `setup.sh` still pulls them all up front unless you pass `--no-pull`.
+- **The agent's compose service** gains `pid: host` (per-app VRAM) and the Moonlight settings (`CHA_MOONLIGHT`, `CHA_GAMESTREAM`, ...). All of them have defaults, so `.env` needs nothing new.
+- **Intel, AMD and CPU-only nodes** now pass `--doctor`: the NVIDIA checks are informational on a machine without NVIDIA.
+
+## Backups and removal
 
 **Back up:**
 
-- **The portal:** its SQLite database in the `cha-portal_data` volume (`/var/lib/cha` in the container). It holds accounts, nodes, settings and the audit log. Stop the portal, or use `sqlite3 .backup`, for a consistent copy.
+- **The portal:** its SQLite database in the `cha-portal_data` volume, or `cha_portal-data` for the quick start (`/var/lib/cha` in the container). It holds accounts, nodes, settings and the audit log. Stop the portal, or use `sqlite3 .backup`, for a consistent copy.
 - **Each node:** `<CHA_DATA_ROOT>/users` holds users' homes. Back it up with whatever you use (restic, rsync, a disk snapshot). The node's identity is in the `cha-node_state` volume; without it, the node has to enroll again.
 
 **To remove** a node, stop the agent (`docker compose -f deploy/node/compose.yaml down`) and delete the node under **Admin → Nodes**. `down -v` also deletes its identity. The host files stay until you remove them yourself; [`deploy/node/host/README.md`](deploy/node/host/README.md) lists them.

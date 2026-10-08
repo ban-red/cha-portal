@@ -67,7 +67,7 @@ For a node alone, the directory is `/opt/cha-portal/deploy/node`. Run compose fr
 - **No NVIDIA.** The script never passes an NVIDIA GPU to a container: the container's driver would have to match the host's exactly, and CDI expects to own it. If the host has one, the script says so; give it to a VM.
 - **GPU sharing.** An Intel or AMD GPU passed into a container is still the host's. Other containers, Plex for example, can use it at the same time, and they compete for its encoder.
 - **Gamepads haven't been tried in a container yet.** The devices they need are passed in and allowed, but no pad has been played there yet.
-- **Updating:** in the container, `git fetch --depth 1 origin tag v0.3.0 && git checkout v0.3.0`, then `setup.sh --version 0.3.0`, then `docker compose pull && docker compose up -d` from the compose directory. For a node alone, also change the version in `deploy/node/.env` (`CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE`, `CHA_IMAGE_TAG`).
+- **Updating:** back up the portal's database first ([Upgrading](../../SETUP.md#upgrading-to-a-new-release)). Then in the container, `git fetch --depth 1 origin tag v0.3.0 && git checkout v0.3.0`, then `setup.sh --version 0.3.0`, then `docker compose pull && docker compose up -d` from the compose directory. For a node alone, also change the version in `deploy/node/.env` (`CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE`, `CHA_IMAGE_TAG`).
 - **Removing:** `pct stop <id> && pct destroy <id>`. On the host, `/etc/modules-load.d/cha.conf` and the udev rule stay until you delete them.
 
 ## A VM with the GPU passed through

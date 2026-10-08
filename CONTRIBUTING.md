@@ -93,8 +93,9 @@ A release rebuilds only the images whose inputs changed. [`scripts/image-inputs.
 
 1. **Check `main` is green.** The `check` workflow passed on the commit you'll tag, and it ran on the node you test with.
 2. **Try the images first** (optional, worth it for a large change): **Actions → publish → Run workflow** on `main` builds and pushes `:sha-<commit>` without a release. A node runs those with `CHA_VERSION=sha-<commit>`.
-3. **Update the docs that name a version or the release state:** the examples in `SETUP.md` (`v0.1.0`, `--version 0.1.0`).
-4. **Tag and push:**
+3. **Set the version** in every crate's `Cargo.toml` (not `cha-workspace-hack`, which stays at 0.1.0) and in `web/apps/portal/package.json`, then build once so `Cargo.lock` follows. The agent fills `{version}` in the catalog's image names with its own crate version, so an agent left at the old version pulls the old images.
+4. **Update the docs that name a version or the release state:** the examples in `SETUP.md` (`v0.2.0`, `--version 0.2.0`), [`deploy/proxmox/README.md`](deploy/proxmox/README.md) and the upgrade notes in `SETUP.md` (*Upgrading to a new release*), with a short *From x to y* list.
+5. **Tag and push:**
 
    ```bash
    git tag -a v0.2.0 -m "v0.2.0"
@@ -104,19 +105,19 @@ A release rebuilds only the images whose inputs changed. [`scripts/image-inputs.
    git push origin v0.2.0
    ```
 
-5. **Watch the build** (about 15 minutes; Steam is the longest):
+6. **Watch the build** (about 15 minutes; Steam is the longest):
 
    ```bash
    gh run watch
    ```
 
-6. **Publish the release notes** from the commits since the last tag:
+7. **Publish the release notes** from the commits since the last tag:
 
    ```bash
    gh release create v0.2.0 --verify-tag --generate-notes
    ```
 
-7. **Check an image** is pullable without signing in and carries its provenance:
+8. **Check an image** is pullable without signing in and carries its provenance:
 
    ```bash
    gh attestation verify oci://ghcr.io/ban-red/cha-streamer:0.2.0 --owner ban-red
