@@ -214,6 +214,7 @@ watch(
             <span v-if="o.reason" class="text-xs" :class="o.allowed ? 'text-warn' : 'text-ink-3'">
               {{ o.allowed ? "" : "Not available: " }}{{ o.reason }}
             </span>
+            <span v-if="o.note" class="text-xs text-ink-3">{{ o.note }}</span>
           </button>
         </li>
       </ul>

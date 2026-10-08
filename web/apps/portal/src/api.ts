@@ -148,6 +148,8 @@ export interface PlacementOption extends PlacementChoice {
   allowed: boolean;
   /** Why it isn't allowed, or what to know before choosing it anyway. */
   reason?: string;
+  /** Worth knowing, not a problem (e.g. "downloads the image first"). */
+  note?: string | null;
   score: number;
 }
 

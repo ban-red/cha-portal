@@ -206,7 +206,7 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
             let running = node.running.get(&device.id).copied().unwrap_or(0);
             let mut allowed = true;
             let mut reason = None;
-            let mut reason_note = None;
+            let mut notes: Vec<&str> = Vec::new();
             if device.kind == DeviceKind::Cpu && needs.gpu {
                 allowed = false;
                 reason = Some("it needs a GPU".to_string());
@@ -223,8 +223,6 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                     "its agent needs an update to keep app data (it reports its data root once it can)"
                         .to_string(),
                 );
-            } else if node.manual {
-                reason = Some("manual placement".to_string());
             } else if let Some(free) = gpu
                 .and_then(|g| Some(g.vram_total?.saturating_sub(g.vram_used?)))
                 .filter(|free| *free < LOW_VRAM_BYTES)
@@ -233,6 +231,9 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                     "only {:.1} GB of VRAM free",
                     free as f64 / f64::from(1u32 << 30)
                 ));
+            }
+            if node.manual && allowed {
+                notes.push("picked by hand only");
             }
             let has_image = !needs.images.is_empty() && node.has_image(&needs.images);
             // Only worth a word when it is the one thing to know, and only
@@ -244,7 +245,7 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                 && !node.images.is_empty()
                 && !has_image
             {
-                reason_note = Some("downloads the image first".to_string());
+                notes.push("downloads the image first");
             }
             options.push(PlacementOption {
                 node: node.id.clone(),
@@ -254,7 +255,7 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                 label: label(device),
                 allowed,
                 reason,
-                note: reason_note,
+                note: (!notes.is_empty()).then(|| notes.join("; ")),
                 score: score(device.kind, usage.map(|u| u.cpu), gpu, running)
                     + if has_image { HAS_IMAGE } else { 0 },
                 manual: node.manual,
@@ -676,7 +677,8 @@ mod tests {
         m.manual = true;
         let o = options(&PLAIN, &[m]);
         assert!(o[0].allowed);
-        assert_eq!(o[0].reason.as_deref(), Some("manual placement"));
+        assert_eq!(o[0].reason, None);
+        assert_eq!(o[0].note.as_deref(), Some("picked by hand only"));
         assert_eq!(
             placements(
                 &PLAIN,
@@ -698,6 +700,15 @@ mod tests {
         let p = placements(&wants(&["cha/env-chrome:dev"]), &[m, cpu]);
         assert_eq!(p.auto.unwrap().node, "id-c");
         assert!(p.options.iter().any(|o| o.node == "id-m" && o.allowed));
+        // Both notes apply to a manual node that lacks the image.
+        let mut m = node("m", vec![rtx()]);
+        m.manual = true;
+        m.images = vec!["other:1".into()];
+        let o = options(&wants(&["cha/env-chrome:dev"]), &[m]);
+        assert_eq!(
+            o[0].note.as_deref(),
+            Some("picked by hand only; downloads the image first")
+        );
     }
 
     #[test]
