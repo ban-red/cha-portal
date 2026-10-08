@@ -1,6 +1,6 @@
 //! libva, loaded at run time: the functions we call, the constants and the
 //! `#[repr(C)]` structs of `va.h`, `va_vpp.h`, `va_drmcommon.h` and
-//! `va_enc_h264.h` that we fill in, and [`Display`], one VA display on a render
+//! `va_enc_h264.h` and `va_enc_hevc.h` that we fill in, and [`Display`], one VA display on a render
 //! node.
 //!
 //! Written from the VA-API headers' declarations as documented (the
@@ -41,6 +41,7 @@ pub const PROFILE_NONE: c_int = -1;
 pub const PROFILE_H264_MAIN: c_int = 6;
 pub const PROFILE_H264_HIGH: c_int = 7;
 pub const PROFILE_H264_CONSTRAINED_BASELINE: c_int = 13;
+pub const PROFILE_HEVC_MAIN: c_int = 17;
 
 // VAEntrypoint.
 pub const ENTRYPOINT_ENC_SLICE: c_int = 6;
@@ -52,6 +53,9 @@ pub const ATTRIB_RT_FORMAT: c_uint = sys::VAConfigAttribType_VAConfigAttribRTFor
 pub const ATTRIB_RATE_CONTROL: c_uint = sys::VAConfigAttribType_VAConfigAttribRateControl;
 pub const ATTRIB_ENC_PACKED_HEADERS: c_uint =
     sys::VAConfigAttribType_VAConfigAttribEncPackedHeaders;
+pub const ATTRIB_ENC_HEVC_FEATURES: c_uint = sys::VAConfigAttribType_VAConfigAttribEncHEVCFeatures;
+pub const ATTRIB_ENC_HEVC_BLOCK_SIZES: c_uint =
+    sys::VAConfigAttribType_VAConfigAttribEncHEVCBlockSizes;
 /// What `vaGetConfigAttributes` puts in an attribute the driver lacks.
 pub const ATTRIB_NOT_SUPPORTED: c_uint = sys::VA_ATTRIB_NOT_SUPPORTED;
 
@@ -112,6 +116,10 @@ pub const COLOR_STANDARD_SRGB: c_uint = sys::_VAProcColorStandardType_VAProcColo
 // VAPictureH264 flags.
 pub const PICTURE_H264_INVALID: u32 = sys::VA_PICTURE_H264_INVALID;
 pub const PICTURE_H264_SHORT_TERM_REFERENCE: u32 = sys::VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+
+// VAPictureHEVC flags.
+pub const PICTURE_HEVC_INVALID: u32 = sys::VA_PICTURE_HEVC_INVALID;
+pub const PICTURE_HEVC_RPS_ST_CURR_BEFORE: u32 = sys::VA_PICTURE_HEVC_RPS_ST_CURR_BEFORE;
 
 type GetDisplayDrm = unsafe extern "C" fn(c_int) -> *mut c_void;
 type Initialize = unsafe extern "C" fn(*mut c_void, *mut c_int, *mut c_int) -> c_int;

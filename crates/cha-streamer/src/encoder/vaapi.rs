@@ -3,9 +3,9 @@
 //! - [`probe`]: which codecs the driver can *encode* (an `EncSlice` or
 //!   `EncSliceLP` entrypoint on a profile of that codec), for the node's
 //!   inventory.
-//! - [`open`]: the encoder, H.264 only so far ([`BUILT`]); HEVC and AV1 take
-//!   other parameter buffers (`VAEncSequenceParameterBufferHEVC`, …`AV1`) and
-//!   headers, and are not written.
+//! - [`open`]: the encoder, H.264 and HEVC Main 8-bit so far ([`BUILT`]); AV1
+//!   takes other parameter buffers (`VAEncSequenceParameterBufferAV1`) and
+//!   headers, and is not written.
 //!
 //! The encoder (`session.rs`) imports the compositor's dmabuf as a VA surface
 //! with no copy, converts it to NV12 with the driver's video processor, and
@@ -14,14 +14,16 @@
 //! the buffers' format and modifier, so it only allocates what the driver can
 //! import. The module tree:
 //! - `ffi.rs`: libva's functions and structs, and the display;
-//! - `h264.rs`: what the H.264 parameter buffers say (pure, tested anywhere);
+//! - `h264.rs`, `hevc.rs`: what the H.264 and HEVC parameter buffers say (pure,
+//!   tested anywhere);
 //! - `session.rs`: the encoder, and the self-test.
 //!
-//! Written from the VA-API headers and documentation, and the H.264
-//! specification; no FFmpeg, GStreamer or other project's source.
+//! Written from the VA-API headers and documentation, and the H.264 and H.265
+//! specifications; no FFmpeg, GStreamer or other project's source.
 
 mod ffi;
 mod h264;
+mod hevc;
 mod session;
 #[allow(
     dead_code,
@@ -42,18 +44,17 @@ use cha_nvenc::Codec;
 
 use self::ffi::{
     ENTRYPOINT_ENC_SLICE, ENTRYPOINT_ENC_SLICE_LP, PROFILE_H264_CONSTRAINED_BASELINE,
-    PROFILE_H264_HIGH, PROFILE_H264_MAIN,
+    PROFILE_H264_HIGH, PROFILE_H264_MAIN, PROFILE_HEVC_MAIN,
 };
 use super::{Params, VideoEncoder};
 
-// va.h's VAProfile values for the codecs we have no encoder for yet.
-const PROFILE_HEVC_MAIN: i32 = 17;
+// va.h's VAProfile value for the codec we have no encoder for yet.
 const PROFILE_AV1_PROFILE0: i32 = 32;
 /// Whether [`open`] makes an encoder.
 pub const ENCODER_BUILT: bool = true;
 /// The codecs the encoder makes: what the driver offers beyond them stays
 /// unused (and unoffered) until they are written.
-pub const BUILT: [Codec; 1] = [Codec::H264];
+pub const BUILT: [Codec; 2] = [Codec::H264, Codec::Hevc];
 
 /// What a device's driver offers.
 #[derive(Debug, PartialEq, Eq)]
@@ -146,27 +147,25 @@ mod tests {
     fn only_the_codecs_that_are_written_are_offered() {
         assert_eq!(
             built(vec![Codec::H264, Codec::Hevc, Codec::Av1]),
-            [Codec::H264]
+            [Codec::H264, Codec::Hevc]
         );
         assert!(built(vec![Codec::Av1]).is_empty());
     }
 
     #[test]
-    fn hevc_and_av1_are_refused_before_the_device_is_touched() {
-        for codec in [Codec::Hevc, Codec::Av1] {
-            let err = open(
-                Path::new("/dev/dri/none"),
-                Params {
-                    codec,
-                    width: 1280,
-                    height: 720,
-                    fps: 60,
-                    bitrate_bps: 1,
-                },
-            )
-            .err()
-            .unwrap();
-            assert!(err.to_string().contains("H.264 only"), "{err}");
-        }
+    fn av1_is_refused_before_the_device_is_touched() {
+        let err = open(
+            Path::new("/dev/dri/none"),
+            Params {
+                codec: Codec::Av1,
+                width: 1280,
+                height: 720,
+                fps: 60,
+                bitrate_bps: 1,
+            },
+        )
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("H.264 and HEVC only"), "{err}");
     }
 }

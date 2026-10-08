@@ -8,8 +8,8 @@
 //! - [`svtav1`]: SVT-AV1 loaded at run time, from the same frames (AV1), the
 //!   CPU device's other codec;
 //! - [`vaapi`]: libva loaded at run time (Intel, AMD): the output buffer
-//!   imported as a VA surface with no copy, H.264 (the packed headers are
-//!   ours: [`bitstream`]).
+//!   imported as a VA surface with no copy, H.264 and HEVC (the packed
+//!   headers are ours: [`bitstream`]).
 //!
 //! An encoder owns its codec's state for one stream. The media code asks it
 //! for a frame at a time, keyframes on request, and reconfigures it in place

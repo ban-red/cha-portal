@@ -259,7 +259,7 @@ pub use super::sys::VAPictureH264 as VaPicture;
 ///
 /// # Safety
 /// Every bit pattern of zeros must be a valid `T`.
-unsafe fn zeroed<T>() -> Box<T> {
+pub(super) unsafe fn zeroed<T>() -> Box<T> {
     // SAFETY: the caller vouches for `T`.
     Box::new(unsafe { std::mem::zeroed() })
 }

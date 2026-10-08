@@ -1,13 +1,14 @@
-//! The VA-API H.264 encoder: one stream on one render node.
+//! The VA-API encoder, H.264 or HEVC: one stream on one render node.
 //!
 //! Per frame, all on the GPU:
 //! 1. the compositor's dmabuf is imported as an RGB VA surface (no copy;
 //!    cached per output buffer);
 //! 2. the video processor converts it to NV12 (BT.709, limited range);
 //! 3. the encoder codes that as one slice, an IDR or a P picture referring
-//!    to the picture before it, in CBR with a one-frame HRD buffer;
-//! 4. the coded buffer is read back (Annex-B), and an IDR gets our SPS and
-//!    PPS (`bitstream::h264::fix_headers`).
+//!    to the picture before it, in CBR with a multi-frame HRD buffer;
+//! 4. the coded buffer is read back (Annex-B), and an IDR gets our headers
+//!    (SPS and PPS, `bitstream::h264::fix_headers`; VPS, SPS and PPS,
+//!    `bitstream::h265::fix_headers`).
 //!
 //! Settings the node can change without restarting the stream (bitrate, frame
 //! rate) go in as rate control buffers on the next frame, with the `reset`
@@ -17,7 +18,11 @@
 //! picks `EncSlice` or `EncSliceLP`; `CHA_VAAPI_PACKED_HEADERS=off|slice`
 //! turns the packed SPS/PPS off (the driver writes its own, which we then
 //! rewrite) or adds the packed slice header; `CHA_VAAPI_PACKED_EMULATION=driver`
-//! hands the packed headers over without emulation prevention bytes.
+//! hands the packed headers over without emulation prevention bytes. HEVC takes
+//! one more: `CHA_VAAPI_PACKED_HEADERS=headers` packs the VPS, SPS and PPS and
+//! leaves the slice header to the driver (the default packs it too); HEVC also
+//! reads `CHA_VAAPI_HEVC_TOOLS=sao,amp,sdh,tskip,nocuqp,nottmvp,nossm`, coding
+//! tools to turn on (or, `no…`, off) against the defaults.
 
 use std::collections::HashMap;
 use std::ffi::c_int;
@@ -32,10 +37,10 @@ use tracing::{info, warn};
 
 use super::ffi::{self, Display, Id, Rectangle};
 use super::h264::{
-    self, Gop, Layout, Picture, Profile, Rate, misc_frame_rate, misc_hrd, misc_rate_control,
-    packed_header_params, picture_params, sequence_params, slice_params,
+    self, Profile, Rate, misc_frame_rate, misc_hrd, misc_rate_control, packed_header_params,
 };
-use crate::encoder::bitstream::h264 as bits;
+use super::hevc::{self, Blocks, Tools};
+use crate::encoder::bitstream::{h264 as bits, h265 as bits265};
 use crate::encoder::{Params, VideoEncoder};
 use crate::media::Frame;
 
@@ -46,6 +51,12 @@ use crate::media::Frame;
 /// 114 KB IDR (under 3 frame times to send), 8 frames 50-65 dB but 260 KB
 /// IDRs. IDRs are rare (on request), P frames small.
 const DEFAULT_HRD_FRAMES: u32 = 4;
+/// HEVC's default: iHD's HEVC rate control gives an IDR a smaller share of
+/// the same buffer than its H.264 one (1280x720 at 20 Mbit/s: 52 KB at 34 dB
+/// with 4 frames, against 114 KB at 39 dB for H.264). 10 frames gives 200 KB
+/// (the IDR 1-2 dB under the P pictures, the average on par with H.264's).
+/// Measured on a UHD 630 (iHD 25.2.3).
+const DEFAULT_HRD_FRAMES_HEVC: u32 = 10;
 
 /// Settings for trying a driver, from the environment (read when an encoder
 /// starts, so they apply to a self-test run and to a streamer alike; they
@@ -53,7 +64,7 @@ const DEFAULT_HRD_FRAMES: u32 = 4;
 #[derive(Clone, Debug, Default)]
 struct Tuning {
     /// `CHA_VAAPI_HRD_FRAMES=n`: the HRD buffer holds n frames
-    /// ([`DEFAULT_HRD_FRAMES`] unless set).
+    /// ([`DEFAULT_HRD_FRAMES`], or [`DEFAULT_HRD_FRAMES_HEVC`], unless set).
     hrd_frames: u32,
     /// `CHA_VAAPI_CQP=qp`: constant quantiser instead of CBR, as a diagnostic:
     /// if the picture is right at a low QP, the pipeline (conversion,
@@ -65,11 +76,15 @@ struct Tuning {
 }
 
 impl Tuning {
-    fn from_env() -> Self {
+    fn from_env(codec: Codec) -> Self {
         let number = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
         Self {
             hrd_frames: number("CHA_VAAPI_HRD_FRAMES")
-                .unwrap_or(DEFAULT_HRD_FRAMES)
+                .unwrap_or(if codec == Codec::Hevc {
+                    DEFAULT_HRD_FRAMES_HEVC
+                } else {
+                    DEFAULT_HRD_FRAMES
+                })
                 .clamp(1, 240),
             cqp: number("CHA_VAAPI_CQP").map(|qp| qp.clamp(1, 51)),
             dump_nv12: std::env::var_os("CHA_VAAPI_DUMP_NV12").map(Into::into),
@@ -92,7 +107,7 @@ enum Packed {
     None,
     /// SPS and PPS are ours.
     Headers,
-    /// And the slice header too (an experiment).
+    /// And the slice header too (an experiment for H.264; HEVC's default).
     HeadersAndSlice,
 }
 
@@ -122,9 +137,35 @@ impl Setup {
     }
 }
 
-/// The best profile and entrypoint with CBR: High before Main before
-/// Constrained Baseline, the low-power entrypoint before the other.
-fn choose(display: &Display, rate_mode: u32) -> Result<(Profile, c_int, u32)> {
+/// A function that takes a NAL unit's emulation prevention bytes out.
+type Unescape = fn(&[u8]) -> Vec<u8>;
+
+/// What was picked for the codec, and what a layout is made from.
+#[derive(Clone, Copy, Debug)]
+enum Picked {
+    H264(Profile),
+    /// `VAConfigAttribEncHEVCFeatures` and `…BlockSizes`, if the driver
+    /// has them.
+    Hevc {
+        features: Option<u32>,
+        block_sizes: Option<u32>,
+    },
+}
+
+/// The profile and entrypoint chosen.
+struct Choice {
+    picked: Picked,
+    va_profile: c_int,
+    name: &'static str,
+    entrypoint: c_int,
+    /// `VAConfigAttribEncPackedHeaders`.
+    packed: u32,
+}
+
+/// The best profile and entrypoint with CBR: for H.264 High before Main
+/// before Constrained Baseline, for HEVC Main; the low-power entrypoint
+/// before the other.
+fn choose(display: &Display, codec: Codec, rate_mode: u32) -> Result<Choice> {
     let forced = std::env::var("CHA_VAAPI_ENTRYPOINT").ok();
     let entrypoints: &[c_int] = match forced.as_deref() {
         Some("slice") => &[ffi::ENTRYPOINT_ENC_SLICE],
@@ -135,17 +176,30 @@ fn choose(display: &Display, rate_mode: u32) -> Result<(Profile, c_int, u32)> {
         }
         None => &[ffi::ENTRYPOINT_ENC_SLICE_LP, ffi::ENTRYPOINT_ENC_SLICE],
     };
+    let candidates: Vec<(c_int, &'static str, Option<Profile>)> = match codec {
+        Codec::H264 => Profile::PREFERENCE
+            .iter()
+            .map(|p| (p.va, p.name, Some(*p)))
+            .collect(),
+        Codec::Hevc => vec![(ffi::PROFILE_HEVC_MAIN, "Main", None)],
+        other => bail!("VA-API encodes H.264 and HEVC, not {}", other.name()),
+    };
     let mut seen = Vec::new();
-    for profile in Profile::PREFERENCE {
-        let have = display.entrypoints(profile.va);
+    for (va_profile, name, profile) in candidates {
+        let have = display.entrypoints(va_profile);
         for &entrypoint in entrypoints {
             if !have.contains(&entrypoint) {
                 continue;
             }
             let values = display.attributes(
-                profile.va,
+                va_profile,
                 entrypoint,
-                &[ffi::ATTRIB_RATE_CONTROL, ffi::ATTRIB_ENC_PACKED_HEADERS],
+                &[
+                    ffi::ATTRIB_RATE_CONTROL,
+                    ffi::ATTRIB_ENC_PACKED_HEADERS,
+                    ffi::ATTRIB_ENC_HEVC_FEATURES,
+                    ffi::ATTRIB_ENC_HEVC_BLOCK_SIZES,
+                ],
             );
             let (rate_control, packed) = (values[0], values[1]);
             if rate_control != ffi::ATTRIB_NOT_SUPPORTED && rate_control & rate_mode != 0 {
@@ -154,41 +208,205 @@ fn choose(display: &Display, rate_mode: u32) -> Result<(Profile, c_int, u32)> {
                 } else {
                     packed
                 };
-                return Ok((profile, entrypoint, packed));
+                let said = |value: u32| (value != ffi::ATTRIB_NOT_SUPPORTED).then_some(value);
+                let picked = match profile {
+                    Some(profile) => Picked::H264(profile),
+                    None => Picked::Hevc {
+                        features: said(values[2]),
+                        block_sizes: said(values[3]),
+                    },
+                };
+                return Ok(Choice {
+                    picked,
+                    va_profile,
+                    name,
+                    entrypoint,
+                    packed,
+                });
             }
             seen.push(format!(
-                "{} entrypoint {entrypoint}: rate control {rate_control:#x}",
-                profile.name
+                "{name} entrypoint {entrypoint}: rate control {rate_control:#x}"
             ));
         }
     }
     bail!(
-        "the driver has no H.264 encode entrypoint with CBR ({})",
+        "the driver has no {} encode entrypoint with CBR ({})",
+        codec.name(),
         if seen.is_empty() {
-            "none of High, Main or Constrained Baseline encodes".to_string()
+            match codec {
+                Codec::Hevc => "Main doesn't encode".to_string(),
+                _ => "none of High, Main or Constrained Baseline encodes".to_string(),
+            }
         } else {
             seen.join("; ")
         }
     )
 }
 
-/// The stream's layout; with constant quantiser the PPS carries that QP.
-fn make_layout(profile: Profile, params: &Params, tuning: &Tuning) -> Result<Layout> {
-    let mut layout = Layout::new(profile, params)?;
-    if let Some(qp) = tuning.cqp {
-        layout.pps.pic_init_qp = qp as i32;
-    }
-    Ok(layout)
+/// The picture numbering of a stream, in its codec's terms.
+#[derive(Clone, Copy, Debug)]
+enum Pic {
+    H264(h264::Picture),
+    Hevc(hevc::Picture),
 }
 
-/// Which headers to pack, from what the driver says it takes.
-fn packed_mode(offered: u32, setting: Option<&str>) -> Packed {
+impl Pic {
+    fn idr(&self) -> bool {
+        match self {
+            Pic::H264(p) => p.idr,
+            Pic::Hevc(p) => p.idr,
+        }
+    }
+}
+
+/// A stream's layout and picture numbering: what differs between the codecs.
+enum Stream {
+    H264 {
+        layout: h264::Layout,
+        gop: h264::Gop,
+    },
+    Hevc {
+        layout: hevc::Layout,
+        gop: hevc::Gop,
+    },
+}
+
+impl Stream {
+    /// The stream's layout; with constant quantiser the PPS carries that QP.
+    fn new(picked: &Picked, params: &Params, tuning: &Tuning) -> Result<Self> {
+        Ok(match *picked {
+            Picked::H264(profile) => {
+                let mut layout = h264::Layout::new(profile, params)?;
+                if let Some(qp) = tuning.cqp {
+                    layout.pps.pic_init_qp = qp as i32;
+                }
+                Stream::H264 {
+                    layout,
+                    gop: h264::Gop::default(),
+                }
+            }
+            Picked::Hevc {
+                features,
+                block_sizes,
+            } => {
+                let mut tools = Tools::from_attribute(features);
+                if let Ok(list) = std::env::var("CHA_VAAPI_HEVC_TOOLS") {
+                    for name in list.split(',') {
+                        match name {
+                            "nocuqp" => tools.cu_qp_delta = false,
+                            "sao" => tools.sao = true,
+                            "amp" => tools.amp = true,
+                            "sdh" => tools.sign_data_hiding = true,
+                            "tskip" => tools.transform_skip = true,
+                            "nottmvp" => tools.temporal_mvp = false,
+                            "nossm" => tools.strong_intra_smoothing = false,
+                            _ => {}
+                        }
+                    }
+                }
+                let mut layout =
+                    hevc::Layout::new(Blocks::from_attribute(block_sizes), tools, params)?;
+                if let Some(qp) = tuning.cqp {
+                    layout.pps.init_qp = qp as i32;
+                }
+                Stream::Hevc {
+                    layout,
+                    gop: hevc::Gop::default(),
+                }
+            }
+        })
+    }
+
+    /// The same stream at another size, starting over.
+    fn resized(&self, params: &Params, tuning: &Tuning) -> Result<Self> {
+        match self {
+            Stream::H264 { layout, .. } => Self::new(&Picked::H264(layout.profile), params, tuning),
+            Stream::Hevc { layout, .. } => {
+                // The block sizes and tools were fitted to the driver already.
+                let mut new = hevc::Layout::new(layout.blocks, layout.tools, params)?;
+                new.pps = layout.pps.clone();
+                Ok(Stream::Hevc {
+                    layout: new,
+                    gop: hevc::Gop::default(),
+                })
+            }
+        }
+    }
+
+    fn coded_size(&self) -> (u32, u32) {
+        match self {
+            Stream::H264 { layout, .. } => layout.coded_size(),
+            Stream::Hevc { layout, .. } => layout.coded_size(),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Stream::H264 { layout, .. } => layout.profile.name,
+            Stream::Hevc { .. } => "Main",
+        }
+    }
+
+    fn level(&self) -> u32 {
+        match self {
+            Stream::H264 { layout, .. } => u32::from(layout.sps.level_idc),
+            Stream::Hevc { layout, .. } => u32::from(layout.sps.level_idc),
+        }
+    }
+
+    fn with_fps(&mut self, params: &Params) {
+        match self {
+            Stream::H264 { layout, .. } => layout.with_fps(params),
+            Stream::Hevc { layout, .. } => layout.with_fps(params),
+        }
+    }
+
+    fn next(&mut self, idr: bool) -> Pic {
+        match self {
+            Stream::H264 { gop, .. } => Pic::H264(gop.next(idr)),
+            Stream::Hevc { gop, .. } => Pic::Hevc(gop.next(idr)),
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Stream::H264 { gop, .. } => gop.reset(),
+            Stream::Hevc { gop, .. } => gop.reset(),
+        }
+    }
+
+    fn has_idr(&self, coded: &[u8]) -> bool {
+        match self {
+            Stream::H264 { .. } => bits::has_idr(coded),
+            Stream::Hevc { .. } => bits265::has_idr(coded),
+        }
+    }
+
+    /// Puts our headers in front of an IDR. Returns whether the driver's SPS
+    /// was left as it was (H.264: it uses what we don't parse).
+    fn fix_headers(&self, coded: &[u8], out: &mut Vec<u8>) -> bool {
+        match self {
+            Stream::H264 { layout, .. } => {
+                bits::fix_headers(coded, &layout.sps, &layout.pps, out).sps_kept > 0
+            }
+            Stream::Hevc { layout, .. } => {
+                bits265::fix_headers(coded, &layout.sps, &layout.pps, out);
+                false
+            }
+        }
+    }
+}
+
+/// Which headers to pack, from what the driver offers. HEVC packs the slice
+/// header too unless told not to: its POC bits depend on our SPS.
+fn packed_mode(offered: u32, setting: Option<&str>, codec: Codec) -> Packed {
     let both = ffi::PACKED_HEADER_SEQUENCE | ffi::PACKED_HEADER_PICTURE;
+    let slice = offered & both == both && offered & ffi::PACKED_HEADER_SLICE != 0;
     match setting {
         Some("off") => Packed::None,
-        Some("slice") if offered & both == both && offered & ffi::PACKED_HEADER_SLICE != 0 => {
-            Packed::HeadersAndSlice
-        }
+        Some("slice") if slice => Packed::HeadersAndSlice,
+        Some("headers") if offered & both == both => Packed::Headers,
+        None if codec == Codec::Hevc && slice => Packed::HeadersAndSlice,
         _ if offered & both == both => Packed::Headers,
         _ => Packed::None,
     }
@@ -206,7 +424,7 @@ struct Resources {
 }
 
 impl Resources {
-    fn create(display: &Display, setup: &Setup, layout: &Layout) -> Result<Self> {
+    fn create(display: &Display, setup: &Setup, coded: (u32, u32)) -> Result<Self> {
         let mut res = Self {
             input: ffi::INVALID_ID,
             recon: [ffi::INVALID_ID; 2],
@@ -214,7 +432,7 @@ impl Resources {
             enc_context: ffi::INVALID_ID,
             vpp_context: ffi::INVALID_ID,
         };
-        match res.fill(display, setup, layout) {
+        match res.fill(display, setup, coded) {
             Ok(()) => Ok(res),
             Err(err) => {
                 res.release(display);
@@ -223,8 +441,8 @@ impl Resources {
         }
     }
 
-    fn fill(&mut self, display: &Display, setup: &Setup, layout: &Layout) -> Result<()> {
-        let (width, height) = layout.coded_size();
+    fn fill(&mut self, display: &Display, setup: &Setup, coded: (u32, u32)) -> Result<()> {
+        let (width, height) = coded;
         let surfaces = display.create_nv12_surfaces(width, height, 3)?;
         self.input = surfaces[0];
         self.recon = [surfaces[1], surfaces[2]];
@@ -289,24 +507,25 @@ impl<'a> Buffers<'a> {
     }
 
     /// A packed header: its parameters, then its bytes. Our NALs have
-    /// emulation prevention bytes in, and say so; with `driver_escapes` the
-    /// bytes are taken out again and the driver is asked to put them back
+    /// emulation prevention bytes in, and say so; with `driver_escapes` (the
+    /// codec's function for it) the bytes are taken out again and the driver
+    /// is asked to put them back
     /// (`CHA_VAAPI_PACKED_EMULATION=driver`, in case a driver ignores the flag).
     fn add_packed(
         &mut self,
         context: Id,
         kind: u32,
         nal: &[u8],
-        driver_escapes: bool,
+        driver_escapes: Option<Unescape>,
     ) -> Result<()> {
         let raw;
-        let (bytes, bit_length): (&[u8], u32) = if driver_escapes {
-            raw = crate::encoder::bitstream::unescaped_nal(nal);
+        let (bytes, bit_length): (&[u8], u32) = if let Some(unescaped) = driver_escapes {
+            raw = unescaped(nal);
             (&raw, raw.len() as u32 * 8)
         } else {
             (nal, nal.len() as u32 * 8)
         };
-        self.add_packed_bits(context, kind, bytes, bit_length, !driver_escapes)
+        self.add_packed_bits(context, kind, bytes, bit_length, driver_escapes.is_none())
     }
 
     fn add_packed_bits(
@@ -338,15 +557,14 @@ pub struct Vaapi {
     display: Display,
     params: Params,
     setup: Setup,
-    layout: Layout,
+    stream: Stream,
     rate: Rate,
     /// None until the first frame, and after a size change.
     res: Option<Resources>,
     /// The RGB surfaces made from the output buffers, by buffer.
     imports: HashMap<usize, Id>,
-    gop: Gop,
     /// The last picture's reconstruction (the next picture's reference).
-    last: Option<(Id, Picture)>,
+    last: Option<(Id, Pic)>,
     /// Which of `Resources::recon` the next picture is reconstructed into.
     recon_next: usize,
     index: u64,
@@ -367,16 +585,18 @@ unsafe impl Send for Vaapi {}
 impl Vaapi {
     pub fn new(render_node: &Path, params: Params) -> Result<Self> {
         ensure!(
-            params.codec == Codec::H264,
-            "VA-API encodes H.264 only so far, not {}",
+            matches!(params.codec, Codec::H264 | Codec::Hevc),
+            "VA-API encodes H.264 and HEVC only so far, not {}",
             params.codec.name()
         );
         let display = Display::open(render_node)?;
-        let tuning = Tuning::from_env();
-        let (profile, entrypoint, offered) = choose(&display, tuning.rate_mode())?;
+        let tuning = Tuning::from_env(params.codec);
+        let choice = choose(&display, params.codec, tuning.rate_mode())?;
+        let (entrypoint, offered) = (choice.entrypoint, choice.packed);
         let packed = packed_mode(
             offered,
             std::env::var("CHA_VAAPI_PACKED_HEADERS").ok().as_deref(),
+            params.codec,
         );
         let mut attribs = vec![
             (ffi::ATTRIB_RT_FORMAT, ffi::RT_FORMAT_YUV420),
@@ -386,8 +606,8 @@ impl Vaapi {
             attribs.push((ffi::ATTRIB_ENC_PACKED_HEADERS, value));
         }
         let enc_config = display
-            .create_config(profile.va, entrypoint, &attribs)
-            .with_context(|| format!("an H.264 {} encoder config", profile.name))?;
+            .create_config(choice.va_profile, entrypoint, &attribs)
+            .with_context(|| format!("a {} {} encoder config", params.codec.name(), choice.name))?;
         let vpp_config =
             match display.create_config(ffi::PROFILE_NONE, ffi::ENTRYPOINT_VIDEO_PROC, &[]) {
                 Ok(config) => config,
@@ -396,7 +616,14 @@ impl Vaapi {
                     return Err(err.context("the driver has no video processor (RGB to NV12)"));
                 }
             };
-        let layout = make_layout(profile, &params, &tuning)?;
+        let stream = match Stream::new(&choice.picked, &params, &tuning) {
+            Ok(stream) => stream,
+            Err(err) => {
+                display.destroy_config(vpp_config);
+                display.destroy_config(enc_config);
+                return Err(err);
+            }
+        };
         let rate = Rate::with_buffer(params.bitrate_bps, params.fps, tuning.hrd_frames);
         let setup = Setup {
             entrypoint,
@@ -406,10 +633,10 @@ impl Vaapi {
         };
         let driver = display.vendor();
         info!(
-            codec = "h264",
+            codec = params.codec.name(),
             driver = driver.as_str(),
-            profile = profile.name,
-            level = layout.sps.level_idc,
+            profile = stream.name(),
+            level = stream.level(),
             width = params.width,
             height = params.height,
             entrypoint = if setup.low_power() { "EncSliceLP" } else { "EncSlice" },
@@ -419,15 +646,25 @@ impl Vaapi {
             packed_headers = ?packed,
             "VA-API encoder ready"
         );
+        if let Stream::Hevc { layout, .. } = &stream {
+            // What the driver said it takes, and what we picked of it.
+            info!(
+                driver_says = ?choice.picked,
+                ctb = 1 << layout.blocks.log2_ctb,
+                min_cb = 1 << layout.blocks.log2_min_cb,
+                blocks = ?layout.blocks,
+                tools = ?layout.tools,
+                "HEVC coding tree and tools"
+            );
+        }
         Ok(Self {
             display,
             params,
             setup,
-            layout,
+            stream,
             rate,
             res: None,
             imports: HashMap::new(),
-            gop: Gop::default(),
             last: None,
             recon_next: 0,
             index: 0,
@@ -445,13 +682,14 @@ impl Vaapi {
     /// What the encoder is set up as, for a self-test's output.
     fn describe(&self) -> String {
         format!(
-            "{} entrypoint, {} {}, hrd {} bits, packed headers {:?}, {:?}",
+            "{} entrypoint, {} {} {}, hrd {} bits, packed headers {:?}, {:?}",
             if self.setup.low_power() {
                 "EncSliceLP"
             } else {
                 "EncSlice"
             },
-            self.layout.profile.name,
+            self.params.codec.name(),
+            self.stream.name(),
             if self.tuning.cqp.is_some() {
                 "CQP"
             } else {
@@ -522,57 +760,111 @@ impl Vaapi {
         self.display.sync_surface(res.input)
     }
 
-    /// Codes the converted picture; the coded bytes are in `self.scratch`.
-    fn submit(&mut self, picture: &Picture, res: &Resources) -> Result<()> {
-        let current = res.recon[self.recon_next];
-        let reference = self.last.filter(|_| !picture.idr);
-        let context = res.enc_context;
-        let mut buffers = Buffers::new(&self.display);
-        if picture.idr {
-            let seq = sequence_params(&self.layout, &self.rate);
-            buffers.add(context, ffi::BUFFER_ENC_SEQUENCE, &*seq)?;
-            if self.setup.packed != Packed::None {
-                let nal = bits::sps_nal(&self.layout.sps);
-                buffers.add_packed(context, ffi::PACKED_SEQUENCE, &nal, self.driver_escapes)?;
-            }
+    /// The rate control, HRD and frame rate buffers: with an IDR, and when
+    /// the rate changed.
+    fn add_rate_control(&self, buffers: &mut Buffers, context: Id, idr: bool) -> Result<()> {
+        if !(idr || self.rc_dirty) {
+            return Ok(());
         }
-        if picture.idr || self.rc_dirty {
-            let reset = self.rc_dirty;
-            // (With constant quantiser there is no rate to control.)
-            if self.tuning.cqp.is_none() {
-                buffers.add(
-                    context,
-                    ffi::BUFFER_ENC_MISC_PARAMETER,
-                    &misc_rate_control(&self.rate, reset),
-                )?;
-                buffers.add(
-                    context,
-                    ffi::BUFFER_ENC_MISC_PARAMETER,
-                    &misc_hrd(&self.rate),
-                )?;
-            }
+        let reset = self.rc_dirty;
+        // (With constant quantiser there is no rate to control.)
+        if self.tuning.cqp.is_none() {
             buffers.add(
                 context,
                 ffi::BUFFER_ENC_MISC_PARAMETER,
-                &misc_frame_rate(self.params.fps),
+                &misc_rate_control(&self.rate, reset),
+            )?;
+            buffers.add(
+                context,
+                ffi::BUFFER_ENC_MISC_PARAMETER,
+                &misc_hrd(&self.rate),
             )?;
         }
-        let pic = picture_params(&self.layout, picture, current, reference, res.coded);
-        buffers.add(context, ffi::BUFFER_ENC_PICTURE, &*pic)?;
-        if picture.idr && self.setup.packed != Packed::None {
-            let nal = bits::pps_nal(&self.layout.pps);
-            buffers.add_packed(context, ffi::PACKED_PICTURE, &nal, self.driver_escapes)?;
+        buffers.add(
+            context,
+            ffi::BUFFER_ENC_MISC_PARAMETER,
+            &misc_frame_rate(self.params.fps),
+        )
+    }
+
+    /// Codes the converted picture; the coded bytes are in `self.scratch`.
+    fn submit(&mut self, picture: &Pic, res: &Resources) -> Result<()> {
+        let current = res.recon[self.recon_next];
+        let reference = self.last.filter(|_| !picture.idr());
+        let context = res.enc_context;
+        let mut buffers = Buffers::new(&self.display);
+        let packed = self.setup.packed;
+        let escapes = self.driver_escapes;
+        match (&self.stream, picture) {
+            (Stream::H264 { layout, .. }, Pic::H264(picture)) => {
+                let reference = reference.and_then(|(surface, last)| match last {
+                    Pic::H264(last) => Some((surface, last)),
+                    Pic::Hevc(_) => None,
+                });
+                if picture.idr {
+                    let seq = h264::sequence_params(layout, &self.rate);
+                    buffers.add(context, ffi::BUFFER_ENC_SEQUENCE, &*seq)?;
+                    if packed != Packed::None {
+                        let nal = bits::sps_nal(&layout.sps);
+                        let unescape =
+                            escapes.then_some(crate::encoder::bitstream::unescaped_nal as _);
+                        buffers.add_packed(context, ffi::PACKED_SEQUENCE, &nal, unescape)?;
+                    }
+                }
+                self.add_rate_control(&mut buffers, context, picture.idr)?;
+                let pic = h264::picture_params(layout, picture, current, reference, res.coded);
+                buffers.add(context, ffi::BUFFER_ENC_PICTURE, &*pic)?;
+                if picture.idr && packed != Packed::None {
+                    let nal = bits::pps_nal(&layout.pps);
+                    let unescape = escapes.then_some(crate::encoder::bitstream::unescaped_nal as _);
+                    buffers.add_packed(context, ffi::PACKED_PICTURE, &nal, unescape)?;
+                }
+                if packed == Packed::HeadersAndSlice {
+                    let (nal, bit_length) = bits::slice_header_nal(
+                        &layout.sps,
+                        &layout.pps,
+                        &h264::slice_header(picture),
+                    );
+                    buffers.add_packed_bits(context, ffi::PACKED_SLICE, &nal, bit_length, true)?;
+                }
+                let slice = h264::slice_params(layout, picture, reference);
+                buffers.add(context, ffi::BUFFER_ENC_SLICE, &*slice)?;
+            }
+            (Stream::Hevc { layout, .. }, Pic::Hevc(picture)) => {
+                let reference = reference.and_then(|(surface, last)| match last {
+                    Pic::Hevc(last) => Some((surface, last)),
+                    Pic::H264(_) => None,
+                });
+                let unescape = escapes.then_some(bits265::unescaped_nal as _);
+                if picture.idr {
+                    let seq = hevc::sequence_params(layout, &self.rate);
+                    buffers.add(context, ffi::BUFFER_ENC_SEQUENCE, &*seq)?;
+                    if packed != Packed::None {
+                        // Both are "sequence" packed headers: VPS, then SPS.
+                        let vps = bits265::vps_nal(&layout.sps);
+                        buffers.add_packed(context, ffi::PACKED_SEQUENCE, &vps, unescape)?;
+                        let sps = bits265::sps_nal(&layout.sps);
+                        buffers.add_packed(context, ffi::PACKED_SEQUENCE, &sps, unescape)?;
+                    }
+                }
+                self.add_rate_control(&mut buffers, context, picture.idr)?;
+                let pic = hevc::picture_params(layout, picture, current, reference, res.coded);
+                buffers.add(context, ffi::BUFFER_ENC_PICTURE, &*pic)?;
+                if picture.idr && packed != Packed::None {
+                    let nal = bits265::pps_nal(&layout.pps);
+                    buffers.add_packed(context, ffi::PACKED_PICTURE, &nal, unescape)?;
+                }
+                if packed == Packed::HeadersAndSlice {
+                    let header = hevc::slice_header(picture);
+                    let (nal, bit_length) =
+                        bits265::slice_header_nal(&layout.sps, &layout.pps, &header);
+                    buffers.add_packed_bits(context, ffi::PACKED_SLICE, &nal, bit_length, true)?;
+                }
+                let slice = hevc::slice_params(layout, picture, reference);
+                buffers.add(context, ffi::BUFFER_ENC_SLICE, &*slice)?;
+            }
+            _ => bail!("the picture isn't of the stream's codec"),
         }
-        if self.setup.packed == Packed::HeadersAndSlice {
-            let (nal, bit_length) = bits::slice_header_nal(
-                &self.layout.sps,
-                &self.layout.pps,
-                &h264::slice_header(picture),
-            );
-            buffers.add_packed_bits(context, ffi::PACKED_SLICE, &nal, bit_length, true)?;
-        }
-        let slice = slice_params(&self.layout, picture, reference);
-        buffers.add(context, ffi::BUFFER_ENC_SLICE, &*slice)?;
 
         let submitted = Instant::now();
         self.display.begin_picture(context, res.input)?;
@@ -611,7 +903,7 @@ impl Vaapi {
         let rgb = self.import(dmabuf, key)?;
         let res = match self.res.take() {
             Some(res) => res,
-            None => Resources::create(&self.display, &self.setup, &self.layout)
+            None => Resources::create(&self.display, &self.setup, self.stream.coded_size())
                 .context("creating the encoder's surfaces and contexts")?,
         };
         let result = self.encode_with(&res, rgb, started, keyframe, out);
@@ -619,7 +911,7 @@ impl Vaapi {
         if result.is_err() {
             // Whatever the driver did with this picture, the next one starts over.
             self.need_idr = true;
-            self.gop.reset();
+            self.stream.reset();
             self.last = None;
         }
         result
@@ -655,19 +947,18 @@ impl Vaapi {
             }
         }
         let idr = keyframe || self.need_idr || self.last.is_none();
-        let picture = self.gop.next(idr);
+        let picture = self.stream.next(idr);
         self.submit(&picture, res).context("encoding the frame")?;
         ensure!(!self.scratch.is_empty(), "the driver made no bitstream");
-        let key = bits::has_idr(&self.scratch);
+        let key = self.stream.has_idr(&self.scratch);
         ensure!(
-            key == picture.idr,
+            key == picture.idr(),
             "asked for {} picture, the driver made {}",
-            if picture.idr { "an IDR" } else { "a P" },
+            if picture.idr() { "an IDR" } else { "a P" },
             if key { "an IDR" } else { "a P" }
         );
         if key {
-            let fixed = bits::fix_headers(&self.scratch, &self.layout.sps, &self.layout.pps, out);
-            if fixed.sps_kept > 0 {
+            if self.stream.fix_headers(&self.scratch, out) {
                 warn!("the driver's SPS uses features we don't parse; its VUI is left as it is");
             }
         } else {
@@ -701,13 +992,12 @@ impl VideoEncoder for Vaapi {
         let mut params = self.params.clone();
         params.width = width;
         params.height = height;
-        let layout = make_layout(self.layout.profile, &params, &self.tuning)?;
+        let stream = self.stream.resized(&params, &self.tuning)?;
         self.drop_imports();
         self.drop_resources();
         self.params = params;
-        self.layout = layout;
+        self.stream = stream;
         self.need_idr = true;
-        self.gop.reset();
         self.last = None;
         self.rc_dirty = false;
         Ok(())
@@ -723,7 +1013,7 @@ impl VideoEncoder for Vaapi {
     fn set_frame_rate(&mut self, fps: u32, bitrate_bps: u32) -> Result<()> {
         self.params.fps = fps;
         self.params.bitrate_bps = bitrate_bps;
-        self.layout.with_fps(&self.params);
+        self.stream.with_fps(&self.params);
         self.rate = Rate::with_buffer(bitrate_bps, fps, self.tuning.hrd_frames);
         self.rc_dirty = true;
         Ok(())
@@ -798,6 +1088,34 @@ fn paint_row(row: &mut [u8], y: u32, n: u32, width: u32, height: u32) {
     }
 }
 
+/// What `check_access_unit` of either codec found.
+struct Unit {
+    nals: Vec<u8>,
+    idr: bool,
+    size: Option<(u32, u32)>,
+}
+
+fn check_access_unit(codec: Codec, stream: &[u8]) -> Result<Unit> {
+    Ok(match codec {
+        Codec::Hevc => {
+            let unit = bits265::check_access_unit(stream).map_err(anyhow::Error::msg)?;
+            Unit {
+                nals: unit.nals,
+                idr: unit.idr,
+                size: unit.size,
+            }
+        }
+        _ => {
+            let unit = h264::check_access_unit(stream)?;
+            Unit {
+                nals: unit.nals,
+                idr: unit.idr,
+                size: unit.size,
+            }
+        }
+    })
+}
+
 /// What a self-test run found.
 #[derive(Debug)]
 pub struct SelfTest {
@@ -805,17 +1123,19 @@ pub struct SelfTest {
     pub keyframes: u32,
     pub bytes: u64,
     pub encode_ms_avg: f64,
-    /// The NAL unit types of the first picture (SPS, PPS, IDR slice).
+    /// The NAL unit types of the first picture (SPS, PPS, IDR slice; HEVC has
+    /// a VPS in front).
     pub first_nals: Vec<u8>,
     /// How the encoder was set up (entrypoint, rate control, headers, knobs).
     pub setup: String,
 }
 
 /// Encodes `frames` generated pictures on `render_node` and checks the output
-/// is H.264 as the players expect: an IDR with SPS and PPS first, P pictures
-/// after it, another IDR on request, and the stream still coding after a
-/// bitrate change. For `CHA_ENCODE_TEST=<frames> cha-streamer --probe-device
-/// vaapi:<node>` and the ignored test below.
+/// is H.264 (or HEVC, with `CHA_ENCODE_TEST_CODEC=hevc`) as the players
+/// expect: an IDR with its parameter sets first, P pictures after it, another
+/// IDR on request, and the stream still coding after a bitrate change. For
+/// `CHA_ENCODE_TEST=<frames> cha-streamer --probe-device vaapi:<node>` and the
+/// ignored test below.
 pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
     use smithay::backend::allocator::dmabuf::{AsDmabuf, DmabufMappingMode, DmabufSyncFlags};
     use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
@@ -844,10 +1164,15 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
     let dmabuf = buffer.export().context("exporting it as a dmabuf")?;
     let stride = dmabuf.strides().next().context("no stride")? as usize;
 
+    let codec = match std::env::var("CHA_ENCODE_TEST_CODEC").as_deref() {
+        Ok("hevc" | "h265") => Codec::Hevc,
+        Ok("h264") | Err(_) => Codec::H264,
+        Ok(other) => bail!("CHA_ENCODE_TEST_CODEC is h264 or hevc, not {other:?}"),
+    };
     let mut encoder = Vaapi::new(
         render_node,
         Params {
-            codec: Codec::H264,
+            codec,
             width,
             height,
             fps: 60,
@@ -858,7 +1183,7 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
     let mut total = std::time::Duration::ZERO;
     let mut out = Vec::new();
     let mut first_nals = Vec::new();
-    // CHA_ENCODE_TEST_DUMP=/path/out.h264 writes the Annex-B stream there and
+    // CHA_ENCODE_TEST_DUMP=/path/out.h264 (or .hevc) writes the Annex-B stream there and
     // the generated pictures to /path/out.src: raw, 1280×720, 4 bytes a pixel
     // in the order B, G, R, unused (ffmpeg: `-f rawvideo -pix_fmt bgr0
     // -video_size 1280x720 -framerate 60 -i out.src`).
@@ -938,8 +1263,13 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
             use std::io::Write;
             file.write_all(&out)?;
         }
-        let unit = h264::check_access_unit(&out)
-            .with_context(|| format!("frame {n} ({} bytes) isn't well-formed H.264", out.len()))?;
+        let unit = check_access_unit(codec, &out).with_context(|| {
+            format!(
+                "frame {n} ({} bytes) isn't well-formed {}",
+                out.len(),
+                codec.name()
+            )
+        })?;
         ensure!(
             unit.idr == key,
             "frame {n}: the key flag says {key}, the bitstream {}",
@@ -987,15 +1317,28 @@ mod tests {
     fn packed_headers_follow_what_the_driver_offers() {
         let seq_pic = ffi::PACKED_HEADER_SEQUENCE | ffi::PACKED_HEADER_PICTURE;
         let all = seq_pic | ffi::PACKED_HEADER_SLICE | 0x18;
-        assert_eq!(packed_mode(all, None), Packed::Headers);
-        assert_eq!(packed_mode(seq_pic, None), Packed::Headers);
+        let h264 = Codec::H264;
+        assert_eq!(packed_mode(all, None, h264), Packed::Headers);
+        assert_eq!(packed_mode(seq_pic, None, h264), Packed::Headers);
         // Only the sequence header: the driver writes its own.
-        assert_eq!(packed_mode(ffi::PACKED_HEADER_SEQUENCE, None), Packed::None);
-        assert_eq!(packed_mode(0, None), Packed::None);
+        assert_eq!(
+            packed_mode(ffi::PACKED_HEADER_SEQUENCE, None, h264),
+            Packed::None
+        );
+        assert_eq!(packed_mode(0, None, h264), Packed::None);
         // The knobs.
-        assert_eq!(packed_mode(all, Some("off")), Packed::None);
-        assert_eq!(packed_mode(all, Some("slice")), Packed::HeadersAndSlice);
-        assert_eq!(packed_mode(seq_pic, Some("slice")), Packed::Headers);
+        assert_eq!(packed_mode(all, Some("off"), h264), Packed::None);
+        assert_eq!(
+            packed_mode(all, Some("slice"), h264),
+            Packed::HeadersAndSlice
+        );
+        assert_eq!(packed_mode(seq_pic, Some("slice"), h264), Packed::Headers);
+        // HEVC packs the slice header unless told not to.
+        let hevc = Codec::Hevc;
+        assert_eq!(packed_mode(all, None, hevc), Packed::HeadersAndSlice);
+        assert_eq!(packed_mode(all, Some("headers"), hevc), Packed::Headers);
+        assert_eq!(packed_mode(all, Some("off"), hevc), Packed::None);
+        assert_eq!(packed_mode(seq_pic, None, hevc), Packed::Headers);
         assert_eq!(Packed::None.attribute(), None);
         assert_eq!(Packed::Headers.attribute(), Some(3));
         assert_eq!(Packed::HeadersAndSlice.attribute(), Some(7));
