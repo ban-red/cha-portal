@@ -47,7 +47,7 @@ Pick an app under your portal and Launch (or follow "Open in Cha Player" with an
 2. It picks the first of its codecs (HEVC, then H.264; Settings) that the environment's GPU encodes, asks the portal for a media token for that codec, and connects to the streamer's WebTransport address(es) over `cha-stream/1` (`cha-client-stream`, [`docs/plans/c2-transport.md`](../../docs/plans/c2-transport.md)). The streamer's certificate is trusted only if its SHA-256 is the one the portal gave.
 3. The player asks the streamer for its Settings resolution (2560x1440 by default; the streamer rounds down to a multiple of 8). The picture and audio are the browser's: 10 ms Opus, FEC-protected video, loss answered with reference invalidation (`rfi`) and then keyframes.
 
-Leaving the stream (Ctrl+Alt+Shift+Q) leaves the environment running, so launching the app again resumes where you were. Ctrl+Alt+Shift+X quits the app: it stops the environment on the portal. There is no reconnect yet: if the connection drops, the stream ends with the reason and you launch again. PyroWave (the LAN codec) and AV1 are not played yet.
+Leaving the stream (Ctrl+Alt+Shift+Q) leaves the environment running, so launching the app again resumes where you were. Ctrl+Alt+Shift+X quits the app: it stops the environment on the portal. The app list shows which apps have an environment running or starting, whether it was started here, in a browser or from another player, and lists them again every 5 seconds while the portal is shown and whenever a stream ends; those apps read Resume, with a Quit button that stops the environment without streaming it first. There is no reconnect yet: if the connection drops, the stream ends with the reason and you launch again. PyroWave (the LAN codec) and AV1 are not played yet.
 
 The media path is the portal-brokered one: nothing leaves your network except what you route yourself (Tailscale, a port-forward). The player must be able to reach the node's streamer address that the portal reports (UDP, the streamer's WebTransport port).
 
@@ -67,7 +67,7 @@ Losing focus releases the pointer and every held key and button. Relative motion
 
 Gamepads go through SDL3 on their own thread, with SDL's Apple GameController (MFi) backend turned off (`SDL_JOYSTICK_MFI=0`): started off the main thread it kept macOS from ever showing the window as visible, so nothing was drawn. Controllers come through IOKit and SDL's HIDAPI drivers instead (DualSense, Xbox, Steam Controller, with rumble and LEDs).
 
-macOS gates those drivers behind **Input Monitoring** (System Settings → Privacy & Security). It asks the first time a controller is opened; until Cha Player is allowed, a Steam Controller in particular is simply not there, while keyboard and mouse (read from the window) still work. When access has been denied the launcher says so, with a button to the settings pane; reopen the player after allowing it. `bundle.sh` signs the app ad hoc, and macOS keeps an ad-hoc app's permission only for that exact binary: after a rebuild, turn Cha Player off and on again in Input Monitoring. To keep it across rebuilds, sign with a stable identity: `CHA_SIGN_IDENTITY="Apple Development: …" crates/cha-player/macos/bundle.sh` (Xcode makes one from a free Apple ID; `security find-identity -v -p codesigning` lists them). `CHA_PLAYER_NO_PADS=1` starts without gamepads, to rule them out when something looks wrong.
+macOS gates those drivers behind **Input Monitoring** (System Settings → Privacy & Security). It asks the first time a controller is opened; until Cha Player is allowed, a Steam Controller in particular is simply not there, while keyboard and mouse (read from the window) still work. When access has been denied the launcher says so, with a button to the settings pane; reopen the player after allowing it. macOS ties the permission to the app's designated requirement. `bundle.sh` signs ad hoc, whose default requirement is the binary's hash, so each rebuild used to lose the grant while System Settings still showed Cha Player switched on; the script now pins the requirement to the bundle identifier (`sh.cha.player`), and the grant survives rebuilds. An app bundled before that change still holds the stale grant: remove Cha Player from the Input Monitoring list with −, add it again and reopen the player. The trade-off is that any ad-hoc app signed as `sh.cha.player` inherits the permission. To sign with a real identity instead: `CHA_SIGN_IDENTITY="Apple Development: …" crates/cha-player/macos/bundle.sh` (Xcode makes one from a free Apple ID; `security find-identity -v -p codesigning` lists them). `CHA_PLAYER_NO_PADS=1` starts without gamepads, to rule them out when something looks wrong.
 
 ## Wi-Fi: AWDL latency spikes
 
@@ -81,6 +81,46 @@ sudo ifconfig awdl0 down     # undo with: sudo ifconfig awdl0 up
 
 The player never runs this itself. The detector (`src/awdl.rs`) looks only at video arrival times: at least three gaps of 80 to 200 ms about 0.5 to 1.8 s apart, and few other long gaps. A host that sends nothing while the picture is still can show the same rhythm over Ethernet, so the hint also needs `awdl0` up (it is down with Wi-Fi off).
 
+## Themes
+
+The launcher, pairing and settings look like the portal. The colours are the portal's own: `themes/cha-magenta.json` (the default) and `themes/cha-jade.json` are generated from `web/apps/portal/src/themes/*.css` by `scripts/export-player-themes.ts` and compiled into the binary. After changing a portal theme, run `bun scripts/export-player-themes.ts` and commit the JSON; do not edit it by hand. Each file has the portal's colour roles (`canvas`, `panel`, `ink`, `accent`, `danger`, ...) in four variants: `dark`, `light`, and `dark-more` and `light-more` for more contrast.
+
+Settings, Appearance picks the theme, Light or dark, Contrast and the UI size (egui's zoom factor, 75% to 200%, applied when you let go of the slider). The choices are saved in `config.json` under `theme`; a config without it uses Cha Magenta, System, System, 100%.
+
+- **System light or dark** follows macOS: the window's appearance at start and whenever it changes (`WindowEvent::ThemeChanged`).
+- **System contrast** follows System Settings, Accessibility, Display, Increase contrast, read from `NSWorkspace` about every two seconds while the launcher is shown. More contrast uses the `-more` palettes and draws borders 1.5 times as thick.
+
+To look at every theme and variant without a window, run `CHA_SNAPSHOT_DIR=/some/dir cargo test -p cha-player --release snapshot -- --ignored --nocapture`: it draws the launcher, Settings, status lines and stats overlay offscreen and writes `<theme>-<variant>-<screen>.png` (`src/ui/snapshots.rs`).
+
+The stats overlay is on top of the video, so it is not themed like the launcher: black at 75% opacity, with the text and warning colours of the theme's `dark-more` palette.
+
+### Your own themes
+
+Put `*.json` files in `~/Library/Application Support/Cha Player/themes` (Settings, Open themes folder makes the folder and shows it; Reload themes reads it again, so you can edit a file and see it without restarting). A theme only says what it changes; everything else comes from the theme it `extends` (Cha Magenta if it does not say):
+
+```json
+{
+  "id": "my-theme",
+  "name": "My theme",
+  "extends": "cha-magenta",
+  "variants": {
+    "dark": { "accent": "#00ff88", "accent-fill": "#00a85a" },
+    "light": { "accent": "#007a3d" }
+  },
+  "metrics": { "radius_medium": 2.0, "font_body": 15.0 },
+  "fonts": { "proportional": "Inter.ttf", "monospace": "/Users/me/Fonts/JetBrainsMono.ttf" }
+}
+```
+
+- Only `id` is required. Colours are `#rgb`, `#rrggbb` or `#rrggbbaa`. The roles are the ones in `themes/cha-magenta.json`; a misspelt role is an error.
+- Changes to `dark` also apply to `dark-more` (and `light` to `light-more`) unless that variant sets the role itself.
+- `metrics` keys: `radius_small`, `radius_medium`, `radius_large`, `item_spacing_x`, `item_spacing_y`, `button_padding_x`, `button_padding_y`, `window_margin`, `control_height`, `stroke_width`, `stroke_width_strong`, `font_heading`, `font_body`, `font_button`, `font_small`, `font_monospace` (points).
+- Fonts are SF Pro and SF Mono from `/System/Library/Fonts` unless a theme names a `.ttf`/`.otf` file, absolute or relative to the theme file. Font files are not bundled. A file that is missing or cannot be read is skipped with a message in Settings and egui's built-in font is used instead.
+- A theme with the id of a built-in replaces it. Themes can extend each other.
+- A file that does not parse, extends a theme that does not exist, loops, or repeats another file's `id` is skipped, and Settings lists the file and the reason under the buttons. The rest still load.
+
+All of it lives in `src/theme/`: `palette.rs` (roles), `metrics.rs`, `fonts.rs`, `registry.rs` (built-ins and your folder), `resolve.rs` (preferences and the system pick a variant), `apply.rs` (the one place roles become an egui style) and `widgets.rs` (accent and danger buttons, cards, status text). Code in `src/ui/` asks for roles (`ui.palette().danger`), never RGB.
+
 ## Layout
 
 | Path | What |
@@ -88,6 +128,8 @@ The player never runs this itself. The detector (`src/awdl.rs`) looks only at vi
 | `src/main.rs` | args, logging, the tokio runtime, building the transports (GameStream behind the default `gamestream` feature, the portal behind `portal`, `--demo`) |
 | `src/app.rs` | the `winit` handler: Launcher and Streaming states, pointer lock, hotkeys, drawing |
 | `src/ui/` | egui launcher, settings, stats overlay |
+| `src/theme/` | themes: palettes, user themes, fonts, the egui style (see Themes) |
+| `themes/` | built-in palettes, generated from the portal's CSS |
 | `src/render/` | `wgpu` device and surface, the YCbCr video pipeline (aspect-fit, WGSL), egui layer |
 | `src/video/` | `VideoDecoder` trait; Annex-B to AVCC; the VideoToolbox decoder; `pyrowave.rs`, the PyroWave presenter (decode on the window's `wgpu` device, via `cha-pyrowave-wgpu`) |
 | `src/present/` | `FrameImporter` trait; Metal zero-copy import |

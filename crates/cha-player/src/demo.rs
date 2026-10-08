@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use cha_client::{
-    App, AudioPacket, BoxFuture, Codec, Ended, Host, Input, Pairing, Session, SessionControl,
-    StreamConfig, Transport, VideoFrame,
+    App, AppState, AudioPacket, BoxFuture, Codec, Ended, Host, Input, Pairing, Session,
+    SessionControl, StreamConfig, Transport, VideoFrame,
 };
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
@@ -70,6 +70,7 @@ impl Transport for DemoTransport {
                 id: 1,
                 name: "Test pattern".into(),
                 hdr: false,
+                state: AppState::Stopped,
             }])
         })
     }

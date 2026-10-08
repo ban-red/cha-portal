@@ -53,7 +53,8 @@ pub struct Host {
     /// Where it was found or added, for showing (`192.168.1.20:47989`).
     pub address: String,
     pub paired: bool,
-    /// The app it is running now, if any.
+    /// The app it is running now, if any. A host that runs several at once
+    /// (a portal) leaves this `None` and says so on each [`App`].
     pub running_app: Option<u32>,
 }
 
@@ -62,6 +63,27 @@ pub struct App {
     pub id: u32,
     pub name: String,
     pub hdr: bool,
+    /// Whether it is up on the host, as of when the apps were listed.
+    #[serde(default)]
+    pub state: AppState,
+}
+
+/// Whether an app is up on its host. Launching one that is resumes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppState {
+    #[default]
+    Stopped,
+    /// On its way up (a portal environment pulling its image, say).
+    Starting,
+    Running,
+}
+
+impl AppState {
+    /// Running or on its way: launching it joins it rather than starting another.
+    pub fn is_up(self) -> bool {
+        self != AppState::Stopped
+    }
 }
 
 /// What the player asks a host for.
@@ -201,6 +223,22 @@ pub trait Transport: Send + Sync {
         app_id: u32,
         config: StreamConfig,
     ) -> BoxFuture<'_, anyhow::Result<Session>>;
+    /// Quit the app on the host, unsaved work included. By default it
+    /// resumes the app and stops that session with `quit_app`; a transport
+    /// that can quit without streaming does so.
+    fn quit_app(
+        &self,
+        host_id: &str,
+        app_id: u32,
+        config: StreamConfig,
+    ) -> BoxFuture<'_, anyhow::Result<()>> {
+        let host_id = host_id.to_string();
+        Box::pin(async move {
+            let session = self.launch(&host_id, app_id, config).await?;
+            session.control.stop(true);
+            Ok(())
+        })
+    }
 }
 
 /// A pairing in progress.

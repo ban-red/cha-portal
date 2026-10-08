@@ -19,6 +19,8 @@ mod render;
 #[cfg(target_os = "macos")]
 mod session;
 #[cfg(target_os = "macos")]
+mod theme;
+#[cfg(target_os = "macos")]
 mod ui;
 #[cfg(all(target_os = "macos", feature = "portal"))]
 mod urlscheme;

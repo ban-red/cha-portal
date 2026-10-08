@@ -2,6 +2,10 @@
 // (`<id>.css`) that defines every role as a `--cha-<role>` variable; style.css maps the
 // roles to Tailwind colours. `themes.test.ts` checks that the files and this list agree
 // and that every contrast pair passes.
+//
+// The native player (crates/cha-player) embeds these themes as JSON generated from the CSS.
+// After changing a theme, re-run `bun scripts/export-player-themes.ts`; check.sh fails if the
+// files in crates/cha-player/themes are stale.
 
 export const ROLES = [
   "canvas",

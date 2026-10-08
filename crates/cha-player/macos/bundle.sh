@@ -3,8 +3,11 @@
 # Signed ad hoc, or with CHA_SIGN_IDENTITY (a codesigning identity's name)
 # when set; not notarised. Run from anywhere: ./crates/cha-player/macos/bundle.sh
 #
-# macOS keeps privacy permissions (Input Monitoring) for an ad-hoc signed app
-# only while the binary is unchanged; under an identity they survive rebuilds.
+# macOS ties privacy permissions (Input Monitoring) to the app's designated
+# requirement. An ad-hoc signature's default one is the binary's hash, so
+# every rebuild silently lost the grant while System Settings still showed it
+# on; ad hoc we pin the requirement to the bundle identifier instead. Under an
+# identity the default requirement already survives rebuilds.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -18,5 +21,10 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "$bin" "$app/Contents/MacOS/cha-player"
 sed "s/@VERSION@/$version/" "$here/Info.plist" > "$app/Contents/Info.plist"
-codesign --force --sign "${CHA_SIGN_IDENTITY:--}" --identifier sh.cha.player "$app"
+if [ -n "${CHA_SIGN_IDENTITY:-}" ]; then
+    codesign --force --sign "$CHA_SIGN_IDENTITY" --identifier sh.cha.player "$app"
+else
+    codesign --force --sign - --identifier sh.cha.player \
+        -r='designated => identifier "sh.cha.player"' "$app"
+fi
 echo "built $app"

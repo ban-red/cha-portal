@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use cha_client::{App, BoxFuture, Host, Pairing, Session, StreamConfig, Transport};
+use cha_client::{App, AppState, BoxFuture, Host, Pairing, Session, StreamConfig, Transport};
 use cha_gamestream::client::front::{ClientIdentity, HostClient, random_pin};
 use futures_util::future::join_all;
 use tokio::sync::{Notify, mpsc, watch};
@@ -303,7 +303,7 @@ impl Inner {
     async fn apps(self: &Arc<Self>, id: &str) -> Result<Vec<App>> {
         let (client, host) = self.paired_client(id).await?;
         // Learns the host's HTTPS port, which hosts needn't keep at 47984.
-        client
+        let info = client
             .server_info()
             .await
             .map_err(|e| anyhow!("reading {}'s state: {e}", host.name))?;
@@ -314,6 +314,11 @@ impl Inner {
         Ok(apps
             .into_iter()
             .map(|a| App {
+                state: if info.current_game != 0 && a.id == info.current_game {
+                    AppState::Running
+                } else {
+                    AppState::Stopped
+                },
                 id: a.id,
                 name: a.title,
                 hdr: a.hdr,

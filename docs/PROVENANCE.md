@@ -28,13 +28,13 @@ Used as libraries, unmodified, under their own licences. `Cargo.lock` and `bun.l
 | libpyrowave | PyroWave encoding on the node, loaded at runtime | MIT |
 | tokio-enet, fec-rs | GameStream control channel and FEC | BSD-2-Clause |
 | SDL3 (via `sdl3`) | the native client's window, input and gamepads | zlib (SDL); MIT (bindings) |
-| moonlight-common ([moonlight-common-rust](https://github.com/MrCreativ3001/moonlight-common-rust)) | GameStream client in `cha-gateway`, `cha-node`, `cha-client-gamestream` and `cha-moonlight-input`, being replaced by our own ([ADR 0011](adr/0011-own-gamestream-client.md)); after that, test-only, as an independent client that `cha-gamestream`'s tests drive against our host | GPL-3.0-or-later |
+| moonlight-common ([moonlight-common-rust](https://github.com/MrCreativ3001/moonlight-common-rust)) | test-only: an independent client that `cha-gamestream`'s tests drive against our host; also the unshipped S3 spike. No shipped crate uses it since our own client replaced it ([ADR 0011](adr/0011-own-gamestream-client.md)) | GPL-3.0-or-later |
 
 ## Protocols we interoperate with
 
 `cha-gamestream` speaks the GameStream protocol so that stock Moonlight clients and Sunshine-family hosts work with Cha. Where the protocol is undocumented we match the behaviour of the reference client, moonlight-common-c, and comments name the function or file whose behaviour we follow. That covers wire formats, constants and protocol behaviour. Interop constants from it are cited where they're used; the audio FEC parity matrix, for example, came through Moonshine, which credits Moonlight for it.
 
-The client half (`cha-gamestream/src/client`) is new and still under review: each file is being checked to confirm it's written from the protocol and not adapted from moonlight-common-c's code. This section will say the result.
+The client half (`cha-gamestream/src/client`) is written for this project. It uses Moonlight's wire formats, constants and some of its compatibility tuning values (bitrate and audio settings a host expects from a Moonlight client), each cited where it's used, but not its code. An independent side-by-side review against moonlight-common-c, moonlight-qt and moonlight-common-rust found two places adapted from moonlight-common-c (parsing the host's audio configuration, and a check on packets rebuilt by error correction); both were rewritten clean-room, from our own host's output and packetizer, before the client was committed.
 
 ## Not used
 

@@ -13,13 +13,20 @@ mod settings;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use cha_client::{App, Host, Transport};
-use egui::{Color32, RichText};
+use cha_client::{App, AppState, Host, Transport};
+use egui::RichText;
 
 use crate::config::Config;
 use crate::input::pads::{InputAccess, input_access};
+use crate::theme::widgets::{
+    Status, callout, danger_button, primary_button_enabled, selectable_card, status_label,
+};
+use crate::theme::{ThemeController, ThemeExt};
 
 const INPUT_ACCESS_RECHECK: Duration = Duration::from_secs(2);
+/// How often a shown portal's apps are listed again: apps start and stop
+/// from browsers and other players too.
+const PORTAL_APPS_REFRESH: Duration = Duration::from_secs(5);
 /// System Settings, Privacy & Security, Input Monitoring.
 const INPUT_MONITORING_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
@@ -49,6 +56,7 @@ pub enum Action {
     QuitApp {
         transport: usize,
         host: String,
+        app: u32,
     },
     /// Swap a `cha://` link's ticket for a token (the user said yes).
     SignIn {
@@ -62,6 +70,10 @@ pub enum Action {
         host: String,
     },
     SaveConfig(Config),
+    /// Read the themes folder again.
+    ReloadThemes,
+    /// Show the themes folder in Finder (made if missing).
+    OpenThemesFolder,
 }
 
 /// A `cha://connect` link waiting for the user's yes.
@@ -100,6 +112,12 @@ pub enum Event {
         launch: Option<String>,
         result: Result<String, String>,
     },
+    /// A quit finished (the app's name, or why it failed).
+    AppQuit {
+        transport: usize,
+        host: String,
+        result: Result<String, String>,
+    },
     /// A launch or quit finished without a stream to show.
     Failed(String),
     /// Something for the status line ("Quit Steam").
@@ -108,7 +126,13 @@ pub enum Event {
 
 enum AppsState {
     Loading,
-    Loaded(Vec<App>),
+    Loaded {
+        apps: Vec<App>,
+        /// When they were listed, to list a portal's again.
+        listed: Instant,
+        /// Listing again in the background: the list stays meanwhile.
+        refreshing: bool,
+    },
     Failed(String),
 }
 
@@ -204,8 +228,21 @@ impl Launcher {
     /// The listed name of an app, for "Starting Steam…".
     pub fn app_name(&self, transport: usize, host: &str, app: u32) -> Option<String> {
         match self.apps.get(&(transport, host.to_string()))? {
-            AppsState::Loaded(apps) => apps.iter().find(|a| a.id == app).map(|a| a.name.clone()),
+            AppsState::Loaded { apps, .. } => {
+                apps.iter().find(|a| a.id == app).map(|a| a.name.clone())
+            }
             _ => None,
+        }
+    }
+
+    /// Apps may have started or stopped (a stream ended, a launch failed):
+    /// list the shown portal's again now rather than in a few seconds.
+    pub fn refresh_apps(&mut self) {
+        let due = Instant::now().checked_sub(PORTAL_APPS_REFRESH);
+        for state in self.apps.values_mut() {
+            if let (AppsState::Loaded { listed, .. }, Some(due)) = (state, due) {
+                *listed = due;
+            }
         }
     }
 
@@ -230,8 +267,34 @@ impl Launcher {
                 host,
                 result,
             } => {
+                let key = (transport, host.clone());
+                let refreshing = matches!(
+                    self.apps.get(&key),
+                    Some(AppsState::Loaded {
+                        refreshing: true,
+                        ..
+                    })
+                );
                 let state = match result {
-                    Ok(apps) => AppsState::Loaded(apps),
+                    Ok(apps) => AppsState::Loaded {
+                        apps,
+                        listed: Instant::now(),
+                        refreshing: false,
+                    },
+                    // A background listing that failed keeps the list shown
+                    // and tries again later; a portal that signed us out
+                    // shows as not signed in anyway.
+                    Err(e) if refreshing => {
+                        tracing::warn!(host, "listing apps again: {e}");
+                        if let Some(AppsState::Loaded {
+                            listed, refreshing, ..
+                        }) = self.apps.get_mut(&key)
+                        {
+                            *listed = Instant::now();
+                            *refreshing = false;
+                        }
+                        return;
+                    }
                     Err(e) => AppsState::Failed(e),
                 };
                 if let AppsState::Failed(e) = &state {
@@ -287,6 +350,22 @@ impl Launcher {
                     Err(e) => self.error = Some(format!("Pairing failed: {e}")),
                 }
             }
+            Event::AppQuit {
+                transport,
+                host,
+                result,
+            } => {
+                match result {
+                    Ok(name) => self.info = Some(format!("Quit {name}")),
+                    Err(e) => self.error = Some(format!("Could not quit the app: {e}")),
+                }
+                if self.portal_transport == Some(transport) {
+                    self.refresh_apps();
+                } else {
+                    // The host's own state says what runs; the list follows.
+                    self.apps.remove(&(transport, host));
+                }
+            }
             Event::Failed(e) => {
                 self.busy = None;
                 self.error = Some(e);
@@ -296,7 +375,12 @@ impl Launcher {
     }
 
     /// Draw one frame of the launcher.
-    pub fn show(&mut self, ui: &mut egui::Ui, transports: &[Box<dyn Transport>]) -> Vec<Action> {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        transports: &[Box<dyn Transport>],
+        themes: &ThemeController,
+    ) -> Vec<Action> {
         let mut actions = Vec::new();
         let hosts: Vec<Vec<Host>> = transports.iter().map(|t| t.hosts()).collect();
 
@@ -312,7 +396,11 @@ impl Launcher {
             self.messages(ui);
         });
 
+        // The host list is a raised surface beside the canvas, as the
+        // portal's sidebar is.
+        let side = egui::Frame::side_top_panel(ui.style()).fill(ui.palette().panel);
         egui::Panel::left("hosts")
+            .frame(side)
             .resizable(true)
             .default_size(320.0)
             .show(ui, |ui| {
@@ -325,13 +413,30 @@ impl Launcher {
                         }
                         for host in &hosts[t] {
                             let selected = self.selected.as_ref() == Some(&(t, host.id.clone()));
-                            let state = match (host.paired, host.running_app) {
-                                (false, _) => "found, not paired".to_string(),
-                                (true, Some(_)) => "paired, running an app".to_string(),
-                                (true, None) => "paired".to_string(),
+                            let state = if self.portal_transport == Some(t) {
+                                let up = self.apps_up(t, &host.id);
+                                match (host.paired, up) {
+                                    (false, _) => "not signed in".to_string(),
+                                    (true, 0) => "signed in".to_string(),
+                                    (true, 1) => "signed in, 1 app running".to_string(),
+                                    (true, n) => format!("signed in, {n} apps running"),
+                                }
+                            } else {
+                                match (host.paired, host.running_app) {
+                                    (false, _) => "found, not paired".to_string(),
+                                    (true, Some(_)) => "paired, running an app".to_string(),
+                                    (true, None) => "paired".to_string(),
+                                }
                             };
-                            let label = format!("{}\n{}  ·  {}", host.name, host.address, state);
-                            if ui.selectable_label(selected, label).clicked() {
+                            let card = selectable_card(ui, selected, |ui| {
+                                ui.label(RichText::new(&host.name).strong());
+                                ui.label(
+                                    RichText::new(format!("{}  ·  {}", host.address, state))
+                                        .small()
+                                        .color(ui.palette().ink_2),
+                                );
+                            });
+                            if card.response.clicked() {
                                 self.selected = Some((t, host.id.clone()));
                             }
                         }
@@ -363,16 +468,23 @@ impl Launcher {
 
         if self.settings_open {
             let mut open = true;
-            let mut changed = false;
+            let mut outcome = settings::Outcome::default();
             egui::Window::new("Settings")
                 .open(&mut open)
+                .collapsible(false)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
-                    changed = settings::show(ui, &mut self.config);
+                    outcome = settings::show(ui, &mut self.config, themes);
                 });
             self.settings_open = open;
-            if changed {
+            if outcome.changed {
                 actions.push(Action::SaveConfig(self.config.clone()));
+            }
+            if outcome.reload_themes {
+                actions.push(Action::ReloadThemes);
+            }
+            if outcome.open_themes_folder {
+                actions.push(Action::OpenThemesFolder);
             }
         }
 
@@ -400,7 +512,7 @@ impl Launcher {
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Sign in").clicked() {
+                    if primary_button_enabled(ui, true, "Sign in").clicked() {
                         answer = Some(true);
                     }
                     if ui.button("Cancel").clicked() {
@@ -431,13 +543,10 @@ impl Launcher {
                 ui.label(what);
             });
         }
-        if let Some(error) = self.error.clone() {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(Color32::from_rgb(235, 90, 90), error);
-                if ui.small_button("Dismiss").clicked() {
-                    self.error = None;
-                }
-            });
+        if let Some(error) = self.error.clone()
+            && callout(ui, Status::Danger, &error, Some("Dismiss"))
+        {
+            self.error = None;
         }
         if self.input_access.1.elapsed() > INPUT_ACCESS_RECHECK {
             self.input_access = (input_access(), Instant::now());
@@ -445,27 +554,26 @@ impl Launcher {
         // Only while no controller works: macOS's answer can be "denied" for
         // a build it hasn't seen, or for the terminal that started the player,
         // while the controller plays fine.
-        if self.input_access.0 == InputAccess::Denied && crate::input::pads::connected() == 0 {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(
-                    Color32::from_rgb(230, 180, 80),
-                    "Some gamepads (Steam Controller) need Input Monitoring: allow Cha Player in \
-                     System Settings → Privacy & Security → Input Monitoring, then reopen it.",
-                );
-                if ui.small_button("Open Settings").clicked() {
-                    let _ = std::process::Command::new("open")
-                        .arg(INPUT_MONITORING_SETTINGS)
-                        .spawn();
-                }
-            });
+        if self.input_access.0 == InputAccess::Denied
+            && crate::input::pads::connected() == 0
+            && callout(
+                ui,
+                Status::Warn,
+                "Some gamepads (Steam Controller) need Input Monitoring: allow Cha Player in \
+                 System Settings → Privacy & Security → Input Monitoring, then reopen it. \
+                 If it is already on, it was granted to an older build: remove it with −, \
+                 add it again, then reopen it.",
+                Some("Open Settings"),
+            )
+        {
+            let _ = std::process::Command::new("open")
+                .arg(INPUT_MONITORING_SETTINGS)
+                .spawn();
         }
-        if let Some(info) = self.info.clone() {
-            ui.horizontal_wrapped(|ui| {
-                ui.weak(info);
-                if ui.small_button("OK").clicked() {
-                    self.info = None;
-                }
-            });
+        if let Some(info) = self.info.clone()
+            && callout(ui, Status::Info, &info, Some("OK"))
+        {
+            self.info = None;
         }
     }
 
@@ -509,6 +617,26 @@ impl Launcher {
         ui.separator();
     }
 
+    /// How many of a host's listed apps are running or starting.
+    fn apps_up(&self, t: usize, host: &str) -> usize {
+        match self.apps.get(&(t, host.to_string())) {
+            Some(AppsState::Loaded { apps, .. }) => apps.iter().filter(|a| a.state.is_up()).count(),
+            _ => 0,
+        }
+    }
+
+    /// Whether `app` is up on `host`. A portal says so per app; a GameStream
+    /// host's own state is newer than its listed apps.
+    fn app_state(&self, t: usize, host: &Host, app: &App) -> AppState {
+        if self.portal_transport == Some(t) {
+            app.state
+        } else if host.running_app == Some(app.id) {
+            AppState::Running
+        } else {
+            AppState::Stopped
+        }
+    }
+
     fn host_panel(&mut self, ui: &mut egui::Ui, t: usize, host: &Host, actions: &mut Vec<Action>) {
         ui.heading(&host.name);
         ui.weak(&host.address);
@@ -522,6 +650,22 @@ impl Launcher {
         let key = (t, host.id.clone());
         if !self.apps.contains_key(&key) {
             self.apps.insert(key.clone(), AppsState::Loading);
+            actions.push(Action::LoadApps {
+                transport: t,
+                host: host.id.clone(),
+            });
+        }
+
+        // A portal's apps start and stop elsewhere too: list them again now
+        // and then, keeping the list shown meanwhile.
+        if self.portal_transport == Some(t)
+            && let Some(AppsState::Loaded {
+                listed, refreshing, ..
+            }) = self.apps.get_mut(&key)
+            && !*refreshing
+            && listed.elapsed() >= PORTAL_APPS_REFRESH
+        {
+            *refreshing = true;
             actions.push(Action::LoadApps {
                 transport: t,
                 host: host.id.clone(),
@@ -542,17 +686,6 @@ impl Launcher {
                     host: host.id.clone(),
                 });
             }
-            if host.running_app.is_some()
-                && ui
-                    .small_button("Quit the running app")
-                    .on_hover_text("Closes it on the host, unsaved work included")
-                    .clicked()
-            {
-                actions.push(Action::QuitApp {
-                    transport: t,
-                    host: host.id.clone(),
-                });
-            }
         });
         ui.separator();
 
@@ -565,34 +698,57 @@ impl Launcher {
                 });
             }
             Some(AppsState::Failed(e)) => {
-                ui.colored_label(
-                    Color32::from_rgb(235, 90, 90),
-                    format!("Could not list apps: {e}"),
+                callout(
+                    ui,
+                    Status::Danger,
+                    &format!("Could not list apps: {e}"),
+                    None,
                 );
             }
-            Some(AppsState::Loaded(apps)) if apps.is_empty() => {
+            Some(AppsState::Loaded { apps, .. }) if apps.is_empty() => {
                 ui.weak("This host has no apps.");
             }
-            Some(AppsState::Loaded(apps)) => {
+            Some(AppsState::Loaded { apps, .. }) => {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for app in apps {
-                        ui.horizontal(|ui| {
-                            let running = host.running_app == Some(app.id);
-                            let launch = if running { "Resume" } else { "Launch" };
-                            if ui.add_enabled(!busy, egui::Button::new(launch)).clicked() {
-                                actions.push(Action::Launch {
-                                    transport: t,
-                                    host: host.id.clone(),
-                                    app: app.id,
-                                });
-                            }
-                            ui.label(&app.name);
-                            if running {
-                                ui.weak("(running)");
-                            }
-                            if app.hdr {
-                                ui.weak("HDR");
-                            }
+                        let state = self.app_state(t, host, app);
+                        crate::theme::widgets::card(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let launch = if state.is_up() { "Resume" } else { "Launch" };
+                                if primary_button_enabled(ui, !busy, launch).clicked() {
+                                    actions.push(Action::Launch {
+                                        transport: t,
+                                        host: host.id.clone(),
+                                        app: app.id,
+                                    });
+                                }
+                                ui.label(RichText::new(&app.name).strong());
+                                match state {
+                                    AppState::Running => {
+                                        status_label(ui, Status::Ok, "(running)");
+                                    }
+                                    AppState::Starting => {
+                                        status_label(ui, Status::Info, "(starting)");
+                                    }
+                                    AppState::Stopped => {}
+                                }
+                                if app.hdr {
+                                    ui.weak("HDR");
+                                }
+                                if state.is_up()
+                                    && danger_button(ui, !busy, "Quit")
+                                        .on_hover_text(
+                                            "Closes it on the host, unsaved work included",
+                                        )
+                                        .clicked()
+                                {
+                                    actions.push(Action::QuitApp {
+                                        transport: t,
+                                        host: host.id.clone(),
+                                        app: app.id,
+                                    });
+                                }
+                            });
                         });
                     }
                 });
@@ -656,5 +812,42 @@ impl Launcher {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod snapshots;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The launcher and its settings window draw under a themed context
+    /// without panicking, in every variant (no window needed).
+    #[test]
+    fn launcher_draws_themed_in_every_variant() {
+        use crate::theme::{Appearance, Contrast};
+        let dir = std::env::temp_dir().join(format!("cha-player-ui-{}", std::process::id()));
+        let mut themes = ThemeController::new(dir.clone(), None);
+        let ctx = egui::Context::default();
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            for contrast in [Contrast::Standard, Contrast::More] {
+                let mut config = Config::default();
+                config.theme.appearance = appearance;
+                config.theme.contrast = contrast;
+                config.theme.scale = 1.25;
+                assert!(themes.sync(&ctx, &config.theme));
+                assert!(!themes.sync(&ctx, &config.theme), "unchanged: no restyle");
+                let mut launcher = Launcher::new(config);
+                launcher.settings_open = true;
+                launcher.error = Some("boom".into());
+                for _ in 0..2 {
+                    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                        launcher.show(ui, &[], &themes);
+                    });
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).ok();
     }
 }

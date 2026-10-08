@@ -48,6 +48,10 @@ impl EguiLayer {
         }
     }
 
+    pub fn ctx(&self) -> &egui::Context {
+        &self.ctx
+    }
+
     /// True when egui used the event (a click on a widget, typing in a field).
     pub fn on_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
         let response = self.state.on_window_event(window, event);

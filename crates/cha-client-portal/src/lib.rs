@@ -20,7 +20,10 @@
 //! - **Apps:** the portal's catalog. Catalog ids are strings and
 //!   [`cha_client::App::id`] is a number, so an app's id is its position in
 //!   the catalog the portal last sent (1-based); [`Portal::template_id`]
-//!   maps it back.
+//!   maps it back. Each app's [`cha_client::AppState`] is the user's
+//!   environment of that template (`GET /api/environments`), so apps running
+//!   from a browser or another player show as running here; the list is a
+//!   snapshot, to be listed again to stay current.
 //! - **Launch:** [`Transport::launch`] runs the app's template on the portal
 //!   and streams it over `cha-stream/1` on WebTransport
 //!   (`cha-client-stream`), through the portal as the browser does. It
@@ -30,7 +33,8 @@
 //!   environment encodes; asks `POST /api/environments/{id}/connect` for a
 //!   media token (60 s) right before connecting. Stopping the session leaves
 //!   the environment running, so launching again resumes it; stopping with
-//!   `quit_app` also stops the environment (`DELETE /api/environments/{id}`).
+//!   `quit_app` also stops the environment (`DELETE /api/environments/{id}`),
+//!   and [`Transport::quit_app`] stops it without streaming.
 //!   A dropped connection ends the session; there is no reconnect yet.
 //!
 //! Needs a tokio runtime.
@@ -47,7 +51,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use cha_client::{
-    App, BoxFuture, Codec, Host, Input, Pairing, Session, SessionControl, StreamConfig, Transport,
+    App, AppState, BoxFuture, Codec, Host, Input, Pairing, Session, SessionControl, StreamConfig,
+    Transport,
 };
 use cha_client_stream::Target;
 use tracing::{info, warn};
@@ -268,6 +273,18 @@ impl Inner {
             .catalog()
             .await
             .map_err(|e| self.on_error(origin, e))?;
+        // Without them every app reads as stopped, and launching still finds
+        // a running one: not worth failing the list for.
+        let environments = match client.environments().await {
+            Ok(environments) => environments,
+            Err(PortalError::SignedOut) => {
+                return Err(self.on_error(origin, PortalError::SignedOut));
+            }
+            Err(e) => {
+                warn!(portal = origin, "listing environments: {e}");
+                Vec::new()
+            }
+        };
         let apps = templates
             .iter()
             .enumerate()
@@ -275,6 +292,7 @@ impl Inner {
                 id: i as u32 + 1,
                 name: t.name.clone(),
                 hdr: false,
+                state: app_state(&environments, &t.id),
             })
             .collect();
         self.templates.lock().expect("templates lock").insert(
@@ -391,6 +409,17 @@ impl Transport for Portal {
         let host = host_id.to_string();
         Box::pin(async move { inner.launch(&host, app_id, config).await })
     }
+
+    fn quit_app(
+        &self,
+        host_id: &str,
+        app_id: u32,
+        _config: StreamConfig,
+    ) -> BoxFuture<'_, Result<()>> {
+        let inner = Arc::clone(&self.inner);
+        let host = host_id.to_string();
+        Box::pin(async move { inner.quit_app(&host, app_id).await })
+    }
 }
 
 /// Wraps a stream's control so that stopping it with `quit_app` also stops
@@ -465,6 +494,25 @@ impl Inner {
         }
         self.apps(origin).await?;
         known(self).ok_or_else(|| anyhow!("the portal's catalog has no app {app_id}"))
+    }
+
+    /// Stops the user's environment of the app's template, running or
+    /// starting, without connecting to it.
+    async fn quit_app(&self, origin: &str, app_id: u32) -> Result<()> {
+        let client = self.authed(origin)?;
+        let template = self.template_for(origin, app_id).await?;
+        let environments = client
+            .environments()
+            .await
+            .map_err(|e| self.on_error(origin, e))?;
+        let env = pick_existing(&environments, &template)
+            .ok_or_else(|| anyhow!("it isn't running any more"))?;
+        client
+            .stop_environment(&env.id)
+            .await
+            .map_err(|e| self.on_error(origin, e))?;
+        info!(environment = %env.id, template = %template, "environment stopped");
+        Ok(())
     }
 
     async fn launch(&self, origin: &str, app_id: u32, config: StreamConfig) -> Result<Session> {
@@ -589,4 +637,14 @@ pub fn pick_existing<'a>(
     of_template()
         .find(|e| e.state == "running")
         .or_else(|| of_template().find(|e| e.state == "starting"))
+}
+
+/// How the user's environments of `template` make its app look: running if
+/// one runs, starting if one starts, else stopped.
+pub fn app_state(environments: &[Environment], template: &str) -> AppState {
+    match pick_existing(environments, template).map(|e| e.state.as_str()) {
+        Some("running") => AppState::Running,
+        Some(_) => AppState::Starting,
+        None => AppState::Stopped,
+    }
 }

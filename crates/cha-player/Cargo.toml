@@ -39,6 +39,7 @@ libc = "0.2"
 egui = "0.35"
 egui-wgpu = "0.35"
 egui-winit = "0.35"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
 objc2 = "0.6"
 objc2-core-foundation = "0.3"
 objc2-core-media = "0.3"

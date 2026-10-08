@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use cha_client::{Codec, StreamConfig};
 use serde::{Deserialize, Serialize};
 
+use crate::theme::ThemePrefs;
+
 /// `~/Library/Application Support/Cha Player`: settings, and whatever a
 /// transport keeps (its client identity and paired hosts).
 pub fn data_dir() -> Result<PathBuf> {
@@ -40,6 +42,8 @@ pub struct Config {
     /// Send Cmd as Ctrl, as the browser player does (Cmd+C copies in a Linux
     /// app); off sends it as Super.
     pub command_as_control: bool,
+    /// Colours, appearance and UI scale.
+    pub theme: ThemePrefs,
 }
 
 impl Default for Config {
@@ -51,6 +55,7 @@ impl Default for Config {
             bitrate_kbps: 80_000,
             codecs: vec![Codec::Hevc, Codec::H264],
             command_as_control: true,
+            theme: ThemePrefs::default(),
         }
     }
 }
@@ -89,6 +94,7 @@ impl Config {
             self.fps = defaults.fps;
         }
         self.bitrate_kbps = self.bitrate_kbps.clamp(1_000, 500_000);
+        self.theme = self.theme.sanitized();
         self.codecs.retain(|c| *c != Codec::Av1);
         if self.codecs.is_empty() {
             self.codecs = defaults.codecs;
@@ -131,6 +137,36 @@ mod tests {
         assert_eq!(repaired.fps, 60);
         assert_eq!(repaired.width, 1920);
         assert_eq!(repaired.codecs, vec![Codec::Hevc, Codec::H264]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn config_without_a_theme_key_gets_the_default_theme() {
+        let old = r#"{"width": 1920, "height": 1080, "fps": 60, "bitrate_kbps": 50000,
+                      "codecs": ["h264"], "command_as_control": false}"#;
+        let config: Config = serde_json::from_str(old).unwrap();
+        assert_eq!(config.theme, ThemePrefs::default());
+        assert_eq!(config.theme.theme, "cha-magenta");
+        assert_eq!(config.theme.scale, 1.0);
+        assert!(!config.command_as_control);
+    }
+
+    #[test]
+    fn theme_prefs_round_trip_and_partial_keys_default() {
+        let dir = std::env::temp_dir().join(format!("cha-player-theme-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"theme": {"theme": "cha-jade", "appearance": "light", "scale": 9.0}}"#,
+        )
+        .unwrap();
+        let config = Config::load(&dir);
+        assert_eq!(config.theme.theme, "cha-jade");
+        assert_eq!(config.theme.appearance, crate::theme::Appearance::Light);
+        assert_eq!(config.theme.contrast, crate::theme::Contrast::System);
+        assert_eq!(config.theme.scale, 2.0);
+        config.save(&dir).unwrap();
+        assert_eq!(Config::load(&dir), config);
         std::fs::remove_dir_all(dir).ok();
     }
 

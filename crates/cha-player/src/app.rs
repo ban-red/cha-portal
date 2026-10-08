@@ -32,6 +32,7 @@ use crate::render::egui_layer::EguiLayer;
 use crate::render::video::{VideoPipeline, aspect_fit};
 use crate::render::{Gpu, Skip};
 use crate::session::{self, Rates, Running};
+use crate::theme::ThemeController;
 use crate::ui::{self, Action, Launcher};
 use crate::video::pyrowave::PyroPresenter;
 
@@ -133,6 +134,8 @@ struct App {
 
     gfx: Option<Graphics>,
     launcher: Launcher,
+    /// Themes, and what the system says about appearance.
+    theme: ThemeController,
     stream: Option<Stream>,
     generation: u64,
     modifiers: ModifiersState,
@@ -155,6 +158,7 @@ impl App {
         #[cfg_attr(not(feature = "portal"), allow(unused_mut))] mut options: Options,
     ) -> Self {
         let config = Config::load(&data_dir);
+        let theme = ThemeController::new(data_dir.clone(), None);
         #[cfg_attr(not(feature = "portal"), allow(unused_mut))]
         let mut launcher = Launcher::new(config);
         #[cfg(feature = "portal")]
@@ -174,6 +178,7 @@ impl App {
             options,
             gfx: None,
             launcher,
+            theme,
             stream: None,
             generation: 0,
             modifiers: ModifiersState::empty(),
@@ -263,28 +268,27 @@ impl App {
                     )
                 });
             }
-            Action::QuitApp { transport, host } => {
-                // The core has no "quit" call: resume the running app and
-                // stop that session with `quit_app`.
-                let running = transports[transport]
-                    .hosts()
-                    .into_iter()
-                    .find(|h| h.id == host)
-                    .and_then(|h| h.running_app);
+            Action::QuitApp {
+                transport,
+                host,
+                app,
+            } => {
+                let name = self
+                    .launcher
+                    .app_name(transport, &host, app)
+                    .unwrap_or_else(|| "the app".into());
                 let config = self.launcher.config().stream_config();
                 self.spawn(async move {
-                    let Some(app) = running else {
-                        return UserEvent::Ui(ui::Event::Info("Nothing is running".into()));
-                    };
-                    match transports[transport].launch(&host, app, config).await {
-                        Ok(session) => {
-                            session.control.stop(true);
-                            UserEvent::Ui(ui::Event::Info("Asked the host to quit the app".into()))
-                        }
-                        Err(e) => UserEvent::Ui(ui::Event::Failed(format!(
-                            "Could not quit the app: {e:#}"
-                        ))),
-                    }
+                    let result = transports[transport]
+                        .quit_app(&host, app, config)
+                        .await
+                        .map(|()| name)
+                        .map_err(|e| format!("{e:#}"));
+                    UserEvent::Ui(ui::Event::AppQuit {
+                        transport,
+                        host,
+                        result,
+                    })
                 });
             }
             #[cfg(feature = "portal")]
@@ -331,6 +335,17 @@ impl App {
             }
             #[cfg(not(feature = "portal"))]
             Action::SignIn { .. } | Action::SignOut { .. } => {}
+            Action::ReloadThemes => {
+                self.theme.reload();
+                self.request_redraw();
+            }
+            Action::OpenThemesFolder => {
+                if let Err(e) = self.theme.open_themes_folder() {
+                    self.launcher.handle(ui::Event::Failed(format!(
+                        "Could not open the themes folder: {e}"
+                    )));
+                }
+            }
             Action::SaveConfig(config) => {
                 if let Err(e) = config.save(&self.data_dir) {
                     tracing::warn!("saving the settings: {e:#}");
@@ -514,6 +529,8 @@ impl App {
         self.set_locked(None, false);
         stream.running.control.release_all();
         stream.running.control.stop(quit_app);
+        // What runs on the host changed, or may have.
+        self.launcher.refresh_apps();
         self.pads.detach();
         if let Some(gfx) = &mut self.gfx {
             gfx.history.clear();
@@ -725,9 +742,12 @@ impl App {
                 return;
             }
         };
+        self.theme.poll_system();
+        self.theme
+            .sync(gfx.egui.ctx(), &self.launcher.config().theme);
         let mut actions = Vec::new();
         let frame = gfx.egui.run(&window, |ui| {
-            actions = self.launcher.show(ui, &transports);
+            actions = self.launcher.show(ui, &transports, &self.theme);
         });
         let view = surface.texture.create_view(&Default::default());
         let mut encoder = gfx
@@ -741,12 +761,7 @@ impl App {
             &mut encoder,
             &view,
             &frame,
-            Some(wgpu::Color {
-                r: 0.05,
-                g: 0.05,
-                b: 0.06,
-                a: 1.0,
-            }),
+            Some(clear_color(self.theme.canvas(), gfx.gpu.format)),
         );
         gfx.gpu.queue.submit([encoder.finish()]);
         window.pre_present_notify();
@@ -902,6 +917,8 @@ impl App {
         }
         if show_stats {
             let snapshot = stream.rates.snapshot(&shared).clone();
+            self.theme
+                .sync(gfx.egui.ctx(), &self.launcher.config().theme);
             let frame = gfx
                 .egui
                 .run(&window, |ui| ui::show_stats(ui.ctx(), &snapshot));
@@ -969,6 +986,9 @@ impl ApplicationHandler<UserEvent> for App {
             });
         match built {
             Ok(gfx) => {
+                if let Some(theme) = gfx.gpu.window.theme() {
+                    self.theme.set_window_theme(theme);
+                }
                 gfx.gpu.window.request_redraw();
                 self.gfx = Some(gfx);
             }
@@ -1077,6 +1097,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.launcher
                     .show_error(format!("Could not start the stream: {e}"));
+                self.launcher.refresh_apps();
                 self.request_redraw();
             }
         }
@@ -1109,6 +1130,10 @@ impl ApplicationHandler<UserEvent> for App {
                 window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => window.request_redraw(),
+            WindowEvent::ThemeChanged(theme) => {
+                self.theme.set_window_theme(theme);
+                window.request_redraw();
+            }
             WindowEvent::Occluded(occluded) => {
                 tracing::debug!(occluded, "window occlusion");
                 if !occluded {
@@ -1148,5 +1173,22 @@ impl ApplicationHandler<UserEvent> for App {
                     dy: dy as f32,
                 });
         }
+    }
+}
+
+/// The window's clear colour for `canvas`: an sRGB surface wants linear
+/// values, egui's usual non-sRGB one the colour as written.
+fn clear_color(canvas: egui::Color32, format: wgpu::TextureFormat) -> wgpu::Color {
+    let [r, g, b, _] = if format.is_srgb() {
+        let c = egui::Rgba::from(canvas);
+        [c.r(), c.g(), c.b(), c.a()]
+    } else {
+        canvas.to_normalized_gamma_f32()
+    };
+    wgpu::Color {
+        r: f64::from(r),
+        g: f64::from(g),
+        b: f64::from(b),
+        a: 1.0,
     }
 }

@@ -141,6 +141,7 @@ libc = { version = "0.2" }
 objc2-core-foundation = { version = "0.3" }
 objc2-foundation = { version = "0.3", features = ["objc2-core-services"] }
 once_cell = { version = "1" }
+quinn-udp = { version = "0.5", default-features = false, features = ["fast-apple-datapath"] }
 security-framework-sys = { version = "2" }
 smallvec = { version = "1", default-features = false, features = ["union"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }

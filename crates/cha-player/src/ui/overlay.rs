@@ -1,6 +1,8 @@
 //! The stats overlay, toggled with Ctrl+Alt+Shift+S while streaming.
 
-use egui::{Align2, Color32, FontId, RichText};
+use egui::{Align2, FontId, RichText};
+
+use crate::theme::ThemeExt;
 
 /// One reading of the running stream, for the overlay.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -23,20 +25,22 @@ pub struct StatsSnapshot {
 }
 
 pub fn show_stats(ctx: &egui::Context, stats: &StatsSnapshot) {
+    // Over the video, so not the launcher's look: see `theme::OverlayStyle`.
+    let look = ctx.overlay_style();
     egui::Area::new(egui::Id::new("stats"))
         .anchor(Align2::LEFT_TOP, [10.0, 10.0])
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(Color32::from_black_alpha(190))
-                .corner_radius(6.0)
-                .inner_margin(8.0)
+                .fill(look.fill)
+                .corner_radius(look.radius)
+                .inner_margin(look.margin)
                 .show(ui, |ui| {
                     let line = |ui: &mut egui::Ui, text: String| {
                         ui.label(
                             RichText::new(text)
-                                .font(FontId::monospace(13.0))
-                                .color(Color32::from_gray(230)),
+                                .font(FontId::monospace(look.font_size))
+                                .color(look.text),
                         );
                     };
                     line(
@@ -71,8 +75,8 @@ pub fn show_stats(ctx: &egui::Context, stats: &StatsSnapshot) {
                             RichText::new(
                                 "Wi-Fi latency spikes: likely AWDL (AirDrop/Continuity). See the README.",
                             )
-                            .font(FontId::monospace(13.0))
-                            .color(Color32::from_rgb(255, 200, 80)),
+                            .font(FontId::monospace(look.font_size))
+                            .color(look.warn),
                         );
                     }
                 });

@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use cha_client::{Codec, Ended, StreamConfig, Transport};
+use cha_client::{AppState, Codec, Ended, StreamConfig, Transport};
 use cha_client_portal::{ConnectLink, Portal, pick_codecs};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -324,6 +324,35 @@ async fn a_running_environment_of_the_app_is_reused_and_left_running() {
     assert_eq!(ended, Ended::Stopped);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(fake.lock().unwrap().deletes.is_empty(), "left running");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn apps_say_which_run_and_quit_without_streaming() {
+    let fake: Shared = Arc::default();
+    fake.lock().unwrap().environments = vec![
+        env("old", "chrome", "failed", None),
+        env("mine", "steam", "running", Some(&["h264"])),
+    ];
+    let (portal, origin, _dir) = signed_in(fake.clone()).await;
+    let apps = portal.apps(&origin).await.unwrap();
+    let states: Vec<AppState> = apps.iter().map(|a| a.state).collect();
+    assert_eq!(states, [AppState::Stopped, AppState::Running]);
+
+    // Started from a browser meanwhile: the next listing sees it.
+    fake.lock()
+        .unwrap()
+        .environments
+        .insert(0, env("b", "chrome", "starting", None));
+    let apps = portal.apps(&origin).await.unwrap();
+    assert_eq!(apps[0].state, AppState::Starting);
+
+    portal
+        .quit_app(&origin, apps[1].id, config(vec![Codec::H264]))
+        .await
+        .expect("quit");
+    let f = fake.lock().unwrap();
+    assert_eq!(f.deletes, ["mine"]);
+    assert!(f.connects.is_empty(), "quitting doesn't stream");
 }
 
 #[tokio::test(flavor = "multi_thread")]
