@@ -33,6 +33,8 @@ pub fn collect() -> Inventory {
         // its own is.
         disks: Vec::new(),
         platform: platform(),
+        // The agent adds it: it asks Docker about its own container.
+        update: None,
     };
     // NVIDIA and the CPU; the agent adds the VA-API devices it probes.
     let mut devices = inventory.devices_or_derived();

@@ -141,6 +141,16 @@ pub enum ToNode {
         /// host lists only running environments and never sends them.
         #[serde(default)]
         gamestream_launch: bool,
+        /// The portal reads [`ToPortal::AgentUpdate`] (ADR 0018); the same
+        /// guard.
+        #[serde(default)]
+        agent_updates: bool,
+    },
+    /// Move this node's agent to `version` (`0.2.1`), ADR 0018. Sent only to
+    /// an agent whose inventory says it can ([`Inventory::update`]); the
+    /// agent picks the image itself, from the one it runs.
+    UpdateAgent {
+        version: String,
     },
     Request {
         id: u64,
@@ -210,6 +220,19 @@ pub enum ToPortal {
     EnvironmentWarning {
         id: String,
         warning: Option<String>,
+    },
+    /// How an update of the agent ([`ToNode::UpdateAgent`]) is going (only
+    /// once the welcome says the portal reads it). Success needs none: the
+    /// node reconnects with its new `agent_version`.
+    AgentUpdate {
+        state: AgentUpdateState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        /// Bytes of the images downloaded so far, while `pulling`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        done: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
     },
     /// The machine's use now, every [`USAGE_INTERVAL_SECS`] while connected
     /// (only once the welcome says the portal reads it).
@@ -744,6 +767,36 @@ pub struct Inventory {
     /// that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<Platform>,
+    /// Whether the portal can update this agent (ADR 0018). Absent from
+    /// agents that predate it, which can't be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<AgentUpdatability>,
+}
+
+/// The image the agent runs, and whether it can be updated from the portal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUpdatability {
+    /// `ghcr.io/ban-red/cha-node:0.2.0`, or a local build (`cha-node:dev`).
+    pub image: String,
+    pub updatable: bool,
+    /// Why not, when not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Where an agent update is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentUpdateState {
+    /// Downloading the new agent and streamer images.
+    Pulling,
+    /// The helper is replacing the agent's container.
+    Swapping,
+    /// It didn't start; the old agent keeps running.
+    Failed,
+    /// The new agent didn't connect; the previous one runs again.
+    RolledBack,
 }
 
 /// What a disk holds for the node.
@@ -1071,6 +1124,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn agent_updates_round_trip() {
+        let msg = ToNode::UpdateAgent {
+            version: "0.2.1".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({"type": "update_agent", "version": "0.2.1"})
+        );
+        let progress = ToPortal::AgentUpdate {
+            state: AgentUpdateState::RolledBack,
+            detail: Some("the new agent didn't connect".into()),
+            done: None,
+            total: None,
+        };
+        let json = serde_json::to_value(&progress).unwrap();
+        assert_eq!(json["state"], "rolled-back");
+        assert!(json.get("done").is_none());
+        assert!(matches!(
+            serde_json::from_value::<ToPortal>(json).unwrap(),
+            ToPortal::AgentUpdate {
+                state: AgentUpdateState::RolledBack,
+                ..
+            }
+        ));
+        let can = AgentUpdatability {
+            image: "cha-node:dev".into(),
+            updatable: false,
+            reason: Some("a local build".into()),
+        };
+        let json = serde_json::to_value(&can).unwrap();
+        assert_eq!(json["updatable"], false);
+        assert_eq!(
+            serde_json::from_value::<AgentUpdatability>(json).unwrap(),
+            can
+        );
+    }
+
+    #[test]
     fn signed_hello_verifies_only_for_its_challenge() {
         let key = NodeKey::from_secret([7u8; 32]);
         let msg = hello_message("nonce-1", "node-a");
@@ -1195,6 +1286,7 @@ mod tests {
             moonlight: true,
             gamestream: true,
             gamestream_launch: true,
+            agent_updates: true,
         };
         let text = serde_json::to_string(&new).unwrap();
         assert!(matches!(

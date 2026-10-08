@@ -56,6 +56,28 @@ struct Args {
     /// can't, and exit (non-zero if something must be fixed).
     #[arg(long)]
     doctor: bool,
+    /// Update this agent to a release (`0.2.1`) as the portal's Update button
+    /// does, and exit: run it in the agent's container (`docker exec
+    /// cha-node-agent-1 cha-node --update-to 0.2.1`). Pulls the images
+    /// unless the engine has them, then hands over to the update helper
+    /// (ADR 0018) and shows its log until this container is replaced.
+    #[arg(long, value_name = "VERSION")]
+    update_to: Option<String>,
+    /// The update helper (ADR 0018, started by the agent from the new image):
+    /// replace the agent's container ID with one running `--image`, wait for
+    /// it to connect, and put the old one back if it doesn't.
+    #[arg(long, value_name = "ID", requires = "image")]
+    replace_agent: Option<String>,
+    /// With `--replace-agent`: the new agent image.
+    #[arg(long, requires = "replace_agent")]
+    image: Option<String>,
+    /// With `--replace-agent`: the compose directory whose `.env` follows the
+    /// new release.
+    #[arg(long, requires = "replace_agent")]
+    env_dir: Option<PathBuf>,
+    /// With `--replace-agent`: how many seconds the new agent has to connect.
+    #[arg(long, default_value_t = cha_node::update::HEALTH_TIMEOUT.as_secs(), requires = "replace_agent")]
+    health_timeout: u64,
     /// The Docker engine's socket; environments need it.
     #[arg(long, env = "CHA_DOCKER_SOCKET", default_value = DEFAULT_SOCKET)]
     docker_socket: String,
@@ -186,6 +208,20 @@ async fn main() -> Result<()> {
     }
     init_tls();
     let docker = Docker::new(&args.docker_socket);
+    if let (Some(id), Some(image)) = (&args.replace_agent, &args.image) {
+        let timeout = std::time::Duration::from_secs(args.health_timeout.max(1));
+        let result =
+            cha_node::update::replace_agent(&docker, id, image, args.env_dir.as_deref(), timeout)
+                .await;
+        if let Err(err) = result {
+            warn!("{err:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(version) = &args.update_to {
+        return update_to(&docker, version).await;
+    }
     let config = docker_config(&args)?;
     #[cfg(feature = "gamestream")]
     let gamestream_host = gamestream_config(&args);
@@ -270,7 +306,9 @@ async fn main() -> Result<()> {
     #[cfg(feature = "gamestream")]
     let node_name = identity.name.clone();
     let placement = cha_node::inventory::parse_placement(args.placement.as_deref())?;
-    let mut agent = Agent::new(identity)?.with_placement(placement);
+    let mut agent = Agent::new(identity)?
+        .with_placement(placement)
+        .with_state_dir(args.state_dir.clone());
     #[cfg(feature = "gamestream")]
     let mut browse = None;
     if args.moonlight {
@@ -308,6 +346,19 @@ async fn main() -> Result<()> {
         ),
     }
     agent.run().await
+}
+
+/// `--update-to`: what the portal's Update button does, run by hand.
+async fn update_to(docker: &Docker, version: &str) -> Result<()> {
+    cha_node::update::start_update(docker, docker.socket(), version, &mut |msg| {
+        if let cha_wire::ToPortal::AgentUpdate { detail, .. } = msg {
+            println!("{}", detail.unwrap_or_default());
+        }
+    })
+    .await?;
+    println!("The update helper is running; this agent is replaced once the new one connects.");
+    cha_node::update::follow_helper(docker).await;
+    Ok(())
 }
 
 /// The GameStream host's settings, when `CHA_GAMESTREAM` turns it on; the

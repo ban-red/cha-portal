@@ -21,12 +21,14 @@ pub mod hostfiles;
 pub mod inventory;
 pub mod moonlight;
 pub mod storage;
+pub mod update;
 pub mod usage;
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -224,6 +226,10 @@ pub struct Agent {
     moonlight: Option<Arc<dyn Control>>,
     gamestream: GameStreamHandle,
     placement: cha_wire::PlacementMode,
+    /// Where the state is, to read what an update helper left (ADR 0018).
+    state_dir: Option<PathBuf>,
+    /// An update of this agent is under way (ADR 0018); one at a time.
+    updating: Arc<AtomicBool>,
 }
 
 impl Agent {
@@ -236,6 +242,8 @@ impl Agent {
             moonlight: None,
             gamestream: Default::default(),
             placement: cha_wire::PlacementMode::Auto,
+            state_dir: None,
+            updating: Arc::default(),
         })
     }
 
@@ -257,6 +265,12 @@ impl Agent {
     /// Whether placement may pick this node by itself (`CHA_PLACEMENT`).
     pub fn with_placement(mut self, placement: cha_wire::PlacementMode) -> Self {
         self.placement = placement;
+        self
+    }
+
+    /// The state directory, where an update helper leaves its report.
+    pub fn with_state_dir(mut self, dir: PathBuf) -> Self {
+        self.state_dir = Some(dir);
         self
     }
 
@@ -296,7 +310,62 @@ impl Agent {
                 inventory::set_cpu_codecs(&mut inventory, codecs);
             }
         }
+        inventory.update = Some(
+            update::updatability(self.runtime.as_ref().and_then(|r| r.engine()).as_ref()).await,
+        );
         Ok(inventory)
+    }
+
+    /// What an update helper left for the portal, once (ADR 0018). The next
+    /// update may start from here.
+    fn update_note(&self) -> Option<ToPortal> {
+        let note = update::take_result(self.state_dir.as_deref()?)?;
+        self.updating.store(false, Ordering::SeqCst);
+        Some(note)
+    }
+
+    /// `UpdateAgent`: prepares in a task and hands over to the helper
+    /// ([`update::start_update`]), telling the portal how it goes. If all
+    /// goes well this process is stopped soon after, by the helper.
+    fn update_agent(&self, version: String, out: mpsc::UnboundedSender<ToPortal>) {
+        let engine = self.runtime.as_ref().and_then(|r| r.engine());
+        let busy = self.updating.swap(true, Ordering::SeqCst);
+        let updating = Arc::clone(&self.updating);
+        tokio::spawn(async move {
+            let refuse = |detail: &str| {
+                let _ = out.send(ToPortal::AgentUpdate {
+                    state: cha_wire::AgentUpdateState::Failed,
+                    detail: Some(detail.to_string()),
+                    done: None,
+                    total: None,
+                });
+            };
+            if busy {
+                return refuse("an update is already running");
+            }
+            let Some(docker) = engine else {
+                updating.store(false, Ordering::SeqCst);
+                return refuse("the agent has no Docker socket");
+            };
+            let sent = out.clone();
+            let result = update::start_update(&docker, docker.socket(), &version, &mut |msg| {
+                let _ = sent.send(msg);
+            })
+            .await;
+            match result {
+                // The helper has it; if it ends without replacing this agent
+                // and leaves no note, a later update may still try.
+                Ok(()) => {
+                    tokio::time::sleep(Duration::from_secs(600)).await;
+                    updating.store(false, Ordering::SeqCst);
+                }
+                Err(err) => {
+                    warn!("updating to {version}: {err:#}");
+                    updating.store(false, Ordering::SeqCst);
+                    let _ = out.send(update::failure(&err));
+                }
+            }
+        });
     }
 
     /// Stays connected, reconnecting with backoff, until the portal says this
@@ -366,6 +435,7 @@ impl Agent {
             portal_reads_moonlight,
             portal_reads_gamestream,
             portal_launches,
+            portal_reads_updates,
         ) = match next_message(&mut stream).await? {
             Next::Message(ToNode::Welcome {
                 heartbeat_secs,
@@ -374,6 +444,7 @@ impl Agent {
                 moonlight,
                 gamestream,
                 gamestream_launch,
+                agent_updates,
                 ..
             }) => (
                 Duration::from_secs(heartbeat_secs.max(1)),
@@ -382,6 +453,7 @@ impl Agent {
                 moonlight,
                 gamestream,
                 gamestream_launch,
+                agent_updates,
             ),
             Next::Closed(closed) => return Ok(closed),
             Next::Message(other) => bail!("expected a welcome, got {other:?}"),
@@ -431,6 +503,12 @@ impl Agent {
                 sink.send(encode(&ToPortal::EnvironmentWarning { id, warning })?)
                     .await?;
             }
+        }
+
+        // How an update that ended while this agent ran (or before it came
+        // back) went; the portal that reads it hears of it.
+        if portal_reads_updates && let Some(note) = self.update_note() {
+            sink.send(encode(&note)?).await?;
         }
 
         // Moonlight hosts: the whole list now (even an empty one, which tells
@@ -488,6 +566,9 @@ impl Agent {
                         bail!("the portal went quiet");
                     }
                     sink.send(encode(&ToPortal::Heartbeat)?).await?;
+                    if portal_reads_updates && let Some(note) = self.update_note() {
+                        sink.send(encode(&note)?).await?;
+                    }
                     // The portal's WebSocket layer pongs, which proves it's alive.
                     sink.send(Message::Ping(Default::default())).await?;
                 }
@@ -596,6 +677,11 @@ impl Agent {
                             // What the GameStream host asked it (a launch, a stop).
                             ToNode::Response { id, result } => {
                                 gamestream_answer(&self.gamestream, id, result);
+                            }
+                            ToNode::UpdateAgent { version } => {
+                                if portal_reads_updates {
+                                    self.update_agent(version, out_tx.clone());
+                                }
                             }
                             other => bail!("unexpected {other:?}"),
                         },

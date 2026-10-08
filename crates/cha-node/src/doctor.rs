@@ -84,6 +84,7 @@ pub async fn run(
     let nvidia = crate::inventory::has_nvidia_render_node();
     if engine.is_ok() {
         checks.push(images(docker, config).await);
+        checks.push(updates(docker).await);
         checks.push(if nvidia {
             gpu(docker, config).await
         } else {
@@ -618,6 +619,23 @@ async fn sandboxes(docker: &Docker, config: &DockerConfig) -> Check {
 /// names (it is given host paths): a root that is only inside the agent's
 /// container would take users' data to places nothing keeps.
 /// One line per disk that matters: Docker's and the data root's.
+/// Whether the portal can update this agent (ADR 0018).
+async fn updates(docker: &Docker) -> Check {
+    let can = crate::update::updatability(Some(docker)).await;
+    match can.reason {
+        None => check(
+            Level::Info,
+            "Updates",
+            format!("can be updated from the portal (running {})", can.image),
+        ),
+        Some(reason) => check(
+            Level::Info,
+            "Updates",
+            format!("not from the portal: {reason}"),
+        ),
+    }
+}
+
 async fn disk_checks(docker: &Docker, config: &DockerConfig, engine: bool) -> Vec<Check> {
     let docker_root = if engine {
         docker.root_dir().await.ok().flatten()

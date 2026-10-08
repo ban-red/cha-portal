@@ -286,6 +286,76 @@ impl Docker {
             .collect())
     }
 
+    /// What a container has written since `since` (Unix seconds), stdout and
+    /// stderr together, at most [`LOGS_READ_LIMIT`] bytes. For waiting on a
+    /// line to appear; the whole span is read each time.
+    pub async fn logs_since(&self, container: &str, since: u64) -> Result<String> {
+        let path = format!(
+            "/containers/{}/logs?stdout=1&stderr=1&since={since}",
+            encode(container)
+        );
+        tokio::time::timeout(LOGS_TIMEOUT, async {
+            let res = self.open(Method::GET, &path, None).await?;
+            if !res.status().is_success() {
+                bail!("reading the logs of {container}: {}", res.status());
+            }
+            let mut body = res.into_body();
+            let mut raw = Vec::new();
+            while let Some(frame) = body.frame().await {
+                if let Ok(data) = frame?.into_data() {
+                    raw.extend_from_slice(&data);
+                    if raw.len() >= LOGS_READ_LIMIT {
+                        break;
+                    }
+                }
+            }
+            Ok(demux(&raw))
+        })
+        .await
+        .context("timed out reading the logs")?
+    }
+
+    /// Gives a container another name (`POST /containers/{id}/rename`).
+    pub async fn rename(&self, id: &str, name: &str) -> Result<()> {
+        self.call(
+            Method::POST,
+            &format!("/containers/{}/rename?name={}", encode(id), encode(name)),
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Stops a container (SIGTERM, then SIGKILL after `grace_secs`) and keeps
+    /// it. One that isn't running is fine.
+    pub async fn stop(&self, id: &str, grace_secs: u32) -> Result<()> {
+        let (status, bytes) = self
+            .send(
+                Method::POST,
+                &format!("/containers/{}/stop?t={grace_secs}", encode(id)),
+                None,
+            )
+            .await?;
+        if status.is_success() || status == StatusCode::NOT_MODIFIED {
+            Ok(())
+        } else {
+            bail!("stopping {id}: {status}: {}", engine_message(&bytes))
+        }
+    }
+
+    /// A container's state and configuration (`GET /containers/{id}/json`);
+    /// an error when it doesn't exist.
+    pub async fn inspect_container(&self, id: &str) -> Result<Value> {
+        let bytes = self
+            .call(
+                Method::GET,
+                &format!("/containers/{}/json", encode(id)),
+                None,
+            )
+            .await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
     pub async fn image_exists(&self, image: &str) -> Result<bool> {
         let (status, bytes) = self
             .send(

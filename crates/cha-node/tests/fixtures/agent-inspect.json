@@ -1,0 +1,86 @@
+{
+  "Id": "3f1c0a9d8b7e6a5f4c3b2a190807f6e5d4c3b2a1908f7e6d5c4b3a291807f6e5",
+  "Created": "2026-10-08T17:22:24.499674471Z",
+  "Path": "cha-node",
+  "Args": [],
+  "State": { "Status": "running", "Running": true, "ExitCode": 0 },
+  "Image": "sha256:cab7cd0d9ee44525b5c6d2fbb8ee073082274b36a8d975989e9b08173bd5d59e",
+  "Name": "/cha-node-agent-1",
+  "RestartCount": 0,
+  "HostConfig": {
+    "Binds": [
+      "/srv/cha-portal:/srv/cha-portal:rw",
+      "/var/run/docker.sock:/var/run/docker.sock:rw",
+      "/etc/os-release:/run/host/os-release:ro"
+    ],
+    "NetworkMode": "cha-node_default",
+    "PortBindings": { "47989/tcp": [{ "HostIp": "", "HostPort": "47989" }] },
+    "RestartPolicy": { "Name": "unless-stopped", "MaximumRetryCount": 0 },
+    "AutoRemove": false,
+    "CapDrop": null,
+    "PidMode": "host",
+    "Privileged": false,
+    "SecurityOpt": ["label=disable"],
+    "Mounts": [
+      { "Type": "volume", "Source": "cha-node_state", "Target": "/var/lib/cha-node", "VolumeOptions": {} }
+    ]
+  },
+  "Mounts": [
+    { "Type": "bind", "Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock", "Mode": "rw", "RW": true },
+    {
+      "Type": "volume",
+      "Name": "cha-node_state",
+      "Source": "/var/lib/docker/volumes/cha-node_state/_data",
+      "Destination": "/var/lib/cha-node",
+      "Driver": "local"
+    }
+  ],
+  "Config": {
+    "Hostname": "3f1c0a9d8b7e",
+    "Domainname": "",
+    "User": "",
+    "AttachStdin": false,
+    "AttachStdout": true,
+    "AttachStderr": true,
+    "ExposedPorts": { "47989/tcp": {} },
+    "Tty": false,
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Env": [
+      "CHA_PLACEMENT=auto",
+      "CHA_STREAMER_IMAGE=ghcr.io/ban-red/cha-streamer:0.2.0",
+      "CHA_IMAGE_REGISTRY=ghcr.io/ban-red",
+      "CHA_IMAGE_TAG=0.2.0",
+      "CHA_NODE_NAME=",
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ],
+    "Cmd": null,
+    "Image": "ghcr.io/ban-red/cha-node:0.2.0",
+    "Volumes": { "/var/lib/cha-node": {} },
+    "WorkingDir": "",
+    "Entrypoint": ["cha-node"],
+    "Labels": {
+      "com.docker.compose.config-hash": "4a1f0c2b9d",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.project": "cha-node",
+      "com.docker.compose.project.working_dir": "/root/cha-portal-node/deploy/node",
+      "com.docker.compose.service": "agent",
+      "com.docker.compose.version": "2.40.0"
+    }
+  },
+  "NetworkSettings": {
+    "Networks": {
+      "cha-node_default": {
+        "IPAMConfig": null,
+        "Links": null,
+        "Aliases": ["cha-node-agent-1", "agent", "3f1c0a9d8b7e"],
+        "NetworkID": "9b1e",
+        "EndpointID": "77aa",
+        "Gateway": "172.18.0.1",
+        "IPAddress": "172.18.0.2",
+        "MacAddress": "02:42:ac:12:00:02",
+        "DriverOpts": null
+      }
+    }
+  }
+}
