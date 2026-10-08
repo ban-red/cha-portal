@@ -29,3 +29,5 @@ __pycache__/
 
 # Local cha-control databases (development)
 /data/
+# Written by deploy/proxmox/create-node.sh, beside a compose file
+deploy/*/compose.override.yaml
