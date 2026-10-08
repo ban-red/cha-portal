@@ -1,6 +1,29 @@
 #!/bin/sh
 # Starts the environment's app once the streamer's compositor is listening.
+#
+# The node starts an app as root only when its custom environment adds
+# capabilities (ADR 0021). Then this first drops to uid 1000, keeping exactly
+# those (CHA_AMBIENT_CAPS, comma separated) as ambient capabilities so the app
+# holds them as user cha, and runs itself again to wait as cha: root here has
+# no capabilities beyond those, so it can't even look into /run/cha. Root's
+# group 0 goes; the groups the node added (GPU, input) stay.
 set -eu
+if [ "$(id -u)" = 0 ]; then
+  if [ -z "${CHA_AMBIENT_CAPS:-}" ]; then
+    echo "cha-run: refusing to run the app as root" >&2
+    exit 1
+  fi
+  caps=$(printf '%s' "$CHA_AMBIENT_CAPS" | tr 'A-Z' 'a-z' | sed 's/[^,][^,]*/+&/g')
+  groups=$(id -G | tr ' ' '\n' | grep -vx 0 | paste -sd, -)
+  if [ -n "$groups" ]; then
+    set -- --groups="$groups" -- "$0" "$@"
+  else
+    set -- --clear-groups -- "$0" "$@"
+  fi
+  unset CHA_AMBIENT_CAPS
+  exec setpriv --reuid=1000 --regid=1000 \
+    --inh-caps=-all,"$caps" --ambient-caps=-all,"$caps" --bounding-set=-all,"$caps" "$@"
+fi
 socket="${XDG_RUNTIME_DIR:?}/${WAYLAND_DISPLAY:-wayland-0}"
 tries=0
 until [ -S "$socket" ]; do

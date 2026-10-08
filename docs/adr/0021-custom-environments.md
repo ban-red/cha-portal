@@ -21,7 +21,7 @@
   - **A custom environment may ask for:**
     - `mounts`: `{ source, target, readOnly }`. `source` is a name the node defines; in `full` mode it may also be an absolute host path.
     - `ports`: `{ container, protocol, host? }` (tcp or udp). The node picks the host port from its allowed range unless one is asked for.
-    - `capAdd`: capability names.
+    - `capAdd`: capability names. They reach the app as ambient capabilities of its uid 1000 processes. Docker gives a process that isn't root none of the container's capabilities, even privileged. So for these the node starts the app as root with only them plus `SETUID`, `SETGID` and `SETPCAP`, and passes them in `CHA_AMBIENT_CAPS`. The base image's `cha-run` drops to uid 1000 with `setpriv` before anything of the image runs, keeping them as ambient capabilities, trimming the bounding set to them and dropping root's group 0. The node does this only for an image whose entrypoint is `cha-run` and whose user is `cha`: any other entrypoint would itself run as root. Docker's init (PID 1) stays root; it only reaps.
     - `devices`: host device paths, as Docker's `Devices` takes them.
     - in `full` mode only: `privileged`, `networkMode: host`, `securityOpt` entries, and mounts from a network share: an NFS or CIFS volume (Docker's `local` driver with its `type`, `device` and `o` options), made for the launch and removed with the environment.
   - **The node decides, from `deploy/node/.env`:**

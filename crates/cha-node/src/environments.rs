@@ -1226,6 +1226,10 @@ impl DockerRuntime {
             self.ensure_image(&spec.id, "streamer", &streamer).await?;
         }
         spec.image = self.ensure_image(&spec.id, "app", &candidates).await?;
+        if spec.host.as_deref().is_some_and(|h| !h.cap_add.is_empty()) {
+            let image = self.docker.inspect_image(&spec.image).await?;
+            takes_added_caps(&spec.image, image.as_ref())?;
+        }
         let port = self.allocate(&spec.id)?;
         if spec.gateway.is_none()
             && let Err(err) = self.allocate_gamestream(&spec.id, port)
@@ -2737,6 +2741,31 @@ impl Runtime for DockerRuntime {
     }
 }
 
+/// Tells `cha-run` which capabilities to keep as it drops to uid 1000.
+const AMBIENT_CAPS_ENV: &str = "CHA_AMBIENT_CAPS";
+
+/// What `cha-run` needs, besides the app's own capabilities, to drop to uid
+/// 1000 and trim its bounding set to them.
+const DROP_CAPS: [&str; 3] = ["SETUID", "SETGID", "SETPCAP"];
+
+/// Whether `image` can be started as root for added capabilities: only one
+/// whose entrypoint is our base's `cha-run` and whose user is `cha`, so it is
+/// `cha-run` that runs as root and drops to uid 1000 before the app starts.
+/// Any other entrypoint would run as root itself.
+fn takes_added_caps(image: &str, inspect: Option<&Value>) -> Result<()> {
+    let config = inspect.map(|i| &i["Config"]);
+    let entrypoint = config.and_then(|c| c["Entrypoint"].as_array());
+    let user = config.and_then(|c| c["User"].as_str()).unwrap_or_default();
+    let ours = entrypoint.is_some_and(|e| e.len() == 1 && e[0] == "cha-run")
+        && matches!(user, "cha" | "1000" | "1000:1000" | "cha:cha");
+    if !ours {
+        bail!(
+            "host options refused: {image} can't take added capabilities: only an image built on the Cha base, with its cha-run entrypoint and user cha, starts as root to keep them"
+        );
+    }
+    Ok(())
+}
+
 /// What a custom environment's host options come to on this node: the
 /// settled form of [`HostOptions`], ready for the app's container.
 #[derive(Debug, Default)]
@@ -2764,10 +2793,27 @@ impl HostPlan {
     /// Adds it all to the app's container configuration. The profile's
     /// `CapDrop` stays; privileged, when asked, overrides it.
     fn apply(&self, config: &mut Value) {
-        let host = &mut config["HostConfig"];
         if !self.cap_add.is_empty() {
-            host["CapAdd"] = json!(self.cap_add);
+            // A process that isn't root holds no capabilities, whatever the
+            // container may have: the app starts as root with only these
+            // and what `cha-run` needs to drop to uid 1000 keeping them
+            // (ambient), which it does before anything of the image runs.
+            config["User"] = json!("0:0");
+            if let Some(env) = config["Env"].as_array_mut() {
+                env.push(json!(format!(
+                    "{AMBIENT_CAPS_ENV}={}",
+                    self.cap_add.join(",")
+                )));
+            }
+            let mut caps = self.cap_add.clone();
+            for cap in DROP_CAPS {
+                if !caps.iter().any(|c| c == cap) {
+                    caps.push(cap.to_string());
+                }
+            }
+            config["HostConfig"]["CapAdd"] = json!(caps);
         }
+        let host = &mut config["HostConfig"];
         if self.privileged {
             host["Privileged"] = json!(true);
         }
@@ -6824,7 +6870,29 @@ mod tests {
             })
         );
         assert_eq!(app["ExposedPorts"].as_object().unwrap().len(), 3);
-        assert_eq!(host["CapAdd"], json!(["SYS_NICE"]));
+        // Added capabilities: the app starts as root with only them and what
+        // cha-run needs to drop to uid 1000 keeping them.
+        assert_eq!(
+            host["CapAdd"],
+            json!(["SYS_NICE", "SETUID", "SETGID", "SETPCAP"])
+        );
+        assert_eq!(app["User"], "0:0");
+        assert!(
+            app["Env"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("CHA_AMBIENT_CAPS=SYS_NICE"))
+        );
+        // Without them it stays uid 1000, with nothing to hand down.
+        assert_eq!(app_ro["User"], app_user());
+        assert!(app_ro["HostConfig"].get("CapAdd").is_none());
+        assert!(
+            !app_ro["Env"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e.as_str().unwrap().starts_with("CHA_AMBIENT_CAPS="))
+        );
         // CapDrop and the rest of the confinement stay.
         assert_eq!(host["CapDrop"], json!(["ALL"]));
         assert!(host.get("Privileged").is_none());
@@ -6882,6 +6950,26 @@ mod tests {
             ..Default::default()
         });
         assert!(err.contains("mounts itself"), "{err}");
+    }
+
+    #[test]
+    fn only_an_image_that_drops_root_itself_takes_added_capabilities() {
+        let image = |entrypoint: Value, user: &str| json!({ "Config": { "Entrypoint": entrypoint, "User": user } });
+        for user in ["cha", "1000", "1000:1000"] {
+            assert!(takes_added_caps("x", Some(&image(json!(["cha-run"]), user))).is_ok());
+        }
+        // Another entrypoint would run as root itself.
+        for (entrypoint, user) in [
+            (json!(["/bin/sh", "-c"]), "cha"),
+            (json!(["cha-run", "--x"]), "cha"),
+            (json!(null), "cha"),
+            (json!(["cha-run"]), "root"),
+            (json!(["cha-run"]), ""),
+        ] {
+            let err = takes_added_caps("x", Some(&image(entrypoint, user))).unwrap_err();
+            assert!(err.to_string().contains("can't take added capabilities"));
+        }
+        assert!(takes_added_caps("x", None).is_err());
     }
 
     #[test]
