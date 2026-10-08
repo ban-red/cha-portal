@@ -51,6 +51,10 @@ Leaving the stream (Ctrl+Alt+Shift+Q) leaves the environment running, so launchi
 
 The media path is the portal-brokered one: nothing leaves your network except what you route yourself (Tailscale, a port-forward). The player must be able to reach the node's streamer address that the portal reports (UDP, the streamer's WebTransport port).
 
+## When the stream drops
+
+A stream that drops (a Wi-Fi blip, the node's network, nothing heard for 4 seconds) comes back by itself, in the same session: "Reconnecting…" shows over the last picture, the transport asks the portal for a fresh media token and reconnects, waiting 1, 2, 4, 8, then 15 s between attempts for as long as it takes, as the browser player does. It gives up only when that can't work: signed out of the portal, the environment gone, or another of your sessions took the seat. Keys and buttons held at the drop are released; pads, the size and the frame rate are sent again. Moonlight streams (`cha-client-gamestream`) don't reconnect yet.
+
 ## Controls while streaming
 
 | Keys | |

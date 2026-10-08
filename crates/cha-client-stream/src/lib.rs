@@ -19,7 +19,7 @@
 //! - [`session`]: the task that owns a connection. One bidirectional stream
 //!   carries JSON lines both ways (the first, a `ping`, is written at once);
 //!   everything else is datagrams. Clock sync from ping/pong every second, a
-//!   `report` every 100 ms, a 4 s silence watchdog that ends the session.
+//!   `report` every 100 ms, a 4 s silence watchdog that ends the connection.
 //! - [`receiver`] and [`video`]: the Sans-IO receive logic with injected
 //!   time: datagram demux, video reassembly with FEC recovery, in-order
 //!   delivery gated on a keyframe (or a RECOVERY frame after loss), `rfi`
@@ -41,15 +41,26 @@
 //! receive path against a PyroWave-shaped stream over loopback (frames per
 //! second, delivery jitter, CPU); see the example's header.
 //!
+//! - [`reconnect`]: [`connect_with`] makes a session that heals itself. When
+//!   the connection drops (the silence watchdog, the QUIC idle timeout, a
+//!   reset) it connects again inside the same [`cha_client::Session`], after
+//!   1, 2, 4, 8 and then 15 s, asking the caller's `refresh` for a new media
+//!   token each time. The streamer closing on purpose (code 1, another session
+//!   took the seat; code 2, the encoder stopped) or the player's `stop()`
+//!   ends it. The player sees [`cha_client::Feedback::Reconnecting`] and
+//!   [`cha_client::Feedback::Reconnected`].
+//!
 //! Not here: finding or launching the environment and the media token (the
-//! portal transport, `cha-client-portal`), reconnecting, codec switching, the
-//! clipboard, the streamer's cursor images.
+//! portal transport, `cha-client-portal`), codec switching, the clipboard,
+//! the streamer's cursor images.
 
 pub mod control;
 pub mod input;
 pub mod net;
 pub mod receiver;
+pub mod reconnect;
 mod session;
 pub mod video;
 
-pub use session::{Target, connect, connect_at};
+pub use reconnect::{BACKOFF, Refresh, RefreshFn, backoff_delay};
+pub use session::{Target, connect, connect_at, connect_with};

@@ -119,6 +119,21 @@ impl InputMapper {
         lines
     }
 
+    /// The connection dropped: lets go of the keys and mouse buttons held
+    /// (the lines are for the old connection, if it can still hear them) and
+    /// gives up the floor. Unlike [`release_all`](Self::release_all) the
+    /// pads' newest states stay, to be sent to the next session when it gives
+    /// us the floor again.
+    pub fn drop_floor(&mut self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.floor {
+            lines.extend(self.keys.iter().map(|k| key(k, false)));
+            lines.extend(self.buttons.iter().map(|b| button(*b, false)));
+        }
+        self.set_floor(false);
+        lines
+    }
+
     /// The lines for one input; none when we don't hold the floor (a pad's
     /// state is kept for when we do).
     pub fn map(&mut self, input: &Input) -> Vec<String> {
@@ -461,5 +476,38 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    #[test]
+    fn a_drop_lets_go_of_keys_and_keeps_the_pads_for_the_next_session() {
+        let mut m = controller();
+        m.map(&Input::Key {
+            code: "KeyA".into(),
+            down: true,
+        });
+        m.map(&Input::MouseButton {
+            button: 0,
+            down: true,
+        });
+        m.map(&Input::Pad {
+            index: 0,
+            pad: PadState {
+                buttons: vec![1.0; 2],
+                axes: vec![0.0; 4],
+            },
+        });
+        let lines = m.drop_floor();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(v(&lines[0])["code"], "KeyA");
+        assert_eq!(v(&lines[0])["down"], false);
+        assert_eq!(v(&lines[1])["k"], "button");
+        assert!(!m.has_floor());
+        // Nothing is said without the floor, and a second drop says nothing.
+        assert!(m.drop_floor().is_empty());
+        // The next session's floor brings the pad back as it is held now.
+        let again = m.set_floor(true);
+        assert_eq!(again.len(), 1);
+        assert_eq!(v(&again[0])["k"], "pad");
+        assert_eq!(v(&again[0])["b"][0], 1.0);
     }
 }

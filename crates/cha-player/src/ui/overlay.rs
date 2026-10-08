@@ -82,3 +82,24 @@ pub fn show_stats(ctx: &egui::Context, stats: &StatsSnapshot) {
                 });
         });
 }
+
+/// "Reconnecting…" over the last picture while a dropped stream comes back.
+pub fn show_reconnecting(ctx: &egui::Context, text: &str) {
+    let look = ctx.overlay_style();
+    egui::Area::new(egui::Id::new("reconnecting"))
+        .anchor(Align2::CENTER_TOP, [0.0, 24.0])
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(look.fill)
+                .corner_radius(look.radius)
+                .inner_margin(look.margin)
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(text)
+                            .font(FontId::proportional(look.font_size * 1.4))
+                            .color(look.text),
+                    );
+                });
+        });
+}

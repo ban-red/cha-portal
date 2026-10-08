@@ -915,13 +915,19 @@ impl App {
                 gfx.video.draw(&mut pass, &prepared);
             }
         }
-        if show_stats {
-            let snapshot = stream.rates.snapshot(&shared).clone();
+        let reconnecting = shared.reconnecting.lock().unwrap().clone();
+        if show_stats || reconnecting.is_some() {
+            let snapshot = show_stats.then(|| stream.rates.snapshot(&shared).clone());
             self.theme
                 .sync(gfx.egui.ctx(), &self.launcher.config().theme);
-            let frame = gfx
-                .egui
-                .run(&window, |ui| ui::show_stats(ui.ctx(), &snapshot));
+            let frame = gfx.egui.run(&window, |ui| {
+                if let Some(snapshot) = &snapshot {
+                    ui::show_stats(ui.ctx(), snapshot);
+                }
+                if let Some(text) = &reconnecting {
+                    ui::show_reconnecting(ui.ctx(), text);
+                }
+            });
             gfx.egui.paint(&gfx.gpu, &mut encoder, &view, &frame, None);
         }
         gfx.gpu.queue.submit([encoder.finish()]);

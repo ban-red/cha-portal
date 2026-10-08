@@ -368,6 +368,14 @@ impl Numbering {
         self.last = Some(id);
         self.high + u64::from(id)
     }
+
+    /// A new streamer session starts its frame ids at 0 again: the numbers
+    /// go on from where they were.
+    pub fn restart(&mut self) {
+        if let Some(last) = self.last.take() {
+            self.high += u64::from(last) + 1;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -600,5 +608,16 @@ mod tests {
         rx.on_datagram(t0, &bad);
         assert_eq!(rx.dropped(), 2);
         assert!(rx.take().frames.is_empty());
+    }
+
+    #[test]
+    fn numbers_keep_increasing_across_a_new_session() {
+        let mut n = Numbering::default();
+        assert_eq!([n.number(0), n.number(1), n.number(7)], [0, 1, 7]);
+        n.restart();
+        assert_eq!([n.number(0), n.number(1)], [8, 9]);
+        n.restart();
+        n.restart();
+        assert_eq!(n.number(0), 10);
     }
 }

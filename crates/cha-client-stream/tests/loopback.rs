@@ -3,11 +3,13 @@
 //! fragmenter and FEC), over loopback with induced loss.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cha_client::{Codec, Ended, Input, PadState, Session};
+use cha_client::{BoxFuture, Codec, Ended, Feedback, Input, PadState, Session};
 use cha_client_stream::control::LineBuf;
-use cha_client_stream::{Target, connect, connect_at};
+use cha_client_stream::{Refresh, Target, connect, connect_at, connect_with};
 use cha_proto::{DatagramHeader, Flags, Fragmenter, HEADER_LEN, Kind};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -37,6 +39,14 @@ enum Script {
     Quiet,
     /// Hello and floor, then the streamer's encoder stops and it hangs up.
     Close,
+    /// Hello and floor, then another session of this user takes the seat.
+    Replaced,
+    /// Hello, floor, two frames (0 a keyframe), then the connection drops
+    /// with a code that is not a decision (a blip).
+    Blip,
+    /// A session after a drop: hello, floor, three frames from id 0 (a
+    /// keyframe), then it stays up.
+    Back,
 }
 
 struct Streamer {
@@ -276,6 +286,32 @@ async fn serve(conn: Connection, script: Script, seen: mpsc::UnboundedSender<See
         tokio::time::sleep(Duration::from_millis(300)).await;
         conn.close(2u32.into(), b"hevc encoder stopped");
         return;
+    }
+    if script == Script::Replaced {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        conn.close(1u32.into(), b"replaced");
+        return;
+    }
+    if matches!(script, Script::Blip | Script::Back) {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut fragmenter = Fragmenter::new(MAX_DATAGRAM);
+        let count = if script == Script::Blip { 2 } else { 3 };
+        for id in 0..count {
+            let flags = if id == 0 { Flags::KEYFRAME } else { 0 };
+            fragmenter
+                .fragment(
+                    header(Kind::Video, flags, id, ts()),
+                    &frame_bytes(id, 800),
+                    |d| conn.send_datagram(d).unwrap(),
+                )
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        if script == Script::Blip {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            conn.close(9u32.into(), b"blip");
+            return;
+        }
     }
     let _ = reader.await;
     conn.close(0u32.into(), b"done");
@@ -551,4 +587,250 @@ async fn pyrowave_frames_arrive_whole_or_partial_and_nothing_is_asked_for() {
         }
     }
     assert!(!asked, "PyroWave never asks for a keyframe or an rfi");
+}
+
+/// A `refresh` that hands out `targets` in turn, then says to try again;
+/// counts how often it was asked.
+fn refresher(
+    targets: Vec<Result<Target, Refresh>>,
+    asked: Arc<AtomicUsize>,
+) -> impl Fn() -> BoxFuture<'static, Result<Target, Refresh>> + Send + Sync + 'static {
+    let targets = Mutex::new(targets.into_iter());
+    move || {
+        asked.fetch_add(1, Ordering::SeqCst);
+        let next = targets
+            .lock()
+            .unwrap()
+            .next()
+            .unwrap_or_else(|| Err(Refresh::Retry("nothing more to hand out".into())));
+        Box::pin(async move { next })
+    }
+}
+
+async fn next_feedback(session: &mut Session) -> Feedback {
+    tokio::time::timeout(Duration::from_secs(8), session.feedback.recv())
+        .await
+        .expect("feedback in time")
+        .expect("the feedback channel is open")
+}
+
+async fn next_frame(session: &mut Session) -> cha_client::VideoFrame {
+    tokio::time::timeout(Duration::from_secs(8), session.video.recv())
+        .await
+        .expect("a frame in time")
+        .expect("the video channel is open")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_stream_comes_back_inside_the_same_session() {
+    let first = start_streamer(Script::Blip, false);
+    let mut second = start_streamer(Script::Back, false);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let refresh = refresher(vec![Ok(target(second.port, &second.hash))], asked.clone());
+    let mut session = connect_with(
+        target(first.port, &first.hash),
+        2560,
+        1440,
+        Some(120),
+        refresh,
+    )
+    .await
+    .expect("connect");
+
+    // Held when the connection drops: a key (let go, not re-sent) and a pad
+    // (its state goes to the next session).
+    session.control.input(Input::Key {
+        code: "KeyA".into(),
+        down: true,
+    });
+    session.control.input(Input::Pad {
+        index: 0,
+        pad: PadState {
+            buttons: vec![1.0; 2],
+            axes: vec![0.0; 4],
+        },
+    });
+
+    // Frames 0 and 1 of the first session, then a pause, then the new
+    // session's, numbered on from there and starting at a keyframe.
+    let a = next_frame(&mut session).await;
+    let b = next_frame(&mut session).await;
+    assert_eq!((a.number, b.number), (0, 1));
+    let dropped_at = Instant::now();
+    let c = next_frame(&mut session).await;
+    let paused = dropped_at.elapsed();
+    let d = next_frame(&mut session).await;
+    let e = next_frame(&mut session).await;
+    assert!(c.key && !d.key && !e.key);
+    assert_eq!([c.number, d.number, e.number], [2, 3, 4]);
+    assert_eq!(c.data.as_ref(), frame_bytes(0, 800));
+    assert!(
+        paused >= Duration::from_millis(800),
+        "the first retry waits a second, not {paused:?}"
+    );
+
+    // The player was told of the pause and of the return.
+    match next_feedback(&mut session).await {
+        Feedback::Reconnecting { attempt: 1, reason } => {
+            assert!(reason.contains("blip"), "{reason}")
+        }
+        other => panic!("expected Reconnecting, got {other:?}"),
+    }
+    assert_eq!(next_feedback(&mut session).await, Feedback::Reconnected);
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+
+    // The new session heard, besides its first ping: the cursor mode, the
+    // sizing, the frame rate and the pad as it is held now; not the key.
+    let mut tags = Vec::new();
+    let mut pad = None;
+    let mut resize = None;
+    let mut fps = None;
+    let mut path = None;
+    while !(tags.contains(&"cursor".to_string())
+        && pad.is_some()
+        && resize.is_some()
+        && fps.is_some())
+    {
+        let seen = tokio::time::timeout(Duration::from_secs(5), second.seen.recv())
+            .await
+            .expect("the second session heard the asks")
+            .unwrap();
+        match seen {
+            Seen::Path(p) => path = Some(p),
+            Seen::Line(v) => {
+                let t = v["t"].as_str().unwrap().to_string();
+                match t.as_str() {
+                    "input" if v["k"] == "pad" => pad = Some(v.clone()),
+                    "input" => panic!("a held key leaked into the new session: {v}"),
+                    "resize" => resize = Some(v.clone()),
+                    "fps" => fps = Some(v.clone()),
+                    _ => {}
+                }
+                tags.push(t);
+            }
+            Seen::Closed => panic!("the second session closed"),
+        }
+    }
+    assert!(path.unwrap().contains("token="));
+    assert_eq!(tags[0], "ping");
+    let pad = pad.unwrap();
+    assert_eq!(pad["i"], 0);
+    assert_eq!(pad["b"][0], 1.0);
+    let resize = resize.unwrap();
+    assert_eq!(
+        (resize["w"].as_u64(), resize["h"].as_u64()),
+        (Some(2560), Some(1440))
+    );
+    assert_eq!(fps.unwrap()["fps"], 120);
+
+    // Input works on the new session, and stopping ends it as usual.
+    session.control.input(Input::Key {
+        code: "KeyB".into(),
+        down: true,
+    });
+    assert_eq!(
+        next_line(&mut second, "input").await,
+        json!({"t":"input","k":"key","code":"KeyB","down":true})
+    );
+    session.control.stop(false);
+    let ended = tokio::time::timeout(Duration::from_secs(3), session.ended)
+        .await
+        .expect("ended in time")
+        .unwrap();
+    assert_eq!(ended, Ended::Stopped);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_to_refresh_ends_the_session_with_its_reason() {
+    let first = start_streamer(Script::Blip, false);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let refresh = refresher(
+        vec![Err(Refresh::GiveUp("signed out".into()))],
+        asked.clone(),
+    );
+    let mut session = connect_with(target(first.port, &first.hash), 1280, 720, None, refresh)
+        .await
+        .expect("connect");
+    assert!(matches!(
+        next_feedback(&mut session).await,
+        Feedback::Reconnecting { attempt: 1, .. }
+    ));
+    let ended = tokio::time::timeout(Duration::from_secs(5), session.ended)
+        .await
+        .expect("ended in time")
+        .unwrap();
+    assert_eq!(ended, Ended::Failed("signed out".into()));
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replaced_session_does_not_reconnect() {
+    let first = start_streamer(Script::Replaced, false);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let refresh = refresher(vec![], asked.clone());
+    let session = connect_with(target(first.port, &first.hash), 1280, 720, None, refresh)
+        .await
+        .expect("connect");
+    let ended = tokio::time::timeout(Duration::from_secs(5), session.ended)
+        .await
+        .expect("ended in time")
+        .unwrap();
+    assert!(
+        matches!(&ended, Ended::ByHost(m) if m.contains("another session took this seat")),
+        "{ended:?}"
+    );
+    // The encoder stopping (code 2) is decided the same way.
+    let closing = start_streamer(Script::Close, false);
+    let session = connect_with(
+        target(closing.port, &closing.hash),
+        1280,
+        720,
+        None,
+        refresher(vec![], asked.clone()),
+    )
+    .await
+    .expect("connect");
+    let ended = tokio::time::timeout(Duration::from_secs(5), session.ended)
+        .await
+        .expect("ended in time")
+        .unwrap();
+    assert!(matches!(&ended, Ended::ByHost(m) if m.contains("encoder stopped")));
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "nothing was refreshed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_during_a_wait_ends_the_session_at_once() {
+    let first = start_streamer(Script::Blip, false);
+    let asked = Arc::new(AtomicUsize::new(0));
+    // The portal stays unreachable: 1 s, then 2 s, and so on.
+    let refresh = refresher(
+        vec![
+            Err(Refresh::Retry("the portal is unreachable".into())),
+            Err(Refresh::Retry("the portal is unreachable".into())),
+        ],
+        asked.clone(),
+    );
+    let mut session = connect_with(target(first.port, &first.hash), 1280, 720, None, refresh)
+        .await
+        .expect("connect");
+    assert!(matches!(
+        next_feedback(&mut session).await,
+        Feedback::Reconnecting { attempt: 1, .. }
+    ));
+    match next_feedback(&mut session).await {
+        Feedback::Reconnecting { attempt: 2, reason } => {
+            assert_eq!(reason, "the portal is unreachable")
+        }
+        other => panic!("expected attempt 2, got {other:?}"),
+    }
+    // Now in the 2 s wait before attempt 2's refresh.
+    let stop = Instant::now();
+    session.control.stop(false);
+    let ended = tokio::time::timeout(Duration::from_secs(1), session.ended)
+        .await
+        .expect("ended long before the wait is over")
+        .unwrap();
+    assert_eq!(ended, Ended::Stopped);
+    assert!(stop.elapsed() < Duration::from_millis(500));
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
 }

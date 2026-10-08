@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cha_client::{Codec, Ended, Session, SessionControl, VideoFrame};
+use cha_client::{Codec, Ended, Feedback, Session, SessionControl, VideoFrame};
 use tokio::runtime::Handle;
 
 use crate::audio::AudioOut;
@@ -46,6 +46,9 @@ pub struct Shared {
     /// is decoded on the window's GPU device when drawn, not on a thread here.
     pub latest_pyro: Mutex<Option<VideoFrame>>,
     pub stats: Stats,
+    /// What to show over the picture while the transport brings a dropped
+    /// stream back (`Feedback::Reconnecting`), until it is back.
+    pub reconnecting: Mutex<Option<String>>,
     /// Recent video arrival times (ms since the session began), for the AWDL check.
     arrivals: Mutex<VecDeque<u64>>,
     began: Instant,
@@ -59,11 +62,22 @@ impl Shared {
             latest: Mutex::new(None),
             latest_pyro: Mutex::new(None),
             stats: Stats::default(),
+            reconnecting: Mutex::new(None),
             arrivals: Mutex::new(VecDeque::new()),
             began: Instant::now(),
             redraw_requested: AtomicBool::new(false),
             wake,
         }
+    }
+
+    /// Shows or clears the reconnecting note, and draws it at once (no frame
+    /// is coming to wake the window).
+    fn set_reconnecting(&self, note: Option<String>) {
+        *self.reconnecting.lock().unwrap() = note;
+        // The gaps of a drop aren't AWDL's.
+        self.arrivals.lock().unwrap().clear();
+        self.redraw_requested.store(true, Ordering::Release);
+        (self.wake)();
     }
 
     /// Called after storing a frame; wakes the window once until it redraws.
@@ -153,10 +167,22 @@ pub fn start(
     })?;
     spawn("feedback", {
         let pads = pads.clone();
+        let shared = shared.clone();
         let mut feedback = feedback;
         move || {
             while let Some(f) = feedback.blocking_recv() {
-                pads.feedback(f);
+                match f {
+                    Feedback::Reconnecting { attempt, reason } => {
+                        tracing::info!(attempt, %reason, "the stream dropped; reconnecting");
+                        shared.set_reconnecting(Some(if attempt > 1 {
+                            format!("Reconnecting… (try {attempt})")
+                        } else {
+                            "Reconnecting…".to_string()
+                        }));
+                    }
+                    Feedback::Reconnected => shared.set_reconnecting(None),
+                    f => pads.feedback(f),
+                }
             }
         }
     })?;

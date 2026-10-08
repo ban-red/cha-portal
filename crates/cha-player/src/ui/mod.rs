@@ -33,7 +33,7 @@ const PORTAL_APPS_REFRESH_CHANGING: Duration = Duration::from_secs(1);
 const INPUT_MONITORING_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
 
-pub use overlay::{StatsSnapshot, show_stats};
+pub use overlay::{StatsSnapshot, show_reconnecting, show_stats};
 
 /// What the user asked for; the app does it.
 #[derive(Debug)]

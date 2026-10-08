@@ -161,7 +161,8 @@ pub struct PadState {
     pub axes: Vec<f32>,
 }
 
-/// What a host sends back about controllers.
+/// What a host sends back about controllers, and what a transport says
+/// about the link itself.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Feedback {
     /// Motor levels 0..1; both 0 stops.
@@ -176,6 +177,17 @@ pub enum Feedback {
         g: u8,
         b: u8,
     },
+    /// The stream dropped and the transport is connecting again inside this
+    /// session: show a pause ("Reconnecting...") and keep the channels and the
+    /// decoder. Sent at the drop (`attempt` 1) and again for each further
+    /// attempt; `reason` says what went wrong, for a tooltip or the log.
+    /// Frames start again at a keyframe once the link is back.
+    Reconnecting {
+        attempt: u32,
+        reason: String,
+    },
+    /// The stream is back after [`Feedback::Reconnecting`].
+    Reconnected,
 }
 
 /// Why a session ended.

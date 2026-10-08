@@ -54,7 +54,7 @@ use cha_client::{
     App, AppState, BoxFuture, Codec, Host, Input, Pairing, Session, SessionControl, StreamConfig,
     Transport,
 };
-use cha_client_stream::Target;
+use cha_client_stream::{Refresh, Target};
 use tracing::{info, warn};
 
 pub use client::{
@@ -551,11 +551,43 @@ impl Inner {
                 cert_hash: connection.cert_hash,
                 codec,
             };
-            let mut session = cha_client_stream::connect_at(
-                &target,
+            // A dropped stream comes back by itself, inside this session; each
+            // reconnect needs a new media token (valid 60 s, checked once).
+            let refresh = {
+                let client = client.clone();
+                let environment = env.id.clone();
+                let codec_name = cha_client_stream::control::codec_name(codec);
+                move || {
+                    let client = client.clone();
+                    let environment = environment.clone();
+                    Box::pin(async move {
+                        match client.connect_environment(&environment, codec_name).await {
+                            Ok(c) => Ok(Target {
+                                urls: c.urls,
+                                cert_hash: c.cert_hash,
+                                codec,
+                            }),
+                            Err(PortalError::SignedOut) => {
+                                Err(Refresh::GiveUp("signed out of the portal".into()))
+                            }
+                            Err(PortalError::Api {
+                                status,
+                                code,
+                                message,
+                            }) => Err(Refresh::from_status(status, &code, &message)),
+                            // The network, a timeout: try again later.
+                            Err(PortalError::Other(e)) => Err(Refresh::Retry(format!("{e:#}"))),
+                        }
+                    })
+                        as cha_client::BoxFuture<'static, Result<Target, Refresh>>
+                }
+            };
+            let mut session = cha_client_stream::connect_with(
+                target,
                 config.width,
                 config.height,
                 Some(config.fps),
+                refresh,
             )
             .await
             .context("connecting to the streamer")?;

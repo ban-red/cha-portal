@@ -30,6 +30,6 @@ cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 quinn-udp = { version = "0.5", features = ["fast-apple-datapath"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 libc = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
