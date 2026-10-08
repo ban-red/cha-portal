@@ -1291,6 +1291,9 @@ async fn node_update(
         .execute(&p.state.db)
         .await
         .unwrap();
+    // Wait for this inventory, not an earlier one with the same version:
+    // the update status may be all that changed.
+    let expected = serde_json::to_value(&update).unwrap();
     node.send(ToPortal::Inventory {
         inventory: Inventory {
             agent_version: Some(version.into()),
@@ -1301,10 +1304,11 @@ async fn node_update(
     .await;
     let id = node.id.clone();
     wait_for(p, "/api/nodes", &p.admin, |b| {
-        b.as_array()
-            .unwrap()
-            .iter()
-            .any(|n| n["id"] == id.as_str() && n["inventory"]["agentVersion"] == version)
+        b.as_array().unwrap().iter().any(|n| {
+            n["id"] == id.as_str()
+                && n["inventory"]["agentVersion"] == version
+                && n["inventory"]["update"] == expected
+        })
     })
     .await;
 }
