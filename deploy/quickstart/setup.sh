@@ -16,11 +16,13 @@
 #    spec (/etc/cdi/nvidia.yaml) that gives containers the GPU. It never
 #    installs or changes a GPU driver;
 # 4. the node's host files (deploy/node/host/install.sh): udev rules, the
-#    Steam sandbox's AppArmor profile, the uinput and uhid modules;
+#    Steam sandbox's AppArmor profile, the uinput and uhid modules. Not in
+#    an LXC container, whose host has them (deploy/proxmox/create-node.sh);
 # 5. the data root (CHA_DATA_ROOT, /srv/cha-portal), owned by root, mode
 #    0755; the agent makes each user's directories in it itself;
 # 6. deploy/quickstart/.env with CHA_VERSION, owned by you, mode 0600;
-# 7. the environment images: the release's published ones, pulled, or with
+# 7. the environment images: the release's published ones, pulled (or with
+#    --no-pull left for the first launch of each to download), or with
 #    --build built from this checkout;
 # 8. with --tailscale, Tailscale from its own repository.
 # Then it prints what to run next. It changes nothing outside these.
@@ -40,12 +42,14 @@ repository checkout.
   --no-nvidia       skip the NVIDIA Container Toolkit even with a driver
   --build           build the environment images from this checkout instead
                     of pulling the release's published ones
+  --no-pull         don't pull the environment images now: each downloads on
+                    its first launch, with progress in the portal
   --check           only report what would change; needs no root
   --help            this text
 USAGE
 }
 
-version= data_root= tailscale=0 nvidia=1 build=0 check_only=0
+version= data_root= tailscale=0 nvidia=1 build=0 pull=1 check_only=0
 while [ $# -gt 0 ]; do
     case $1 in
         --version) version=${2:?--version needs a value}; shift ;;
@@ -55,6 +59,7 @@ while [ $# -gt 0 ]; do
         --tailscale) tailscale=1 ;;
         --no-nvidia) nvidia=0 ;;
         --build) build=1 ;;
+        --no-pull) pull=0 ;;
         --check) check_only=1 ;;
         --help | -h) usage; exit 0 ;;
         *) echo "setup.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -103,6 +108,14 @@ if [ "$check_only" = 0 ] && [ "$(id -u)" != 0 ]; then
 (--check reports without root)"
 fi
 owner=${SUDO_USER:-root}
+# In an LXC container (a Proxmox CT) the kernel, its modules, udev and
+# AppArmor are the host's: deploy/proxmox/create-node.sh sets those up there.
+in_lxc=0
+if have systemd-detect-virt && [ "$(systemd-detect-virt --container 2>/dev/null)" = lxc ]; then
+    in_lxc=1
+elif grep -qa 'container=lxc' /proc/1/environ 2>/dev/null; then
+    in_lxc=1
+fi
 
 apt_updated=0
 apt_install() {
@@ -133,7 +146,9 @@ add_repo() {
 
 echo "==> packages"
 missing=
-for pkg in ca-certificates curl gnupg git kmod udev apparmor python3; do
+base="ca-certificates curl gnupg git kmod udev apparmor python3"
+[ "$in_lxc" = 1 ] && base="ca-certificates curl gnupg git python3"
+for pkg in $base; do
     dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'ok installed' || missing="$missing $pkg"
 done
 if [ -z "$missing" ]; then
@@ -291,7 +306,13 @@ PY
 fi
 
 echo "==> host files"
-if [ "$check_only" = 1 ]; then
+if [ "$in_lxc" = 1 ]; then
+    skip "host files: this is an LXC container, so its host provides them (deploy/proxmox/README.md)"
+    for module in uinput uhid; do
+        [ -e "/dev/$module" ] ||
+            warn "no /dev/$module: pass it into the container (deploy/proxmox/create-node.sh does)"
+    done
+elif [ "$check_only" = 1 ]; then
     "$repo/deploy/node/host/install.sh" --check || changed=1
 elif ! "$repo/deploy/node/host/install.sh"; then
     warn "the host files didn't all install (above); the rest goes on"
@@ -400,14 +421,21 @@ fi
 
 echo "==> environment images"
 if [ "$build" = 0 ]; then
-    if [ -z "$docker_version" ]; then
+    if [ "$pull" = 0 ]; then
+        skip "pulling (--no-pull): each image downloads on its first launch"
+    elif [ -z "$docker_version" ]; then
         skip "pulling (no Docker yet)"
     else
-        # The catalog's cha/env-<name>:dev, as the agent maps it.
+        # Each catalog entry's published image, {version} filled in; an
+        # older catalog's bare cha/env-<name>:dev as the agent maps it.
         images=$(python3 -c 'import json, sys
 for t in json.load(open(sys.argv[1]))["templates"]:
-    name = t["image"].removeprefix("cha/").split(":")[0]
-    print(f"{sys.argv[2]}/cha-{name}:{sys.argv[3]}")' "$repo/images/catalog.json" "$registry" "$version")
+    image = t["image"]
+    if "/" in image.split(":")[0] and image.split("/")[0] != "cha":
+        print(image.replace("{version}", sys.argv[3]))
+    else:
+        name = image.removeprefix("cha/").split(":")[0]
+        print(f"{sys.argv[2]}/cha-{name}:{sys.argv[3]}")' "$repo/images/catalog.json" "$registry" "$version")
         for image in $images; do
             if docker image inspect "$image" >/dev/null 2>&1; then
                 ok "$image"
