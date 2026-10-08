@@ -12,9 +12,13 @@ use std::time::{Duration, Instant};
 
 /// How long to wait before asking for a drawable again when there wasn't one.
 const SURFACE_RETRY: Duration = Duration::from_millis(50);
+/// Toolbar choices are written to `config.json` this long after the last one.
+const PREFS_SAVE_AFTER: Duration = Duration::from_millis(600);
+/// Input Monitoring is asked again this often while the Controllers menu is up.
+const INPUT_ACCESS_RECHECK: Duration = Duration::from_secs(2);
 
 use anyhow::{Context, Result};
-use cha_client::{Ended, Session, Transport, VideoFrame};
+use cha_client::{Ended, PerfOverlay, Session, Transport, VideoFrame};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{
@@ -25,15 +29,16 @@ use winit::keyboard::{ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::config::Config;
-use crate::input::pads::PadService;
+use crate::input::pads::{self, InputAccess, PadService};
 use crate::input::{self, Hotkey, keymap, pointer};
 use crate::present::{self, FrameImporter, ImportedFrame};
 use crate::render::egui_layer::EguiLayer;
 use crate::render::video::{VideoPipeline, aspect_fit};
 use crate::render::{Gpu, Skip};
 use crate::session::{self, Rates, Running};
+use crate::stream_prefs::{self, StreamPrefs};
 use crate::theme::ThemeController;
-use crate::ui::{self, Action, Launcher};
+use crate::ui::{self, Action, Launcher, ToolbarAction};
 use crate::video::pyrowave::PyroPresenter;
 
 /// Command-line behaviour that isn't in the config.
@@ -56,10 +61,21 @@ pub enum UserEvent {
     /// A session ended (with the generation it belonged to).
     Ended(u64, Ended),
     Ui(ui::Event),
-    Launched(Result<Session, String>),
+    Launched(Result<Launched, String>),
     /// A `cha://` link was opened (macOS delivers it as an Apple Event).
     #[cfg(feature = "portal")]
     OpenUrl(String),
+}
+
+/// A started session and whose it is, for the toolbar's per-app memory.
+pub struct Launched {
+    /// [`stream_prefs::app_key`].
+    pub key: String,
+    /// The app's name, if the launcher knew it.
+    pub title: String,
+    /// The transport's name.
+    pub transport: String,
+    pub session: Session,
 }
 
 pub fn run(
@@ -119,6 +135,19 @@ struct Stream {
     swallow_release: bool,
     import_failed: bool,
     keys: keymap::KeyTranslator,
+    /// Whose toolbar choices these are ([`stream_prefs::app_key`]), the app's
+    /// name and its transport's, for the toolbar.
+    key: String,
+    title: String,
+    transport: String,
+    /// False: the mouse is switched off (keyboard and pads still go).
+    mouse: bool,
+    /// Mouse buttons held down (bit per `PointerEvent.button`).
+    held: u8,
+    /// A saved overlay level to set once the streamer says it has one.
+    overlay_wanted: Option<u8>,
+    /// Esc closed a menu: its release is not sent either.
+    swallow_escape_up: bool,
 }
 
 struct App {
@@ -141,6 +170,11 @@ struct App {
     modifiers: ModifiersState,
     /// The stats panel over the picture: its prefs and what is dragged.
     panel: ui::StatsPanel,
+    /// The bar across the top of the picture.
+    toolbar: ui::Toolbar,
+    /// Toolbar choices in the config in memory that aren't on disk yet.
+    prefs_dirty: Option<Instant>,
+    input_access: (InputAccess, Instant),
     /// Whether the last pointer event was the panel's.
     panel_hover: bool,
     /// When the launcher wants to draw again without any event.
@@ -187,6 +221,9 @@ impl App {
             generation: 0,
             modifiers: ModifiersState::empty(),
             panel,
+            toolbar: ui::Toolbar::new(),
+            prefs_dirty: None,
+            input_access: (pads::input_access(), Instant::now()),
             panel_hover: false,
             launcher_due: None,
             surface_retry: None,
@@ -259,18 +296,24 @@ impl App {
                 app,
             } => {
                 let name = self.launcher.app_name(transport, &host, app);
-                self.launcher.set_busy(Some(match name {
+                self.launcher.set_busy(Some(match &name {
                     Some(name) => format!("Starting {name}…"),
                     None => "Starting the stream".into(),
                 }));
-                let config = self.launcher.config().stream_config();
+                let key = stream_prefs::app_key(transports[transport].name(), &host, app);
+                let config = self.launcher.config().stream_config_for(&key);
+                let title = name.unwrap_or_default();
                 self.spawn(async move {
-                    UserEvent::Launched(
-                        transports[transport]
-                            .launch(&host, app, config)
-                            .await
-                            .map_err(|e| format!("{e:#}")),
-                    )
+                    let t = &transports[transport];
+                    let result = t.launch(&host, app, config).await;
+                    UserEvent::Launched(result.map_err(|e| format!("{e:#}")).map(|session| {
+                        Launched {
+                            key,
+                            title,
+                            transport: t.name().to_string(),
+                            session,
+                        }
+                    }))
                 });
             }
             Action::QuitApp {
@@ -430,7 +473,7 @@ impl App {
     /// host, waiting a few seconds for one to show up.
     fn autostart(&self) {
         let transports = self.transports.clone();
-        let config = self.launcher.config().stream_config();
+        let config = self.launcher.config().clone();
         self.spawn(async move {
             for _ in 0..40 {
                 for transport in transports.iter() {
@@ -439,12 +482,18 @@ impl App {
                             continue;
                         };
                         if let Some(app) = apps.first() {
-                            return UserEvent::Launched(
-                                transport
-                                    .launch(&host.id, app.id, config.clone())
-                                    .await
-                                    .map_err(|e| format!("{e:#}")),
-                            );
+                            let key = stream_prefs::app_key(transport.name(), &host.id, app.id);
+                            let result = transport
+                                .launch(&host.id, app.id, config.stream_config_for(&key))
+                                .await;
+                            return UserEvent::Launched(result.map_err(|e| format!("{e:#}")).map(
+                                |session| Launched {
+                                    key,
+                                    title: app.name.clone(),
+                                    transport: transport.name().to_string(),
+                                    session,
+                                },
+                            ));
                         }
                     }
                 }
@@ -456,7 +505,13 @@ impl App {
 
     // ---- streaming --------------------------------------------------------
 
-    fn start_stream(&mut self, session: Session) {
+    fn start_stream(&mut self, launched: Launched) {
+        let Launched {
+            key,
+            title,
+            transport,
+            session,
+        } = launched;
         if session.codec.is_pyrowave() && !self.prepare_pyrowave() {
             return;
         }
@@ -477,7 +532,20 @@ impl App {
         match running {
             Ok(running) => {
                 self.launcher.set_busy(None);
-                let rates = Rates::new(&running, self.launcher.config().fps);
+                let rates =
+                    Rates::new(&running, self.launcher.config().stream_config_for(&key).fps);
+                // What the toolbar remembered for this app.
+                let prefs: StreamPrefs = self
+                    .launcher
+                    .config()
+                    .toolbar
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default();
+                let volume = &running.shared.volume;
+                volume.set_muted(prefs.muted.unwrap_or(false));
+                volume.set_percent(prefs.volume.unwrap_or(100));
+                self.toolbar.reset();
                 self.launcher_due = None;
                 self.stream = Some(Stream {
                     generation,
@@ -488,10 +556,17 @@ impl App {
                     swallow_release: false,
                     import_failed: false,
                     keys: keymap::KeyTranslator::new(self.launcher.config().command_as_control),
+                    key,
+                    title,
+                    transport,
+                    mouse: prefs.mouse.unwrap_or(true),
+                    held: 0,
+                    overlay_wanted: prefs.overlay,
+                    swallow_escape_up: false,
                 });
                 if let Some(w) = self.window() {
                     w.set_title(
-                        "Cha Player: click to capture the mouse, Ctrl+Alt+Shift+Q to leave",
+                        "Cha Player: click to capture the mouse, Ctrl+Alt+Shift+T for the toolbar, Ctrl+Alt+Shift+Q to leave",
                     );
                 }
                 self.request_redraw();
@@ -532,12 +607,8 @@ impl App {
         let Some(stream) = self.stream.take() else {
             return;
         };
-        if let Some(prefs) = self.panel.take_save(true) {
-            let config = self.launcher.set_overlay_prefs(prefs);
-            if let Err(e) = config.save(&self.data_dir) {
-                tracing::warn!("saving the stats panel's place: {e:#}");
-            }
-        }
+        self.stream_ended_save();
+        self.toolbar.reset();
         self.set_locked(None, false);
         stream.running.control.release_all();
         stream.running.control.stop(quit_app);
@@ -552,6 +623,30 @@ impl App {
             w.set_title("Cha Player");
         }
         self.request_redraw();
+    }
+
+    /// Writes the stats panel's and the toolbar's choices now.
+    fn stream_ended_save(&mut self) {
+        let mut config = self
+            .panel
+            .take_save(true)
+            .map(|p| self.launcher.set_overlay_prefs(p));
+        if self.prefs_dirty.take().is_some() && config.is_none() {
+            config = Some(self.launcher.config().clone());
+        }
+        if let Some(config) = config
+            && let Err(e) = config.save(&self.data_dir)
+        {
+            tracing::warn!("saving the player's choices: {e:#}");
+        }
+    }
+
+    /// Remembers toolbar choices for this stream's app; they are written a
+    /// moment later, once they stop changing.
+    fn remember(&mut self, patch: StreamPrefs) {
+        let Some(stream) = &self.stream else { return };
+        self.launcher.remember_stream(&stream.key, &patch);
+        self.prefs_dirty = Some(Instant::now());
     }
 
     /// Lock or unlock the pointer. With a stream it also records the state.
@@ -577,6 +672,9 @@ impl App {
         if let Some(stream) = &mut self.stream {
             stream.locked = lock;
         }
+        if lock {
+            self.toolbar.on_capture();
+        }
     }
 
     fn toggle_full_screen(&self) {
@@ -597,6 +695,12 @@ impl App {
                 self.panel.toggle_open();
                 self.request_redraw();
             }
+            Hotkey::Toolbar => {
+                // The pointer has to be free to use it.
+                self.set_locked(None, false);
+                self.toolbar.show_now();
+                self.request_redraw();
+            }
             Hotkey::FullScreen => self.toggle_full_screen(),
         }
     }
@@ -613,10 +717,10 @@ impl App {
         Some(aspect_fit((w, h), gfx.gpu.size()))
     }
 
-    /// The stats panel's share of the pointer. While the pointer is free,
-    /// egui sees the pointer events first; those over the panel (or part of a
-    /// press that began on it) are the panel's: they capture no pointer and
-    /// reach no host. Locked, every event goes to the stream.
+    /// The toolbar's and the stats panel's share of the pointer. While the
+    /// pointer is free, egui sees the pointer events first; those over either
+    /// (or part of a press that began on it) are theirs: they capture no
+    /// pointer and reach no host. Locked, every event goes to the stream.
     fn panel_event(&mut self, event: &WindowEvent) -> bool {
         let is_pointer = matches!(
             event,
@@ -643,10 +747,12 @@ impl App {
         let at = stream
             .cursor
             .map(|(x, y)| egui::pos2(x as f32 / ppp, y as f32 / ppp));
-        let consumed = self.panel.consumes(at, event);
-        // Redraw while the pointer is on the panel, and once more as it
-        // leaves, so hover feedback works between video frames.
-        if consumed || self.panel_hover {
+        // The toolbar is on top, then the stats panel.
+        let consumed = self.toolbar.consumes(at, event) || self.panel.consumes(at, event);
+        // Redraw while the pointer is on either, and once more as it leaves,
+        // so hover feedback works between video frames; and while the toolbar
+        // waits to fold, so the timer is armed.
+        if consumed || self.panel_hover || self.toolbar.timer_pending() {
             window.request_redraw();
         }
         self.panel_hover = consumed;
@@ -670,6 +776,22 @@ impl App {
                 ..
             } => {
                 let down = *state == ElementState::Pressed;
+                if *code == winit::keyboard::KeyCode::Escape {
+                    // Esc closes a menu (or cancels a power off) and is not sent on.
+                    if down && self.toolbar.escape() {
+                        if let Some(stream) = &mut self.stream {
+                            stream.swallow_escape_up = true;
+                        }
+                        self.request_redraw();
+                        return true;
+                    }
+                    if !down
+                        && let Some(stream) = &mut self.stream
+                        && std::mem::take(&mut stream.swallow_escape_up)
+                    {
+                        return true;
+                    }
+                }
                 if down && let Some(hotkey) = input::hotkey(*code, self.modifiers) {
                     self.hotkey(hotkey);
                     return true;
@@ -694,6 +816,7 @@ impl App {
                 if let Some(stream) = &mut self.stream {
                     stream.cursor = Some(position);
                     if !stream.locked
+                        && stream.mouse
                         && let Some((x, y)) = picture.and_then(|p| pointer::absolute(position, p))
                     {
                         stream
@@ -713,6 +836,10 @@ impl App {
                     .zip(self.picture())
                     .is_some_and(|(c, p)| pointer::absolute(c, p).is_some());
                 let locked = self.stream.as_ref().is_some_and(|s| s.locked);
+                if self.stream.as_ref().is_some_and(|s| !s.mouse) {
+                    // The mouse is switched off: clicks neither capture nor reach the host.
+                    return true;
+                }
                 if !locked && down && *button == MouseButton::Left && inside {
                     self.set_locked(None, true);
                     if let Some(stream) = &mut self.stream
@@ -732,6 +859,13 @@ impl App {
                 if (locked || inside || !down)
                     && let Some(button) = pointer::button(*button)
                 {
+                    if button < 8 {
+                        if down {
+                            stream.held |= 1 << button;
+                        } else {
+                            stream.held &= !(1 << button);
+                        }
+                    }
                     stream
                         .running
                         .control
@@ -741,7 +875,7 @@ impl App {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = pointer::wheel(*delta);
-                if let Some(stream) = &self.stream {
+                if let Some(stream) = self.stream.as_ref().filter(|s| s.mouse) {
                     stream
                         .running
                         .control
@@ -838,19 +972,114 @@ impl App {
     /// Writes the stats panel's preferences once they have settled (or now,
     /// with `force`), and arranges to be woken when a save is still pending.
     fn save_overlay(&mut self, force: bool, event_loop: &ActiveEventLoop) {
-        if let Some(prefs) = self.panel.take_save(force) {
-            let config = self.launcher.set_overlay_prefs(prefs);
-            if let Err(e) = config.save(&self.data_dir) {
-                tracing::warn!("saving the stats panel's place: {e:#}");
+        let mut config = self
+            .panel
+            .take_save(force)
+            .map(|prefs| self.launcher.set_overlay_prefs(prefs));
+        let toolbar_due = self.prefs_dirty.map(|t| {
+            if force {
+                Duration::ZERO
+            } else {
+                PREFS_SAVE_AFTER.saturating_sub(t.elapsed())
             }
+        });
+        if toolbar_due == Some(Duration::ZERO) {
+            self.prefs_dirty = None;
+            config.get_or_insert_with(|| self.launcher.config().clone());
         }
-        if let Some(wait) = self.panel.save_due() {
+        if let Some(config) = config
+            && let Err(e) = config.save(&self.data_dir)
+        {
+            tracing::warn!("saving the player's choices: {e:#}");
+        }
+        let wait = [self.panel.save_due(), self.prefs_dirty.and(toolbar_due)]
+            .into_iter()
+            .flatten()
+            .min();
+        if let Some(wait) = wait {
             let due = Instant::now() + wait;
             if self.launcher_due.is_none_or(|d| d > due) {
                 self.launcher_due = Some(due);
                 event_loop.set_control_flow(ControlFlow::WaitUntil(due));
             }
         }
+    }
+
+    /// What the toolbar asked for.
+    fn toolbar_action(&mut self, action: ToolbarAction) {
+        let Some(stream) = &mut self.stream else {
+            return;
+        };
+        let control = stream.running.control.clone();
+        let volume = stream.running.shared.volume.clone();
+        match action {
+            ToolbarAction::Back => self.leave(false),
+            ToolbarAction::PowerOff => self.leave(true),
+            ToolbarAction::Capture => {
+                if stream.mouse {
+                    self.set_locked(None, true);
+                }
+            }
+            ToolbarAction::SetMouse(on) => {
+                stream.mouse = on;
+                if !on {
+                    // Let go of what is held, so nothing stays pressed on the host.
+                    for button in 0..8u8 {
+                        if stream.held & (1 << button) != 0 {
+                            control.input(cha_client::Input::MouseButton {
+                                button,
+                                down: false,
+                            });
+                        }
+                    }
+                    stream.held = 0;
+                }
+                self.remember(StreamPrefs {
+                    mouse: Some(on),
+                    ..StreamPrefs::default()
+                });
+            }
+            ToolbarAction::SetMuted(muted) => {
+                volume.set_muted(muted);
+                self.remember(StreamPrefs {
+                    muted: Some(muted),
+                    ..StreamPrefs::default()
+                });
+            }
+            ToolbarAction::SetVolume(percent) => {
+                volume.set_percent(percent);
+                let mut patch = StreamPrefs {
+                    volume: Some(percent),
+                    ..StreamPrefs::default()
+                };
+                // Turning it up is asking for sound.
+                if volume.muted() && percent > 0 {
+                    volume.set_muted(false);
+                    patch.muted = Some(false);
+                }
+                self.remember(patch);
+            }
+            ToolbarAction::RestartSound => volume.request_restart(),
+            ToolbarAction::SetFps(fps) => {
+                control.set_fps(fps);
+                self.remember(StreamPrefs {
+                    fps: Some(fps),
+                    ..StreamPrefs::default()
+                });
+            }
+            ToolbarAction::SetOverlay(level) => {
+                control.set_overlay(level);
+                self.remember(StreamPrefs {
+                    overlay: Some(level),
+                    ..StreamPrefs::default()
+                });
+            }
+            ToolbarAction::TakeControl => control.take_control(),
+            ToolbarAction::ToggleFullScreen => self.toggle_full_screen(),
+            ToolbarAction::ToggleStats => self.panel.toggle_open(),
+            ToolbarAction::OpenInputSettings => ui::open_input_monitoring_settings(),
+        }
+        self.request_redraw();
     }
 
     fn draw_stream(&mut self, event_loop: &ActiveEventLoop) {
@@ -995,11 +1224,46 @@ impl App {
         let health = stream.rates.health().clone();
         self.theme
             .sync(gfx.egui.ctx(), &self.launcher.config().theme);
-        let panel = &mut self.panel;
+        // What the transport says right now, for the toolbar (the stats
+        // snapshot is a second old), and a saved overlay level to set once.
+        let link = stream.running.control.transport_stats();
+        if let (Some(want), Some(l)) = (stream.overlay_wanted, &link)
+            && let (Some(true), Some(current)) = (l.control, l.overlay)
+        {
+            stream.overlay_wanted = None;
+            if current != PerfOverlay::Preset(want) && current != PerfOverlay::Custom {
+                stream.running.control.set_overlay(want);
+            }
+        }
+        if self.input_access.1.elapsed() > INPUT_ACCESS_RECHECK {
+            self.input_access = (pads::input_access(), Instant::now());
+        }
+        let open_pads = pads::open_pads();
+        let toolbar_view = ui::ToolbarView {
+            title: &stream.title,
+            transport: &stream.transport,
+            stats: &snapshot,
+            health: &health,
+            link: link.as_ref(),
+            connected: reconnecting.is_none(),
+            locked: stream.locked,
+            mouse: stream.mouse,
+            muted: shared.volume.muted(),
+            volume: shared.volume.percent(),
+            fullscreen: window.fullscreen().is_some(),
+            stats_open: self.panel.prefs.open,
+            opacity: self.panel.prefs.opacity,
+            pads: &open_pads,
+            input_access: self.input_access.0,
+        };
+        let (panel, toolbar) = (&mut self.panel, &mut self.toolbar);
+        let mut actions = Vec::new();
         let frame = gfx.egui.run(&window, |ui| {
-            panel.show(ui.ctx(), &snapshot, &health);
+            actions = toolbar.show(ui.ctx(), &toolbar_view);
+            let inset = toolbar.inset();
+            panel.show(ui.ctx(), &snapshot, &health, inset);
             if let Some(text) = &reconnecting {
-                ui::show_reconnecting(ui.ctx(), text);
+                ui::show_reconnecting(ui.ctx(), text, inset);
             }
         });
         gfx.egui.paint(&gfx.gpu, &mut encoder, &view, &frame, None);
@@ -1031,6 +1295,9 @@ impl App {
         }
 
         self.save_overlay(false, event_loop);
+        for action in actions {
+            self.toolbar_action(action);
+        }
 
         if let Some(received) = received {
             shared.presented(received);
@@ -1176,12 +1443,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             #[cfg(feature = "portal")]
             UserEvent::OpenUrl(url) => self.open_url(&url),
-            UserEvent::Launched(Ok(session)) => {
+            UserEvent::Launched(Ok(launched)) => {
                 if self.stream.is_some() {
                     // A second launch finished while one is running: drop it.
-                    session.control.stop(false);
+                    launched.session.control.stop(false);
                 } else {
-                    self.start_stream(session);
+                    self.start_stream(launched);
                 }
             }
             UserEvent::Launched(Err(e)) => {
@@ -1259,6 +1526,7 @@ impl ApplicationHandler<UserEvent> for App {
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
             && let Some(stream) = &self.stream
             && stream.locked
+            && stream.mouse
         {
             stream
                 .running

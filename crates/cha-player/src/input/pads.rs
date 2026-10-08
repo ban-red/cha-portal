@@ -4,9 +4,9 @@
 //! SDL insists on being initialised from one thread for the life of the
 //! process, so a single thread owns it from startup; sessions attach to it.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -89,6 +89,40 @@ pub fn connected() -> usize {
     CONNECTED.load(Ordering::Relaxed)
 }
 
+/// A gamepad SDL has open, for the toolbar's Controllers menu. While a stream
+/// runs every one of them sends its state to it, in the slot (player number)
+/// shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PadInfo {
+    /// 0 to 3.
+    pub slot: usize,
+    pub name: String,
+}
+
+static PADS: Mutex<Vec<PadInfo>> = Mutex::new(Vec::new());
+
+/// The gamepads open now, by slot.
+pub fn open_pads() -> Vec<PadInfo> {
+    PADS.lock().map(|p| p.clone()).unwrap_or_default()
+}
+
+fn publish(slots: &[Option<Slot>]) {
+    let list = slots
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, s)| {
+            let pad = &s.as_ref()?.pad;
+            Some(PadInfo {
+                slot,
+                name: pad.name().unwrap_or_else(|| "Controller".into()),
+            })
+        })
+        .collect();
+    if let Ok(mut pads) = PADS.lock() {
+        *pads = list;
+    }
+}
+
 pub fn input_access() -> InputAccess {
     // IOKit's IOHIDRequestType and IOHIDAccessType.
     const LISTEN_EVENT: u32 = 1;
@@ -136,6 +170,7 @@ fn run(commands: Receiver<Command>) -> Result<()> {
     for id in subsystem.gamepads().unwrap_or_default() {
         open(&subsystem, &mut slots, id);
     }
+    publish(&slots);
 
     loop {
         loop {
@@ -154,7 +189,12 @@ fn run(commands: Receiver<Command>) -> Result<()> {
             }
         }
 
+        let mut changed = false;
         for event in events.poll_iter() {
+            changed |= matches!(
+                event,
+                Event::GamepadAdded { .. } | Event::GamepadRemoved { .. }
+            );
             match event {
                 Event::GamepadAdded { which, .. } => open(&subsystem, &mut slots, which),
                 Event::GamepadRemoved { which, .. } => {
@@ -172,6 +212,9 @@ fn run(commands: Receiver<Command>) -> Result<()> {
             }
         }
 
+        if changed {
+            publish(&slots);
+        }
         CONNECTED.store(slots.iter().flatten().count(), Ordering::Relaxed);
 
         if let Some(c) = &control {

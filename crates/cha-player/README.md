@@ -63,11 +63,27 @@ A stream that drops (a Wi-Fi blip, the node's network, nothing heard for 4 secon
 | Ctrl+Alt+Shift+Q | leave: release the pointer, stop the stream, back to the launcher (the app keeps running on the host) |
 | Ctrl+Alt+Shift+X | leave and quit the app on the host |
 | Ctrl+Alt+Shift+S | show or hide the stats panel |
+| Ctrl+Alt+Shift+T | show the toolbar, and release the pointer if it is captured |
+| Esc | closes an open toolbar menu or cancels a power-off countdown; otherwise it goes to the app |
 | Cmd+Ctrl+F | full screen (also in the launcher) |
 
 Losing focus releases the pointer and every held key and button. Relative motion is sent 1:1 in the units macOS reports (not scaled to the picture). Cmd+Q still quits the player.
 
-While the pointer is free, the stats panel is clickable: a click, drag or scroll on it belongs to the panel, so it captures no pointer and nothing is sent to the host. Everywhere else the pointer behaves as above. While the pointer is captured every event goes to the stream. The keyboard always goes to the stream; the panel needs no typing.
+While the pointer is free, the toolbar and the stats panel are clickable: a click, drag or scroll on either belongs to it, so it captures no pointer and nothing is sent to the host. Everywhere else the pointer behaves as above. While the pointer is captured every event goes to the stream. The keyboard always goes to the stream; the panel needs no typing.
+
+## Toolbar
+
+A bar across the top of the picture, the native twin of the portal's in-stream toolbar, drawn in the same dark overlay style (its background takes the stats panel's opacity). It is up when the stream starts, folds into a thin bar at the top a moment after the pointer leaves it or moves below the top 72 points, and comes back when you hover or click the thin bar, or press Ctrl+Alt+Shift+T. It stays up while the stream is reconnecting, while the pointer is on it and while a menu or the power-off countdown is open. "Hide the toolbar" (the tab on its lower edge) folds it at once. While the pointer is captured it is folded and takes no input; Ctrl+Alt+Shift+T releases the pointer and shows it. A click on the bar, a menu or the thin bar is the toolbar's alone: it captures nothing and reaches no host. The stats panel's top corners sit below the bar while it shows.
+
+- **← Back** leaves the stream and keeps the app running. **Power off** counts down 5 seconds (Cancel, Esc or a click outside cancels), then quits the app on the host and leaves.
+- **Stream settings:** the codec and the transport actually in use, read-only (the codec is chosen at launch, from Settings). For `cha-stream/1` streams: the frame rate (60, 90, 120) and, for an app with one (Steam), the Gamescope overlay level (Off, FPS, Bar, Detailed, Full), both changed with the streamer's `fps` and `overlay` messages and only while this session has the controls. A Moonlight stream shows its frame rate read-only: it is set in Settings and applies to the next launch.
+- **Exclusive input** captures the pointer, as a click on the picture does. **Mouse** switches the mouse off (no motion, buttons or wheel are sent; keyboard and pads still are; it survives a reconnect).
+- **Sound:** mute, volume 0 to 100 (turning it up unmutes), and Restart sound, which opens the output device again.
+- **Controllers:** the pads SDL sees, with their slots; each is sending its input to the stream. When macOS has denied Input Monitoring and no pad shows, a note and a button open System Settings.
+- **Full screen** (Cmd+Ctrl+F) and **Stats**, with the health grade's letter in the panel's colours.
+- **Watching and Take back** show for `cha-stream/1` streams when other sessions watch, or when another has the controls.
+- **Remembered per app** (transport, host and app id) in `config.json` under `toolbar`: `muted`, `volume`, `mouse`, `fps` and `overlay`, each only once you have picked it, applied when a stream of that app starts (the frame rate goes in the launch request). A malformed field is dropped on its own. The stats panel keeps its own choices under `overlay`.
+- **Not here:** Share, the GPU badge and "Hand controls" need the portal's share and session APIs, which the player doesn't call yet; the codec switch (the decoder is fixed per stream; the browser rebuilds its pipeline); connecting a controller (WebHID has no counterpart; macOS and SDL find pads); the test pattern's click probe.
 
 ## Stats panel
 
@@ -110,7 +126,7 @@ Settings, Appearance picks the theme, Light or dark, Contrast and the UI size (e
 - **System light or dark** follows macOS: the window's appearance at start and whenever it changes (`WindowEvent::ThemeChanged`).
 - **System contrast** follows System Settings, Accessibility, Display, Increase contrast, read from `NSWorkspace` about every two seconds while the launcher is shown. More contrast uses the `-more` palettes and draws borders 1.5 times as thick.
 
-To look at every theme and variant without a window, run `CHA_SNAPSHOT_DIR=/some/dir cargo test -p cha-player --release snapshot -- --ignored --nocapture`: it draws the launcher, Settings and status lines offscreen and writes `<theme>-<variant>-<screen>.png` (`src/ui/snapshots.rs`). `... snapshot_stats_panel ...` does the same for the stats panel over a colour-bar stand-in for video (full, a section folded, compact, collapsed, hidden, 40% opacity, settings, bottom right).
+To look at every theme and variant without a window, run `CHA_SNAPSHOT_DIR=/some/dir cargo test -p cha-player --release snapshot -- --ignored --nocapture`: it draws the launcher, Settings and status lines offscreen and writes `<theme>-<variant>-<screen>.png` (`src/ui/snapshots.rs`). `... snapshot_toolbar ...` draws the toolbar (bar, each menu, folded, power-off, a Moonlight stream, reconnecting, with the stats panel below it). `... snapshot_stats_panel ...` does the same for the stats panel over a colour-bar stand-in for video (full, a section folded, compact, collapsed, hidden, 40% opacity, settings, bottom right).
 
 The stats panel is on top of the video, so it stays dark whatever the launcher shows: see Stats panel.
 
@@ -147,7 +163,8 @@ All of it lives in `src/theme/`: `palette.rs` (roles), `metrics.rs`, `fonts.rs`,
 |---|---|
 | `src/main.rs` | args, logging, the tokio runtime, building the transports (GameStream behind the default `gamestream` feature, the portal behind `portal`, `--demo`) |
 | `src/app.rs` | the `winit` handler: Launcher and Streaming states, pointer lock, hotkeys, drawing |
-| `src/ui/` | egui launcher, settings, the stats panel (`overlay.rs`) |
+| `src/ui/` | egui launcher, settings, the stats panel (`overlay.rs`), the toolbar (`toolbar.rs`) |
+| `src/stream_prefs.rs` | the toolbar's per-app choices |
 | `src/health.rs` | the stream's health grade, ported from the browser player |
 | `src/overlay_prefs.rs` | the stats panel's saved choices |
 | `src/theme/` | themes: palettes, user themes, fonts, the egui style (see Themes) |

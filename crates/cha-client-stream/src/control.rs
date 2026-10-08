@@ -2,7 +2,7 @@
 //! (`docs/plans/c2-transport.md` §5). Parsing what the streamer says and
 //! building what we say, with no I/O.
 
-use cha_client::{Codec, NodeStats};
+use cha_client::{Codec, NodeStats, PerfOverlay};
 use serde_json::{Value, json};
 
 /// A line longer than this is not the streamer talking.
@@ -20,6 +20,8 @@ pub struct Hello {
     pub input: bool,
     pub audio: bool,
     pub gamepads: bool,
+    /// The app's performance overlay, if it has one.
+    pub overlay: Option<PerfOverlay>,
 }
 
 impl Hello {
@@ -60,6 +62,8 @@ pub enum ServerMsg {
     Floor {
         control: bool,
         viewers: u32,
+        /// Another session has the floor and this one may take it.
+        can_take: bool,
     },
     Pong {
         c: f64,
@@ -100,10 +104,17 @@ pub enum ServerMsg {
         fps: Option<u32>,
         frames_sent: Option<u64>,
         encode_p99_ms: Option<f32>,
+        overlay: Option<PerfOverlay>,
     },
     /// The node's CPU, RAM and GPU use, about once a second.
     System(NodeStats),
-    /// `status`, `overlay`, `pointer`, `haptic`, `players`, `trigger`, and
+    /// The answer to an `overlay` request: the level now (`None`: the app has
+    /// no overlay), and why it didn't change if it didn't.
+    Overlay {
+        level: Option<PerfOverlay>,
+        error: Option<String>,
+    },
+    /// `status`, `pointer`, `haptic`, `players`, `trigger`, and
     /// anything newer: not used.
     Other(String),
 }
@@ -116,6 +127,19 @@ fn u32_of(v: &Value, key: &str) -> u32 {
 
 fn f32_of(v: &Value, key: &str) -> f32 {
     v.get(key).and_then(Value::as_f64).unwrap_or(0.0) as f32
+}
+
+/// The streamer's `overlay` field: a level 0 to 4, or `"custom"`; anything
+/// else (the field left out) is an app with no overlay.
+pub fn parse_overlay(v: Option<&Value>) -> Option<PerfOverlay> {
+    match v? {
+        Value::String(s) if s == "custom" => Some(PerfOverlay::Custom),
+        Value::Number(n) => n
+            .as_u64()
+            .filter(|l| *l <= 4)
+            .map(|l| PerfOverlay::Preset(l as u8)),
+        _ => None,
+    }
 }
 
 fn number(v: &Value, key: &str) -> Option<f64> {
@@ -163,11 +187,13 @@ pub fn parse(line: &str) -> Option<ServerMsg> {
                 input: s.get("input").and_then(Value::as_bool).unwrap_or(false),
                 audio: s.get("audio").and_then(Value::as_bool).unwrap_or(false),
                 gamepads: s.get("gamepads").and_then(Value::as_bool).unwrap_or(false),
+                overlay: parse_overlay(s.get("overlay")),
             })
         }
         "floor" => ServerMsg::Floor {
             control: v.get("control").and_then(Value::as_bool).unwrap_or(false),
             viewers: u32_of(&v, "viewers"),
+            can_take: v.get("can_take").and_then(Value::as_bool).unwrap_or(false),
         },
         "pong" => ServerMsg::Pong {
             c: v.get("c")?.as_f64()?,
@@ -209,6 +235,11 @@ pub fn parse(line: &str) -> Option<ServerMsg> {
                 .get("composite_to_encoded_ms_p99")
                 .and_then(Value::as_f64)
                 .map(|n| n as f32),
+            overlay: parse_overlay(v.get("overlay")),
+        },
+        "overlay" => ServerMsg::Overlay {
+            level: parse_overlay(v.get("level")),
+            error: v.get("error").and_then(Value::as_str).map(str::to_string),
         },
         "system" => ServerMsg::System(node_stats(&v)?),
         other => ServerMsg::Other(other.to_string()),
@@ -269,6 +300,16 @@ pub fn fps(fps: u32) -> String {
     json!({"t": "fps", "fps": fps}).to_string()
 }
 
+/// Sets the app's performance overlay, 0 (off) to 4 (full) (controller only).
+pub fn overlay(level: u8) -> String {
+    json!({"t": "overlay", "level": level}).to_string()
+}
+
+/// Asks for the keyboard and mouse when another session has them.
+pub fn take_control() -> String {
+    json!({"t": "take_control"}).to_string()
+}
+
 pub fn resize(w: u32, h: u32) -> String {
     json!({"t": "resize", "w": w, "h": h}).to_string()
 }
@@ -304,6 +345,42 @@ mod tests {
     }
 
     #[test]
+    fn the_overlay_is_a_level_or_custom_or_absent() {
+        use cha_client::PerfOverlay::{Custom, Preset};
+        let stats = |o: &str| parse(&format!(r#"{{"t":"stats","overlay":{o}}}"#));
+        let level = |m| match m {
+            Some(ServerMsg::Stats { overlay, .. }) => overlay,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(level(stats("3")), Some(Preset(3)));
+        assert_eq!(level(stats("0")), Some(Preset(0)));
+        assert_eq!(level(stats(r#""custom""#)), Some(Custom));
+        assert_eq!(level(stats("9")), None);
+        assert_eq!(level(stats("null")), None);
+        assert_eq!(
+            parse(r#"{"t":"overlay","level":2}"#),
+            Some(ServerMsg::Overlay {
+                level: Some(Preset(2)),
+                error: None
+            })
+        );
+        assert_eq!(
+            parse(r#"{"t":"overlay","error":"this app has no performance overlay"}"#),
+            Some(ServerMsg::Overlay {
+                level: None,
+                error: Some("this app has no performance overlay".into())
+            })
+        );
+        assert_eq!(overlay(4), r#"{"level":4,"t":"overlay"}"#);
+        assert_eq!(take_control(), r#"{"t":"take_control"}"#);
+        let hello = r#"{"t":"hello","stream":{"codec":"hevc","width":1,"height":1,"overlay":1}}"#;
+        let Some(ServerMsg::Hello(h)) = parse(hello) else {
+            panic!()
+        };
+        assert_eq!(h.overlay, Some(Preset(1)));
+    }
+
+    #[test]
     fn hello_and_floor() {
         let hello = r#"{"t":"hello","stream":{"codec":"hevc","width":2560,"height":1440,"input":true,"audio":true,"gamepads":true,"fps":60,"overlay":null,"transport":"webtransport","maxDatagram":1200}}"#;
         let Some(ServerMsg::Hello(h)) = parse(hello) else {
@@ -319,7 +396,16 @@ mod tests {
             parse(r#"{"t":"floor","control":true,"viewers":2}"#),
             Some(ServerMsg::Floor {
                 control: true,
-                viewers: 2
+                viewers: 2,
+                can_take: false
+            })
+        );
+        assert_eq!(
+            parse(r#"{"t":"floor","control":false,"viewers":3,"can_take":true}"#),
+            Some(ServerMsg::Floor {
+                control: false,
+                viewers: 3,
+                can_take: true
             })
         );
         let pyro = hello.replace("hevc", "pyrowave420");
@@ -393,7 +479,8 @@ mod tests {
             Some(ServerMsg::Stats {
                 fps: Some(120),
                 frames_sent: Some(300),
-                encode_p99_ms: Some(2.5)
+                encode_p99_ms: Some(2.5),
+                overlay: None
             })
         );
         assert_eq!(
@@ -401,7 +488,8 @@ mod tests {
             Some(ServerMsg::Stats {
                 fps: None,
                 frames_sent: None,
-                encode_p99_ms: None
+                encode_p99_ms: None,
+                overlay: None
             })
         );
     }

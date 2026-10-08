@@ -447,6 +447,22 @@ impl SessionControl for QuitsEnvironment {
         self.inner.request_keyframe();
     }
 
+    fn transport_stats(&self) -> Option<cha_client::TransportStats> {
+        self.inner.transport_stats()
+    }
+
+    fn set_fps(&self, fps: u32) {
+        self.inner.set_fps(fps);
+    }
+
+    fn set_overlay(&self, level: u8) {
+        self.inner.set_overlay(level);
+    }
+
+    fn take_control(&self) {
+        self.inner.take_control();
+    }
+
     fn stop(&self, quit_app: bool) {
         self.inner.stop(quit_app);
         if quit_app {

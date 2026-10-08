@@ -367,8 +367,16 @@ impl StatsPanel {
         ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()))
     }
 
-    /// Draw the panel (or its chip) for this frame.
-    pub fn show(&mut self, ctx: &Context, stats: &StatsSnapshot, health: &Assessment) {
+    /// Draw the panel (or its chip) for this frame. `top_inset` is the height
+    /// of the toolbar while it shows (0 when folded): a panel in a top corner
+    /// sits below it, 10 points clear, as in the portal.
+    pub fn show(
+        &mut self,
+        ctx: &Context,
+        stats: &StatsSnapshot,
+        health: &Assessment,
+        top_inset: f32,
+    ) {
         let style = ctx.overlay_style();
         let screen = ctx.content_rect();
         let now = Instant::now();
@@ -383,6 +391,11 @@ impl StatsPanel {
 
         let size = self.rect.map_or(vec2(style.width, HEADER_H), |r| r.size());
         let corner = self.prefs.corner;
+        let top_y = if top_inset > 0.0 {
+            top_inset + super::toolbar::TOP + 10.0
+        } else {
+            INSET
+        };
         // Where the top left goes, from the size it had last frame (the
         // first frame is invisible while egui measures it).
         let place = |left: bool, top: bool| {
@@ -393,7 +406,7 @@ impl StatsPanel {
                     screen.right() - INSET - size.x
                 },
                 if top {
-                    INSET
+                    top_y
                 } else {
                     screen.bottom() - INSET - size.y
                 },
@@ -427,7 +440,7 @@ impl StatsPanel {
                 health,
                 copied: self.copied.map(|c| c.0),
                 menu: self.menu_until.is_some(),
-                max_body: (screen.height() - 2.0 * INSET - HEADER_H - 2.0).max(80.0),
+                max_body: (screen.height() - INSET - top_y - HEADER_H - 2.0).max(80.0),
             };
             area.show(ctx, |ui| view.panel(ui, &mut cmds)).response
         } else {
@@ -552,17 +565,17 @@ impl StatsPanel {
 /// Colours and text drawing for one frame: the palette, with the dimmer text
 /// moved toward full ink and given a dark halo as the background gets more
 /// see-through.
-struct Look {
-    p: Arc<Palette>,
-    fill: Color32,
-    ink2: Color32,
+pub(super) struct Look {
+    pub(super) p: Arc<Palette>,
+    pub(super) fill: Color32,
+    pub(super) ink2: Color32,
     /// 0 at full opacity, 1 at the lowest.
     halo: f32,
-    font: FontId,
+    pub(super) font: FontId,
 }
 
 impl Look {
-    fn new(style: &OverlayStyle, opacity: u8) -> Self {
+    pub(super) fn new(style: &OverlayStyle, opacity: u8) -> Self {
         let p = style.palette.clone();
         let t = ((100.0 - f32::from(opacity)) / (100.0 - f32::from(OPACITY_MIN))).clamp(0.0, 1.0);
         Self {
@@ -625,7 +638,7 @@ impl Look {
         painter.layout_job(job)
     }
 
-    fn grade_color(&self, grade: Option<Grade>) -> Color32 {
+    pub(super) fn grade_color(&self, grade: Option<Grade>) -> Color32 {
         match grade {
             Some(Grade::A | Grade::B) => self.p.ok,
             Some(Grade::C | Grade::D) => self.p.warn,
@@ -1587,11 +1600,17 @@ impl Icon {
 }
 
 /// "Reconnecting…" over the last picture while a dropped stream comes back.
-pub fn show_reconnecting(ctx: &egui::Context, text: &str) {
+pub fn show_reconnecting(ctx: &egui::Context, text: &str, top_inset: f32) {
     let style = ctx.overlay_style();
     let p = &style.palette;
+    // Below the toolbar while it shows (it always does while reconnecting).
+    let y = if top_inset > 0.0 {
+        top_inset + super::toolbar::TOP + 12.0
+    } else {
+        24.0
+    };
     egui::Area::new(egui::Id::new("reconnecting"))
-        .anchor(Align2::CENTER_TOP, [0.0, 24.0])
+        .anchor(Align2::CENTER_TOP, [0.0, y])
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()

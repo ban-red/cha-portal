@@ -19,6 +19,8 @@ pub enum Hotkey {
     Stats,
     /// Toggle full screen (Cmd+Ctrl+F).
     FullScreen,
+    /// Show the toolbar, and release the pointer if it is captured.
+    Toolbar,
 }
 
 pub fn hotkey(key: KeyCode, modifiers: ModifiersState) -> Option<Hotkey> {
@@ -28,6 +30,7 @@ pub fn hotkey(key: KeyCode, modifiers: ModifiersState) -> Option<Hotkey> {
             KeyCode::KeyQ => return Some(Hotkey::Leave),
             KeyCode::KeyX => return Some(Hotkey::QuitApp),
             KeyCode::KeyS => return Some(Hotkey::Stats),
+            KeyCode::KeyT => return Some(Hotkey::Toolbar),
             _ => {}
         }
     }
@@ -48,6 +51,8 @@ mod tests {
         assert_eq!(hotkey(KeyCode::KeyQ, ModifiersState::CONTROL), None);
         assert_eq!(hotkey(KeyCode::KeyS, chord), Some(Hotkey::Stats));
         assert_eq!(hotkey(KeyCode::KeyX, chord), Some(Hotkey::QuitApp));
+        assert_eq!(hotkey(KeyCode::KeyT, chord), Some(Hotkey::Toolbar));
+        assert_eq!(hotkey(KeyCode::KeyT, ModifiersState::CONTROL), None);
     }
 
     #[test]

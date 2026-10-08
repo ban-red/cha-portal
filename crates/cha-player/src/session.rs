@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use cha_client::{Codec, Ended, Feedback, Session, SessionControl, TransportStats, VideoFrame};
 use tokio::runtime::Handle;
 
-use crate::audio::AudioOut;
+use crate::audio::{AudioOut, Volume};
 use crate::health::{self, Assessment, HEALTH_WINDOW};
 use crate::input::pads::PadService;
 use crate::ui::StatsSnapshot;
@@ -58,6 +58,8 @@ pub struct Shared {
     /// What to show over the picture while the transport brings a dropped
     /// stream back (`Feedback::Reconnecting`), until it is back.
     pub reconnecting: Mutex<Option<String>>,
+    /// The toolbar's mute and volume, which the audio thread plays through.
+    pub volume: Volume,
     /// Recent video arrival times (ms since the session began), for the AWDL check.
     arrivals: Mutex<VecDeque<u64>>,
     began: Instant,
@@ -72,6 +74,7 @@ impl Shared {
             latest_pyro: Mutex::new(None),
             stats: Stats::default(),
             reconnecting: Mutex::new(None),
+            volume: Volume::new(false, 100),
             arrivals: Mutex::new(VecDeque::new()),
             began: Instant::now(),
             redraw_requested: AtomicBool::new(false),
@@ -293,11 +296,18 @@ fn audio_loop(mut audio: tokio::sync::mpsc::Receiver<cha_client::AudioPacket>, s
     let mut failed = false;
     let (mut seen_underruns, mut seen_dropped) = (0, 0);
     while let Some(packet) = audio.blocking_recv() {
+        // "Restart sound": open the output device again, which also gives a
+        // device that failed to open another chance.
+        if shared.volume.take_restart() {
+            out = None;
+            failed = false;
+            (seen_underruns, seen_dropped) = (0, 0);
+        }
         if failed {
             continue;
         }
         if out.is_none() {
-            match AudioOut::open(packet.sample_rate, packet.channels) {
+            match AudioOut::open(packet.sample_rate, packet.channels, shared.volume.clone()) {
                 Ok(o) => out = Some(o),
                 Err(e) => {
                     // Video keeps going without sound.

@@ -11,7 +11,7 @@
 //! with the canvas colour as written, at 1280x800 points and 2x.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cha_client::{App, AppState, BoxFuture, Host, Pairing, Session, StreamConfig, Transport};
 
@@ -347,6 +347,10 @@ fn out_dir() -> PathBuf {
     let dir = PathBuf::from(
         std::env::var_os("CHA_SNAPSHOT_DIR").expect("set CHA_SNAPSHOT_DIR to a folder"),
     );
+    assert!(
+        dir.is_absolute(),
+        "CHA_SNAPSHOT_DIR must be an absolute path"
+    );
     std::fs::create_dir_all(&dir).expect("make CHA_SNAPSHOT_DIR");
     dir
 }
@@ -584,9 +588,216 @@ fn snapshot_stats_panel() {
             }
             let image = gpu.render(&ctx, egui::Color32::BLACK, |ui| {
                 paint_video(ui.ctx());
-                panel.show(ui.ctx(), &stats, &health);
+                panel.show(ui.ctx(), &stats, &health, 0.0);
             });
             let path = dir.join(format!("stats-{tag}-{name}.png"));
+            write_png(&path, image.0, image.1, &image.2);
+            println!("{}", path.display());
+        }
+    }
+    std::fs::remove_dir_all(data).ok();
+}
+
+/// One toolbar picture: what the stream is, what is open, what else is up.
+struct ToolbarCase {
+    name: &'static str,
+    /// "stream", "sound" or "controllers".
+    menu: Option<&'static str>,
+    folded: bool,
+    /// Seconds already counted down.
+    power_off: Option<u64>,
+    /// A Moonlight stream: no frame rate or overlay to change, no viewers.
+    moonlight: bool,
+    /// Another session has the controls.
+    viewing: bool,
+    muted: bool,
+    pads: bool,
+    denied: bool,
+    reconnecting: bool,
+    /// The stats panel under the toolbar, in its top corner.
+    panel: bool,
+    fullscreen: bool,
+}
+
+impl ToolbarCase {
+    const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            menu: None,
+            folded: false,
+            power_off: None,
+            moonlight: false,
+            viewing: false,
+            muted: false,
+            pads: false,
+            denied: false,
+            reconnecting: false,
+            panel: false,
+            fullscreen: false,
+        }
+    }
+}
+
+fn toolbar_cases() -> Vec<ToolbarCase> {
+    vec![
+        ToolbarCase::new("bar"),
+        ToolbarCase {
+            menu: Some("stream"),
+            ..ToolbarCase::new("menu-stream")
+        },
+        ToolbarCase {
+            menu: Some("sound"),
+            ..ToolbarCase::new("menu-sound")
+        },
+        ToolbarCase {
+            menu: Some("sound"),
+            muted: true,
+            ..ToolbarCase::new("menu-sound-muted")
+        },
+        ToolbarCase {
+            menu: Some("controllers"),
+            pads: true,
+            ..ToolbarCase::new("menu-controllers")
+        },
+        ToolbarCase {
+            menu: Some("controllers"),
+            denied: true,
+            ..ToolbarCase::new("menu-controllers-denied")
+        },
+        ToolbarCase {
+            folded: true,
+            ..ToolbarCase::new("folded")
+        },
+        ToolbarCase {
+            power_off: Some(2),
+            ..ToolbarCase::new("power-off")
+        },
+        ToolbarCase {
+            moonlight: true,
+            ..ToolbarCase::new("moonlight")
+        },
+        ToolbarCase {
+            moonlight: true,
+            menu: Some("stream"),
+            ..ToolbarCase::new("moonlight-menu-stream")
+        },
+        ToolbarCase {
+            viewing: true,
+            menu: Some("stream"),
+            ..ToolbarCase::new("viewing-menu-stream")
+        },
+        ToolbarCase {
+            reconnecting: true,
+            ..ToolbarCase::new("reconnecting")
+        },
+        ToolbarCase {
+            panel: true,
+            pads: true,
+            fullscreen: true,
+            ..ToolbarCase::new("with-stats-panel")
+        },
+    ]
+}
+
+#[test]
+#[ignore = "renders on the GPU into CHA_SNAPSHOT_DIR"]
+fn snapshot_toolbar() {
+    use crate::input::pads::{InputAccess, PadInfo};
+    use crate::overlay_prefs::OverlayPrefs;
+
+    let dir = out_dir();
+    let data = std::env::temp_dir().join(format!("cha-player-snap-bar-{}", std::process::id()));
+    let mut themes = ThemeController::new(data.clone(), None);
+    let ctx = egui::Context::default();
+    let mut gpu = Offscreen::new();
+    let history = stats_history();
+    let stats = history.last().unwrap().clone();
+    let health = crate::health::assess(&history);
+    let pads = vec![
+        PadInfo {
+            slot: 0,
+            name: "DualSense Wireless Controller".into(),
+        },
+        PadInfo {
+            slot: 1,
+            name: "Steam Controller".into(),
+        },
+    ];
+
+    for theme in ["cha-magenta", "cha-jade"] {
+        let mut config = Config::default();
+        config.theme.theme = theme.into();
+        config.theme.appearance = Appearance::Dark;
+        themes.sync(&ctx, &config.theme);
+        for case in toolbar_cases() {
+            let mut toolbar = Toolbar::new();
+            let mut panel = StatsPanel::new(OverlayPrefs::default());
+            if case.folded {
+                toolbar.on_capture();
+            }
+            if let Some(menu) = case.menu {
+                toolbar.open_menu_for_test(menu);
+            }
+            if let Some(counted) = case.power_off {
+                toolbar.power_off_for_test(Instant::now() - Duration::from_secs(counted));
+            }
+            let mut stats = stats.clone();
+            let link = if case.moonlight {
+                stats.transport_tag = "";
+                None
+            } else {
+                Some(cha_client::TransportStats {
+                    tag: "WT",
+                    target_fps: Some(120),
+                    control: Some(!case.viewing),
+                    viewers: Some(2),
+                    can_take: case.viewing,
+                    overlay: Some(cha_client::PerfOverlay::Preset(2)),
+                    ..Default::default()
+                })
+            };
+            let transport = if case.moonlight {
+                "Moonlight"
+            } else {
+                "Cha Portal"
+            };
+            let no_pads: Vec<PadInfo> = Vec::new();
+            let image = gpu.render(&ctx, egui::Color32::BLACK, |ui| {
+                paint_video(ui.ctx());
+                let view = ToolbarView {
+                    title: if case.moonlight {
+                        "Desktop"
+                    } else {
+                        "Google Chrome"
+                    },
+                    transport,
+                    stats: &stats,
+                    health: &health,
+                    link: link.as_ref(),
+                    connected: !case.reconnecting,
+                    locked: false,
+                    mouse: true,
+                    muted: case.muted,
+                    volume: 65,
+                    fullscreen: case.fullscreen,
+                    stats_open: case.panel,
+                    opacity: 90,
+                    pads: if case.pads { &pads } else { &no_pads },
+                    input_access: if case.denied {
+                        InputAccess::Denied
+                    } else {
+                        InputAccess::Granted
+                    },
+                };
+                toolbar.show(ui.ctx(), &view);
+                if case.panel {
+                    panel.show(ui.ctx(), &stats, &health, toolbar.inset());
+                }
+                if case.reconnecting {
+                    show_reconnecting(ui.ctx(), "Reconnecting…", toolbar.inset());
+                }
+            });
+            let path = dir.join(format!("toolbar-{theme}-{}.png", case.name));
             write_png(&path, image.0, image.1, &image.2);
             println!("{}", path.display());
         }

@@ -9,6 +9,7 @@
 
 mod overlay;
 mod settings;
+mod toolbar;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -33,7 +34,15 @@ const PORTAL_APPS_REFRESH_CHANGING: Duration = Duration::from_secs(1);
 const INPUT_MONITORING_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
 
+/// Opens System Settings at Input Monitoring.
+pub fn open_input_monitoring_settings() {
+    let _ = std::process::Command::new("open")
+        .arg(INPUT_MONITORING_SETTINGS)
+        .spawn();
+}
+
 pub use overlay::{StatsPanel, StatsSnapshot, show_reconnecting};
+pub use toolbar::{Toolbar, ToolbarAction, ToolbarView};
 
 /// What the user asked for; the app does it.
 #[derive(Debug)]
@@ -192,6 +201,15 @@ impl Launcher {
     pub fn set_overlay_prefs(&mut self, prefs: crate::overlay_prefs::OverlayPrefs) -> Config {
         self.config.overlay = prefs;
         self.config.clone()
+    }
+
+    /// Remember toolbar choices for the app `key`.
+    pub fn remember_stream(&mut self, key: &str, patch: &crate::stream_prefs::StreamPrefs) {
+        self.config
+            .toolbar
+            .entry(key.to_string())
+            .or_default()
+            .merge(patch);
     }
 
     pub fn config(&self) -> &Config {
@@ -574,9 +592,7 @@ impl Launcher {
                 Some("Open Settings"),
             )
         {
-            let _ = std::process::Command::new("open")
-                .arg(INPUT_MONITORING_SETTINGS)
-                .spawn();
+            open_input_monitoring_settings();
         }
         if let Some(info) = self.info.clone()
             && callout(ui, Status::Info, &info, Some("OK"))

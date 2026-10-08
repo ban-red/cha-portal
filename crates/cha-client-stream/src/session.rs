@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use cha_client::{
-    AudioPacket, BoxFuture, Codec, Ended, Feedback, Input, NodeStats, Session, SessionControl,
-    TransportStats, VideoFrame,
+    AudioPacket, BoxFuture, Codec, Ended, Feedback, Input, NodeStats, PerfOverlay, Session,
+    SessionControl, TransportStats, VideoFrame,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -93,6 +93,20 @@ struct Live {
     encode_p99_ms: Option<f32>,
     node: Option<(Instant, NodeStats)>,
     rtt: Option<Duration>,
+    /// From the streamer's `floor`: whether this session has the keyboard and
+    /// mouse, how many sessions watch, and whether it may take them.
+    floor: Option<Floor>,
+    overlay: Option<PerfOverlay>,
+    /// A frame rate the player picked mid-stream: it replaces the one it
+    /// launched with when the stream comes back.
+    asked_fps: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct Floor {
+    control: bool,
+    viewers: u32,
+    can_take: bool,
 }
 
 impl Live {
@@ -102,6 +116,8 @@ impl Live {
         self.sent.clear();
         self.encode_p99_ms = None;
         self.node = None;
+        self.floor = None;
+        self.overlay = None;
     }
 
     fn on_stats(&mut self, now: Instant, fps: Option<u32>, sent: Option<u64>, p99: Option<f32>) {
@@ -148,6 +164,10 @@ impl Live {
                 .as_ref()
                 .filter(|(at, _)| now.saturating_duration_since(*at) <= NODE_FRESH)
                 .map(|(_, n)| n.clone()),
+            control: self.floor.map(|f| f.control),
+            viewers: self.floor.map(|f| f.viewers),
+            can_take: self.floor.is_some_and(|f| f.can_take),
+            overlay: self.overlay,
         }
     }
 }
@@ -191,6 +211,22 @@ impl SessionControl for Control {
 
     fn transport_stats(&self) -> Option<TransportStats> {
         Some(self.live.lock().expect("live lock").read(Instant::now()))
+    }
+
+    fn set_fps(&self, fps: u32) {
+        if control::FPS_CHOICES.contains(&fps) {
+            // Kept for a reconnect, which asks for it again.
+            self.live.lock().expect("live lock").asked_fps = Some(fps);
+            self.say([control::fps(fps)]);
+        }
+    }
+
+    fn set_overlay(&self, level: u8) {
+        self.say([control::overlay(level.min(4))]);
+    }
+
+    fn take_control(&self) {
+        self.say([control::take_control()]);
     }
 }
 
@@ -869,7 +905,11 @@ impl Task {
         };
         match msg {
             ServerMsg::Hello(h) => self.on_hello(now, h),
-            ServerMsg::Floor { control, viewers } => self.on_floor(now, control, viewers),
+            ServerMsg::Floor {
+                control,
+                viewers,
+                can_take,
+            } => self.on_floor(now, control, viewers, can_take),
             ServerMsg::Pong { c, s_us } => self.rx.on_pong(now, c, s_us),
             ServerMsg::Resized { w, h } => {
                 self.size = (w, h);
@@ -885,20 +925,37 @@ impl Task {
             ServerMsg::Codec { codec, error } => {
                 debug!(%codec, ?error, "codec message (switching isn't asked for)");
             }
-            ServerMsg::Fps { fps, error: None } => info!(fps, "the streamer's frame rate"),
+            ServerMsg::Fps { fps, error: None } => {
+                info!(fps, "the streamer's frame rate");
+                if fps > 0 {
+                    self.live.lock().expect("live lock").target_fps = Some(fps);
+                }
+            }
             ServerMsg::Fps {
                 fps,
                 error: Some(error),
-            } => warn!(fps, %error, "the streamer kept its frame rate"),
+            } => {
+                warn!(fps, %error, "the streamer kept its frame rate");
+                if fps > 0 {
+                    self.live.lock().expect("live lock").target_fps = Some(fps);
+                }
+            }
+            ServerMsg::Overlay { level, error } => {
+                if let Some(error) = error {
+                    warn!(%error, "the streamer kept its overlay");
+                }
+                self.live.lock().expect("live lock").overlay = level;
+            }
             ServerMsg::Stats {
                 fps,
                 frames_sent,
                 encode_p99_ms,
+                overlay,
             } => {
-                self.live
-                    .lock()
-                    .expect("live lock")
-                    .on_stats(now, fps, frames_sent, encode_p99_ms)
+                let mut live = self.live.lock().expect("live lock");
+                live.on_stats(now, fps, frames_sent, encode_p99_ms);
+                // A report without one means the app has none.
+                live.overlay = overlay;
             }
             ServerMsg::System(node) => {
                 self.live.lock().expect("live lock").node = Some((now, node));
@@ -922,14 +979,23 @@ impl Task {
         self.size = (h.width, h.height);
         debug!(?h, "hello");
         self.hello_at = Some(now);
-        if h.fps > 0 {
-            self.live.lock().expect("live lock").target_fps = Some(h.fps);
+        {
+            let mut live = self.live.lock().expect("live lock");
+            if h.fps > 0 {
+                live.target_fps = Some(h.fps);
+            }
+            live.overlay = h.overlay;
         }
         self.hello = Some(h);
     }
 
-    fn on_floor(&mut self, now: Instant, control: bool, viewers: u32) {
-        debug!(control, viewers, "floor");
+    fn on_floor(&mut self, now: Instant, control: bool, viewers: u32, can_take: bool) {
+        debug!(control, viewers, can_take, "floor");
+        self.live.lock().expect("live lock").floor = Some(Floor {
+            control,
+            viewers,
+            can_take,
+        });
         let lines = self.input.lock().expect("input lock").set_floor(control);
         if control {
             // The streamer applies none of this until it's ours.
@@ -948,7 +1014,12 @@ impl Task {
         let hello_fps = self.hello.as_ref().map(|h| h.fps);
         if first
             && control
-            && let Some(want) = self.want_fps
+            && let Some(want) = self
+                .live
+                .lock()
+                .expect("live lock")
+                .asked_fps
+                .or(self.want_fps)
             && hello_fps.is_some_and(|f| f != want)
         {
             self.say(control::fps(want));

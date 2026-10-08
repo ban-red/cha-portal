@@ -1,5 +1,6 @@
 //! The player's saved settings, and where its files live.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -7,6 +8,7 @@ use cha_client::{Codec, StreamConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::overlay_prefs::OverlayPrefs;
+use crate::stream_prefs::StreamPrefs;
 use crate::theme::ThemePrefs;
 
 /// `~/Library/Application Support/Cha Player`: settings, and whatever a
@@ -47,6 +49,9 @@ pub struct Config {
     pub theme: ThemePrefs,
     /// The stats panel: shown or hidden, folded, where it sits, how opaque.
     pub overlay: OverlayPrefs,
+    /// The toolbar's choices per app (see [`crate::stream_prefs::app_key`]).
+    #[serde(deserialize_with = "crate::stream_prefs::lenient_map")]
+    pub toolbar: BTreeMap<String, StreamPrefs>,
 }
 
 impl Default for Config {
@@ -60,6 +65,7 @@ impl Default for Config {
             command_as_control: true,
             theme: ThemePrefs::default(),
             overlay: OverlayPrefs::default(),
+            toolbar: BTreeMap::new(),
         }
     }
 }
@@ -107,6 +113,16 @@ impl Config {
         self
     }
 
+    /// What to ask a host for when launching the app `key`: the settings,
+    /// with the frame rate the toolbar last picked for that app.
+    pub fn stream_config_for(&self, key: &str) -> StreamConfig {
+        let mut config = self.stream_config();
+        if let Some(fps) = self.toolbar.get(key).and_then(|p| p.fps) {
+            config.fps = fps;
+        }
+        config
+    }
+
     pub fn stream_config(&self) -> StreamConfig {
         StreamConfig {
             width: self.width,
@@ -152,9 +168,33 @@ mod tests {
         let config: Config = serde_json::from_str(old).unwrap();
         assert_eq!(config.theme, ThemePrefs::default());
         assert_eq!(config.overlay, OverlayPrefs::default());
+        assert!(config.toolbar.is_empty());
         assert_eq!(config.theme.theme, "cha-magenta");
         assert_eq!(config.theme.scale, 1.0);
         assert!(!config.command_as_control);
+    }
+
+    #[test]
+    fn toolbar_choices_round_trip_and_set_the_launch_rate() {
+        let dir =
+            std::env::temp_dir().join(format!("cha-player-toolbar-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"fps": 60, "toolbar": {"Cha Portal|p.lan|2": {"fps": 120, "volume": 35, "muted": "x"},
+                                       "bad": 3}}"#,
+        )
+        .unwrap();
+        let config = Config::load(&dir);
+        let key = "Cha Portal|p.lan|2";
+        assert_eq!(config.toolbar.len(), 1);
+        assert_eq!(config.toolbar[key].volume, Some(35));
+        assert_eq!(config.toolbar[key].muted, None);
+        assert_eq!(config.stream_config_for(key).fps, 120);
+        assert_eq!(config.stream_config_for("other").fps, 60);
+        config.save(&dir).unwrap();
+        assert_eq!(Config::load(&dir), config);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

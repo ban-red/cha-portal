@@ -228,6 +228,25 @@ pub trait SessionControl: Send + Sync {
     fn transport_stats(&self) -> Option<TransportStats> {
         None
     }
+    /// Ask the host for another frame rate. Only a transport that reports
+    /// [`TransportStats::control`] can; the default does nothing.
+    fn set_fps(&self, _fps: u32) {}
+    /// Set the app's performance overlay (0 off to 4 full). Only for a
+    /// transport that reports an [`TransportStats::overlay`]; the default does
+    /// nothing.
+    fn set_overlay(&self, _level: u8) {}
+    /// Ask for the keyboard and mouse back when another session has them
+    /// ([`TransportStats::control`] is `Some(false)`); the default does nothing.
+    fn take_control(&self) {}
+}
+
+/// An app's performance overlay (Steam's Gamescope one), as the host reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PerfOverlay {
+    /// 0 (off) to 4 (full).
+    Preset(u8),
+    /// A hand-written config the host doesn't change.
+    Custom,
 }
 
 /// What a transport can say about the link and the host right now. Every
@@ -255,6 +274,16 @@ pub struct TransportStats {
     pub encode_p99_ms: Option<f32>,
     /// The host's resource use, if it reported lately.
     pub node: Option<NodeStats>,
+    /// Whether this session has the keyboard and mouse (the floor): `None`
+    /// when the transport has no such thing, and so no frame rate or overlay
+    /// to change from here.
+    pub control: Option<bool>,
+    /// Sessions watching this stream, ours included.
+    pub viewers: Option<u32>,
+    /// Another session has the floor and this one may take it.
+    pub can_take: bool,
+    /// The app's performance overlay; `None` when it has none.
+    pub overlay: Option<PerfOverlay>,
 }
 
 /// The node's CPU, RAM and GPU, as the streamer's `system` message gives
