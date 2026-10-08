@@ -366,6 +366,27 @@ impl Harness {
         }
     }
 
+    /// No frame comes while the client gives up on frames until it has lost
+    /// `lost` in all. Waits up to 20 s: a big frame's FEC is slow to make and
+    /// to check in an unoptimised build on a busy machine, so a fixed wait
+    /// can end before the frame has even arrived.
+    async fn lost_without_a_frame(&mut self, lost: u64) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let stats = self.media.control.stats().video;
+            if stats.frames_lost >= lost {
+                assert_eq!(stats.frames_lost, lost, "{stats:?}");
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "only {} lost in 20 s: {stats:?}",
+                stats.frames_lost
+            );
+            self.no_frame(Duration::from_millis(50)).await;
+        }
+    }
+
     fn keyframe_requests(&self) -> usize {
         self.rig.stream.log.lock().unwrap().keyframes
     }
@@ -553,8 +574,7 @@ async fn synthetic_pyrowave_frame_missing_its_first_packet_or_a_whole_block_is_d
         _ => Action::Forward,
     });
     h.push_au(true, big.bytes.clone()).await;
-    h.no_frame(Duration::from_millis(2500)).await;
-    assert_eq!(h.media.control.stats().video.frames_lost, 1);
+    h.lost_without_a_frame(1).await;
 
     // A whole FEC block of a multi-block frame: dropped, though the rest is fine.
     let huge = pyro_frame(PYRO_SHAPE, 1400, 120);
@@ -570,8 +590,7 @@ async fn synthetic_pyrowave_frame_missing_its_first_packet_or_a_whole_block_is_d
         _ => Action::Forward,
     });
     h.push_au(true, huge.bytes.clone()).await;
-    h.no_frame(Duration::from_millis(2500)).await;
-    assert_eq!(h.media.control.stats().video.frames_lost, 2);
+    h.lost_without_a_frame(2).await;
 
     // Neither asked the host for a keyframe, and the next frame flows.
     h.video.forward_all();
@@ -604,10 +623,9 @@ async fn synthetic_pyrowave_frame_with_a_foreign_sequence_header_is_refused() {
     let blocks: Vec<(u32, usize)> = (0..coarse + 5).map(|i| (i, 40)).collect();
     h.push_au(true, lay_out(other, 1, &blocks, PAYLOAD).bytes)
         .await;
-    h.no_frame(Duration::from_millis(2500)).await;
+    h.lost_without_a_frame(1).await;
     let stats = h.media.control.stats().video;
     assert_eq!(stats.pyrowave_frames_rejected, 1, "{stats:?}");
-    assert_eq!(stats.frames_lost, 1);
     assert_eq!(h.keyframe_requests(), baseline);
     h.media.control.stop();
 }
