@@ -2,8 +2,9 @@
 // download), from `Environment.progress`.
 import type { EnvironmentProgress } from "./api";
 
-const MB = 2 ** 20;
-const GB = 2 ** 30;
+// Decimal, as the node's text and Docker's own output count them.
+const MB = 1e6;
+const GB = 1e9;
 
 function trim(n: number): string {
   return n.toFixed(1).replace(/\.0$/, "");

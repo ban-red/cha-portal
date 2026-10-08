@@ -6,11 +6,11 @@ const bytes = (done: number, total: number) => ({ done, total, unit: "bytes" });
 
 describe("progressText", () => {
   test("megabytes below a gigabyte", () => {
-    expect(progressText(bytes(412 * 2 ** 20, 890 * 2 ** 20))).toBe("412 of 890 MB");
+    expect(progressText(bytes(412 * 1e6, 890 * 1e6))).toBe("412 of 890 MB");
   });
   test("gigabytes with one decimal, from a gigabyte up", () => {
-    expect(progressText(bytes(1.2 * 2 ** 30, 3.4 * 2 ** 30))).toBe("1.2 of 3.4 GB");
-    expect(progressText(bytes(0, 2 * 2 ** 30))).toBe("0 of 2 GB");
+    expect(progressText(bytes(1.2 * 1e9, 3.4 * 1e9))).toBe("1.2 of 3.4 GB");
+    expect(progressText(bytes(0, 2 * 1e9))).toBe("0 of 2 GB");
   });
   test("other units print as counted", () => {
     expect(progressText({ done: 3, total: 9, unit: "layers" })).toBe("3 of 9 layers");
