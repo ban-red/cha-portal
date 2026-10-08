@@ -52,5 +52,12 @@ jobs:
       - name: Install web dependencies
         run: bun install --frozen-lockfile
 
+      # The GameStream client's tests send whole frames (up to 1 MB) over
+      # loopback in one burst, as our host does, into sockets that ask for
+      # 4-8 MB receive buffers. Linux caps those at net.core.rmem_max (212 KB
+      # on the runners), and the kernel then drops packets beyond the FEC.
+      - name: Allow big UDP receive buffers
+        run: sudo sysctl -w net.core.rmem_max=16777216 net.core.wmem_max=16777216
+
       - name: Run checks
         run: ./scripts/check.sh
