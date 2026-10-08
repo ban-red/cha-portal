@@ -505,6 +505,41 @@ async fn what_the_host_cannot_encode_is_refused_before_anything_starts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn synthetic_pyrowave_is_never_automatic_and_refused_by_a_host_without_it() {
+    // Our host speaks no PyroWave: its serverinfo has none of the four bits.
+    let env = env_with(all_codecs(), |_| {}).await;
+    let client = env.paired().await;
+    let info = client.server_info().await.unwrap();
+    assert!(!info.offers_pyrowave());
+    assert_eq!(info.pyrowave_host_link_mbps, 0);
+
+    // The default request never asks for it, whatever the host offers.
+    assert!(!StreamRequest::new(1, 1920, 1080, 60).pyrowave);
+
+    for chroma in [Chroma::Yuv420, Chroma::Yuv444] {
+        let mut r = StreamRequest::new(1, 1920, 1080, 60);
+        r.pyrowave = true;
+        r.chroma = chroma;
+        match client.launch(&r).await {
+            Err(ClientError::Unsupported(why)) => assert!(why.contains("PyroWave"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    // 10-bit PyroWave is out of scope: refused before the host is asked.
+    let mut r = StreamRequest::new(1, 1920, 1080, 60);
+    r.pyrowave = true;
+    r.hdr = true;
+    assert!(matches!(
+        client.launch(&r).await,
+        Err(ClientError::Unsupported(_))
+    ));
+    // Nothing was launched by any of those.
+    assert_eq!(env.fake.launches().len(), 0);
+    assert!(!client.server_info().await.unwrap().busy());
+    env.host.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn hdr_444_surround_and_reference_choices_reach_the_host() {
     let env = env_with(all_codecs(), |_| {}).await;
     let client = env.paired().await;
@@ -561,7 +596,11 @@ async fn video_encryption_is_negotiated_when_the_host_supports_it() {
         c.video_encryption = true
     })
     .await;
-    let off = env_with(caps(&[VideoCodec::Hevc], false, false), |_| {}).await;
+    // Hosts offer video encryption by default now: this one doesn't.
+    let off = env_with(caps(&[VideoCodec::Hevc], false, false), |c| {
+        c.video_encryption = false
+    })
+    .await;
     let (on_client, off_client) = (on.paired().await, off.paired().await);
     let request = |video| {
         let mut r = StreamRequest::new(1, 1920, 1080, 60);
@@ -745,7 +784,10 @@ async fn our_client_negotiates_what_moonlight_common_rust_does() {
     let ours = ClientIdentity::generate().unwrap();
     let client = HostClient::new(&format!("127.0.0.1:{}", rig.http_port()), ours).unwrap();
     client.pair("4321", "Ours").await.unwrap();
-    let request = StreamRequest::new(1, 1920, 1080, 60);
+    let mut request = StreamRequest::new(1, 1920, 1080, 60);
+    // moonlight-common-rust never encrypts video; neither do we here, so the
+    // packet sizes compare.
+    request.video_encryption = Encrypt::Off;
     let setup = client.launch(&request).await.unwrap();
     let mine = rig.backend.next_stream().await.params.clone();
     client.cancel().await.unwrap();
