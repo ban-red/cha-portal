@@ -88,12 +88,34 @@ pub fn valid_user_id(id: &str) -> bool {
         })
 }
 
-/// Template ids are catalog slugs: lowercase letters, digits and inner
-/// hyphens, at most 32 characters.
+/// Template ids: a built-in template's (`steam`), or a loaded catalog's
+/// `<catalog>.<app>` (ADR 0019). One dot at most, so a loaded app's
+/// `<catalog>.<app>.migrated` beside its home is never an id itself.
 pub fn valid_template_id(id: &str) -> bool {
-    let b = id.as_bytes();
+    match id.split_once('.') {
+        None => valid_catalog_slug(id),
+        Some((catalog, app)) => valid_catalog_slug(catalog) && valid_catalog_app(app),
+    }
+}
+
+/// A built-in template's id, or a loaded catalog's slug: lowercase letters,
+/// digits and inner hyphens, at most 32 characters.
+pub fn valid_catalog_slug(slug: &str) -> bool {
+    id_part(slug, 32)
+}
+
+/// An app's id inside a loaded catalog: lowercase letters, digits and inner
+/// hyphens, at most 40 characters, and not `migrated` or `migrating`, which
+/// would make a built-in template's migration marks (`chrome.migrating`)
+/// read as a loaded app's id.
+pub fn valid_catalog_app(app: &str) -> bool {
+    id_part(app, 40) && !matches!(app, "migrated" | "migrating")
+}
+
+fn id_part(p: &str, max: usize) -> bool {
+    let b = p.as_bytes();
     !b.is_empty()
-        && b.len() <= 32
+        && b.len() <= max
         && b.iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
         && b[0] != b'-'
@@ -239,23 +261,65 @@ mod tests {
         ] {
             assert!(!valid_user_id(bad), "{bad:?}");
         }
-        for ok in ["steam", "test-pattern", "kde", "a", "xfce4"] {
+        let longest = format!("{}.{}", "a".repeat(32), "b".repeat(40));
+        for ok in [
+            "steam",
+            "test-pattern",
+            "kde",
+            "a",
+            "xfce4",
+            "acme.web",
+            "a.b",
+            "my-apps.web-2",
+            &longest,
+        ] {
             assert!(valid_template_id(ok), "{ok:?}");
         }
         for bad in [
             "",
             "-x",
             "x-",
+            ".",
             "..",
+            ".a",
+            "a.",
+            "a..b",
+            "a.b.c",
+            "a.-b",
+            "a-.b",
             "a/b",
+            "a.b/c",
+            "../a",
             "Steam",
-            "a.b",
+            "acme.Web",
             "a b",
             "é",
             &"a".repeat(33),
+            &format!("{}.b", "a".repeat(33)),
+            &format!("a.{}", "b".repeat(41)),
         ] {
             assert!(!valid_template_id(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_loaded_apps_migration_marks_are_not_template_ids() {
+        // Beside a home `users/<user>/<template>`, the node keeps
+        // `<template>.migrated` and `<template>.migrating`. For a loaded
+        // app those have two dots; for a built-in one the app part is a
+        // reserved word. Neither reads as an id.
+        for template in ["acme.web", "a.b", "steam", "chrome"] {
+            assert!(valid_template_id(template));
+            for mark in ["migrated", "migrating"] {
+                assert!(!valid_template_id(&format!("{template}.{mark}")));
+            }
+        }
+        assert!(!valid_catalog_app("migrating"));
+        assert!(valid_catalog_app("migrate"));
+        assert!(parse_user_dir(&format!("{USERS_DIR}/{USER}/acme.web")).is_some());
+        assert!(parse_user_dir(&format!("{USERS_DIR}/{USER}/acme.web.migrated")).is_none());
+        assert!(parse_shared_dir(&format!("{SHARED_DIR}/acme.web")).is_some());
+        assert!(parse_shared_dir(&format!("{SHARED_DIR}/acme.web/x")).is_none());
     }
 
     fn uuid_like(c: char) -> String {

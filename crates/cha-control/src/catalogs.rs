@@ -606,7 +606,7 @@ async fn add(
     if !valid_slug(&slug) {
         return Err(ApiError::bad_request(
             "bad_slug",
-            "the slug is lower-case letters, digits and hyphens, 1 to 32 characters, not starting with a hyphen",
+            "the slug is lower-case letters, digits and hyphens, 1 to 32 characters, not starting or ending with a hyphen",
         ));
     }
     if environments::template(&slug).is_some() || RESERVED_SLUGS.contains(&slug.as_str()) {

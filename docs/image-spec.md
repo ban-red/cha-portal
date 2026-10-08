@@ -190,7 +190,7 @@ The portal does not use unknown fields and does not reject them: serde ignores k
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `version` | integer | no | `1`. Absent means 1. Any other value is refused. |
-| `id` | string | no | External catalogs: a suggested namespace slug, `^[a-z0-9][a-z0-9-]{0,31}$`. The admin chooses the real one when loading the catalog. |
+| `id` | string | no | External catalogs: a suggested namespace slug, `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. The admin chooses the real one when loading the catalog. |
 | `name` | string | no | External catalogs: a display name for the catalog. |
 | `templates` | array of template | yes | At least one is useful; the portal accepts an empty list. |
 
@@ -200,7 +200,7 @@ The built-in catalog is the same document without `id` and `name`.
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `id` | string | yes | | Unique in the document, not empty. Use `^[a-z0-9][a-z0-9-]{0,39}$`: the id appears in URL path segments, in the node's directory names (`users/<user>/<template>`) and in Docker labels. Local to the document: the portal namespaces an external catalog's ids as `<catalog>.<app>` (6.3). |
+| `id` | string | yes | | Unique in the document, not empty. Use `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`, and not `migrated` or `migrating` (the node's own files beside a home): the portal refuses an external catalog otherwise. The id appears in URL path segments, in the node's directory names (`users/<user>/<template>`) and in Docker labels. Local to the document: the portal namespaces an external catalog's ids as `<catalog>.<app>` (6.3). |
 | `name` | string | yes | | The card's title. |
 | `description` | string | yes | | One or two sentences under the title. May be empty, but a card with none is poor. |
 | `image` | string | yes | | The image reference to run. Not blank. `{version}` is replaced by the node agent's release when the node resolves it. An external catalog's must name a registry (6.3). |
@@ -227,7 +227,7 @@ The built-in catalog is the same document without `id` and `name`.
 | Template ids | Bare (`chrome`) | Namespaced by the portal as `<catalog>.<app>` |
 | Duplicate ids | Refused | Refused |
 
-**Namespacing.** An external catalog is loaded under a slug the admin chooses (`^[a-z0-9][a-z0-9-]{0,31}$`; the catalog's own `id` is only a suggestion). Its template `foot` becomes `<slug>.foot` everywhere the portal uses an id. The separator is a dot because ids appear in URL path segments, in node directory names and in Docker labels. Don't put a dot in your own ids; the schema's id pattern forbids it. The built-in catalog keeps bare ids, so no external template can take the place of a built-in one.
+**Namespacing.** An external catalog is loaded under a slug the admin chooses (`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`; the catalog's own `id` is only a suggestion). Its template `foot` becomes `<slug>.foot` everywhere the portal uses an id. The separator is a dot because ids appear in URL path segments, in node directory names and in Docker labels. Don't put a dot in your own ids; the schema's id pattern forbids it. The built-in catalog keeps bare ids, so no external template can take the place of a built-in one.
 
 **Trust.** Adding a catalog trusts its `standard` templates. A template asking for `browser` or `steam` stays unavailable until an admin approves that template's profile explicitly. If a refresh of the catalog changes a template's profile or the registry host of its image, the approval is cleared and the admin approves again. A catalog cannot give itself more confinement than the three profiles above; it can't name a seccomp profile, a capability, a device or a mount of its own.
 

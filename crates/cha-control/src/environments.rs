@@ -165,18 +165,16 @@ pub fn image_host(image: &str) -> Option<&str> {
     names_registry(image).then(|| image.split_once('/').map_or(image, |(host, _)| host))
 }
 
-/// A template id inside an external catalog: `^[a-z0-9][a-z0-9-]{0,39}$`.
+/// A template id inside an external catalog, by the node's rule for the app
+/// part of `<catalog>.<app>` (`cha_wire::valid_catalog_app`).
 pub fn valid_local_id(id: &str) -> bool {
-    let b = id.as_bytes();
-    (1..=40).contains(&b.len())
-        && b[0] != b'-'
-        && b.iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+    cha_wire::valid_catalog_app(id)
 }
 
-/// The slug an admin gives a catalog: `^[a-z0-9][a-z0-9-]{0,31}$`.
+/// The slug an admin gives a catalog, by the node's rule
+/// (`cha_wire::valid_catalog_slug`).
 pub fn valid_slug(slug: &str) -> bool {
-    slug.len() <= 32 && valid_local_id(slug)
+    cha_wire::valid_catalog_slug(slug)
 }
 
 /// Reads a catalog document and checks it for `source`.
@@ -258,7 +256,7 @@ fn check_external(t: &Template) -> Result<(), String> {
     let id = &t.id;
     if !valid_local_id(id) {
         return Err(format!(
-            "template id {id:?} must be lower-case letters, digits and hyphens, 1 to 40 characters, not starting with a hyphen"
+            "template id {id:?} must be lower-case letters, digits and hyphens, 1 to 40 characters, not starting or ending with a hyphen, and not `migrated` or `migrating`"
         ));
     }
     if t.local_image.is_some() {
@@ -798,18 +796,6 @@ pub(crate) async fn launch_environment(
             format!(
                 "{} can't keep or share app data yet: update its agent (it reports its data root once it can)",
                 node.name
-            ),
-        ));
-    }
-    // The node keeps app data in directories named by the template id, and
-    // only takes ids of its own shape (no dots): a loaded catalog's app can't
-    // have a home or a shared directory yet (ADR 0019).
-    if app_data.is_some() && !cha_wire::valid_template_id(&template.id) {
-        return Err(ApiError::conflict(
-            "storage_unsupported",
-            format!(
-                "{} comes from a loaded catalog, and nodes can't keep app data for those yet: turn its saved data and sharing off",
-                template.name
             ),
         ));
     }

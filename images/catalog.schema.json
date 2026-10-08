@@ -14,7 +14,7 @@
     "id": {
       "description": "External catalogs only: the namespace the catalog suggests for itself. The admin chooses the real one when loading it; templates then appear as <catalog>.<template id>.",
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$"
     },
     "name": {
       "description": "External catalogs only: a display name for the catalog.",
@@ -33,9 +33,10 @@
       "required": ["id", "name", "description", "image", "class", "security", "shmMb"],
       "properties": {
         "id": {
-          "description": "Unique in the document. Local to it: the portal prefixes an external catalog's ids with the catalog's slug. It becomes a URL path segment, a directory name under the node's data root and part of Docker labels, hence the pattern (the portal itself only rejects empty and repeated ids).",
+          "description": "Unique in the document. Local to it: the portal prefixes an external catalog's ids with the catalog's slug. It becomes a URL path segment, a directory name under the node's data root and part of Docker labels, hence the pattern; `migrated` and `migrating` are reserved for the node's own files. The portal enforces both for external catalogs.",
           "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$",
+          "not": { "enum": ["migrated", "migrating"] }
         },
         "name": {
           "description": "What the card says.",
