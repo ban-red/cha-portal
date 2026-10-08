@@ -1,6 +1,6 @@
 [package]
 name = "cha-node"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cha Node agent: enrolls with the portal, keeps the node channel open, runs environments"
 edition.workspace = true
 license.workspace = true
