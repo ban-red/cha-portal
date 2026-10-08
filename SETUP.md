@@ -306,6 +306,8 @@ All of these are in [`deploy/README.md`](deploy/README.md):
 
 Every release's images share its version, and the portal, the agent, the streamer and the environments change together, so a whole installation moves to one version at a time. Skipping versions is fine: the portal applies every database migration in between when it starts.
 
+From 0.3 on, nodes that run published images can be brought to the portal's release from Admin → Nodes → Update ([details](deploy/README.md#updating-nodes-from-the-portal)). The portal and the host files still follow the steps below.
+
 **Before you upgrade, every time:**
 
 - **Read the [release notes](https://github.com/ban-red/cha-portal/releases)** of each version you're skipping over, for anything that needs doing by hand.

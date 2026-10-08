@@ -135,6 +135,18 @@ A node pulls the images a launch needs when it needs them; there is nothing to i
 
 The streamer works the same way: `CHA_STREAMER_IMAGE` first, then `ghcr.io/ban-red/cha-streamer:<version>` (unless `CHA_STREAMER_IMAGE` already names a registry), settled when the agent starts. The agent reports the images it holds to the portal, which prefers a node that already has the one a launch needs. Pulls are logged with the image used, how long they took and their size. `CHA_PLACEMENT=manual` takes a node out of that automatic choice.
 
+## Updating nodes from the portal
+
+On Admin → Nodes, a node whose agent is older than the portal shows "Update available: vX → vY" and an Update button. The button needs an agent from 0.3 or later, running a published agent image (`ghcr.io/ban-red/cha-node:<version>`). A node built from source (`cha-node:dev`) can't be updated this way, and an older agent shows "its agent predates updates from the portal". See [ADR 0018](../docs/adr/0018-node-agents-updated-from-the-portal.md).
+
+The agent pulls the new agent and streamer images, showing progress. A helper container from the new image then replaces the agent's container with one that has the same settings and the new image. If the new agent doesn't connect within 90 seconds, the helper starts the previous agent again and the update is rolled back. Running environments keep their images until they stop. The compose project's `.env` is updated too (`CHA_VERSION` for the quick start, or `CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE` and `CHA_IMAGE_TAG` for the node stack), so a later `docker compose up` keeps the new version. If that file can't be written, the helper's log names the file to change by hand. An operator can run the same update on the node with `docker exec <agent container> cha-node --update-to <version>`. The audit log records `node.update_requested`, `node.updated` and `node.update_failed`.
+
+Not covered, so do these by hand as the [upgrade guide](../SETUP.md#upgrading-to-a-new-release) says:
+
+- the portal itself;
+- host files, with `sudo deploy/node/host/install.sh` or `setup.sh`;
+- releases whose compose file changes. Their release notes say what to do.
+
 ## Reaching nodes
 
 The stream goes straight from the node to the browser; the portal only brokers it. A browser needs a UDP path to the node:
