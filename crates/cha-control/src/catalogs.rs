@@ -26,9 +26,10 @@ use crate::error::{ApiError, ApiResult};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_REDIRECTS: usize = 3;
-const MAX_ICON_BYTES: usize = 256 * 1024;
-/// Slugs the portal keeps for itself.
-const RESERVED_SLUGS: &[&str] = &["moonlight"];
+pub(crate) const MAX_ICON_BYTES: usize = 256 * 1024;
+/// Slugs the portal keeps for itself (`custom` is the ids of custom
+/// environments, ADR 0021).
+const RESERVED_SLUGS: &[&str] = &["moonlight", "custom"];
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -97,6 +98,11 @@ impl Registry {
     /// Any loaded template, launchable or not.
     pub fn by_id(&self, id: &str) -> Option<Template> {
         self.find(id, |_| true).map(|l| l.template)
+    }
+
+    /// Any loaded template with why a user can't launch it, if they can't.
+    pub fn status(&self, id: &str) -> Option<(Template, Option<String>)> {
+        self.find(id, |_| true).map(|l| (l.template, l.unavailable))
     }
 
     pub fn icon(&self, id: &str) -> Option<Arc<Vec<u8>>> {
@@ -293,13 +299,20 @@ fn icon_url(base: Option<&reqwest::Url>, icon: &str) -> Result<reqwest::Url, Str
 async fn fetch_icon(base: Option<&reqwest::Url>, icon: &str) -> Result<Vec<u8>, String> {
     let url = icon_url(base, icon)?;
     let body = fetch(&url, MAX_ICON_BYTES).await?;
-    let text = std::str::from_utf8(&body).map_err(|_| format!("{url} isn't an SVG (not text)"))?;
+    check_svg(&body).map_err(|e| format!("{url} {e}"))?;
+    Ok(body)
+}
+
+/// Whether `body` is an SVG document (text, starting with `<svg` or an XML
+/// prolog before it, not an HTML page).
+pub(crate) fn check_svg(body: &[u8]) -> Result<(), String> {
+    let text = std::str::from_utf8(body).map_err(|_| "isn't an SVG (not text)".to_string())?;
     let head = text.trim_start().to_ascii_lowercase();
     let svg = head.starts_with("<svg") || (head.starts_with("<?xml") && head.contains("<svg"));
     if !svg || head.contains("<!doctype html") {
-        return Err(format!("{url} isn't an SVG"));
+        return Err("isn't an SVG".into());
     }
-    Ok(body)
+    Ok(())
 }
 
 /// A catalog document read and its icons fetched, ready to store.
@@ -777,7 +790,8 @@ async fn approve(
 }
 
 /// `DELETE /api/admin/catalogs/{slug}`: refused (409 `in_use`) while an
-/// environment of one of its templates is live. Users' choices for its apps
+/// environment of one of its templates, or of a custom template made from
+/// one, is live. Users' choices for its apps
 /// and the nodes' app data are left alone.
 async fn remove(
     State(state): State<AppState>,
@@ -789,7 +803,8 @@ async fn remove(
     catalog_view(&state, &slug)?;
     let prefix = format!("{slug}.");
     let live: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM environments WHERE substr(template_id, 1, ?) = ? \
+        "SELECT COUNT(*) FROM environments WHERE (substr(template_id, 1, ?1) = ?2 \
+         OR template_id IN (SELECT id FROM custom_templates WHERE substr(base, 1, ?1) = ?2)) \
          AND state IN ('starting', 'running', 'stopping')",
     )
     .bind(prefix.chars().count() as i64)

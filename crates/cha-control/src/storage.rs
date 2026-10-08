@@ -132,17 +132,18 @@ pub fn effective(app: AppSettings, user_choice: Option<bool>) -> Effective {
     }
 }
 
-/// The settings a launch of `template` by `user_id` runs with.
+/// The settings a launch of `template` by `user_id` runs with. A custom
+/// environment that shares its base's data follows the base's settings.
 pub async fn effective_for(
     state: &AppState,
     user_id: &str,
     template: &Template,
 ) -> ApiResult<Effective> {
     let rows = db::app_storage(&state.db).await?;
-    let row = rows.iter().find(|r| r.template_id == template.id);
+    let row = rows.iter().find(|r| r.template_id == template.data_id());
     let choice = db::user_storage(&state.db, user_id)
         .await?
-        .get(&template.id)
+        .get(template.data_id())
         .copied();
     Ok(effective(app_settings(template, row), choice))
 }
@@ -157,9 +158,12 @@ pub async fn effective_for(
 /// instead would mix users. (An anonymous volume would do for the copies, but
 /// Docker makes those root-owned, which an app running as uid 1000 can't use.)
 pub fn spec_storage(owner: &str, template: &Template, effective: Effective) -> Option<Storage> {
+    // A custom environment that shares its base's data uses the base's
+    // directories, and tells the node whose they are.
+    let data = template.data_id();
     let home = effective
         .persistent
-        .then(|| cha_wire::user_dir(owner, &template.id));
+        .then(|| cha_wire::user_dir(owner, data));
     let per_user = template
         .shared
         .as_ref()
@@ -168,7 +172,7 @@ pub fn spec_storage(owner: &str, template: &Template, effective: Effective) -> O
     let shared = (effective.shared_access != SharedAccess::None
         && (effective.persistent || per_user.is_empty()))
     .then(|| Shared {
-        path: cha_wire::shared_dir(&template.id),
+        path: cha_wire::shared_dir(data),
         writable: effective.shared_access == SharedAccess::Write,
         per_user,
     });
@@ -180,13 +184,14 @@ pub fn spec_storage(owner: &str, template: &Template, effective: Effective) -> O
         // it hasn't been taken (data used to live in volumes).
         legacy_volume: home
             .is_some()
-            .then(|| cha_wire::home_volume_name(owner, &template.id)),
+            .then(|| cha_wire::home_volume_name(owner, data)),
         home,
         shared,
+        data_template: (data != template.id).then(|| data.to_string()),
     })
 }
 
-fn node_inventory(node: &NodeRow) -> Option<Inventory> {
+pub(crate) fn node_inventory(node: &NodeRow) -> Option<Inventory> {
     node.inventory
         .as_deref()
         .and_then(|j| serde_json::from_str::<Inventory>(j).ok())
@@ -278,16 +283,17 @@ fn user_app(
     live: &[String],
     shared_paths: &HashMap<String, String>,
 ) -> UserApp {
-    let app = app_settings(template, rows.iter().find(|r| r.template_id == template.id));
-    let eff = effective(app, choices.get(&template.id).copied());
+    let data = template.data_id();
+    let app = app_settings(template, rows.iter().find(|r| r.template_id == data));
+    let eff = effective(app, choices.get(data).copied());
     UserApp {
         template: template.id.clone(),
         name: template.name.clone(),
         persistent: eff.persistent,
         default: app.default_persistent,
         shared_access: eff.shared_access,
-        live: live.contains(&template.id),
-        shared_path: shared_paths.get(&template.id).cloned(),
+        live: live.iter().any(|l| l == data),
+        shared_path: shared_paths.get(data).cloned(),
     }
 }
 
@@ -306,7 +312,7 @@ async fn list(
     }
     let rows = db::app_storage(&state.db).await?;
     let choices = db::user_storage(&state.db, &user.id).await?;
-    let live = db::live_templates(&state.db, &user.id).await?;
+    let live = live_data_ids(&state, &user.id).await?;
     Ok(Json(UserStorage {
         root: nodes.root,
         apps: environments::all(&state)
@@ -327,6 +333,42 @@ fn launchable(state: &AppState, user: &User, id: &str) -> ApiResult<Template> {
     environments::find(state, id).ok_or_else(|| ApiError::NotFound("no such template".into()))
 }
 
+/// The data ids (`Template::data_id`) of the user's live environments.
+async fn live_data_ids(state: &AppState, user_id: &str) -> ApiResult<Vec<String>> {
+    Ok(db::live_templates(&state.db, user_id)
+        .await?
+        .into_iter()
+        .map(|id| match environments::find_any(state, &id) {
+            Some(t) => t.data_id().to_string(),
+            None => id,
+        })
+        .collect())
+}
+
+/// The user's live environment (starting, running or stopping) that uses
+/// `data_id`'s app data: of that template, or of a custom one sharing it.
+pub async fn live_on_data(
+    state: &AppState,
+    user_id: &str,
+    data_id: &str,
+) -> ApiResult<Option<db::EnvironmentRow>> {
+    for id in db::live_templates(&state.db, user_id).await? {
+        let data = match environments::find_any(state, &id) {
+            Some(t) => t.data_id().to_string(),
+            None => id.clone(),
+        };
+        if data == data_id
+            && let Some(live) = db::live_environments_of(&state.db, user_id, &id)
+                .await?
+                .into_iter()
+                .next()
+        {
+            return Ok(Some(live));
+        }
+    }
+    Ok(None)
+}
+
 fn live_error() -> ApiError {
     ApiError::conflict(
         "live",
@@ -337,7 +379,7 @@ fn live_error() -> ApiError {
 async fn show(state: &AppState, user: &User, template: &Template) -> ApiResult<UserApp> {
     let rows = db::app_storage(&state.db).await?;
     let choices = db::user_storage(&state.db, &user.id).await?;
-    let live = db::live_templates(&state.db, &user.id).await?;
+    let live = live_data_ids(state, &user.id).await?;
     let nodes = node_storage(state).await?;
     Ok(user_app(
         template,
@@ -363,13 +405,13 @@ async fn set(
     Json(req): Json<SetPersistent>,
 ) -> ApiResult<Json<UserApp>> {
     let template = launchable(&state, &user, &id)?;
-    if db::live_environment_of(&state.db, &user.id, &template.id)
+    if live_on_data(&state, &user.id, template.data_id())
         .await?
         .is_some()
     {
         return Err(live_error());
     }
-    db::set_user_persistent(&state.db, &user.id, &template.id, req.persistent).await?;
+    db::set_user_persistent(&state.db, &user.id, template.data_id(), req.persistent).await?;
     db::audit(
         &state.db,
         Some(&user.id),
@@ -395,7 +437,7 @@ async fn reset(
     Path(id): Path<String>,
 ) -> ApiResult<Json<UserApp>> {
     let template = launchable(&state, &user, &id)?;
-    if db::live_environment_of(&state.db, &user.id, &template.id)
+    if live_on_data(&state, &user.id, template.data_id())
         .await?
         .is_some()
     {
@@ -412,7 +454,7 @@ async fn reset(
                 &node.id,
                 NodeRequest::DeleteUserData {
                     user: user.id.clone(),
-                    template: template.id.clone(),
+                    template: template.data_id().to_string(),
                 },
                 RESET_TIMEOUT,
             )
@@ -470,13 +512,14 @@ fn admin_app(
     rows: &[AppStorageRow],
     shared_paths: &HashMap<String, String>,
 ) -> AdminApp {
-    let app = app_settings(template, rows.iter().find(|r| r.template_id == template.id));
+    let data = template.data_id();
+    let app = app_settings(template, rows.iter().find(|r| r.template_id == data));
     AdminApp {
         template: template.id.clone(),
         name: template.name.clone(),
         default_persistent: app.default_persistent,
         shared_access: app.shared_access,
-        shared_path: shared_paths.get(&template.id).cloned(),
+        shared_path: shared_paths.get(data).cloned(),
     }
 }
 
@@ -529,7 +572,7 @@ async fn admin_set(
     let changes = serde_json::Value::Object(changes);
     db::set_app_storage(
         &state.db,
-        &template.id,
+        template.data_id(),
         req.default_persistent,
         req.shared_access.map(SharedAccess::as_str),
     )

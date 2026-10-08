@@ -35,6 +35,13 @@ pub fn collect() -> Inventory {
         platform: platform(),
         // The agent adds it: it asks Docker about its own container.
         update: None,
+        spec_features: vec![
+            cha_wire::SPEC_FEATURE_ENV.into(),
+            cha_wire::SPEC_FEATURE_DATA_TEMPLATE.into(),
+            cha_wire::SPEC_FEATURE_HOST_OPTIONS.into(),
+        ],
+        // The agent adds it: the owner's settings are the runtime's.
+        host_options: Some(cha_wire::HostPolicy::default()),
     };
     // NVIDIA and the CPU; the agent adds the VA-API devices it probes.
     let mut devices = inventory.devices_or_derived();

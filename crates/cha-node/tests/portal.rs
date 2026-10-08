@@ -285,6 +285,8 @@ fn test_inventory() -> Inventory {
         disks: Vec::new(),
         platform: None,
         update: None,
+        spec_features: Vec::new(),
+        host_options: None,
     }
 }
 

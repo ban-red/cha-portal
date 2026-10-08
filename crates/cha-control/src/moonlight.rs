@@ -184,6 +184,8 @@ fn template_for(row: &MoonlightHostRow, app: &MoonlightApp) -> Template {
         gamepad: None,
         fps: None,
         needs_gpu: false,
+        env: Default::default(),
+        custom: None,
     }
 }
 

@@ -55,8 +55,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use cha_wire::{
-    DeviceKind, EnvironmentSpec, PER_USER_DIR, SHARED_MOUNT_ROOT, SecurityProfile,
-    StreamerEndpoint, home_volume_name, is_home_volume_name, valid_template_id, valid_user_id,
+    DeviceKind, EnvironmentSpec, HostMount, HostOptionsMode, HostPolicy, HostPort, MountSource,
+    PER_USER_DIR, PortRange, Protocol, SHARED_MOUNT_ROOT, SecurityProfile, StreamerEndpoint,
+    check_env, home_volume_name, is_home_volume_name, valid_template_id, valid_user_id,
 };
 use futures_util::future::BoxFuture;
 use http_body_util::{BodyExt, Full};
@@ -68,7 +69,10 @@ use tracing::{debug, info, warn};
 
 use crate::crashlog::{self, Tail};
 use crate::devices::DeviceProbes;
-use crate::docker::{ContainerEvent, ContainerMount, Docker, PullProgress, encode, names_registry};
+use crate::docker::{
+    ContainerEvent, ContainerMount, ContainerSummary, Docker, PullProgress, encode, names_registry,
+};
+use crate::hostopts::HostOptionsConfig;
 use crate::storage::{DataRoot, Seed, plan_seed};
 
 const LABEL_ENV: &str = "sh.cha.env";
@@ -86,6 +90,13 @@ const LABEL_GAMESTREAM_SECRET: &str = "sh.cha.gamestream-secret";
 const LABEL_HOME: &str = "sh.cha.home";
 const LABEL_OWNER: &str = "sh.cha.owner";
 const LABEL_TEMPLATE: &str = "sh.cha.template";
+/// On an app container whose home is a directory under the data root: the
+/// template whose directory that is, when it isn't the environment's own
+/// (a custom environment that shares its base's data, ADR 0021). Homes are
+/// kept by (owner, this).
+const LABEL_DATA_TEMPLATE: &str = "sh.cha.data-template";
+/// Volumes made for an app's network mounts: `cha-hostvol-<environment>-<n>`.
+const HOST_VOLUME_PREFIX: &str = "cha-hostvol-";
 /// On a streamer: the environment streams a Moonlight host's app (a gateway),
 /// not an app beside it. Which is how a restarted agent keeps them out of
 /// the GameStream host's app list.
@@ -244,6 +255,17 @@ pub trait Runtime: Send + Sync + 'static {
         let _ = (user, template);
         Box::pin(async { bail!("this runtime keeps no user data") })
     }
+    /// What custom environments may ask of this node (ADR 0021); nothing from
+    /// a runtime that has no say.
+    fn host_policy(&self) -> HostPolicy {
+        HostPolicy::default()
+    }
+    /// The ports published for the environment's host options, with the
+    /// node's port filled in; empty when it has none.
+    fn host_ports(&self, id: String) -> BoxFuture<'_, Vec<HostPort>> {
+        let _ = id;
+        Box::pin(async { Vec::new() })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -290,6 +312,9 @@ pub struct DockerConfig {
     /// The image that streams a Moonlight host's app (`CHA_GATEWAY_IMAGE`),
     /// mapped through [`Self::app_images`] like an app's.
     pub gateway_image: String,
+    /// What custom environments may ask of this node (`CHA_HOST_OPTIONS` and
+    /// its lists, ADR 0021). Off by default.
+    pub host_options: HostOptionsConfig,
 }
 
 impl DockerConfig {
@@ -656,6 +681,9 @@ pub struct DockerRuntime {
     warnings: broadcast::Sender<Warning>,
     /// Fires after each image pull ([`Runtime::pulled`]).
     pulled: broadcast::Sender<()>,
+    /// Held while an app with published ports picks them and starts, so two
+    /// launches don't pick the same free port.
+    ports_lock: tokio::sync::Mutex<()>,
 }
 
 /// A per-user directory laid over a shared one in an app.
@@ -833,6 +861,7 @@ impl DockerRuntime {
             progress,
             warnings,
             pulled,
+            ports_lock: tokio::sync::Mutex::new(()),
         });
         runtime.adopt().await?;
         let watcher = Arc::clone(&runtime);
@@ -901,7 +930,10 @@ impl DockerRuntime {
                 if container.labels.get(LABEL_ROLE).map(String::as_str) == Some("app")
                     && let (Some(owner), Some(template)) = (
                         container.labels.get(LABEL_OWNER),
-                        container.labels.get(LABEL_TEMPLATE),
+                        container
+                            .labels
+                            .get(LABEL_DATA_TEMPLATE)
+                            .or_else(|| container.labels.get(LABEL_TEMPLATE)),
                     )
                 {
                     state
@@ -1115,6 +1147,7 @@ impl DockerRuntime {
         }
         check_storage(&spec)?;
         check_device(&spec)?;
+        self.check_extras(&spec)?;
         if let Some(port) = self
             .state
             .lock()
@@ -1409,7 +1442,10 @@ impl DockerRuntime {
             .iter()
             .find(|(id, k)| **k == key && **id != spec.id)
         {
-            bail!("environment {other} already uses this home on this node");
+            bail!(
+                "environment {other} already uses this home on this node (its data for {}); stop it first",
+                key.1
+            );
         }
         state.homes.insert(spec.id.clone(), key);
         Ok(())
@@ -1426,10 +1462,10 @@ impl DockerRuntime {
         let data = self.data.clone();
         if let Some(shared) = &storage.shared {
             let per_user = shared.per_user.clone();
-            if let Some(dir) = self.config.shared_dirs.get(&spec.template).cloned() {
+            if let Some(dir) = self.config.shared_dirs.get(spec.data_template()).cloned() {
                 if let Err(problem) = check_external(dir.clone(), per_user).await {
                     warn!(
-                        id = %spec.id, template = %spec.template, dir = %dir.display(),
+                        id = %spec.id, template = %spec.data_template(), dir = %dir.display(),
                         "starting without the shared directory: {problem}"
                     );
                     if let Some(storage) = spec.storage.as_mut() {
@@ -1437,7 +1473,7 @@ impl DockerRuntime {
                     }
                 }
             } else {
-                let template = spec.template.clone();
+                let template = spec.data_template().to_string();
                 let data = data.clone();
                 blocking(move || data.ensure_shared(&template, &per_user)).await?;
             }
@@ -1636,14 +1672,200 @@ impl DockerRuntime {
         {
             warn!(%card, "can't tell the primary node's group; gamescope may not start");
         }
+        // Picking a free port and publishing it is one step: the next launch
+        // sees this one's ports only once the app has them.
+        let wants_ports = spec.host.as_deref().is_some_and(|h| !h.ports.is_empty());
+        let _ports = if wants_ports {
+            Some(self.ports_lock.lock().await)
+        } else {
+            None
+        };
+        let used = if wants_ports {
+            self.used_host_ports(&spec.id).await?
+        } else {
+            HashSet::new()
+        };
+        let plan = self.plan_host(spec, &used)?;
         let app = self
             .docker
             .create(
                 &container_name(&spec.id, "app"),
-                &self.app_config(spec, port, &hidraw),
+                &self.app_config_with(spec, port, &hidraw, &plan),
             )
             .await?;
         self.docker.start(&app).await
+    }
+
+    /// Whether the node may run `spec`'s extras: its variables
+    /// ([`check_env`]) and host options ([`Self::plan_host`]), before
+    /// anything is pulled or created.
+    fn check_extras(&self, spec: &EnvironmentSpec) -> Result<()> {
+        let host = spec.host.as_deref().is_some_and(|h| !h.is_empty());
+        if spec.gateway.is_some() && (spec.env.is_some() || host) {
+            bail!("a Moonlight gateway takes no extra variables or host options");
+        }
+        if let Some(env) = &spec.env {
+            check_env(env).map_err(|e| anyhow!("refusing the app's variables: {e}"))?;
+        }
+        self.plan_host(spec, &HashSet::new())?;
+        Ok(())
+    }
+
+    /// The host ports in use on this node: published by another
+    /// environment's app, or this agent's own (streamers, GameStream),
+    /// whatever the protocol.
+    async fn used_host_ports(&self, own: &str) -> Result<HashSet<(u16, Protocol)>> {
+        let containers = self.docker.list(LABEL_ENV).await?;
+        Ok(used_ports(&containers, own, &self.reserved_ports()))
+    }
+
+    /// The ports this agent hands streamers, which an app can't have.
+    fn reserved_ports(&self) -> Vec<u16> {
+        let span = PORTS_PER_ENVIRONMENT * self.config.max_environments;
+        let mut ports: Vec<u16> = (0..span)
+            .filter_map(|n| self.config.port_base.checked_add(n))
+            .collect();
+        if let Some(base) = self.config.gamestream_port_base {
+            let span = GAMESTREAM_PORTS_PER_ENVIRONMENT * self.config.max_environments;
+            ports.extend((0..span).filter_map(|n| base.checked_add(n)));
+        }
+        ports
+    }
+
+    /// Checks `spec`'s host options against this node's policy and turns them
+    /// into what the app's container gets; `used` are the host ports taken
+    /// already. Nothing is touched. Every refusal names the option.
+    fn plan_host(
+        &self,
+        spec: &EnvironmentSpec,
+        used: &HashSet<(u16, Protocol)>,
+    ) -> Result<HostPlan> {
+        let Some(req) = spec.host.as_deref().filter(|h| !h.is_empty()) else {
+            return Ok(HostPlan::default());
+        };
+        let config = &self.config.host_options;
+        let refuse = |why: String| anyhow!("host options refused: {why}");
+        req.check_shape().map_err(refuse)?;
+        if config.mode == HostOptionsMode::Off {
+            return Err(refuse(
+                "this node allows no host options (CHA_HOST_OPTIONS=off)".into(),
+            ));
+        }
+        let refusals = config.policy().refusals(req);
+        if !refusals.is_empty() {
+            return Err(refuse(format!(
+                "this node {} (CHA_HOST_OPTIONS={})",
+                refusals.join("; "),
+                if config.mode == HostOptionsMode::Full {
+                    "full"
+                } else {
+                    "allowlist"
+                }
+            )));
+        }
+        let socket = self.docker.socket().to_string_lossy().into_owned();
+        // What the app mounts at a fixed place that a target may not cover.
+        let shared = spec
+            .storage
+            .as_ref()
+            .is_some_and(|s| s.shared.is_some())
+            .then(|| self.shared_location(spec.data_template()).1)
+            .filter(|_| self.config.shared_dirs.contains_key(spec.data_template()));
+        let wine = self
+            .config
+            .nvidia_wine_dir
+            .as_ref()
+            .map(|d| d.to_string_lossy().into_owned());
+        let mut plan = HostPlan::default();
+        for (n, mount) in req.mounts.iter().enumerate() {
+            for kept in shared.iter().chain(wine.iter()) {
+                if path_under(&mount.target, kept) || path_under(kept, &mount.target) {
+                    return Err(refuse(format!(
+                        "mount {} would overlap {kept}, which the node mounts itself",
+                        mount.target
+                    )));
+                }
+            }
+            plan.mounts
+                .push(self.host_mount(&spec.id, n, mount, &socket)?);
+        }
+        plan.ports = assign_ports(&req.ports, &config.ports, used, &self.reserved_ports())?;
+        plan.cap_add = req.cap_add.clone();
+        plan.devices = req.devices.clone();
+        plan.privileged = req.privileged;
+        plan.network_host = req.network_host;
+        plan.security_opt = req.security_opt.clone();
+        Ok(plan)
+    }
+
+    /// One requested mount as Docker's `Mounts` takes it. A named mount's
+    /// `:ro` is a ceiling over the request.
+    fn host_mount(&self, id: &str, n: usize, mount: &HostMount, socket: &str) -> Result<Value> {
+        let refuse = |why: String| anyhow!("host options refused: {why}");
+        let bind = |source: &str, read_only: bool| -> Result<Value> {
+            if path_under(socket, source) {
+                return Err(refuse(format!(
+                    "mount {} would give the app this agent's Docker socket ({socket})",
+                    mount.target
+                )));
+            }
+            Ok(json!({
+                "Type": "bind",
+                "Source": source,
+                "Target": mount.target,
+                "ReadOnly": read_only,
+                // The owner's directory: never for Docker to make as root.
+                "BindOptions": { "CreateMountpoint": false },
+            }))
+        };
+        match &mount.source {
+            MountSource::Named { name } => {
+                let Some(named) = self.config.host_options.mount(name) else {
+                    return Err(refuse(format!(
+                        "this node has no mount named {name} (CHA_HOST_MOUNTS)"
+                    )));
+                };
+                bind(
+                    &named.path.to_string_lossy(),
+                    mount.read_only || named.read_only,
+                )
+            }
+            MountSource::Path { path } => bind(path, mount.read_only),
+            MountSource::Network {
+                fs_type,
+                device,
+                options,
+            } => {
+                // The share is mounted by the engine's `local` driver when
+                // the container starts, and removed with the environment.
+                let mut driver = serde_json::Map::new();
+                driver.insert("type".into(), json!(fs_type.as_str()));
+                driver.insert("device".into(), json!(device));
+                driver.insert("o".into(), json!(options));
+                Ok(json!({
+                    "Type": "volume",
+                    "Source": format!("{HOST_VOLUME_PREFIX}{id}-{n}"),
+                    "Target": mount.target,
+                    "ReadOnly": mount.read_only,
+                    "VolumeOptions": {
+                        // The share's files, not the image's directory.
+                        "NoCopy": true,
+                        "Labels": { LABEL_ENV: id },
+                        "DriverConfig": { "Name": "local", "Options": driver },
+                    },
+                }))
+            }
+        }
+    }
+
+    /// The ports published for `id`'s host options, as the engine reports them.
+    async fn published_ports(&self, id: &str) -> Result<Vec<HostPort>> {
+        let containers = self.docker.list(&format!("{LABEL_ENV}={id}")).await?;
+        Ok(containers
+            .iter()
+            .filter(|c| c.labels.get(LABEL_ROLE).map(String::as_str) == Some("app"))
+            .flat_map(|c| published(&c.ports))
+            .collect())
     }
 
     /// Fails if the streamer has already exited (the engine says a container
@@ -1705,9 +1927,11 @@ impl DockerRuntime {
     /// under the data root, so a restarted agent finds the homes in use.
     fn app_labels(&self, spec: &EnvironmentSpec, port: u16) -> Value {
         let mut labels = self.labels(&spec.id, "app", port);
-        if let Some((owner, template)) = home_key(spec) {
+        if let Some((owner, data_template)) = home_key(spec) {
             labels[LABEL_OWNER] = json!(owner);
-            labels[LABEL_TEMPLATE] = json!(template);
+            // The environment's own template; the data's may be its base's.
+            labels[LABEL_TEMPLATE] = json!(spec.template);
+            labels[LABEL_DATA_TEMPLATE] = json!(data_template);
         }
         labels
     }
@@ -1749,7 +1973,7 @@ impl DockerRuntime {
             mounts.push(bind(host(home), APP_HOME.into(), false));
         }
         if let Some(shared) = &storage.shared {
-            let (source, target) = self.shared_location(&spec.template);
+            let (source, target) = self.shared_location(spec.data_template());
             mounts.push(bind(
                 source.to_string_lossy().into_owned(),
                 target.clone(),
@@ -1775,7 +1999,7 @@ impl DockerRuntime {
         let (Some(shared), Some(_home)) = (&storage.shared, &storage.home) else {
             return Vec::new();
         };
-        let (_, target) = self.shared_location(&spec.template);
+        let (_, target) = self.shared_location(spec.data_template());
         shared
             .per_user
             .iter()
@@ -2062,7 +2286,20 @@ impl DockerRuntime {
     /// The app's container. `hidraw` are the streamer's hidraw nodes
     /// ([`Self::streamer_hidraw`]): each is mounted from the input volume and
     /// allowed in the app's device cgroup.
+    #[cfg(test)]
     fn app_config(&self, spec: &EnvironmentSpec, port: u16, hidraw: &[Hidraw]) -> Value {
+        self.app_config_with(spec, port, hidraw, &HostPlan::default())
+    }
+
+    /// [`Self::app_config`] with the host options the node settled on
+    /// ([`Self::plan_host`]).
+    fn app_config_with(
+        &self,
+        spec: &EnvironmentSpec,
+        port: u16,
+        hidraw: &[Hidraw],
+        plan: &HostPlan,
+    ) -> Value {
         let card_gid = steam_primary_node(spec)
             .and_then(|card| render_gid(&card).or_else(|| self.probes.known_gid(&card)));
         let mut groups: Vec<String> = Vec::new();
@@ -2075,6 +2312,7 @@ impl DockerRuntime {
         let list = mounts.as_array_mut().expect("mounts are a list");
         list.extend(self.storage_mounts(spec));
         list.extend(hidraw.iter().map(|node| hidraw_mount(&spec.id, node)));
+        list.extend(plan.mounts.iter().cloned());
         // Proton copies nvngx.dll from here into its prefixes; CDI doesn't bring it.
         // Only NVIDIA's driver has it.
         if let Some(dir) = self
@@ -2098,7 +2336,7 @@ impl DockerRuntime {
         if spec.storage.as_ref().is_some_and(|s| s.shared.is_some()) {
             env.push(format!(
                 "CHA_SHARED_DIR={}",
-                self.shared_location(&spec.template).1
+                self.shared_location(spec.data_template()).1
             ));
         }
         // What it has to keep mounted of its own, for apps that check.
@@ -2106,6 +2344,11 @@ impl DockerRuntime {
         if !overlays.is_empty() {
             let targets: Vec<&str> = overlays.iter().map(|o| o.target.as_str()).collect();
             env.push(format!("CHA_PER_USER_DIRS={}", targets.join(":")));
+        }
+        // A custom environment's own variables, after the node's (the names
+        // the node sets were refused: `check_env`).
+        if let Some(extra) = &spec.env {
+            env.extend(extra.iter().map(|(name, value)| format!("{name}={value}")));
         }
         let mut host = app_host_config(spec.security, spec.shm_mb);
         host["Mounts"] = mounts;
@@ -2130,9 +2373,20 @@ impl DockerRuntime {
                 "CgroupPermissions": "rw",
             }));
         }
+        // The owner's devices, the same path in the container.
+        for dev in &plan.devices {
+            if !devices.iter().any(|d| d["PathInContainer"] == *dev) {
+                devices.push(json!({
+                    "PathOnHost": dev,
+                    "PathInContainer": dev,
+                    "CgroupPermissions": "rwm",
+                }));
+            }
+        }
         if !devices.is_empty() {
             config["HostConfig"]["Devices"] = json!(devices);
         }
+        plan.apply(&mut config);
         config
     }
 
@@ -2199,6 +2453,20 @@ impl DockerRuntime {
             );
         }
         note(self.docker.remove_volume(&volume_name(id)).await);
+        // The shares its app mounted, made for this launch. Found by name, so
+        // an agent that restarted still removes them.
+        match self
+            .docker
+            .volumes_named(&format!("{HOST_VOLUME_PREFIX}{id}-"))
+            .await
+        {
+            Ok(volumes) => {
+                for volume in volumes.iter().filter(|v| is_host_volume_of(v, id)) {
+                    note(self.docker.remove_volume(volume).await);
+                }
+            }
+            Err(err) => note(Err(err)),
+        }
         first.map_or(Ok(()), Err)
     }
 
@@ -2342,6 +2610,205 @@ impl Runtime for DockerRuntime {
     fn delete_user_data(&self, user: String, template: String) -> BoxFuture<'_, Result<()>> {
         Box::pin(self.delete_user_data(user, template))
     }
+
+    fn host_policy(&self) -> HostPolicy {
+        self.config.host_options.policy()
+    }
+
+    fn host_ports(&self, id: String) -> BoxFuture<'_, Vec<HostPort>> {
+        Box::pin(async move {
+            self.published_ports(&id).await.unwrap_or_else(|err| {
+                warn!(%id, "reading the published ports: {err:#}");
+                Vec::new()
+            })
+        })
+    }
+}
+
+/// What a custom environment's host options come to on this node: the
+/// settled form of [`HostOptions`], ready for the app's container.
+#[derive(Debug, Default)]
+struct HostPlan {
+    /// Docker `Mounts` entries.
+    mounts: Vec<Value>,
+    ports: Vec<PlannedPort>,
+    cap_add: Vec<String>,
+    /// Host paths, passed through at the same path.
+    devices: Vec<String>,
+    privileged: bool,
+    network_host: bool,
+    security_opt: Vec<String>,
+}
+
+/// A port the app publishes; `host` is `None` for one the engine chooses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedPort {
+    container: u16,
+    protocol: Protocol,
+    host: Option<u16>,
+}
+
+impl HostPlan {
+    /// Adds it all to the app's container configuration. The profile's
+    /// `CapDrop` stays; privileged, when asked, overrides it.
+    fn apply(&self, config: &mut Value) {
+        let host = &mut config["HostConfig"];
+        if !self.cap_add.is_empty() {
+            host["CapAdd"] = json!(self.cap_add);
+        }
+        if self.privileged {
+            host["Privileged"] = json!(true);
+        }
+        if self.network_host {
+            host["NetworkMode"] = json!("host");
+        }
+        if !self.security_opt.is_empty()
+            && let Some(options) = host["SecurityOpt"].as_array_mut()
+        {
+            options.extend(self.security_opt.iter().map(|o| json!(o)));
+        }
+        if !self.ports.is_empty() {
+            let mut exposed = serde_json::Map::new();
+            let mut bindings = serde_json::Map::new();
+            for p in &self.ports {
+                let key = format!("{}/{}", p.container, p.protocol.as_str());
+                exposed.insert(key.clone(), json!({}));
+                // An empty HostIp is every address; an empty HostPort, the
+                // engine's choice.
+                bindings.insert(
+                    key,
+                    json!([{
+                        "HostIp": "",
+                        "HostPort": p.host.map(|h| h.to_string()).unwrap_or_default(),
+                    }]),
+                );
+            }
+            config["ExposedPorts"] = Value::Object(exposed);
+            config["HostConfig"]["PortBindings"] = Value::Object(bindings);
+        }
+    }
+}
+
+/// `a` is `b` or under it.
+fn path_under(a: &str, b: &str) -> bool {
+    b == "/" || a == b || a.strip_prefix(b).is_some_and(|r| r.starts_with('/'))
+}
+
+/// Whether `volume` is `cha-hostvol-<id>-<n>`; not another environment's whose
+/// id starts with this one's.
+fn is_host_volume_of(volume: &str, id: &str) -> bool {
+    volume
+        .strip_prefix(HOST_VOLUME_PREFIX)
+        .and_then(|rest| rest.strip_prefix(id))
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Host ports in use: published by the apps of environments other than
+/// `own`, or in `reserved` (the agent's own, either protocol).
+fn used_ports(
+    containers: &[ContainerSummary],
+    own: &str,
+    reserved: &[u16],
+) -> HashSet<(u16, Protocol)> {
+    let mut used: HashSet<(u16, Protocol)> = reserved
+        .iter()
+        .flat_map(|p| [(*p, Protocol::Tcp), (*p, Protocol::Udp)])
+        .collect();
+    for c in containers
+        .iter()
+        .filter(|c| c.labels.get(LABEL_ENV).map(String::as_str) != Some(own))
+    {
+        used.extend(
+            published(&c.ports)
+                .into_iter()
+                .filter_map(|p| p.host.map(|h| (h, p.protocol))),
+        );
+    }
+    used
+}
+
+/// The ports a container publishes, once each (the engine lists an IPv4 and
+/// an IPv6 binding separately).
+fn published(ports: &[crate::docker::ContainerPort]) -> Vec<HostPort> {
+    let mut out: Vec<HostPort> = Vec::new();
+    for p in ports {
+        let protocol = match p.protocol.as_str() {
+            "tcp" => Protocol::Tcp,
+            "udp" => Protocol::Udp,
+            _ => continue,
+        };
+        let Some(host) = p.public_port else { continue };
+        let port = HostPort {
+            container: p.private_port,
+            protocol,
+            host: Some(host),
+        };
+        if !out.contains(&port) {
+            out.push(port);
+        }
+    }
+    out.sort_by_key(|p| (p.container, p.protocol));
+    out
+}
+
+/// Settles each requested port's host side: the one asked for, if free, else
+/// the first free one in the owner's ranges for its protocol; the engine's
+/// choice (`None`) when the owner set no range for it (`full` mode only: an
+/// allowlist without one was already refused).
+fn assign_ports(
+    requested: &[HostPort],
+    ranges: &[PortRange],
+    used: &HashSet<(u16, Protocol)>,
+    reserved: &[u16],
+) -> Result<Vec<PlannedPort>> {
+    let mut taken = used.clone();
+    let mut out = Vec::new();
+    for want in requested {
+        let proto = want.protocol.as_str();
+        let host = match want.host {
+            Some(host) => {
+                if taken.contains(&(host, want.protocol)) {
+                    let by = if reserved.contains(&host) {
+                        "this agent's streamers"
+                    } else {
+                        "another environment on this node"
+                    };
+                    bail!("host options refused: port {host}/{proto} is already used by {by}");
+                }
+                Some(host)
+            }
+            None => {
+                let mine: Vec<&PortRange> = ranges
+                    .iter()
+                    .filter(|r| r.protocol == want.protocol)
+                    .collect();
+                if mine.is_empty() {
+                    None
+                } else {
+                    let found = mine
+                        .iter()
+                        .flat_map(|r| r.start..=r.end)
+                        .find(|p| !taken.contains(&(*p, want.protocol)));
+                    match found {
+                        Some(p) => Some(p),
+                        None => bail!(
+                            "host options refused: every {proto} port this node allows is in use (CHA_HOST_PORTS)"
+                        ),
+                    }
+                }
+            }
+        };
+        if let Some(host) = host {
+            taken.insert((host, want.protocol));
+        }
+        out.push(PlannedPort {
+            container: want.container,
+            protocol: want.protocol,
+            host,
+        });
+    }
+    Ok(out)
 }
 
 /// Whether the shared directory the owner keeps at `dir` can be mounted: see
@@ -2392,10 +2859,10 @@ fn check_storage(spec: &EnvironmentSpec) -> Result<()> {
     Ok(())
 }
 
-/// The (user, template) whose directory under the data root is the app's home.
+/// The (user, data template) whose directory under the data root is the app's home.
 fn home_key(spec: &EnvironmentSpec) -> Option<(String, String)> {
     spec.storage.as_ref()?.home.as_ref()?;
-    Some((spec.owner.clone(), spec.template.clone()))
+    Some((spec.owner.clone(), spec.data_template().to_string()))
 }
 
 /// Where a copy comes from.
@@ -2761,6 +3228,7 @@ mod tests {
                 log_dir: None,
                 app_images: None,
                 gateway_image: "cha/gateway:dev".into(),
+                host_options: HostOptionsConfig::default(),
             },
             render_gid: Some(992),
             probes: DeviceProbes::default(),
@@ -2770,6 +3238,7 @@ mod tests {
             progress,
             warnings,
             pulled,
+            ports_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -2791,6 +3260,8 @@ mod tests {
             gamepad: None,
             device: None,
             gateway: None,
+            env: None,
+            host: None,
         }
     }
 
@@ -3941,6 +4412,16 @@ mod tests {
                     Json(json!({})).into_response()
                 }
             }
+            ("GET", "/volumes") => {
+                let volumes: Vec<Value> = engine
+                    .volumes
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|name| json!({ "Name": name }))
+                    .collect();
+                Json(json!({ "Volumes": volumes, "Warnings": null })).into_response()
+            }
             ("GET", p) if p.starts_with("/volumes/") => {
                 let name = p.trim_start_matches("/volumes/");
                 if engine.volumes.lock().unwrap().contains(name) {
@@ -4019,9 +4500,44 @@ mod tests {
                     .flatten()
                     .map(|m| json!({ "Source": m["Source"], "Destination": m["Target"] }))
                     .collect();
+                // Volumes the engine makes for the container, and the ports it
+                // publishes (an IPv4 and an IPv6 entry each; 40000 and up
+                // where the request left the host port to the engine).
+                for m in body["HostConfig"]["Mounts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    if m["Type"] == "volume"
+                        && let Some(name) = m["Source"].as_str()
+                        && name.starts_with(HOST_VOLUME_PREFIX)
+                    {
+                        engine.volumes.lock().unwrap().insert(name.to_string());
+                    }
+                }
+                let mut ports = Vec::new();
+                for (key, bound) in body["HostConfig"]["PortBindings"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                {
+                    let (private, kind) = key.split_once('/').unwrap();
+                    let public: u16 = bound[0]["HostPort"]
+                        .as_str()
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(40000 + ports.len() as u16);
+                    for ip in ["0.0.0.0", "::"] {
+                        ports.push(json!({
+                            "IP": ip,
+                            "PrivatePort": private.parse::<u16>().unwrap(),
+                            "PublicPort": public,
+                            "Type": kind,
+                        }));
+                    }
+                }
                 containers.push(json!({
                     "Id": name, "State": "created", "Labels": body["Labels"], "Config": body,
-                    "Mounts": mounts,
+                    "Mounts": mounts, "Ports": ports,
                 }));
                 (StatusCode::CREATED, Json(json!({ "Id": name }))).into_response()
             }
@@ -4039,7 +4555,13 @@ mod tests {
                 containers.retain(|c| c["Id"] != id);
                 StatusCode::NO_CONTENT.into_response()
             }
-            ("DELETE", p) if p.starts_with("/volumes/") => StatusCode::NO_CONTENT.into_response(),
+            ("DELETE", p) if p.starts_with("/volumes/") => {
+                let name = p.trim_start_matches("/volumes/");
+                if name.starts_with(HOST_VOLUME_PREFIX) {
+                    engine.volumes.lock().unwrap().remove(name);
+                }
+                StatusCode::NO_CONTENT.into_response()
+            }
             _ => StatusCode::NOT_FOUND.into_response(),
         }
     }
@@ -4371,6 +4893,7 @@ mod tests {
                 },
             }),
             legacy_volume: persistent.then(|| home_volume_name(user, "steam")),
+            data_template: None,
         }
     }
 
@@ -4416,6 +4939,7 @@ mod tests {
                         per_user: vec![],
                     }),
                     legacy_volume: None,
+                    data_template: None,
                 };
                 let spec = app_data_spec("e1", "chrome", Some(storage));
                 let mounts = rt.storage_mounts(&spec);
@@ -5816,5 +6340,680 @@ mod tests {
         // (The scratch directories are bind mounts: their contents, not them.)
         std::fs::remove_dir_all(&share).unwrap();
         std::fs::remove_dir_all(&empty).unwrap();
+    }
+
+    // ---- Custom environments (ADR 0021) ----
+
+    use cha_wire::{HostMount, HostOptions, HostPort, MountSource, NetworkFs};
+
+    fn settings(
+        mode: &str,
+        mounts: &str,
+        ports: &str,
+        caps: &str,
+        devices: &str,
+    ) -> HostOptionsConfig {
+        HostOptionsConfig::from_settings(mode, mounts, ports, caps, devices).unwrap()
+    }
+
+    /// A node that allows a media folder (read-only), a roms folder, a UDP
+    /// range, a capability and a device.
+    fn allowlisting() -> DockerRuntime {
+        let mut rt = runtime();
+        rt.config.host_options = settings(
+            "allowlist",
+            "media=/mnt/media:ro,roms=/srv/roms",
+            "27015-27030/udp,25565/tcp",
+            "SYS_NICE",
+            "/dev/dri/card1",
+        );
+        rt
+    }
+
+    fn full() -> DockerRuntime {
+        let mut rt = runtime();
+        rt.config.host_options = settings("full", "media=/mnt/media", "27015-27030/udp", "", "");
+        rt
+    }
+
+    fn with_host(opts: HostOptions) -> EnvironmentSpec {
+        EnvironmentSpec {
+            host: Some(Box::new(opts)),
+            ..spec(SecurityProfile::Browser)
+        }
+    }
+
+    fn named_mount(name: &str, target: &str, read_only: bool) -> HostMount {
+        HostMount {
+            source: MountSource::Named { name: name.into() },
+            target: target.into(),
+            read_only,
+        }
+    }
+
+    fn path_mount(path: &str, target: &str) -> HostMount {
+        HostMount {
+            source: MountSource::Path { path: path.into() },
+            target: target.into(),
+            read_only: false,
+        }
+    }
+
+    fn udp(container: u16, host: Option<u16>) -> HostPort {
+        HostPort {
+            container,
+            protocol: Protocol::Udp,
+            host,
+        }
+    }
+
+    fn tcp(container: u16, host: Option<u16>) -> HostPort {
+        HostPort {
+            container,
+            protocol: Protocol::Tcp,
+            host,
+        }
+    }
+
+    fn env_of(config: &Value) -> Vec<&str> {
+        config["Env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e.as_str().unwrap())
+            .collect()
+    }
+
+    fn planned(rt: &DockerRuntime, spec: &EnvironmentSpec) -> Value {
+        let plan = rt.plan_host(spec, &HashSet::new()).unwrap();
+        rt.app_config_with(spec, 7600, &[], &plan)
+    }
+
+    fn refusal(rt: &DockerRuntime, spec: &EnvironmentSpec) -> String {
+        format!("{:#}", rt.plan_host(spec, &HashSet::new()).unwrap_err())
+    }
+
+    fn with_env(mut spec: EnvironmentSpec, vars: &[(&str, &str)]) -> EnvironmentSpec {
+        spec.env = Some(Box::new(
+            vars.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        ));
+        spec
+    }
+
+    #[test]
+    fn extra_variables_follow_the_nodes_own() {
+        let rt = runtime();
+        let plain = spec(SecurityProfile::Browser);
+        let spec = with_env(plain.clone(), &[("PROTON_LOG", "1"), ("MANGOHUD", "0")]);
+        assert!(rt.check_extras(&spec).is_ok());
+        let app = rt.app_config(&spec, 7600, &[]);
+        let env = env_of(&app);
+        let at = |entry: &str| env.iter().position(|e| *e == entry).unwrap();
+        assert!(at("CHA_WIDTH=2560") < at("MANGOHUD=0"));
+        assert!(at("MANGOHUD=0") < at("PROTON_LOG=1"));
+        // Nothing added without any.
+        let bare = rt.app_config(&plain, 7600, &[]);
+        assert_eq!(env_of(&bare).len(), app_env(2560, 1440, 60).len());
+    }
+
+    #[test]
+    fn the_nodes_own_variables_are_refused() {
+        let rt = runtime();
+        for name in ["CHA_WIDTH", "HOME", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"] {
+            let spec = with_env(spec(SecurityProfile::Browser), &[(name, "x")]);
+            let err = format!("{:#}", rt.check_extras(&spec).unwrap_err());
+            assert!(err.contains("set by the node"), "{name}: {err}");
+        }
+        // Not for a gateway either, which has no app to give them to.
+        let gateway = with_env(gateway_spec(), &[("A", "1")]);
+        assert!(rt.check_extras(&gateway).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_refused_variable_stops_the_start_before_anything_is_made() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        let spec = with_env(spec(SecurityProfile::Browser), &[("CHA_X", "1")]);
+        let err = format!("{:#}", rt.start_environment(spec).await.unwrap_err());
+        assert!(err.contains("CHA_X is set by the node"), "{err}");
+        assert!(engine.created().is_empty());
+    }
+
+    #[test]
+    fn a_shared_base_keeps_its_data_under_the_base_template() {
+        // A custom Steam variant that uses Steam's home and library.
+        let rt = mounting(&[]);
+        let mut storage = steam_storage(true, Some(true));
+        storage.data_template = Some("steam".into());
+        let spec = app_data_spec("e1", "custom.steam-big", Some(storage));
+        assert!(check_storage(&spec).is_ok());
+        assert_eq!(
+            home_key(&spec),
+            Some((USER.to_string(), "steam".to_string()))
+        );
+        let mounts = rt.storage_mounts(&spec);
+        assert_eq!(
+            target(&mounts, "/home/cha").unwrap()["Source"],
+            format!("/data/cha/users/{USER}/steam")
+        );
+        // The base's shared directory, at the base's path.
+        let shared = target(&mounts, "/srv/cha-portal/shared/steam").unwrap();
+        assert_eq!(shared["Source"], "/data/cha/shared/steam");
+        let app = rt.app_config(&spec, 7600, &[]);
+        assert!(env_of(&app).contains(&"CHA_SHARED_DIR=/srv/cha-portal/shared/steam"));
+        assert!(
+            env_of(&app)
+                .iter()
+                .any(|e| e.starts_with("CHA_PER_USER_DIRS=/srv/cha-portal/shared/steam/"))
+        );
+        // The container is the custom environment's; its data is the base's.
+        assert_eq!(app["Labels"]["sh.cha.template"], "custom.steam-big");
+        assert_eq!(app["Labels"]["sh.cha.data-template"], "steam");
+        assert_eq!(app["Labels"]["sh.cha.owner"], USER);
+        // Without the base named, the node refuses the base's paths.
+        let mut alone = spec.clone();
+        alone.storage.as_mut().unwrap().data_template = None;
+        assert!(check_storage(&alone).is_err());
+        // Its streamer is the environment's own.
+        let streamer = rt.streamer_config(&spec, 7600);
+        assert_eq!(streamer["Labels"]["sh.cha.template"], "custom.steam-big");
+    }
+
+    #[test]
+    fn a_shared_base_keeps_a_shared_directory_kept_elsewhere() {
+        let rt = mounting(&[("steam", "/mnt/games/steam")]);
+        let mut storage = steam_storage(true, Some(true));
+        storage.data_template = Some("steam".into());
+        let spec = app_data_spec("e1", "custom.steam-big", Some(storage));
+        let mounts = rt.storage_mounts(&spec);
+        assert_eq!(
+            target(&mounts, "/mnt/games/steam").unwrap()["Source"],
+            "/mnt/games/steam"
+        );
+    }
+
+    #[test]
+    fn one_home_is_never_live_twice_even_under_two_templates() {
+        let rt = runtime();
+        let base = app_data_spec("e1", "steam", Some(steam_storage(true, None)));
+        let variant = {
+            let mut storage = steam_storage(true, None);
+            storage.data_template = Some("steam".into());
+            app_data_spec("e2", "custom.steam-big", Some(storage))
+        };
+        rt.claim_home(&base).unwrap();
+        let err = rt.claim_home(&variant).unwrap_err().to_string();
+        assert!(
+            err.contains("environment e1 already uses this home"),
+            "{err}"
+        );
+        // Another user's is fine, and so is the same once the first ends.
+        let mut other = variant.clone();
+        other.id = "e3".into();
+        other.owner = OTHER.into();
+        other.storage = Some(Box::new(Storage {
+            data_template: Some("steam".into()),
+            ..steam_storage_for(OTHER, true, None)
+        }));
+        rt.claim_home(&other).unwrap();
+        rt.state.lock().unwrap().homes.remove("e1");
+        rt.claim_home(&variant).unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_data_waits_for_the_variant_that_uses_it() {
+        let rt = runtime();
+        let mut storage = steam_storage(true, None);
+        storage.data_template = Some("steam".into());
+        rt.claim_home(&app_data_spec("e2", "custom.steam-big", Some(storage)))
+            .unwrap();
+        let err = rt
+            .delete_user_data(USER.into(), "steam".into())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("is running on this node"), "{err}");
+    }
+
+    #[test]
+    fn nothing_is_asked_of_a_node_at_off() {
+        let rt = runtime();
+        // An empty request is no request.
+        assert!(
+            rt.plan_host(&with_host(HostOptions::default()), &HashSet::new())
+                .is_ok()
+        );
+        let spec = with_host(HostOptions {
+            cap_add: vec!["SYS_NICE".into()],
+            ..Default::default()
+        });
+        let err = refusal(&rt, &spec);
+        assert!(err.contains("CHA_HOST_OPTIONS=off"), "{err}");
+        assert!(rt.check_extras(&spec).is_err());
+        assert_eq!(rt.host_policy(), HostPolicy::default());
+    }
+
+    #[test]
+    fn an_allowlist_maps_each_option_to_the_containers_config() {
+        let rt = allowlisting();
+        let spec = with_host(HostOptions {
+            mounts: vec![
+                // Read-write asked of a read-only mount: read-only.
+                named_mount("media", "/mnt/media", false),
+                named_mount("roms", "/mnt/roms", false),
+            ],
+            ports: vec![udp(27015, Some(27020)), udp(27016, None), tcp(25565, None)],
+            cap_add: vec!["SYS_NICE".into()],
+            devices: vec!["/dev/dri/card1".into()],
+            ..Default::default()
+        });
+        let app = planned(&rt, &spec);
+        let host = &app["HostConfig"];
+        let mounts = host["Mounts"].as_array().unwrap();
+        let media = target(mounts, "/mnt/media").unwrap();
+        assert_eq!(media["Type"], "bind");
+        assert_eq!(media["Source"], "/mnt/media");
+        assert_eq!(media["ReadOnly"], true, "the owner's :ro is a ceiling");
+        assert_eq!(media["BindOptions"]["CreateMountpoint"], false);
+        let roms = target(mounts, "/mnt/roms").unwrap();
+        assert_eq!(roms["Source"], "/srv/roms");
+        assert_eq!(roms["ReadOnly"], false);
+        // A request for read-only is kept where the owner allowed read-write.
+        let ro = with_host(HostOptions {
+            mounts: vec![named_mount("roms", "/mnt/roms", true)],
+            ..Default::default()
+        });
+        let app_ro = planned(&rt, &ro);
+        let mounts_ro = app_ro["HostConfig"]["Mounts"].as_array().unwrap();
+        assert_eq!(target(mounts_ro, "/mnt/roms").unwrap()["ReadOnly"], true);
+        // Ports: the one asked for, then the range's first free, per protocol.
+        assert_eq!(
+            host["PortBindings"],
+            json!({
+                "27015/udp": [{ "HostIp": "", "HostPort": "27020" }],
+                "27016/udp": [{ "HostIp": "", "HostPort": "27015" }],
+                "25565/tcp": [{ "HostIp": "", "HostPort": "25565" }],
+            })
+        );
+        assert_eq!(app["ExposedPorts"].as_object().unwrap().len(), 3);
+        assert_eq!(host["CapAdd"], json!(["SYS_NICE"]));
+        // CapDrop and the rest of the confinement stay.
+        assert_eq!(host["CapDrop"], json!(["ALL"]));
+        assert!(host.get("Privileged").is_none());
+        assert!(host.get("NetworkMode").is_none());
+        let device = host["Devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["PathOnHost"] == "/dev/dri/card1")
+            .unwrap();
+        assert_eq!(device["PathInContainer"], "/dev/dri/card1");
+        assert_eq!(device["CgroupPermissions"], "rwm");
+        // The node's own mounts are all still there.
+        assert!(target(mounts, "/run/cha").is_some());
+    }
+
+    #[test]
+    fn an_allowlist_refuses_what_it_does_not_name() {
+        let rt = allowlisting();
+        let refused = |opts: HostOptions| refusal(&rt, &with_host(opts));
+        let err = refused(HostOptions {
+            mounts: vec![named_mount("secrets", "/mnt/s", false)],
+            ..Default::default()
+        });
+        assert!(err.contains("no mount named secrets"), "{err}");
+        assert!(err.contains("CHA_HOST_OPTIONS=allowlist"), "{err}");
+        let err = refused(HostOptions {
+            mounts: vec![path_mount("/etc", "/mnt/etc")],
+            ..Default::default()
+        });
+        assert!(err.contains("host paths"), "{err}");
+        let err = refused(HostOptions {
+            cap_add: vec!["SYS_ADMIN".into()],
+            ..Default::default()
+        });
+        assert!(err.contains("doesn't allow SYS_ADMIN"), "{err}");
+        let err = refused(HostOptions {
+            devices: vec!["/dev/sda".into()],
+            ..Default::default()
+        });
+        assert!(err.contains("doesn't allow /dev/sda"), "{err}");
+        let err = refused(HostOptions {
+            ports: vec![udp(1, Some(8080))],
+            ..Default::default()
+        });
+        assert!(err.contains("doesn't allow 8080/udp"), "{err}");
+        let err = refused(HostOptions {
+            privileged: true,
+            ..Default::default()
+        });
+        assert!(err.contains("privileged"), "{err}");
+        // Malformed asks are refused whatever the mode.
+        let err = refused(HostOptions {
+            mounts: vec![named_mount("media", "/home/cha/x", false)],
+            ..Default::default()
+        });
+        assert!(err.contains("mounts itself"), "{err}");
+    }
+
+    #[test]
+    fn the_agents_docker_socket_is_never_mounted() {
+        let mut rt = full();
+        rt.docker = Docker::new("/run/cha-engine/docker.sock");
+        for path in [
+            "/run/cha-engine/docker.sock",
+            "/run/cha-engine",
+            "/run",
+            "/",
+        ] {
+            let spec = with_host(HostOptions {
+                mounts: vec![path_mount(path, "/mnt/x")],
+                ..Default::default()
+            });
+            let err = refusal(&rt, &spec);
+            assert!(err.contains("Docker socket"), "{path}: {err}");
+        }
+        // Nor through a name the owner gave to a folder around it.
+        rt.config.host_options = settings("full", "run=/run", "", "", "");
+        let spec = with_host(HostOptions {
+            mounts: vec![named_mount("run", "/mnt/run", true)],
+            ..Default::default()
+        });
+        assert!(refusal(&rt, &spec).contains("Docker socket"));
+        // A folder beside it is fine.
+        let spec = with_host(HostOptions {
+            mounts: vec![path_mount("/run/media", "/mnt/x")],
+            ..Default::default()
+        });
+        assert!(rt.plan_host(&spec, &HashSet::new()).is_ok());
+    }
+
+    #[test]
+    fn a_target_may_not_cover_a_shared_directory_kept_elsewhere() {
+        let mut rt = mounting(&[("steam", "/mnt/games/steam")]);
+        rt.config.host_options = settings("allowlist", "media=/mnt/media", "", "", "");
+        let mut storage = steam_storage(true, Some(true));
+        storage.data_template = Some("steam".into());
+        let mut spec = app_data_spec("e1", "steam", Some(storage));
+        for target in ["/mnt/games", "/mnt/games/steam", "/mnt/games/steam/sub"] {
+            spec.host = Some(Box::new(HostOptions {
+                mounts: vec![named_mount("media", target, true)],
+                ..Default::default()
+            }));
+            let err = refusal(&rt, &spec);
+            assert!(err.contains("/mnt/games/steam"), "{target}: {err}");
+        }
+        spec.host = Some(Box::new(HostOptions {
+            mounts: vec![named_mount("media", "/mnt/media", true)],
+            ..Default::default()
+        }));
+        assert!(rt.plan_host(&spec, &HashSet::new()).is_ok());
+    }
+
+    #[test]
+    fn full_adds_privilege_the_hosts_network_and_security_options() {
+        let rt = full();
+        let spec = with_host(HostOptions {
+            privileged: true,
+            network_host: true,
+            security_opt: vec!["label=disable".into()],
+            mounts: vec![path_mount("/srv/games", "/games")],
+            ..Default::default()
+        });
+        let app = planned(&rt, &spec);
+        let host = &app["HostConfig"];
+        assert_eq!(host["Privileged"], true);
+        assert_eq!(host["NetworkMode"], "host");
+        let options = host["SecurityOpt"].as_array().unwrap();
+        assert_eq!(options[0], "no-new-privileges");
+        assert_eq!(options.last().unwrap(), "label=disable");
+        let games = target(host["Mounts"].as_array().unwrap(), "/games").unwrap();
+        assert_eq!(games["Source"], "/srv/games");
+        assert_eq!(games["ReadOnly"], false);
+        // Named mounts stay usable by name.
+        let by_name = with_host(HostOptions {
+            mounts: vec![named_mount("media", "/mnt/media", false)],
+            ..Default::default()
+        });
+        assert!(rt.plan_host(&by_name, &HashSet::new()).is_ok());
+        // The host's network and ports don't go together.
+        let both = with_host(HostOptions {
+            network_host: true,
+            ports: vec![udp(27015, None)],
+            ..Default::default()
+        });
+        assert!(refusal(&rt, &both).contains("ports mean nothing"));
+        // A name the owner never gave is refused even in full.
+        let unknown = with_host(HostOptions {
+            mounts: vec![named_mount("nope", "/mnt/n", false)],
+            ..Default::default()
+        });
+        assert!(refusal(&rt, &unknown).contains("no mount named nope"));
+    }
+
+    #[test]
+    fn a_network_share_is_a_volume_of_the_local_driver() {
+        let rt = full();
+        let spec = with_host(HostOptions {
+            mounts: vec![HostMount {
+                source: MountSource::Network {
+                    fs_type: NetworkFs::Nfs,
+                    device: ":/export/media".into(),
+                    options: "addr=10.0.0.5,nfsvers=4".into(),
+                },
+                target: "/mnt/nas".into(),
+                read_only: true,
+            }],
+            ..Default::default()
+        });
+        let app = planned(&rt, &spec);
+        let mount = target(app["HostConfig"]["Mounts"].as_array().unwrap(), "/mnt/nas").unwrap();
+        assert_eq!(mount["Type"], "volume");
+        assert_eq!(mount["Source"], "cha-hostvol-e1-0");
+        assert_eq!(mount["ReadOnly"], true);
+        assert_eq!(mount["VolumeOptions"]["NoCopy"], true);
+        assert_eq!(mount["VolumeOptions"]["Labels"][LABEL_ENV], "e1");
+        assert_eq!(
+            mount["VolumeOptions"]["DriverConfig"],
+            json!({
+                "Name": "local",
+                "Options": {
+                    "type": "nfs",
+                    "device": ":/export/media",
+                    "o": "addr=10.0.0.5,nfsvers=4",
+                },
+            })
+        );
+        // An allowlist has no shares.
+        assert!(refusal(&allowlisting(), &spec).contains("network shares"));
+    }
+
+    #[test]
+    fn host_ports_come_from_the_range_skipping_those_in_use() {
+        let ranges = [PortRange {
+            start: 27015,
+            end: 27018,
+            protocol: Protocol::Udp,
+        }];
+        let used = HashSet::from([
+            (27015, Protocol::Udp),
+            (27017, Protocol::Udp),
+            // Another protocol's use doesn't count.
+            (27016, Protocol::Tcp),
+        ]);
+        let ports = assign_ports(
+            &[udp(1, None), udp(2, None), udp(3, Some(27030))],
+            &ranges,
+            &used,
+            &[],
+        )
+        .unwrap();
+        let hosts: Vec<_> = ports.iter().map(|p| p.host).collect();
+        assert_eq!(hosts, vec![Some(27016), Some(27018), Some(27030)]);
+        // The range runs out.
+        let err = assign_ports(
+            &[udp(1, None), udp(2, None), udp(3, None)],
+            &ranges,
+            &used,
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("every udp port this node allows is in use"),
+            "{err}"
+        );
+        // A port asked for that is taken.
+        let err = assign_ports(&[udp(1, Some(27015))], &ranges, &used, &[])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("27015/udp is already used by another environment"),
+            "{err}"
+        );
+        let err = assign_ports(
+            &[udp(7600, Some(7600))],
+            &ranges,
+            &HashSet::from([(7600, Protocol::Udp)]),
+            &[7600],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("streamers"), "{err}");
+        // No range for the protocol: the engine chooses (`full` only gets here).
+        let ports = assign_ports(&[tcp(80, None)], &ranges, &used, &[]).unwrap();
+        assert_eq!(ports[0].host, None);
+        let mut config = json!({ "HostConfig": {} });
+        HostPlan {
+            ports,
+            ..Default::default()
+        }
+        .apply(&mut config);
+        assert_eq!(
+            config["HostConfig"]["PortBindings"]["80/tcp"],
+            json!([{ "HostIp": "", "HostPort": "" }])
+        );
+    }
+
+    #[test]
+    fn ports_in_use_are_read_from_other_environments_apps() {
+        let container = |env: &str, ports: Value| -> ContainerSummary {
+            serde_json::from_value(json!({
+                "Id": env, "State": "running", "Labels": { LABEL_ENV: env }, "Ports": ports,
+            }))
+            .unwrap()
+        };
+        let listed = [
+            container(
+                "a",
+                json!([
+                    { "IP": "0.0.0.0", "PrivatePort": 1, "PublicPort": 27015, "Type": "udp" },
+                    { "IP": "::", "PrivatePort": 1, "PublicPort": 27015, "Type": "udp" },
+                    { "PrivatePort": 9, "Type": "tcp" },
+                ]),
+            ),
+            container(
+                "mine",
+                json!([{ "PrivatePort": 1, "PublicPort": 27016, "Type": "udp" }]),
+            ),
+        ];
+        let used = used_ports(&listed, "mine", &[7600]);
+        assert!(used.contains(&(27015, Protocol::Udp)));
+        assert!(!used.contains(&(27016, Protocol::Udp)));
+        // The agent's own ports, both protocols.
+        assert!(used.contains(&(7600, Protocol::Tcp)) && used.contains(&(7600, Protocol::Udp)));
+        // Published once, whatever the address family.
+        assert_eq!(published(&listed[0].ports), vec![udp(1, Some(27015))]);
+    }
+
+    #[test]
+    fn volumes_are_matched_to_their_environment_exactly() {
+        assert!(is_host_volume_of("cha-hostvol-e1-0", "e1"));
+        assert!(is_host_volume_of("cha-hostvol-e1-12", "e1"));
+        assert!(!is_host_volume_of("cha-hostvol-e1-2-0", "e1"));
+        assert!(!is_host_volume_of("cha-hostvol-e1-x", "e1"));
+        assert!(is_host_volume_of("cha-hostvol-e1-2-0", "e1-2"));
+    }
+
+    #[test]
+    fn the_inventory_says_what_the_agent_reads_and_allows() {
+        let features = crate::inventory::collect().spec_features;
+        for f in ["env", "data-template", "host-options"] {
+            assert!(features.iter().any(|x| x == f), "{f}");
+        }
+        let policy = allowlisting().host_policy();
+        assert_eq!(policy.mode, HostOptionsMode::Allowlist);
+        assert!(
+            policy
+                .mounts
+                .iter()
+                .any(|m| m.name == "media" && m.read_only)
+        );
+        assert!(
+            !serde_json::to_string(&policy)
+                .unwrap()
+                .contains("/mnt/media")
+        );
+    }
+
+    #[tokio::test]
+    async fn published_ports_are_reported_and_shares_removed_with_the_environment() {
+        let (engine, _dir, docker) = fake_engine();
+        let mut rt = runtime_on(docker);
+        rt.config.host_options = settings("full", "", "27015-27030/udp", "", "");
+        let share = HostMount {
+            source: MountSource::Network {
+                fs_type: NetworkFs::Cifs,
+                device: "//nas/media".into(),
+                options: "addr=10.0.0.5".into(),
+            },
+            target: "/mnt/nas".into(),
+            read_only: false,
+        };
+        let request = |id: &str| EnvironmentSpec {
+            id: id.into(),
+            host: Some(Box::new(HostOptions {
+                mounts: vec![share.clone()],
+                ports: vec![udp(27015, None), tcp(80, None)],
+                ..Default::default()
+            })),
+            ..spec(SecurityProfile::Browser)
+        };
+        rt.start_environment(request("e1")).await.unwrap();
+        rt.start_environment(request("e2")).await.unwrap();
+        let first = rt.published_ports("e1").await.unwrap();
+        let second = rt.published_ports("e2").await.unwrap();
+        // The second sees the first's port taken; with no TCP range, the
+        // engine's choice is read back.
+        assert_eq!(first, vec![tcp(80, Some(40002)), udp(27015, Some(27015))]);
+        assert_eq!(second[1], udp(27015, Some(27016)));
+        let created = engine.created();
+        let mounts = created["cha-env-e1-app"]["HostConfig"]["Mounts"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            target(mounts, "/mnt/nas").unwrap()["Source"],
+            "cha-hostvol-e1-0"
+        );
+        assert!(engine.volumes.lock().unwrap().contains("cha-hostvol-e2-0"));
+        // Stopping removes the environment's shares, and only its own.
+        rt.stop_environment("e1").await.unwrap();
+        let volumes = engine.volumes.lock().unwrap().clone();
+        assert!(!volumes.contains("cha-hostvol-e1-0"), "{volumes:?}");
+        assert!(volumes.contains("cha-hostvol-e2-0"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_host_option_stops_the_start_before_anything_is_made() {
+        let (engine, _dir, docker) = fake_engine();
+        let rt = runtime_on(docker);
+        let spec = with_host(HostOptions {
+            cap_add: vec!["SYS_NICE".into()],
+            ..Default::default()
+        });
+        let err = format!("{:#}", rt.start_environment(spec).await.unwrap_err());
+        assert!(err.contains("host options refused"), "{err}");
+        assert!(engine.created().is_empty());
     }
 }

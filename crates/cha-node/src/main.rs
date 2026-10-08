@@ -8,6 +8,7 @@ use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime, PublishedImages};
 #[cfg(feature = "gamestream")]
 use cha_node::gamestream;
+use cha_node::hostopts::HostOptionsConfig;
 use cha_node::moonlight::{self, Moonlight};
 use cha_node::storage::{DataRoot, parse_shared_dirs};
 use cha_node::{
@@ -191,6 +192,28 @@ struct Args {
     /// The release of the published app images (`0.1.0`).
     #[arg(long, env = "CHA_IMAGE_TAG")]
     image_tag: Option<String>,
+    /// What custom environments may ask of this node beyond their template
+    /// (ADR 0021): `off` (the default), `allowlist` (only what the four
+    /// settings below name) or `full` (anything, including host paths,
+    /// privileged mode and the host's network: root on this machine for the
+    /// portal's admins).
+    #[arg(long, env = "CHA_HOST_OPTIONS", default_value = "off")]
+    host_options: String,
+    /// Folders custom environments may mount, as NAME=/host/path[:ro]
+    /// (comma-separated): `media=/mnt/media:ro,roms=/srv/roms`. `:ro` is a
+    /// ceiling. In `full` mode they stay usable by name.
+    #[arg(long, env = "CHA_HOST_MOUNTS", default_value = "")]
+    host_mounts: String,
+    /// Host ports custom environments may publish, as PORT[-PORT]/PROTOCOL
+    /// (comma-separated): `27015-27030/udp,25565/tcp`.
+    #[arg(long, env = "CHA_HOST_PORTS", default_value = "")]
+    host_ports: String,
+    /// Capabilities custom environments may add: `SYS_NICE,NET_RAW`.
+    #[arg(long, env = "CHA_HOST_CAPS", default_value = "")]
+    host_caps: String,
+    /// Devices custom environments may pass through: `/dev/dri/card1`.
+    #[arg(long, env = "CHA_HOST_DEVICES", default_value = "")]
+    host_devices: String,
     /// `auto` (the default) lets the portal pick this node for a launch;
     /// `manual` keeps it to launches that choose it, for test beds.
     #[arg(long, env = "CHA_PLACEMENT")]
@@ -463,7 +486,25 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
             args.image_tag.as_deref(),
         )?,
         gateway_image: args.gateway_image.trim().to_string(),
+        host_options: host_options_config(args)?,
     })
+}
+
+/// `CHA_HOST_OPTIONS` and its lists. A bad value stops the agent.
+fn host_options_config(args: &Args) -> Result<HostOptionsConfig> {
+    let config = HostOptionsConfig::from_settings(
+        &args.host_options,
+        &args.host_mounts,
+        &args.host_ports,
+        &args.host_caps,
+        &args.host_devices,
+    )?;
+    if config.mode == cha_wire::HostOptionsMode::Off && config.has_lists() {
+        warn!(
+            "CHA_HOST_MOUNTS, CHA_HOST_PORTS, CHA_HOST_CAPS or CHA_HOST_DEVICES is set but CHA_HOST_OPTIONS is off: custom environments get none of it"
+        );
+    }
+    Ok(config)
 }
 
 /// The NVIDIA Wine directory, `None` when empty. Docker is handed it as a bind

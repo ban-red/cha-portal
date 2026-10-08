@@ -49,6 +49,22 @@ pub struct ContainerSummary {
     pub labels: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub mounts: Vec<ContainerMount>,
+    #[serde(default)]
+    pub ports: Vec<ContainerPort>,
+}
+
+/// One of a container's published ports, as `GET /containers/json` lists
+/// them (one entry per host address, so an IPv4 and an IPv6 for one port).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ContainerPort {
+    pub private_port: u16,
+    /// Absent for a port that is exposed but not published.
+    #[serde(default)]
+    pub public_port: Option<u16>,
+    /// `tcp` or `udp`.
+    #[serde(rename = "Type")]
+    pub protocol: String,
 }
 
 /// One of a container's mounts, as `GET /containers/json` lists them.

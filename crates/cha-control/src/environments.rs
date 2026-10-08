@@ -7,8 +7,8 @@
 //! user between launches is app data ([`crate::storage`]), not the
 //! environment. Node calls run in the background; the SPA polls.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use axum::extract::{Path, State};
@@ -17,8 +17,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cha_wire::{
-    Device, DeviceChoice, DeviceKind, EnvironmentSpec, GamepadKind, Inventory, MediaClaims,
-    NodeRequest, NodeResponse, SecurityProfile, sign_media_token,
+    Device, DeviceChoice, DeviceKind, EnvironmentSpec, GamepadKind, HostOptions, HostPort,
+    Inventory, MediaClaims, NodeRequest, NodeResponse, SecurityProfile, sign_media_token,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -28,6 +28,7 @@ use crate::AppState;
 use crate::apps;
 use crate::auth::{ClientInfo, PlayerUser};
 use crate::controllers;
+use crate::custom;
 use crate::db::{self, EnvironmentRow, NodeRow, Role, User};
 use crate::error::{ApiError, ApiResult};
 use crate::moonlight;
@@ -108,6 +109,46 @@ pub struct Template {
     /// (`crate::placement`).
     #[serde(default)]
     pub needs_gpu: bool,
+    /// Extra variables for the app, from a custom environment (ADR 0021).
+    /// Never read from a catalog document, never shown to players.
+    #[serde(skip)]
+    pub env: BTreeMap<String, String>,
+    /// Set on a custom environment's resolved template; never read from a
+    /// catalog document.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<CustomInfo>,
+}
+
+/// What makes a template a custom environment (`crate::custom`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomInfo {
+    /// The built-in or catalog template it was made from.
+    pub base: String,
+    /// It keeps its base's app data instead of its own.
+    pub share_data: bool,
+    /// Mounts, ports, capabilities and devices it asks of the node.
+    pub host: Option<HostOptions>,
+}
+
+impl Template {
+    /// The template whose app data this one uses: its own id, or its base's
+    /// for a custom environment that shares data. Storage settings, the
+    /// directories on the node and the one-home-at-a-time rule all go by it.
+    pub fn data_id(&self) -> &str {
+        match &self.custom {
+            Some(c) if c.share_data => &c.base,
+            _ => &self.id,
+        }
+    }
+
+    /// The host options it asks for, if any.
+    pub fn host_options(&self) -> Option<&HostOptions> {
+        self.custom
+            .as_ref()
+            .and_then(|c| c.host.as_ref())
+            .filter(|h| !h.is_empty())
+    }
 }
 
 impl Template {
@@ -340,10 +381,12 @@ pub(crate) fn template(id: &str) -> Option<&'static Template> {
 }
 
 /// Every template a user can launch: the built-in ones, then the available
-/// ones of loaded catalogs (`<catalog>.<app>`).
+/// ones of loaded catalogs (`<catalog>.<app>`), then custom ones
+/// (`custom.<slug>`).
 pub(crate) fn all(state: &AppState) -> Vec<Template> {
     let mut all = catalog().to_vec();
     all.extend(state.catalogs.available());
+    all.extend(custom::available(state));
     all
 }
 
@@ -353,12 +396,16 @@ pub(crate) fn find(state: &AppState, id: &str) -> Option<Template> {
     template(id)
         .cloned()
         .or_else(|| state.catalogs.available_by_id(id))
+        .or_else(|| custom::find(state, id, false))
 }
 
 /// Like [`find`], but also templates waiting for approval: for naming
 /// environments that already exist.
 pub(crate) fn find_any(state: &AppState, id: &str) -> Option<Template> {
-    template(id).cloned().or_else(|| state.catalogs.by_id(id))
+    template(id)
+        .cloned()
+        .or_else(|| state.catalogs.by_id(id))
+        .or_else(|| custom::find(state, id, true))
 }
 
 async fn list_catalog(State(state): State<AppState>, _: PlayerUser) -> Json<Vec<Template>> {
@@ -384,15 +431,8 @@ async fn catalog_icon(
     _: PlayerUser,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    let loaded;
-    let svg: &[u8] = if let Some((_, svg)) = ICONS.iter().find(|(t, _)| *t == id) {
-        svg
-    } else if let Some(svg) = state.catalogs.icon(&id) {
-        loaded = svg;
-        &loaded
-    } else {
-        return Err(ApiError::NotFound("no icon for that template".into()));
-    };
+    let svg = icon_of(&state, &id)
+        .ok_or_else(|| ApiError::NotFound("no icon for that template".into()))?;
     Ok((
         [
             (header::CONTENT_TYPE, "image/svg+xml"),
@@ -406,6 +446,15 @@ async fn catalog_icon(
         svg.to_vec(),
     )
         .into_response())
+}
+
+/// A template's logo: a built-in one, a loaded catalog's, or a custom
+/// template's own (else its base's).
+pub(crate) fn icon_of(state: &AppState, id: &str) -> Option<Arc<Vec<u8>>> {
+    if let Some((_, svg)) = ICONS.iter().find(|(t, _)| *t == id) {
+        return Some(Arc::new(svg.to_vec()));
+    }
+    state.catalogs.icon(id).or_else(|| custom::icon(state, id))
 }
 
 // ---- Views ----
@@ -436,6 +485,10 @@ struct EnvironmentView {
     device: Option<DeviceView>,
     /// What it uses of its node now (running, on a node that reports it).
     usage: Option<UsageView>,
+    /// The host ports published for its host options, with the node's port
+    /// filled in; absent without any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ports: Option<Vec<HostPort>>,
     created_at: i64,
     updated_at: i64,
     /// Where the streamer listens, while it runs (the portal brokers
@@ -611,6 +664,11 @@ fn view(
         codecs,
         device: device_view,
         usage: None,
+        ports: row
+            .ports
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<HostPort>>(j).ok())
+            .filter(|p| !p.is_empty()),
         created_at: row.created_at,
         updated_at: row.updated_at,
         streamer,
@@ -777,6 +835,20 @@ pub(crate) async fn launch_environment(
             ),
         ));
     }
+    // A custom environment sharing its base's data (or the base, while one
+    // does) would write the same home as the one that is live.
+    if settings.persistent
+        && let Some(live) = storage::live_on_data(state, &user.id, template.data_id()).await?
+    {
+        let name = find_any(state, &live.template_id).map_or(live.template_id.clone(), |t| t.name);
+        return Err(ApiError::conflict(
+            "data_in_use",
+            format!(
+                "your {name} (environment {}) is {} and keeps the same app data as {}; stop it first",
+                live.id, live.state, template.name
+            ),
+        ));
+    }
     let gamepad = controllers::effective_for(state, &user.id, template).await?;
     let fps = apps::fps_for(state, &user.id, template).await?;
     let (node, device, gateway) = if template.class == moonlight::CLASS {
@@ -799,6 +871,17 @@ pub(crate) async fn launch_environment(
             ),
         ));
     }
+    // Placement leaves out nodes that would drop what the spec adds; this is
+    // for one whose agent changed since.
+    if let Some(why) = placement::spec_refusal(
+        &placement::Needs::of(template, app_data.as_ref()),
+        storage::node_inventory(&node).as_ref(),
+    ) {
+        return Err(ApiError::conflict(
+            "node_needs_update",
+            format!("{} can't run {}: {why}", node.name, template.name),
+        ));
+    }
     let id = db::new_id();
     db::insert_environment(
         &state.db,
@@ -815,9 +898,12 @@ pub(crate) async fn launch_environment(
         Some(&user.id),
         "environment.launched",
         Some(&id),
-        Some(caller.audit_details(
-            json!({ "template": template.id, "node": node.name, "device": device.id }),
-        )),
+        Some(caller.audit_details(json!({
+            "template": template.id,
+            "node": node.name,
+            "device": device.id,
+            "host": template.host_options(),
+        }))),
         caller.ip,
     )
     .await?;
@@ -895,6 +981,8 @@ fn environment_spec(
             render_node: device.render_node,
         })),
         gateway,
+        env: (!template.env.is_empty()).then(|| Box::new(template.env.clone())),
+        host: template.host_options().cloned().map(Box::new),
     }
 }
 
@@ -1246,7 +1334,12 @@ async fn start_on_node(state: AppState, node_id: String, spec: EnvironmentSpec) 
         )
         .await;
     let result = match reply {
-        Ok(NodeResponse::EnvironmentStarted { streamer, .. }) => {
+        Ok(NodeResponse::EnvironmentStarted {
+            streamer, ports, ..
+        }) => {
+            if let Err(err) = db::set_environment_ports(&state.db, &id, &ports).await {
+                warn!(%id, "recording the published ports: {err}");
+            }
             match db::set_environment_running(
                 &state.db,
                 &id,

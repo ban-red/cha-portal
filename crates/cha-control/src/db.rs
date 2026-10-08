@@ -406,11 +406,14 @@ pub struct EnvironmentRow {
     /// The id of the node's device it runs on; `None` is the NVIDIA GPU, from
     /// before devices.
     pub device: Option<String>,
+    /// The host ports published for its host options, as a JSON array of
+    /// `cha_wire::HostPort`; `None` without any.
+    pub ports: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, log, http_port, webrtc_port, device, created_at, updated_at";
+const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, log, http_port, webrtc_port, device, ports, created_at, updated_at";
 
 pub async fn insert_environment(
     db: &SqlitePool,
@@ -696,6 +699,25 @@ pub async fn set_environment_running(
     .await?
     .rows_affected()
         > 0)
+}
+
+/// Records the host ports a starting environment published (call before
+/// [`set_environment_running`], so the page never sees it running without).
+pub async fn set_environment_ports(
+    db: &SqlitePool,
+    id: &str,
+    ports: &[cha_wire::HostPort],
+) -> Result<(), sqlx::Error> {
+    if ports.is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::to_string(ports).unwrap_or_default();
+    sqlx::query("UPDATE environments SET ports = ? WHERE id = ? AND state = 'starting'")
+        .bind(json)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// Before a node is deleted: its live environments can't be reached any more.

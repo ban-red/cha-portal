@@ -311,6 +311,7 @@ impl FakeNode {
                     webrtc_port: 7601,
                     webtransport_port: 0,
                 },
+                ports: Vec::new(),
             }),
         })
         .await;

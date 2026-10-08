@@ -18,6 +18,7 @@ pub mod envusage;
 #[cfg(feature = "gamestream")]
 pub mod gamestream;
 pub mod hostfiles;
+pub mod hostopts;
 pub mod image_check;
 pub mod inventory;
 pub mod moonlight;
@@ -476,8 +477,14 @@ impl Agent {
         // otherwise show Moonlight clients a host nobody can pair with.
         let gamestream = gamestream_info(&self.gamestream).filter(|_| portal_reads_gamestream);
         let placement = self.placement;
+        let host_options = self
+            .runtime
+            .as_ref()
+            .map(|r| r.host_policy())
+            .unwrap_or_default();
         let collect = move || Inventory {
             placement: Some(placement),
+            host_options: Some(host_options.clone()),
             data_root: data_root.clone(),
             shared_dirs: shared_dirs.clone(),
             gamestream: gamestream.clone(),
@@ -709,11 +716,22 @@ async fn handle(
         NodeRequest::StartEnvironment { environment } => {
             let runtime = runtime.ok_or(NO_RUNTIME)?;
             let id = environment.id.clone();
-            runtime
+            let host_options = environment.host.as_ref().is_some_and(|h| !h.is_empty());
+            let streamer = runtime
                 .start(environment)
                 .await
-                .map(|streamer| NodeResponse::EnvironmentStarted { id, streamer })
-                .map_err(|e| format!("{e:#}"))
+                .map_err(|e| format!("{e:#}"))?;
+            // What the node published for the ports it was asked for.
+            let ports = if host_options {
+                runtime.host_ports(id.clone()).await
+            } else {
+                Vec::new()
+            };
+            Ok(NodeResponse::EnvironmentStarted {
+                id,
+                streamer,
+                ports,
+            })
         }
         NodeRequest::Connect {
             environment_id,
@@ -853,6 +871,8 @@ async fn next_event<T: Clone>(events: &mut Option<broadcast::Receiver<T>>) -> Op
     }
 }
 
+/// One value at a time, during the handshake: not worth boxing the message.
+#[allow(clippy::large_enum_variant)]
 enum Next {
     Message(ToNode),
     Closed(Option<Closed>),

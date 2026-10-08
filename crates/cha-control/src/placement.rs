@@ -16,7 +16,10 @@ use std::collections::HashMap;
 use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use cha_wire::{Device, DeviceKind, GpuUsage, NodeUsage};
+use cha_wire::{
+    Device, DeviceKind, GpuUsage, HostOptions, HostPolicy, Inventory, NodeUsage,
+    SPEC_FEATURE_DATA_TEMPLATE, SPEC_FEATURE_ENV, SPEC_FEATURE_HOST_OPTIONS, Storage,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -100,6 +103,7 @@ pub struct Placements {
 }
 
 /// An online node, as placement sees it.
+#[derive(Clone)]
 pub struct NodeView {
     pub id: String,
     pub name: String,
@@ -118,6 +122,10 @@ pub struct NodeView {
     /// Free bytes on the disk that holds its images (the only disk it
     /// reports, or the one used for `images`); `None` when it reports none.
     pub images_disk_free: Option<u64>,
+    /// The optional spec fields its agent honours (`Inventory::spec_features`).
+    pub spec_features: Vec<String>,
+    /// What it lets custom environments ask for; `None` is nothing.
+    pub host_policy: Option<HostPolicy>,
 }
 
 impl NodeView {
@@ -147,16 +155,72 @@ pub struct Needs {
     /// The images the template can run from, in order; empty when it doesn't
     /// matter.
     pub images: Vec<String>,
+    /// It sends extra variables (`EnvironmentSpec::env`).
+    pub env: bool,
+    /// Its storage names another template's directories
+    /// (`Storage::data_template`).
+    pub data_template: bool,
+    /// The host options (ADR 0021) it asks the node for.
+    pub host: Option<HostOptions>,
 }
 
 impl Needs {
-    pub fn of(template: &Template, app_data: bool) -> Self {
+    pub fn of(template: &Template, storage: Option<&Storage>) -> Self {
         Self {
             gpu: template.needs_gpu,
-            app_data,
+            app_data: storage.is_some(),
             images: template.image_candidates(),
+            env: !template.env.is_empty(),
+            data_template: storage.is_some_and(|s| s.data_template.is_some()),
+            host: template.host_options().cloned(),
         }
     }
+}
+
+/// Why a node whose agent lists `features` and allows `policy` can't take a
+/// spec that needs `needs`, if it can't: an older agent would drop what it
+/// doesn't know, and a node's owner decides which host options are allowed.
+fn spec_refusal_of(
+    needs: &Needs,
+    features: &[String],
+    policy: Option<&HostPolicy>,
+) -> Option<String> {
+    let has = |f: &str| features.iter().any(|x| x == f);
+    if needs.env && !has(SPEC_FEATURE_ENV) {
+        return Some(format!(
+            "its agent needs an update to pass environment variables (it lists \"{SPEC_FEATURE_ENV}\" once it can)"
+        ));
+    }
+    if needs.data_template && !has(SPEC_FEATURE_DATA_TEMPLATE) {
+        return Some(format!(
+            "its agent needs an update to share another environment's app data (it lists \"{SPEC_FEATURE_DATA_TEMPLATE}\" once it can)"
+        ));
+    }
+    if let Some(host) = needs.host.as_ref().filter(|h| !h.is_empty()) {
+        if !has(SPEC_FEATURE_HOST_OPTIONS) {
+            return Some(format!(
+                "its agent needs an update to take host options (it lists \"{SPEC_FEATURE_HOST_OPTIONS}\" once it can)"
+            ));
+        }
+        let refusals = match policy {
+            Some(policy) => policy.refusals(host),
+            None => vec!["allows no host options".to_string()],
+        };
+        if !refusals.is_empty() {
+            return Some(format!("it {}", refusals.join("; it ")));
+        }
+    }
+    None
+}
+
+/// [`spec_refusal_of`] for a node's inventory (a node that sent none lists
+/// nothing).
+pub fn spec_refusal(needs: &Needs, inventory: Option<&Inventory>) -> Option<String> {
+    spec_refusal_of(
+        needs,
+        inventory.map_or(&[], |i| &i.spec_features),
+        inventory.and_then(|i| i.host_options.as_ref()),
+    )
 }
 
 /// The GPU's name without its maker's marketing: `RTX 4090`.
@@ -230,6 +294,11 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                     "its agent needs an update to keep app data (it reports its data root once it can)"
                         .to_string(),
                 );
+            } else if let Some(why) =
+                spec_refusal_of(needs, &node.spec_features, node.host_policy.as_ref())
+            {
+                allowed = false;
+                reason = Some(why);
             } else if let Some(free) = gpu
                 .and_then(|g| Some(g.vram_total?.saturating_sub(g.vram_used?)))
                 .filter(|free| *free < LOW_VRAM_BYTES)
@@ -394,6 +463,11 @@ pub async fn online_nodes(state: &AppState) -> ApiResult<Vec<NodeView>> {
             images_disk_free: inventory
                 .as_ref()
                 .and_then(|inv| images_disk_free(&inv.disks)),
+            spec_features: inventory
+                .as_ref()
+                .map(|inv| inv.spec_features.clone())
+                .unwrap_or_default(),
+            host_policy: inventory.as_ref().and_then(|inv| inv.host_options.clone()),
             id: row.id,
             name: row.name,
             devices,
@@ -411,8 +485,8 @@ pub async fn for_template(
     nodes: &[NodeView],
 ) -> ApiResult<Placements> {
     let settings = storage::effective_for(state, user_id, template).await?;
-    let app_data = storage::spec_storage(user_id, template, settings).is_some();
-    Ok(placements(&Needs::of(template, app_data), nodes))
+    let app_data = storage::spec_storage(user_id, template, settings);
+    Ok(placements(&Needs::of(template, app_data.as_ref()), nodes))
 }
 
 #[derive(Deserialize)]
@@ -484,6 +558,8 @@ mod tests {
             agent_version: None,
             manual: false,
             images_disk_free: None,
+            spec_features: Vec::new(),
+            host_policy: None,
         }
     }
 
@@ -508,11 +584,17 @@ mod tests {
         gpu: false,
         app_data: false,
         images: Vec::new(),
+        env: false,
+        data_template: false,
+        host: None,
     };
     const GAME: Needs = Needs {
         gpu: true,
         app_data: false,
         images: Vec::new(),
+        env: false,
+        data_template: false,
+        host: None,
     };
 
     #[test]
@@ -673,9 +755,8 @@ mod tests {
         let mut old = node("old", vec![rtx()]);
         old.keeps_app_data = false;
         let needs = Needs {
-            gpu: false,
             app_data: true,
-            images: Vec::new(),
+            ..PLAIN_NEEDS()
         };
         let o = options(&needs, &[old]);
         assert!(!o[0].allowed);
@@ -706,10 +787,81 @@ mod tests {
 
     fn wants(images: &[&str]) -> Needs {
         Needs {
+            images: images.iter().map(|s| s.to_string()).collect(),
+            ..PLAIN_NEEDS()
+        }
+    }
+
+    #[allow(non_snake_case)]
+    fn PLAIN_NEEDS() -> Needs {
+        Needs {
             gpu: false,
             app_data: false,
-            images: images.iter().map(|s| s.to_string()).collect(),
+            images: Vec::new(),
+            env: false,
+            data_template: false,
+            host: None,
         }
+    }
+
+    fn media_mount() -> HostOptions {
+        HostOptions {
+            mounts: vec![cha_wire::HostMount {
+                source: cha_wire::MountSource::Named {
+                    name: "media".into(),
+                },
+                target: "/mnt/media".into(),
+                read_only: false,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_spec_goes_only_to_nodes_that_understand_and_allow_it() {
+        let mut env = PLAIN_NEEDS();
+        env.env = true;
+        let mut old = node("old", vec![rtx()]);
+        let mut new = node("new", vec![rtx()]);
+        new.spec_features = vec![SPEC_FEATURE_ENV.into()];
+        let o = options(&env, &[old.clone(), new.clone()]);
+        let by = |n: &str| o.iter().find(|o| o.node_name == n).unwrap();
+        assert!(!by("old").allowed);
+        assert!(
+            by("old")
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("environment variables")
+        );
+        assert!(by("new").allowed);
+
+        // Host options also need the node's owner to allow them.
+        let mut host = PLAIN_NEEDS();
+        host.host = Some(media_mount());
+        new.spec_features.push(SPEC_FEATURE_HOST_OPTIONS.into());
+        old.spec_features.push(SPEC_FEATURE_HOST_OPTIONS.into());
+        old.host_policy = Some(HostPolicy {
+            mode: cha_wire::HostOptionsMode::Allowlist,
+            mounts: vec![cha_wire::AllowedMount {
+                name: "media".into(),
+                read_only: true,
+            }],
+            ..Default::default()
+        });
+        new.host_policy = Some(HostPolicy {
+            mode: cha_wire::HostOptionsMode::Allowlist,
+            ..Default::default()
+        });
+        let o = options(&host, &[old, new]);
+        let by = |n: &str| o.iter().find(|o| o.node_name == n).unwrap();
+        assert!(by("old").allowed, "{:?}", by("old").reason);
+        assert!(!by("new").allowed);
+        assert_eq!(
+            by("new").reason.as_deref(),
+            Some("it has no mount named media")
+        );
+        assert_eq!(best(&o).unwrap().node_name, "old");
     }
 
     #[test]

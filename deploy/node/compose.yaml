@@ -70,6 +70,17 @@ services:
       # auto: the portal may pick this node for a launch. manual: only when a
       # launch chooses it by hand (a test bed). Anything else stops the agent.
       CHA_PLACEMENT: ${CHA_PLACEMENT:-auto}
+      # What custom environments may ask of this node beyond their template
+      # (ADR 0021, deploy/README.md, Host options): off, allowlist (the four
+      # lists below) or full (root-equivalent access for the portal's admins).
+      CHA_HOST_OPTIONS: ${CHA_HOST_OPTIONS:-off}
+      # Folders to offer by name, name=/host/path[:ro], comma-separated.
+      CHA_HOST_MOUNTS: ${CHA_HOST_MOUNTS:-}
+      # Host ports to publish, 27015-27030/udp,25565/tcp.
+      CHA_HOST_PORTS: ${CHA_HOST_PORTS:-}
+      # Capabilities to add (SYS_NICE,NET_RAW) and devices to pass (/dev/dri/card1).
+      CHA_HOST_CAPS: ${CHA_HOST_CAPS:-}
+      CHA_HOST_DEVICES: ${CHA_HOST_DEVICES:-}
       # Moonlight clients: the node hosts GameStream and gives each environment
       # a block of media ports (deploy/README.md, Playing from Moonlight).
       CHA_GAMESTREAM: ${CHA_GAMESTREAM:-false}

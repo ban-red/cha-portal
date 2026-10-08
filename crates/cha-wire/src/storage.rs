@@ -57,6 +57,14 @@ pub struct Storage {
     /// new and the volume exists, the node copies it in first (once).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_volume: Option<String>,
+    /// The template whose directories these are, when it isn't the spec's
+    /// own: a custom environment that shares its base's data (ADR 0021).
+    /// Sent only to a node that lists
+    /// [`SPEC_FEATURE_DATA_TEMPLATE`](crate::SPEC_FEATURE_DATA_TEMPLATE); an
+    /// older one checks the paths against the spec's template and refuses
+    /// them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,7 +174,13 @@ pub fn parse_shared_dir(path: &str) -> Option<&str> {
 impl Storage {
     /// Whether this is something the node may set up for `owner`'s launch of
     /// `template`: every path is the layout's, for these ids and no others.
+    /// `template` is the spec's; the paths are checked against
+    /// [`Self::data_template`] when it is set.
     pub fn check(&self, owner: &str, template: &str) -> Result<(), String> {
+        if !valid_template_id(template) {
+            return Err(format!("{template:?} isn't a template id"));
+        }
+        let template = self.data_template.as_deref().unwrap_or(template);
         if !valid_template_id(template) {
             return Err(format!("{template:?} isn't a template id"));
         }
@@ -242,7 +256,20 @@ mod tests {
                 ],
             }),
             legacy_volume: Some(home_volume_name(USER, "steam")),
+            data_template: None,
         }
+    }
+
+    #[test]
+    fn a_shared_base_is_checked_against_its_own_paths() {
+        let mut s = steam();
+        s.data_template = Some("steam".into());
+        assert_eq!(s.check(USER, "custom.steam-big"), Ok(()));
+        // Without it, a custom template's spec can't name the base's paths.
+        s.data_template = None;
+        assert!(s.check(USER, "custom.steam-big").is_err());
+        s.data_template = Some("not an id".into());
+        assert!(s.check(USER, "custom.steam-big").is_err());
     }
 
     #[test]

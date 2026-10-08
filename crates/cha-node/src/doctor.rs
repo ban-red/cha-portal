@@ -128,6 +128,7 @@ pub async fn run(
     });
     checks.push(ports(config));
     checks.extend(gamestream_ports(config));
+    checks.extend(host_options(docker, config, engine.is_ok()).await);
     checks.extend(more);
     checks.push(host_files(
         Path::new(hostfiles::HOST_ETC),
@@ -1181,6 +1182,100 @@ fn ports(config: &DockerConfig) -> Check {
         )
         .fix("pick another range with CHA_PORT_BASE")
     }
+}
+
+/// What custom environments may ask of this node (ADR 0021): the mode, a
+/// warning for `full`, and for an allowlist whether its mounts and devices
+/// are on the host. The agent sees the host through the engine (its own
+/// container has only what is bound in), so the paths are looked up there.
+async fn host_options(docker: &Docker, config: &DockerConfig, engine: bool) -> Vec<Check> {
+    use cha_wire::HostOptionsMode;
+    let options = &config.host_options;
+    let mut out = Vec::new();
+    match options.mode {
+        HostOptionsMode::Off => {
+            out.push(check(
+                Level::Ok,
+                "Host options",
+                "off: custom environments get no mounts, ports, capabilities or devices",
+            ));
+            if options.has_lists() {
+                out.push(
+                    check(
+                        Level::Info,
+                        "Host options",
+                        "CHA_HOST_MOUNTS, CHA_HOST_PORTS, CHA_HOST_CAPS or CHA_HOST_DEVICES is set but unused",
+                    )
+                    .fix("set CHA_HOST_OPTIONS=allowlist to use them"),
+                );
+            }
+            return out;
+        }
+        HostOptionsMode::Allowlist => out.push(check(
+            Level::Ok,
+            "Host options",
+            format!(
+                "allowlist: {} mounts, {} port ranges, {} capabilities, {} devices",
+                options.mounts.len(),
+                options.ports.len(),
+                options.caps.len(),
+                options.devices.len()
+            ),
+        )),
+        HostOptionsMode::Full => out.push(
+            check(
+                Level::Warn,
+                "Host options",
+                "full: custom environments from this portal can run with root-equivalent access on this machine",
+            )
+            .fix("set CHA_HOST_OPTIONS=allowlist and name what you allow, unless every portal admin is trusted with root here"),
+        ),
+    }
+    if !engine {
+        return out;
+    }
+    let mut missing = Vec::new();
+    for mount in &options.mounts {
+        if !host_path_present(docker, config, &mount.path).await {
+            missing.push(format!("{} ({})", mount.name, mount.path.display()));
+        }
+    }
+    if !missing.is_empty() {
+        out.push(
+            check(
+                Level::Warn,
+                "Host mounts",
+                format!("not on this machine: {}", missing.join(", ")),
+            )
+            .fix("create the directories or mount the shares, or fix CHA_HOST_MOUNTS; launches that use them fail until then"),
+        );
+    }
+    let mut missing = Vec::new();
+    for device in &options.devices {
+        if !host_path_present(docker, config, Path::new(device)).await {
+            missing.push(device.clone());
+        }
+    }
+    if !missing.is_empty() {
+        out.push(
+            check(
+                Level::Warn,
+                "Host devices",
+                format!("not on this machine: {}", missing.join(", ")),
+            )
+            .fix("load the driver that makes them, or fix CHA_HOST_DEVICES; launches that use them fail until then"),
+        );
+    }
+    out
+}
+
+/// Whether the host has `path`, as the engine sees it.
+async fn host_path_present(docker: &Docker, config: &DockerConfig, path: &Path) -> bool {
+    docker
+        .host_path_exists(&config.streamer_image, path)
+        .await
+        // Unknown isn't missing.
+        .unwrap_or(true)
 }
 
 /// With GameStream on, the first environment's Moonlight ports (UDP: video,

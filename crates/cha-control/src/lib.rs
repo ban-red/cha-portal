@@ -12,6 +12,7 @@ pub mod auth;
 pub mod catalogs;
 pub mod claim;
 pub mod controllers;
+pub mod custom;
 pub mod db;
 pub mod devices;
 pub mod discovery;
@@ -83,6 +84,8 @@ pub struct AppState {
     pub share_limit: Arc<shares::RateLimit>,
     /// Catalogs an admin loaded (ADR 0019).
     pub catalogs: Arc<catalogs::Registry>,
+    /// Custom environments an admin made (ADR 0021).
+    pub customs: Arc<custom::Registry>,
 }
 
 impl AppState {
@@ -92,6 +95,8 @@ impl AppState {
         let media_key = Arc::new(media_key(&db).await?);
         let catalogs = catalogs::Registry::default();
         catalogs.reload(&db).await?;
+        let customs = custom::Registry::default();
+        customs.reload(&db).await?;
         Ok(Self {
             db,
             config: Arc::new(config),
@@ -103,6 +108,7 @@ impl AppState {
             gamestream: Arc::default(),
             share_limit: Arc::default(),
             catalogs: Arc::new(catalogs),
+            customs: Arc::new(customs),
         })
     }
 }

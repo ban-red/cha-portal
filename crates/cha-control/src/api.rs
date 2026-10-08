@@ -31,6 +31,7 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::nodes::routes())
         .merge(crate::environments::routes())
         .merge(crate::catalogs::routes())
+        .merge(crate::custom::routes())
         .merge(crate::moonlight::routes())
         .merge(crate::gamestream::routes())
         .merge(crate::ice::routes())

@@ -56,8 +56,10 @@
 //! means `nvidia`, which an older node does whatever the spec says.
 
 pub mod claim;
+mod host;
 mod storage;
 
+pub use host::*;
 pub use storage::*;
 
 use std::collections::BTreeMap;
@@ -391,6 +393,10 @@ pub enum NodeResponse {
     EnvironmentStarted {
         id: String,
         streamer: StreamerEndpoint,
+        /// The ports published for [`HostOptions::ports`], each with the
+        /// node's port filled in. Empty without any.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ports: Vec<HostPort>,
     },
     EnvironmentStopped {
         id: String,
@@ -521,6 +527,29 @@ pub struct EnvironmentSpec {
     /// sent [`ToPortal::MoonlightHosts`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<Box<GatewaySpec>>,
+    /// Extra variables for the app, from a custom environment (ADR 0021),
+    /// checked by [`check_env`]. The portal sends them only to a node that
+    /// lists [`SPEC_FEATURE_ENV`]: an older one would start the app without.
+    /// Boxed, like `storage`: the spec is inside every start request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Box<BTreeMap<String, String>>>,
+    /// Mounts, ports, capabilities and devices the node's owner allows
+    /// (ADR 0021). Sent only to a node that lists
+    /// [`SPEC_FEATURE_HOST_OPTIONS`] and whose [`Inventory::host_options`]
+    /// allows them; the node checks again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<Box<HostOptions>>,
+}
+
+impl EnvironmentSpec {
+    /// The template whose data directories this environment uses
+    /// ([`Storage::data_template`]).
+    pub fn data_template(&self) -> &str {
+        self.storage
+            .as_ref()
+            .and_then(|s| s.data_template.as_deref())
+            .unwrap_or(&self.template)
+    }
 }
 
 /// What kind of device an environment runs on (`docs/devices.md`).
@@ -771,6 +800,22 @@ pub struct Inventory {
     /// agents that predate it, which can't be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update: Option<AgentUpdatability>,
+    /// Optional [`EnvironmentSpec`] fields the agent honours, beyond those
+    /// that predate this list ([`SPEC_FEATURE_ENV`] and the others). Empty
+    /// from agents that predate it: the portal sends them none of those.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spec_features: Vec<String>,
+    /// What custom environments may ask of this node (ADR 0021). Absent from
+    /// agents that predate it, which allow nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_options: Option<HostPolicy>,
+}
+
+impl Inventory {
+    /// The agent honours this optional spec field.
+    pub fn has_spec_feature(&self, feature: &str) -> bool {
+        self.spec_features.iter().any(|f| f == feature)
+    }
 }
 
 /// The image the agent runs, and whether it can be updated from the portal.
@@ -1443,6 +1488,8 @@ mod tests {
         assert_eq!(spec.gateway.as_deref(), Some(&gw));
         let plain = serde_json::to_value(EnvironmentSpec {
             gateway: None,
+            env: None,
+            host: None,
             ..spec
         })
         .unwrap();
@@ -1576,6 +1623,8 @@ mod tests {
                 gamepad: None,
                 device: None,
                 gateway: None,
+                env: None,
+                host: None,
             },
         })
         .unwrap();
@@ -1653,6 +1702,8 @@ mod tests {
             gamepad,
             device: None,
             gateway: None,
+            env: None,
+            host: None,
         };
         // Absent when unset, so an older node reads what it always did.
         let json = serde_json::to_value(spec(None)).unwrap();
@@ -1715,10 +1766,13 @@ mod tests {
                     per_user: vec!["steamapps/compatdata".into()],
                 }),
                 legacy_volume: Some(home_volume_name(user, "steam")),
+                data_template: None,
             })),
             gamepad: None,
             device: None,
             gateway: None,
+            env: None,
+            host: None,
         };
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(
