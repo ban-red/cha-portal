@@ -699,7 +699,7 @@ Delivers **features 4, 6 and 7**, and KDE for feature 3.
 Delivers **features 5 and 8**.
 
 - Persistent environments:
-  - per-(user, template) homes as plain directories under the node's data root (`CHA_DATA_ROOT`), built: on or off per (user, app) by the user, a default per app and shared access (`none`, `read`, `write`) by the admin, a reset button, the old Steam home volumes copied in on the first launch (`deploy/README.md`, *App data*). Open: `zfs`/`btrfs` drivers, size limits and backups;
+  - per-(user, template) homes as plain directories under the node's data root (`CHA_DATA_ROOT`), built: on or off per (user, app) by the user, a default per app and shared access (`none`, `read`, `write`) by the admin, a reset button, the old Steam home volumes copied in on the first launch (`deploy/README.md`, *App data*). *KDE persists by default too (2026-10-07)*: its whole home, with `start-plasma` clearing the lock files and caches an unclean stop leaves; checked on the node: a Desktop file, Dolphin and a kconfig setting kept across a clean stop, and across containers killed outright with stale Qt locks planted (relaunch running in 2 s, locks cleared, data kept); a real reboot of the node not yet run. Open: `zfs`/`btrfs` drivers, size limits and backups;
   - snapshots, suspend/resume, idle timeouts, placement that follows the data;
   - experimental shared Steam library, built (a shared directory, local or on a NAS, listed in the user's Steam; each user's Proton prefixes and shader caches apart). Open: a game played from it, and updates by two users at once.
 - WAN hardening: *moved to the backlog by the owner 2026-10-07*.

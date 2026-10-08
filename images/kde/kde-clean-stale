@@ -1,0 +1,42 @@
+#!/bin/sh
+# Clears what an unclean stop (a node reboot, `docker kill`) leaves in a
+# persisted home and would trip the next Plasma session, and nothing else.
+# Usage: kde-clean-stale [HOME]
+#
+# - KDE's lock files. Qt's QLockFile (kconfig's `<file>.lock`, kded, plasma)
+#   records pid, application, host name and host id, and decides a lock is
+#   stale by asking whether that pid runs *on that host*. Each container has
+#   a new host name, so the old lock never looks stale: the next session waits
+#   out the 30 s stale time on every config file it writes, or gives up. A
+#   file counts as such a lock only when it is `*.lock`, a few bytes, and
+#   starts with a pid and has a host name; a user's own `.lock` file is none of
+#   that.
+# - The service cache (`ksycoca*`): rebuilt on start, and one from a crash
+#   can be half written.
+# - ICE authority (`.ICEauthority*`) and `.dbus/session-bus`: they name
+#   sockets and a bus of the dead container.
+# Settings, session restore data (`~/.config/session`) and everything the user
+# made stay.
+set -eu
+home="${1:-${HOME:?}}"
+[ -d "$home" ] || exit 0
+
+rm -f "$home"/.ICEauthority "$home"/.ICEauthority-c "$home"/.ICEauthority-l
+rm -f "$home"/.cache/ksycoca*
+rm -f "$home"/.dbus/session-bus/*
+
+for dir in .config .local/share .local/state .cache; do
+  [ -d "$home/$dir" ] || continue
+  # -type f skips symlinks, and find doesn't follow them: nothing outside the
+  # home is touched through a link the app planted.
+  find "$home/$dir" -maxdepth 5 -type f -name '*.lock' -size -512c \
+    -exec sh -c '
+      for f; do
+        pid="" app="" host=""
+        { IFS= read -r pid; IFS= read -r app; IFS= read -r host; } < "$f" || true
+        case $pid in "" | *[!0-9]*) continue ;; esac
+        [ -n "$host" ] || continue
+        rm -f -- "$f"
+      done
+    ' sh {} +
+done

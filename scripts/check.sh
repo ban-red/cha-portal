@@ -28,6 +28,8 @@ echo "==> cargo test"
 cargo test --workspace --quiet
 echo "==> steam image scripts tests"
 python3 -m unittest discover -s images/steam
+echo "==> kde image scripts tests"
+python3 -m unittest discover -s images/kde
 echo "==> node host installer tests"
 python3 -m unittest discover -s deploy/node/host
 echo "==> image inputs (every image's crates still exist)"

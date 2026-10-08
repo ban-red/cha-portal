@@ -15,7 +15,7 @@ RUN sed -i 's/^Components: main.*/Components: main restricted universe multivers
 # container without capabilities refuses to exec: drop it.
 RUN install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix \
  && setcap -r /usr/bin/kwin_wayland
-COPY images/kde/start-plasma /usr/local/bin/start-plasma
+COPY images/kde/start-plasma images/kde/kde-clean-stale /usr/local/bin/
 USER cha
 LABEL sh.cha.template="kde"
 CMD ["start-plasma"]

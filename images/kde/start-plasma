@@ -2,6 +2,23 @@
 # A Plasma Wayland session nested in our compositor. startplasma-wayland
 # starts KWin, which opens one window here and follows its size.
 set -eu
+# The home outlives the container when the user keeps their app data (the
+# catalog's default for KDE), and Plasma is killed when the container stops, a
+# node reboot included. Plasma writes its settings on its own and, on a home
+# that already has them, keeps them: this script copies nothing in (no
+# /etc/skel) and sets no defaults, so a later launch never replaces them.
+#
+# The agent makes the home 1000:1000; the image's user is uid 1000. A home that
+# isn't ours would make every Plasma service fail on its first write.
+if [ ! -w "$HOME" ] || [ "$(stat -c %u "$HOME")" != "$(id -u)" ]; then
+  echo "start-plasma: $HOME isn't writable by uid $(id -u)" >&2
+  exit 1
+fi
+# Locks and caches of the last container, which would stall or confuse this
+# session (kde-clean-stale says which and why).
+kde-clean-stale "$HOME"
+# Where the desktop shows the user's files; empty homes have none.
+mkdir -p "$HOME/Desktop"
 export XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP=KDE
 export XDG_SESSION_DESKTOP=KDE

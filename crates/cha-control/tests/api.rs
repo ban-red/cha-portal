@@ -1266,7 +1266,7 @@ async fn admins_set_the_defaults_and_the_sharing_per_app() {
             "sharedAccess": "write",
         })
     );
-    assert_eq!(app_of(&listed.body, "kde")["sharedAccess"], "none");
+    assert_eq!(app_of(&listed.body, "chrome")["sharedAccess"], "none");
 
     // Only what is sent changes.
     let access = p
@@ -1300,7 +1300,7 @@ async fn admins_set_the_defaults_and_the_sharing_per_app() {
     let both = p
         .call(
             "PUT",
-            "/api/admin/storage/kde",
+            "/api/admin/storage/chrome",
             Some(&admin),
             Some(json!({ "defaultPersistent": true, "sharedAccess": "write" })),
         )
@@ -1319,24 +1319,24 @@ async fn admins_set_the_defaults_and_the_sharing_per_app() {
         ),
         (json!(false), json!(false), json!("read"))
     );
-    assert_eq!(app_of(&seen, "kde")["persistent"], true);
+    assert_eq!(app_of(&seen, "chrome")["persistent"], true);
     p.call(
         "PUT",
-        "/api/storage/kde",
+        "/api/storage/chrome",
         Some(&alice),
         Some(json!({ "persistent": false })),
     )
     .await;
     p.call(
         "PUT",
-        "/api/admin/storage/kde",
+        "/api/admin/storage/chrome",
         Some(&admin),
         Some(json!({ "defaultPersistent": true })),
     )
     .await;
     let kept = p.call("GET", "/api/storage", Some(&alice), None).await.body;
-    assert_eq!(app_of(&kept, "kde")["persistent"], false);
-    assert_eq!(app_of(&kept, "kde")["default"], true);
+    assert_eq!(app_of(&kept, "chrome")["persistent"], false);
+    assert_eq!(app_of(&kept, "chrome")["default"], true);
 
     // Bad requests.
     for body in [
@@ -1366,16 +1366,16 @@ async fn admins_set_the_defaults_and_the_sharing_per_app() {
 
     // Audited, newest first, with only what was sent.
     let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
-    let kde: Vec<Value> = audit
+    let chrome: Vec<Value> = audit
         .body
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["action"] == "storage.defaults_set" && e["target"] == "kde")
+        .filter(|e| e["action"] == "storage.defaults_set" && e["target"] == "chrome")
         .map(|e| serde_json::from_str(e["detail"].as_str().unwrap()).unwrap())
         .collect();
     assert_eq!(
-        kde,
+        chrome,
         [
             json!({ "defaultPersistent": true }),
             json!({ "defaultPersistent": true, "sharedAccess": "write" }),

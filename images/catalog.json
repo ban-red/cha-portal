@@ -42,12 +42,13 @@
     {
       "id": "kde",
       "name": "KDE Plasma",
-      "description": "A full Plasma desktop: panel, Dolphin, Konsole, System Settings.",
+      "description": "A full Plasma desktop: panel, Dolphin, Konsole, System Settings. Your settings and files stay between launches while you keep your app data.",
       "image": "cha/env-kde:dev",
       "class": "desktop",
       "icon": "icon.svg",
       "security": "standard",
-      "shmMb": 512
+      "shmMb": 512,
+      "persistent": true
     },
     {
       "id": "steam",

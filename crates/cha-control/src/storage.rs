@@ -8,8 +8,8 @@
 //! - **The app's default** and **shared access** (`none`, `read`, `write`:
 //!   whether a directory shared by all users of the app is mounted, and how)
 //!   are the admin's, per app. Until an admin sets one, the catalog's applies
-//!   (`images/catalog.json`: Steam keeps data and shares a library, the others
-//!   don't).
+//!   (`images/catalog.json`: Steam and KDE keep data, Steam also shares a
+//!   library, the others do neither).
 //! - A user can **reset** an app's data: the nodes delete their directory.
 //!
 //! None of this changes an environment that is running: its mounts were made
@@ -576,6 +576,14 @@ mod tests {
                 shared_access: SharedAccess::None
             }
         );
+        // A desktop keeps its home, and shares nothing.
+        assert_eq!(
+            app_settings(template("kde").unwrap(), None),
+            AppSettings {
+                default_persistent: true,
+                shared_access: SharedAccess::None
+            }
+        );
         // An admin's settings win, each on its own.
         let only_access = row(None, Some("read"));
         assert_eq!(
@@ -683,6 +691,19 @@ mod tests {
     }
 
     #[test]
+    fn kde_gets_a_home_and_no_shared_directory() {
+        let kde = template("kde").unwrap();
+        let storage = spec_storage(USER, kde, eff(true, SharedAccess::None)).unwrap();
+        assert_eq!(storage.home, Some(cha_wire::user_dir(USER, "kde")));
+        assert_eq!(storage.shared, None);
+        // Off, nothing is mounted: the home goes with the container.
+        assert_eq!(
+            spec_storage(USER, kde, eff(false, SharedAccess::None)),
+            None
+        );
+    }
+
+    #[test]
     fn everything_sent_is_what_a_node_accepts() {
         for template in catalog() {
             for persistent in [false, true] {
@@ -714,6 +735,7 @@ mod tests {
             }
         }
         assert!(template("steam").unwrap().persistent);
+        assert!(template("kde").unwrap().persistent);
         assert!(!template("chrome").unwrap().persistent);
     }
 

@@ -1133,6 +1133,8 @@ mod tests {
         assert_eq!(chrome.security, SecurityProfile::Browser);
         assert!(chrome.shm_mb >= 512);
         assert!(template("steam").unwrap().persistent);
+        assert!(template("kde").unwrap().persistent);
+        assert!(!chrome.persistent);
         // Games need a GPU; browsers and desktops make do without.
         assert!(template("steam").unwrap().needs_gpu);
         assert!(
