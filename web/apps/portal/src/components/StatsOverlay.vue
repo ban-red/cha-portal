@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import type { HealthAssessment, HealthIssue, ProbeResult, StatsSnapshot } from "@cha/player";
+import { buildPanel, panelReport, STATS_PANEL, type SectionColor, type Tone } from "@cha/ui-spec";
 import { computed, onBeforeUnmount, ref, useId, useTemplateRef, watch } from "vue";
 
 import Icon from "./Icon.vue";
-import { clampPos, codecTag, cornerByArrow, nearestCorner, num, OPACITY_MIN, type Corner, type OverlayPrefs, type SectionId } from "../statsOverlay";
+import { clampPos, cornerByArrow, nearestCorner, num, OPACITY_MIN, type Corner, type OverlayPrefs, type SectionId } from "../statsOverlay";
+import { statsValues } from "../statsValues";
 
 // The session's stats panel: a header (grade, move, fold, close) over either one compact line or
 // the full sections. The prefs (open, compact, collapsed, corner) belong to the parent, which
@@ -30,67 +32,23 @@ const toggleSection = (id: SectionId) =>
   patch({ folded: isFolded(id) ? prefs.value.folded.filter((x) => x !== id) : [...prefs.value.folded, id] });
 const patch = (p: Partial<OverlayPrefs>) => (prefs.value = { ...prefs.value, ...p });
 
-const GRADE_TEXT: Record<string, string> = { A: "text-ok", B: "text-ok", C: "text-warn", D: "text-warn", F: "text-danger" };
-const gradeClass = computed(() => (props.health.grade ? GRADE_TEXT[props.health.grade] : "text-ink-2"));
+// What the panel says (rows, labels, tooltips, summaries, the compact line and the copy report) is
+// built from @cha/ui-spec's stats-panel.json by `buildPanel`; this file only draws it. The class
+// names are written out so Tailwind sees them.
+const TONE_TEXT: Record<Tone, string> = { none: "", ok: "text-ok", warn: "text-warn", danger: "text-danger", dim: "text-ink-2" };
+const COLOR_TEXT: Record<SectionColor, string> = { accent: "text-accent", "chart-1": "text-chart-1", "chart-2": "text-chart-2", "chart-3": "text-chart-3" };
 const SEVERITY_TEXT = { minor: "text-ink-2", major: "text-warn", critical: "text-danger" };
 
-/** A value is coloured only when health.ts found its signal bad, in that issue's severity. */
-function bad(...ids: string[]): string {
-  const issue = props.health.issues.find((i) => ids.includes(i.id));
-  return issue ? (issue.severity === "minor" ? "text-warn" : SEVERITY_TEXT[issue.severity]) : "";
-}
-const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
-const pct = (used: number, total: number) => (total > 0 ? (used / total) * 100 : 0);
-/** Amber for a node value at or over `limit` percent (°C for the temperature); health.ts only judges the worst of them together. */
-const hot = (v: number, limit = 90) => (v >= limit ? "text-warn" : "");
-
+const panelModel = computed(() => buildPanel(STATS_PANEL, statsValues({ stats: props.stats, codec: props.codec, transport: props.transport, reconnects: props.reconnects }), props.health, "web"));
+const gradeClass = computed(() => TONE_TEXT[panelModel.value.gradeTone] || "text-ink");
 const word = computed(() => props.health.summary);
-const codecText = computed(() => codecTag(props.stats?.codec ?? props.codec, props.transport));
-const reconnectText = computed(() => (props.reconnects ? `${props.reconnects} reconnect${props.reconnects === 1 ? "" : "s"}` : ""));
-const compactLine = computed(() => {
-  const s = props.stats;
-  return [`${num(s?.fps ?? null, 0)} fps`, `${num(s?.latencyMs ?? null)} ms`, `${num(s?.mbps ?? null)} Mbit/s`, codecText.value, reconnectText.value].filter(Boolean).join(" · ");
-});
-/** What a folded section still shows on its heading: its headline numbers, amber when health.ts found them bad. */
-const summary = computed<Record<SectionId, { text: string; cls: string }>>(() => {
-  const s = props.stats;
-  const n = node.value;
-  return {
-    stream: { text: [codecText.value, `${num(s?.fps ?? null, 0)} fps`, `${num(s?.mbps ?? null)} Mbit/s`, reconnectText.value].filter(Boolean).join(" · "), cls: bad("stutter", "freeze") },
-    latency: { text: `${num(s?.latencyMs ?? null)} ms · decode ${num(s?.decodeMs ?? null)} ms`, cls: bad("latency", "decode") },
-    network: { text: `${num(s?.rttMs ?? null)} ms · ${s?.packetsLost ?? 0} lost · ${s?.framesDropped ?? 0} dropped`, cls: bad("rtt", "loss", "recovered", "dropped") },
-    node: {
-      text: n ? [`CPU ${num(n.cpu, 0)}%`, n.gpu !== undefined ? `GPU ${num(n.gpu, 0)}%` : "", n.vramUsed !== undefined && n.vramTotal ? `VRAM ${gb(n.vramUsed)}/${gb(n.vramTotal)} GB` : "", n.temp !== undefined ? `${n.temp} °C` : ""].filter(Boolean).join(" · ") : "",
-      cls: n && (hot(n.cpu) || (n.gpu !== undefined && hot(n.gpu)) || (n.vramUsed !== undefined && n.vramTotal !== undefined && hot(pct(n.vramUsed, n.vramTotal))) || (n.temp !== undefined && hot(n.temp, 85))) ? "text-warn" : "",
-    },
-  };
-});
+const compactLine = computed(() => panelModel.value.compact);
+
 // ---- Copying a warning with the numbers around it, for a bug report or a chat ----
 
 const copiedId = ref<string | null>(null);
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
-function issueReport(issues: HealthIssue[]): string {
-  const s = props.stats;
-  const n = node.value;
-  const ms = (v: number | null | undefined, d = 1) => `${num(v, d)} ms`;
-  const lines = [
-    ...issues.flatMap((i) => [`${i.title}: ${i.detail}`, i.hint, ""]),
-    `Health: ${props.health.grade ?? "not measured"}${props.health.score !== null ? ` (${props.health.score}/100)` : ""}, ${props.health.summary}`,
-    `Stream: ${codecText.value || "–"}, ${s?.width ?? "–"}×${s?.height ?? "–"}, ${num(s?.fps ?? null, 0)}${s?.targetFps ? ` of ${s.targetFps}` : ""} fps, ${num(s?.mbps ?? null)} Mbit/s`,
-    `Latency: send → shown ${ms(s?.latencyMs)}, decode ${ms(s?.decodeMs, 2)}, jitter buffer ${ms(s?.jitterMs, 2)}, audio buffer ${ms(s?.audioJitterMs, 0)}`,
-    `Network: round trip ${ms(s?.rttMs)}, ${s?.packetsLost ?? 0} lost, ${s?.framesDropped ?? 0} dropped`,
-  ];
-  if (n) {
-    const parts = [`CPU ${num(n.cpu, 0)}%`, `RAM ${gb(n.memUsed)}/${gb(n.memTotal)} GB`];
-    if (n.gpu !== undefined) parts.push(`GPU ${num(n.gpu, 0)}%`);
-    if (n.vramUsed !== undefined && n.vramTotal !== undefined) parts.push(`VRAM ${gb(n.vramUsed)}/${gb(n.vramTotal)} GB`);
-    if (n.temp !== undefined) parts.push(`${n.temp} °C`);
-    if (n.power !== undefined) parts.push(`${num(n.power, 0)}${n.powerLimit ? `/${num(n.powerLimit, 0)}` : ""} W`);
-    lines.push(`Node: ${parts.join(", ")}`);
-  }
-  lines.push(`Browser: ${navigator.userAgent}`);
-  return lines.join("\n");
-}
+const issueReport = (issues: HealthIssue[]) => panelReport(panelModel.value, issues, navigator.userAgent);
 /** Copy one warning, or all of them (`id` "all"), with the numbers around them. */
 async function copyIssues(issues: HealthIssue[], id: string) {
   try {
@@ -107,7 +65,6 @@ const copyIssue = (issue: HealthIssue) => copyIssues([issue], issue.id);
 onBeforeUnmount(() => clearTimeout(copiedTimer));
 
 const topIssue = computed(() => props.health.issues[0] ?? null);
-const node = computed(() => props.stats?.node ?? null);
 
 // ---- Moving: drag the header, or use the arrow keys on it; it snaps to the nearest corner ----
 
@@ -404,74 +361,19 @@ const BTN =
         </div>
         <div v-if="health.score !== null" class="mb-1 text-ink-2">Health {{ health.score }}/100</div>
 
-        <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-accent uppercase">
-          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('stream')" @click="toggleSection('stream')">
-            <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded('stream') && '-rotate-90'" />
-            Stream
-            <span v-if="isFolded('stream')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.stream.cls || 'text-ink'">{{ summary.stream.text }}</span>
-          </button>
-        </h3>
-        <dl v-show="!isFolded('stream')" class="grid grid-cols-[1fr_auto] [&>dt]:flex [&>dt]:items-center [&>dt]:text-ink-2 [&>dt]:whitespace-nowrap [&>dt]:after:ml-1.5 [&>dt]:after:h-px [&>dt]:after:flex-1 [&>dt]:after:bg-ink-2/50 [&>dd]:flex [&>dd]:items-center [&>dd]:justify-end [&>dd]:whitespace-pre [&>dd]:text-ink [&>dd]:before:mr-1.5 [&>dd]:before:h-px [&>dd]:before:flex-1 [&>dd]:before:bg-ink-2/50">
-          <dt title="How the video is compressed on the node. The suffix is how it travels: WT is WebTransport, RTC is WebRTC.">Codec</dt><dd>{{ codecText || "–" }}</dd>
-          <dt title="The resolution of the picture the browser is decoding, in pixels.">Size</dt><dd>{{ stats?.width ?? "–" }}×{{ stats?.height ?? "–" }}</dd>
-          <dt title="Frames per second arriving here, against the rate the node encodes at. A still screen sends few frames, so a low number on an idle desktop is normal.">Frame rate</dt><dd :class="bad('stutter', 'freeze')">{{ num(stats?.fps ?? null, 0) }}<template v-if="stats?.targetFps"> of {{ stats.targetFps }}</template> fps</dd>
-          <dt title="How much video data is arriving each second, in megabits. It rises with motion and falls on a still screen.">Bitrate</dt><dd>{{ num(stats?.mbps ?? null) }} Mbit/s</dd>
-        </dl>
-
-        <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-1 uppercase">
-          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('latency')" @click="toggleSection('latency')">
-            <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded('latency') && '-rotate-90'" />
-            Latency
-            <span v-if="isFolded('latency')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.latency.cls || 'text-ink'">{{ summary.latency.text }}</span>
-          </button>
-        </h3>
-        <dl v-show="!isFolded('latency')" class="grid grid-cols-[1fr_auto] [&>dt]:flex [&>dt]:items-center [&>dt]:text-ink-2 [&>dt]:whitespace-nowrap [&>dt]:after:ml-1.5 [&>dt]:after:h-px [&>dt]:after:flex-1 [&>dt]:after:bg-ink-2/50 [&>dd]:flex [&>dd]:items-center [&>dd]:justify-end [&>dd]:whitespace-pre [&>dd]:text-ink [&>dd]:before:mr-1.5 [&>dd]:before:h-px [&>dd]:before:flex-1 [&>dd]:before:bg-ink-2/50">
-          <dt title="Time from the node sending a frame to it appearing on your screen (the median over the last second). It adds network, buffering and decoding, but not the time the app took to react to your input.">Send → shown</dt><dd :class="bad('latency')">{{ num(stats?.latencyMs ?? null) }} ms</dd>
-          <dt title="Average time your browser takes to decode one frame. If this approaches the gap between frames, the picture will stutter.">Decode</dt><dd :class="bad('decode')">{{ num(stats?.decodeMs ?? null, 2) }} ms</dd>
-          <dt title="Average time each frame waits in the browser to even out uneven network arrival. More wait is smoother video but adds delay.">Jitter buffer</dt><dd :class="bad('jitter')">{{ num(stats?.jitterMs ?? null, 2) }} ms</dd>
-          <dt title="Average time sound waits in the browser's audio buffer to avoid crackles. More wait is steadier sound but later sound.">Audio buffer</dt><dd :class="bad('audio')">{{ num(stats?.audioJitterMs ?? null, 0) }} ms</dd>
-        </dl>
-
-        <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-2 uppercase">
-          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('network')" @click="toggleSection('network')">
-            <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded('network') && '-rotate-90'" />
-            Network
-            <span v-if="isFolded('network')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.network.cls || 'text-ink'">{{ summary.network.text }}</span>
-          </button>
-        </h3>
-        <dl v-show="!isFolded('network')" class="grid grid-cols-[1fr_auto] [&>dt]:flex [&>dt]:items-center [&>dt]:text-ink-2 [&>dt]:whitespace-nowrap [&>dt]:after:ml-1.5 [&>dt]:after:h-px [&>dt]:after:flex-1 [&>dt]:after:bg-ink-2/50 [&>dd]:flex [&>dd]:items-center [&>dd]:justify-end [&>dd]:whitespace-pre [&>dd]:text-ink [&>dd]:before:mr-1.5 [&>dd]:before:h-px [&>dd]:before:flex-1 [&>dd]:before:bg-ink-2/50">
-          <dt title="How long a message takes to reach the node and come back. It is the network's base delay, with no processing included.">Round trip</dt><dd :class="bad('rtt')">{{ num(stats?.rttMs ?? null) }} ms</dd>
-          <dt title="Network packets that never arrived. A few are harmless: lost video data is rebuilt from spare data or skipped.">Lost</dt><dd :class="bad('loss', 'recovered')">{{ stats?.packetsLost ?? 0 }}</dd>
-          <dt title="Frames that arrived but were thrown away instead of shown, usually because they came too late or the browser fell behind.">Dropped</dt><dd :class="bad('dropped')">{{ stats?.framesDropped ?? 0 }}</dd>
-        </dl>
-
-        <template v-if="node">
-          <h3 class="mt-1.5 text-2xs font-semibold tracking-wider text-chart-3 uppercase">
-          <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded('node')" @click="toggleSection('node')">
-            <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded('node') && '-rotate-90'" />
-            Node
-            <span v-if="isFolded('node')" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="summary.node.cls || 'text-ink'">{{ summary.node.text }}</span>
-          </button>
-        </h3>
-          <dl v-show="!isFolded('node')" class="grid grid-cols-[1fr_auto] [&>dt]:flex [&>dt]:items-center [&>dt]:text-ink-2 [&>dt]:whitespace-nowrap [&>dt]:after:ml-1.5 [&>dt]:after:h-px [&>dt]:after:flex-1 [&>dt]:after:bg-ink-2/50 [&>dd]:flex [&>dd]:items-center [&>dd]:justify-end [&>dd]:whitespace-pre [&>dd]:text-ink [&>dd]:before:mr-1.5 [&>dd]:before:h-px [&>dd]:before:flex-1 [&>dd]:before:bg-ink-2/50">
-            <dt title="How busy the node's processor is overall, across all cores.">CPU</dt><dd :class="hot(node.cpu)">{{ num(node.cpu, 0) }}%</dd>
-            <template v-if="node.cores"><dt title="The node's average number of busy processes over the last minute, next to its core count. Steadily above the core count means it is overloaded.">Load</dt><dd>{{ num(node.load1) }} <span class="text-ink-2">on {{ node.cores }} cores</span></dd></template>
-            <dt title="Memory in use on the node out of its total.">RAM</dt>
-            <dd><span :class="hot(pct(node.memUsed, node.memTotal))">{{ gb(node.memUsed) }}</span> / {{ gb(node.memTotal) }} GB</dd>
-            <template v-if="node.gpu !== undefined"><dt title="How busy the node's graphics card is. Games and the desktop's rendering use this.">GPU</dt><dd :class="hot(node.gpu)">{{ num(node.gpu, 0) }}%</dd></template>
-            <template v-if="node.vramUsed !== undefined && node.vramTotal !== undefined">
-              <dt title="Graphics card memory in use out of its total.">VRAM</dt>
-              <dd><span :class="hot(pct(node.vramUsed, node.vramTotal))">{{ gb(node.vramUsed) }}</span> / {{ gb(node.vramTotal) }} GB</dd>
+        <template v-for="section in panelModel.sections" :key="section.id">
+          <h3 class="mt-1.5 text-2xs font-semibold tracking-wider uppercase" :class="COLOR_TEXT[section.color]">
+            <button type="button" class="flex w-full items-center gap-1 uppercase hover:brightness-125 focus-visible:outline-2 focus-visible:outline-focus" :aria-expanded="!isFolded(section.id as SectionId)" @click="toggleSection(section.id as SectionId)">
+              <Icon name="section-chevron" class="size-2.5 transition-transform" :class="isFolded(section.id as SectionId) && '-rotate-90'" />
+              {{ section.heading }}
+              <span v-if="isFolded(section.id as SectionId)" class="ml-auto min-w-0 truncate text-right font-normal tracking-normal normal-case" :class="TONE_TEXT[section.summary.tone] || 'text-ink'">{{ section.summary.text }}</span>
+            </button>
+          </h3>
+          <dl v-show="!isFolded(section.id as SectionId)" class="grid grid-cols-[1fr_auto] [&>dt]:flex [&>dt]:items-center [&>dt]:text-ink-2 [&>dt]:whitespace-nowrap [&>dt]:after:ml-1.5 [&>dt]:after:h-px [&>dt]:after:flex-1 [&>dt]:after:bg-ink-2/50 [&>dd]:flex [&>dd]:items-center [&>dd]:justify-end [&>dd]:whitespace-pre [&>dd]:text-ink [&>dd]:before:mr-1.5 [&>dd]:before:h-px [&>dd]:before:flex-1 [&>dd]:before:bg-ink-2/50">
+            <template v-for="row in section.rows" :key="row.id">
+              <dt :title="row.tooltip">{{ row.label }}</dt>
+              <dd :class="TONE_TEXT[row.tone] || undefined"><template v-if="row.segments.length === 1">{{ row.segments[0]!.text }}</template><template v-else><template v-for="(seg, i) in row.segments" :key="i"><span v-if="seg.tone !== 'none'" :class="TONE_TEXT[seg.tone]">{{ seg.text }}</span><template v-else>{{ seg.text }}</template></template></template></dd>
             </template>
-            <template v-if="node.temp !== undefined"><dt title="The graphics card's temperature. Much above 85 °C it may slow itself down.">Temp</dt><dd :class="hot(node.temp, 85)">{{ node.temp }} °C</dd></template>
-            <template v-if="node.power !== undefined">
-              <dt title="What the graphics card is drawing now, out of the limit it is allowed.">Power</dt>
-              <dd><span :class="node.powerLimit ? hot(pct(node.power, node.powerLimit)) : ''">{{ num(node.power, 0) }}</span><template v-if="node.powerLimit"> / {{ num(node.powerLimit, 0) }}</template> W</dd>
-            </template>
-            <template v-if="node.clock !== undefined"><dt title="The graphics card's current core speed. It drops when the card is idle, hot or at its power limit.">Clock</dt><dd>{{ node.clock }} MHz</dd></template>
-            <template v-if="node.enc !== undefined"><dt title="How busy the card's video encoder is. This is the part that compresses the stream.">NVENC</dt><dd :class="hot(node.enc)">{{ num(node.enc, 0) }}%</dd></template>
-            <template v-if="node.dec !== undefined"><dt title="How busy the card's video decoder is. It is used when the environment itself plays video.">NVDEC</dt><dd :class="hot(node.dec)">{{ num(node.dec, 0) }}%</dd></template>
-            <dt title="Processor used by the streaming program alone, in percent of one core, so it can pass 100.">Streamer CPU</dt><dd>{{ num(node.streamerCpu, 0) }}%</dd>
           </dl>
         </template>
 

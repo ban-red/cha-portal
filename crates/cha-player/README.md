@@ -163,7 +163,8 @@ All of it lives in `src/theme/`: `palette.rs` (roles), `metrics.rs`, `fonts.rs`,
 |---|---|
 | `src/main.rs` | args, logging, the tokio runtime, building the transports (GameStream behind the default `gamestream` feature, the portal behind `portal`, `--demo`) |
 | `src/app.rs` | the `winit` handler: Launcher and Streaming states, pointer lock, hotkeys, drawing |
-| `src/ui/` | egui launcher, settings, the stats panel (`overlay.rs`), the toolbar (`toolbar.rs`) |
+| `src/ui/` | egui launcher, settings, the toolbar (`toolbar.rs`) |
+| `src/ui/stats/` | the stats panel: `mod.rs` (state, drawing a frame), `snapshot.rs` (the reading and its value keys), `header.rs`, `settings.rs`, `compact.rs`, `sections.rs`, `chip.rs`, `placement.rs`, `report.rs`, `look.rs`; what it says comes from `cha-ui-spec`'s `build_panel` |
 | `src/stream_prefs.rs` | the toolbar's per-app choices |
 | `src/health.rs` | the stream's health grade, ported from the browser player |
 | `src/overlay_prefs.rs` | the stats panel's saved choices |

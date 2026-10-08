@@ -2,6 +2,8 @@
 import healthJson from "./health.json";
 import iconsJson from "./icons.json";
 
+export * from "./panel";
+
 /** One drawn part of an icon: an SVG path, stroked at `stroke` units wide, or filled. */
 export type IconPart = { d: string; stroke: number; fill?: undefined } | { d: string; fill: true; stroke?: undefined };
 
@@ -135,14 +137,27 @@ export type FillValue = number | string;
 /** `Number.prototype.toFixed`: a half rounds up (away from zero), and a NaN reads "NaN". The Rust side matches it. */
 export const fixed = (v: number, digits: number): string => v.toFixed(digits);
 
-/** The formatters a placeholder can name: `{name:ms1}`. A number needs one; a string takes none. */
+/**
+ * The formatters a placeholder can name: `{name:ms1}`. A number needs one; a string takes none.
+ * `f0`..`f2`: that many decimals. `ms0`, `ms1`: the same, then " ms". `int`: the whole part, with no
+ * digit grouping. `gb`: bytes as GiB with one decimal. `pct`: a whole number and "%". `mbit`: one
+ * decimal and " Mbit/s". `s`: the plural "s" (nothing for exactly 1), for `reconnect{n:s}`.
+ */
 export const FORMATTERS: Record<string, (v: number) => string> = {
   f0: (v) => fixed(v, 0),
   f1: (v) => fixed(v, 1),
   f2: (v) => fixed(v, 2),
   ms0: (v) => `${fixed(v, 0)} ms`,
   ms1: (v) => `${fixed(v, 1)} ms`,
+  int: (v) => String(Math.trunc(v)),
+  gb: (v) => fixed(v / 1024 ** 3, 1),
+  pct: (v) => `${fixed(v, 0)}%`,
+  mbit: (v) => `${fixed(v, 1)} Mbit/s`,
+  s: (v) => (v === 1 ? "" : "s"),
 };
+
+/** What a formatter writes after the number, so the stats panel can write "– ms" for a number it lacks. */
+export const UNITS: Record<string, string> = { ms0: " ms", ms1: " ms", pct: "%", mbit: " Mbit/s" };
 
 /** A placeholder: `{name}` or `{name:formatter}`. Anything else in braces stays as written. */
 export const PLACEHOLDER = /\{([a-z][a-z0-9_]*)(?::([a-z0-9]+))?\}/g;

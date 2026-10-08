@@ -8,11 +8,18 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+import { ROLES } from "../web/apps/portal/src/themes/index.ts";
+
 const ROOT = join(import.meta.dir, "..");
 const ICONS = join(ROOT, "web/packages/ui-spec/icons.json");
 const HEALTH = join(ROOT, "web/packages/ui-spec/health.json");
 const HEALTH_CASES = join(ROOT, "web/packages/ui-spec/health-cases.json");
 const FILL_CASES = join(ROOT, "web/packages/ui-spec/fill-cases.json");
+const PANEL = join(ROOT, "web/packages/ui-spec/stats-panel.json");
+const PANEL_CASES = join(ROOT, "web/packages/ui-spec/stats-panel-cases.json");
+const FORMAT_CASES = join(ROOT, "web/packages/ui-spec/format-cases.json");
+const STATS_OVERLAY = join(ROOT, "web/apps/portal/src/statsOverlay.ts");
+const THEMES_INDEX = join(ROOT, "web/apps/portal/src/themes/index.ts");
 const PORTAL_SRC = join(ROOT, "web/apps/portal/src");
 const errors: string[] = [];
 const fail = (msg: string) => errors.push(msg);
@@ -104,7 +111,7 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const PLATFORMS = ["web", "native"];
-const FORMATTERS = ["f0", "f1", "f2", "ms0", "ms1"];
+const FORMATTERS = ["f0", "f1", "f2", "ms0", "ms1", "int", "gb", "pct", "mbit", "s"];
 const SEVERITIES = ["minor", "major", "critical"];
 const GRADES = ["A", "B", "C", "D", "F"];
 /** The same pattern as fill() in index.ts and cha-ui-spec's health.rs. */
@@ -313,6 +320,216 @@ for (const c of fillCases) {
   if (typeof c.template !== "string" || typeof c.expect !== "string" || !isObj(c.values)) fail(`${at}: needs template, values and expect`);
 }
 
+// --- stats-panel.json and its cases ---
+
+const panel = JSON.parse(readFileSync(PANEL, "utf8")) as Obj;
+const TONES = ["none", "ok", "warn", "danger", "dim"];
+const panelValues = (isObj(panel.values) ? panel.values : {}) as Record<string, Obj>;
+const sectionIds = [...readFileSync(STATS_OVERLAY, "utf8").matchAll(/SECTIONS = \[([^\]]*)\]/g)]
+  .flatMap((m) => [...m[1]!.matchAll(/"([^"]+)"/g)].map((x) => x[1]!));
+const issueIds = new Set(issueSpecs.map((i) => String(i.id)));
+let panelRows = 0;
+let panelTemplates = 0;
+
+for (const [k, v] of Object.entries(panelValues)) {
+  const at = `stats-panel.json value "${k}"`;
+  if (!/^[a-z][a-z0-9_]*$/.test(k)) fail(`${at}: snake_case`);
+  if (v.kind !== "number" && v.kind !== "string") fail(`${at}: kind is "number" or "string"`);
+  const ps = Array.isArray(v.platforms) ? (v.platforms as string[]) : [];
+  if (!ps.length || ps.some((p) => !PLATFORMS.includes(p))) fail(`${at}: platforms is a non-empty list of ${PLATFORMS.join(", ")}`);
+}
+
+const platformsOf = (c: Obj): string[] => (Array.isArray(c.platforms) ? (c.platforms as string[]) : PLATFORMS);
+
+/** A text's templates, with the platforms each covers. */
+function templates(t: unknown, platforms: string[], at: string): [string, string[]][] {
+  if (typeof t === "string") return [[t, platforms]];
+  if (!isObj(t)) {
+    fail(`${at}: a string or { web?, native? }`);
+    return [];
+  }
+  const out: [string, string[]][] = [];
+  for (const [p, text] of Object.entries(t)) {
+    if (!PLATFORMS.includes(p) || typeof text !== "string") fail(`${at}: "${p}" must be web or native with a string`);
+    else out.push([text, [p]]);
+  }
+  for (const p of platforms) if (!(p in t)) fail(`${at}: no text for ${p}`);
+  return out;
+}
+
+/** Every key a template uses must be declared, of the right kind, and filled on every platform the template is shown on. */
+function checkTemplate(text: string, platforms: string[], at: string, extra: string[] = []) {
+  panelTemplates++;
+  for (const m of text.matchAll(PLACEHOLDER)) {
+    const [, name, fmt] = m as unknown as [string, string, string | undefined];
+    const v = panelValues[name!];
+    if (!v && !extra.includes(name)) {
+      fail(`${at}: {${name}} is not a declared value`);
+      continue;
+    }
+    const kind = v ? v.kind : "string";
+    if (fmt && !FORMATTERS.includes(fmt)) fail(`${at}: unknown formatter "${fmt}"`);
+    if (kind === "number" && !fmt) fail(`${at}: {${name}} is a number and needs a formatter`);
+    if (kind === "string" && fmt) fail(`${at}: {${name}:${fmt}} is a string and takes no formatter`);
+    if (v) for (const p of platforms) if (!(v.platforms as string[]).includes(p)) fail(`${at}: {${name}} is not filled on ${p}`);
+  }
+  if (/[{}]/.test(text.replace(PLACEHOLDER, ""))) fail(`${at}: a stray brace in ${JSON.stringify(text)}`);
+}
+
+function checkKeys(keys: unknown, platforms: string[], at: string) {
+  const lists: [string[], string[]][] = [];
+  if (Array.isArray(keys)) lists.push([keys as string[], platforms]);
+  else if (isObj(keys)) {
+    for (const [p, l] of Object.entries(keys)) {
+      if (!PLATFORMS.includes(p) || !Array.isArray(l)) fail(`${at}: { web?, native? } of key lists`);
+      else lists.push([l as string[], [p]]);
+    }
+  } else if (keys !== undefined) fail(`${at}: a list of value keys`);
+  for (const [l, ps] of lists) {
+    for (const k of l) {
+      const v = panelValues[k];
+      if (!v) fail(`${at}: "${k}" is not a declared value`);
+      else for (const p of ps) if (!(v.platforms as string[]).includes(p)) fail(`${at}: "${k}" is not filled on ${p}`);
+    }
+  }
+}
+
+function checkHot(hot: unknown, platforms: string[], at: string) {
+  if (!isObj(hot) || typeof hot.key !== "string" || !isNum(hot.limit) || Object.keys(hot).some((k) => !["key", "of", "limit"].includes(k))) {
+    return fail(`${at}: hot is { key, of?, limit }`);
+  }
+  checkKeys([hot.key, ...(hot.of === undefined ? [] : [hot.of as string])], platforms, `${at} hot`);
+  for (const k of [hot.key, hot.of]) if (typeof k === "string" && panelValues[k]?.kind !== "number") fail(`${at}: hot "${k}" is not a number`);
+}
+
+function checkBad(bad: unknown, platforms: string[], at: string) {
+  const lists: [string[], string[]][] = [];
+  if (Array.isArray(bad)) lists.push([bad as string[], platforms]);
+  else if (isObj(bad)) for (const [p, l] of Object.entries(bad)) lists.push([l as string[], PLATFORMS.includes(p) ? [p] : []]);
+  else if (bad !== undefined) fail(`${at}: bad is a list of issue ids`);
+  for (const [l, ps] of lists) {
+    if (!Array.isArray(l)) continue;
+    for (const id of l) {
+      if (!issueIds.has(id)) fail(`${at}: bad "${id}" is not an issue in health.json`);
+      else for (const p of ps) if (!issuePlatforms.get(id)!.includes(p)) fail(`${at}: bad "${id}" is not reported on ${p}`);
+    }
+  }
+}
+
+function checkParts(list: unknown, platforms: string[], at: string, allowRow = false) {
+  if (!Array.isArray(list) || !list.length) return fail(`${at}: a non-empty list of parts`);
+  (list as Obj[]).forEach((p, n) => {
+    const a = `${at}[${n}]`;
+    const allowed = ["text", "when", "unless", "platforms", ...(allowRow ? ["hot", "tone"] : [])];
+    if (!isObj(p) || Object.keys(p).some((k) => !allowed.includes(k))) return fail(`${a}: a part has ${allowed.join(", ")}`);
+    const ps = p.platforms === undefined ? platforms : (p.platforms as string[]).filter((x) => platforms.includes(x));
+    if (p.platforms !== undefined && (!Array.isArray(p.platforms) || p.platforms.some((x) => !PLATFORMS.includes(x as string)))) fail(`${a}: platforms`);
+    for (const [t, tp] of templates(p.text, ps, `${a} text`)) checkTemplate(t, tp, `${a} text`);
+    checkKeys(p.when, ps, `${a} when`);
+    checkKeys(p.unless, ps, `${a} unless`);
+    if (p.hot !== undefined) checkHot(p.hot, ps, a);
+    if (p.tone !== undefined && p.tone !== "dim") fail(`${a}: tone is "dim"`);
+  });
+}
+
+const seenSections = new Set<string>();
+const seenRows = new Set<string>();
+if (!Array.isArray(panel.sections)) fail("stats-panel.json: sections is a list");
+for (const s of (Array.isArray(panel.sections) ? panel.sections : []) as Obj[]) {
+  const sid = String(s.id);
+  const at = `stats-panel.json section "${sid}"`;
+  if (seenSections.has(sid)) fail(`${at}: id appears twice`);
+  seenSections.add(sid);
+  if (!sectionIds.includes(sid)) fail(`${at}: not a SectionId in statsOverlay.ts (${sectionIds.join(", ")})`);
+  if (typeof s.heading !== "string" || !s.heading) fail(`${at}: needs a heading`);
+  if (!(ROLES as readonly string[]).includes(s.color as string)) fail(`${at}: color "${s.color}" is not a theme role (${THEMES_INDEX.slice(ROOT.length + 1)})`);
+  checkKeys(s.when, PLATFORMS, `${at} when`);
+  const sum = s.summary;
+  if (!isObj(sum)) fail(`${at}: needs a summary`);
+  else {
+    checkParts(sum.parts, PLATFORMS, `${at} summary.parts`);
+    checkBad(sum.bad, PLATFORMS, `${at} summary`);
+    if (sum.hot !== undefined) {
+      if (!Array.isArray(sum.hot)) fail(`${at} summary.hot: a list`);
+      else for (const h of sum.hot) checkHot(h, PLATFORMS, `${at} summary`);
+    }
+  }
+  for (const r of (Array.isArray(s.rows) ? s.rows : []) as Obj[]) {
+    const rid = String(r.id);
+    const ra = `${at} row "${rid}"`;
+    panelRows++;
+    if (seenRows.has(rid)) fail(`${ra}: id appears twice`);
+    seenRows.add(rid);
+    if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(rid)) fail(`${ra}: ids are kebab-case`);
+    const ps = platformsOf(r);
+    if (r.platforms !== undefined && (!Array.isArray(r.platforms) || !ps.length || ps.some((p) => !PLATFORMS.includes(p)))) fail(`${ra}: platforms`);
+    for (const f of ["label", "tooltip"]) for (const [t, tp] of templates(r[f], ps, `${ra} ${f}`)) if (/[{}]/.test(t)) fail(`${ra} ${f}: no placeholders in ${f}s`) ;
+    if (typeof r.value === "string") checkParts([{ text: r.value }], ps, `${ra} value`, true);
+    else checkParts(r.value, ps, `${ra} value`, true);
+    checkKeys(r.when, ps, `${ra} when`);
+    checkBad(r.bad, ps, ra);
+  }
+}
+if (sectionIds.join() !== [...seenSections].join()) fail(`stats-panel.json: sections are ${[...seenSections].join(", ")}, SECTIONS in statsOverlay.ts is ${sectionIds.join(", ")}`);
+
+checkParts(panel.compact, PLATFORMS, "stats-panel.json compact");
+const report = (isObj(panel.report) ? panel.report : {}) as Obj;
+for (const [t, tp] of templates(report.agent, PLATFORMS, "stats-panel.json report.agent")) checkTemplate(t, tp, "stats-panel.json report.agent");
+if (typeof report.issue !== "string") fail("stats-panel.json report.issue: a template");
+else checkTemplate(report.issue, PLATFORMS, "stats-panel.json report.issue", ["title", "detail"]);
+const seenLines = new Set<string>();
+for (const l of (Array.isArray(report.lines) ? report.lines : []) as Obj[]) {
+  const at = `stats-panel.json report line "${l.id}"`;
+  if (seenLines.has(String(l.id))) fail(`${at}: id appears twice`);
+  seenLines.add(String(l.id));
+  const ps = platformsOf(l);
+  checkKeys(l.when, ps, `${at} when`);
+  checkParts(l.parts, ps, `${at} parts`);
+}
+
+const panelCases = JSON.parse(readFileSync(PANEL_CASES, "utf8")) as Obj[];
+const panelNames = new Set<string>();
+for (const c of panelCases) {
+  const at = `stats-panel-cases.json "${c.name}"`;
+  if (typeof c.name !== "string" || panelNames.has(c.name)) fail(`${at}: names are unique strings`);
+  panelNames.add(String(c.name));
+  const cps = platformsOf(c);
+  if (c.platforms !== undefined && (!Array.isArray(c.platforms) || !cps.length || cps.some((p) => !PLATFORMS.includes(p)))) fail(`${at}: platforms`);
+  for (const k of Object.keys(isObj(c.values) ? c.values : {})) if (!panelValues[k] || panelValues[k]!.derived) fail(`${at}: "${k}" is not a value a player fills`);
+  const h = c.health;
+  if (h !== undefined) {
+    if (!isObj(h) || (h.grade !== null && !GRADES.includes(h.grade as string)) || (h.grade === null) !== (h.score === null)) fail(`${at}: health needs a grade and score, or neither`);
+    else for (const i of (h.issues as Obj[])) if (!issueIds.has(String(i.id)) || !SEVERITIES.includes(i.severity as string)) fail(`${at}: health issue "${i.id}"`);
+  }
+  const e = c.expect as Obj;
+  const expects = isObj(e) && "grade_tone" in e ? [e] : isObj(e) ? Object.values(e) as Obj[] : [];
+  if (!isObj(e) || (!("grade_tone" in e) && !cps.every((p) => p in e))) fail(`${at}: expect covers ${cps.join(", ")}`);
+  for (const x of expects) {
+    if (!TONES.includes(x.grade_tone as string)) fail(`${at}: grade_tone`);
+    for (const s of (x.sections as Obj[])) {
+      if (!seenSections.has(String(s.id))) fail(`${at}: section "${s.id}" is not in the spec`);
+      const known = new Set(((panel.sections as Obj[]).find((q) => q.id === s.id)?.rows as Obj[] | undefined)?.map((r) => String(r.id)));
+      for (const id of s.row_ids as string[]) if (!known.has(id)) fail(`${at}: row "${id}" is not in section "${s.id}"`);
+      for (const r of (s.rows ?? []) as Obj[]) if (!(s.row_ids as string[]).includes(String(r.id))) fail(`${at}: pinned row "${r.id}" is not among the section's row_ids`);
+    }
+  }
+}
+
+const formatFile = JSON.parse(readFileSync(FORMAT_CASES, "utf8")) as { fill: Obj[]; codec_tag: Obj[] };
+const formatNames = new Set<string>();
+for (const c of [...formatFile.fill, ...formatFile.codec_tag]) {
+  const at = `format-cases.json "${c.name}"`;
+  if (typeof c.name !== "string" || formatNames.has(c.name)) fail(`${at}: names are unique strings`);
+  formatNames.add(String(c.name));
+  if (typeof c.expect !== "string") fail(`${at}: needs expect`);
+}
+for (const c of formatFile.fill) {
+  for (const m of String(c.template).matchAll(PLACEHOLDER)) if (m[2] && !FORMATTERS.includes(m[2])) fail(`format-cases.json "${c.name}": unknown formatter "${m[2]}"`);
+}
+for (const f of FORMATTERS) {
+  if (!formatFile.fill.some((c) => new RegExp(`:${f}\\}`).test(String(c.template)))) fail(`format-cases.json: no case for the formatter "${f}"`);
+}
+
 // --- every <Icon name="..."> in the portal exists ---
 
 function* files(dir: string): Generator<string> {
@@ -349,5 +566,6 @@ if (errors.length) {
 }
 console.log(
   `ui-spec ok: ${Object.keys(icons).length} icons, ${used} uses in the portal; ${issueSpecs.length} health issues ` +
-    `(${placeholderUses} placeholders), ${cases.length} health cases (${caseCount.shared} shared, ${caseCount.web} web-only, ${caseCount.native} native-only), ${fillCases.length} fill cases`,
+    `(${placeholderUses} placeholders), ${cases.length} health cases (${caseCount.shared} shared, ${caseCount.web} web-only, ${caseCount.native} native-only), ${fillCases.length} fill cases; ` +
+    `stats panel: ${seenSections.size} sections, ${panelRows} rows, ${panelTemplates} templates, ${panelCases.length} cases, ${formatNames.size} format cases`,
 );

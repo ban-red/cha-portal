@@ -75,7 +75,7 @@ Each phase lands both sides together, with its cases, and leaves both players wo
    - `health.ts` and `health.rs` read the spec and keep their check functions.
    - Add the coverage tests.
    - Highest value: this is where drift does real harm (two players grading the same stream differently).
-3. **Stats panel.**
+3. **Stats panel.** Done: `stats-panel.json` holds the sections, rows (labels, tooltips per platform, value templates, which issues colour them, hot limits, platforms, `when`), folded summaries, the compact line and the copy report; `format-cases.json` and `stats-panel-cases.json` (32 cases, run on both platforms by both sides) pin the formatters and the model. `buildPanel` (TypeScript) and `build_panel` (`cha-ui-spec`) are the one pure model; `StatsOverlay.vue` loops over it and the native panel is split into `ui/stats/{mod,header,sections,settings,placement,report,...}.rs`, which only draw it. `check-ui-spec.ts` validates ids, value keys, issue ids, platforms, section ids and colour roles. The browser's HTML is unchanged apart from the rows the browser now has too (Reconnects, and Recovered over WebTransport).
    - Write `stats-panel.json` and `format-cases.json`.
    - Browser: `StatsOverlay.vue`'s four nearly identical `<dl>` blocks become one loop over the spec's sections, and the copy report is built from the spec's lines.
    - Native: split `ui/overlay.rs` into `ui/stats/{mod, header, sections, settings, placement, report}.rs`, with the sections drawn from the spec.

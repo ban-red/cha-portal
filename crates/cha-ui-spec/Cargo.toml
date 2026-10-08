@@ -8,7 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [features]
-# The shared test vectors (health-cases.json), for the players' test runners.
+# The shared test vectors (health-cases.json, stats-panel-cases.json), for the players' test runners.
 cases = []
 
 [dependencies]

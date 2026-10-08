@@ -7,8 +7,8 @@
 // Signing in to portals is only wired up with the `portal` feature.
 #![cfg_attr(not(feature = "portal"), allow(dead_code))]
 
-mod overlay;
 mod settings;
+mod stats;
 mod toolbar;
 
 use std::collections::HashMap;
@@ -41,7 +41,7 @@ pub fn open_input_monitoring_settings() {
         .spawn();
 }
 
-pub use overlay::{StatsPanel, StatsSnapshot, show_reconnecting};
+pub use stats::{StatsPanel, StatsSnapshot, show_reconnecting};
 pub use toolbar::{Toolbar, ToolbarAction, ToolbarView};
 
 /// What the user asked for; the app does it.

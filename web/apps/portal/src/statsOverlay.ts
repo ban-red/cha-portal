@@ -1,4 +1,6 @@
-// The session stats overlay's small pure parts: saved preferences, corners, number text.
+// The session stats overlay's small pure parts: saved preferences, corners, the codec tag. What the
+// panel says (rows, labels, number formats) is in @cha/ui-spec's stats-panel.json.
+import { formatNumber } from "@cha/ui-spec";
 
 export type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 /** Clockwise from the top left, which is the order the arrow keys walk. */
@@ -69,9 +71,8 @@ export function cornerByArrow(from: Corner, key: string): Corner {
   return `${row}-${side}` as Corner;
 }
 
-/** A number with fixed digits, or an en dash when there is none. */
-export const num = (v: number | null | undefined, digits = 1): string =>
-  v === null || v === undefined || !Number.isFinite(v) ? "–" : v.toFixed(digits);
+/** A number with fixed digits, or an en dash when there is none (the panel's formatter, for text outside the spec). */
+export const num = formatNumber;
 
 /** "HEVC/WT": the codec and a short transport name, whichever are known. */
 export function codecTag(codec: string | null, transport: "webtransport" | "webrtc" | null): string {

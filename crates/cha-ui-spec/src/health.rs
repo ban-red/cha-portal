@@ -305,21 +305,47 @@ fn is_half(abs: f64, digits: usize) -> bool {
     (0..128).contains(&k) && t.is_multiple_of(1u128 << k) && (t >> k) & 1 == 1
 }
 
-/// The formatters a placeholder can name: `{name:ms1}`.
-fn format_number(v: f64, formatter: &str) -> String {
+/// The formatters a placeholder can name: `{name:ms1}`. `f0`..`f2` write that many decimals,
+/// `ms0` and `ms1` the same and " ms", `int` the whole part with no digit grouping, `gb` bytes as
+/// GiB with one decimal, `pct` a whole number and "%", `mbit` one decimal and " Mbit/s", and `s`
+/// the plural "s" (nothing for exactly 1).
+pub(crate) fn format_number(v: f64, formatter: &str) -> String {
     match formatter {
         "f0" => fixed(v, 0),
         "f1" => fixed(v, 1),
         "f2" => fixed(v, 2),
         "ms0" => format!("{} ms", fixed(v, 0)),
         "ms1" => format!("{} ms", fixed(v, 1)),
+        "int" => format!("{}", v.trunc() as i64),
+        "gb" => fixed(v / 1_073_741_824.0, 1),
+        "pct" => format!("{}%", fixed(v, 0)),
+        "mbit" => format!("{} Mbit/s", fixed(v, 1)),
+        "s" => if v == 1.0 { "" } else { "s" }.into(),
         other => panic!("fill: unknown formatter {other}"),
+    }
+}
+
+/// Whether `formatter` is one [`format_number`] knows.
+pub(crate) fn is_formatter(formatter: &str) -> bool {
+    matches!(
+        formatter,
+        "f0" | "f1" | "f2" | "ms0" | "ms1" | "int" | "gb" | "pct" | "mbit" | "s"
+    )
+}
+
+/// What a formatter writes after the number, so a missing number can read "– ms".
+pub(crate) fn unit(formatter: &str) -> &'static str {
+    match formatter {
+        "ms0" | "ms1" => " ms",
+        "pct" => "%",
+        "mbit" => " Mbit/s",
+        _ => "",
     }
 }
 
 /// A placeholder at the start of `s` (which begins after its `{`): `name`, an optional
 /// `:formatter` and `}`. Returns the name, the formatter and the length consumed after the `{`.
-fn placeholder(s: &str) -> Option<(&str, Option<&str>, usize)> {
+pub(crate) fn placeholder(s: &str) -> Option<(&str, Option<&str>, usize)> {
     let b = s.as_bytes();
     let word = |from: usize, first: fn(u8) -> bool, rest: fn(u8) -> bool| -> usize {
         if from >= b.len() || !first(b[from]) {
@@ -353,7 +379,7 @@ fn placeholder(s: &str) -> Option<(&str, Option<&str>, usize)> {
 }
 
 /// Fills a template's `{name}` and `{name:formatter}` placeholders; anything else in braces stays
-/// as written. Formatters: `f0`, `f1`, `f2` (fixed digits) and `ms0`, `ms1` (the same, then " ms").
+/// as written. The formatters are listed at [`format_number`].
 /// A missing value, an unknown formatter, a number without one or a string with one panics: those
 /// are spec bugs the tests catch.
 pub fn fill(template: &str, values: &[(&str, Val)]) -> String {

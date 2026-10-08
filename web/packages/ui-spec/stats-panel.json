@@ -1,0 +1,424 @@
+{
+  "separator": " · ",
+  "grade_tone": { "A": "ok", "B": "ok", "C": "warn", "D": "warn", "F": "danger", "none": "dim" },
+  "severity_tone": { "minor": "warn", "major": "warn", "critical": "danger" },
+  "hot_tone": "warn",
+  "values": {
+    "shown_fps": { "kind": "number", "platforms": ["web", "native"] },
+    "target_fps": { "kind": "number", "platforms": ["web", "native"] },
+    "mbps": { "kind": "number", "platforms": ["web", "native"] },
+    "codec_tag": { "kind": "string", "platforms": ["web", "native"] },
+    "width": { "kind": "number", "platforms": ["web", "native"] },
+    "height": { "kind": "number", "platforms": ["web", "native"] },
+    "reconnects": { "kind": "number", "platforms": ["web", "native"] },
+    "latency_ms": { "kind": "number", "platforms": ["web", "native"] },
+    "decode_ms": { "kind": "number", "platforms": ["web", "native"] },
+    "jitter_buffer_ms": { "kind": "number", "platforms": ["web"] },
+    "audio_jitter_ms": { "kind": "number", "platforms": ["web", "native"] },
+    "audio_underruns": { "kind": "number", "platforms": ["web", "native"] },
+    "audio_dropped_ms": { "kind": "number", "platforms": ["native"] },
+    "rtt_ms": { "kind": "number", "platforms": ["web", "native"] },
+    "lost": { "kind": "number", "platforms": ["web", "native"] },
+    "recovered": { "kind": "number", "platforms": ["web", "native"] },
+    "dropped": { "kind": "number", "platforms": ["web", "native"] },
+    "partial": { "kind": "number", "platforms": ["web", "native"] },
+    "decode_errors": { "kind": "number", "platforms": ["native"] },
+    "node_cpu": { "kind": "number", "platforms": ["web", "native"] },
+    "node_cores": { "kind": "number", "platforms": ["web", "native"] },
+    "node_load1": { "kind": "number", "platforms": ["web", "native"] },
+    "node_mem_used": { "kind": "number", "platforms": ["web", "native"] },
+    "node_mem_total": { "kind": "number", "platforms": ["web", "native"] },
+    "node_gpu": { "kind": "number", "platforms": ["web", "native"] },
+    "node_vram_used": { "kind": "number", "platforms": ["web", "native"] },
+    "node_vram_total": { "kind": "number", "platforms": ["web", "native"] },
+    "node_temp": { "kind": "number", "platforms": ["web", "native"] },
+    "node_power": { "kind": "number", "platforms": ["web", "native"] },
+    "node_power_limit": { "kind": "number", "platforms": ["web", "native"] },
+    "node_clock": { "kind": "number", "platforms": ["web", "native"] },
+    "node_enc": { "kind": "number", "platforms": ["web", "native"] },
+    "node_dec": { "kind": "number", "platforms": ["web", "native"] },
+    "node_streamer_cpu": { "kind": "number", "platforms": ["web", "native"] },
+    "health_grade": { "kind": "string", "platforms": ["web", "native"], "derived": true },
+    "health_score": { "kind": "number", "platforms": ["web", "native"], "derived": true },
+    "health_summary": { "kind": "string", "platforms": ["web", "native"], "derived": true },
+    "agent": { "kind": "string", "platforms": ["web", "native"], "derived": true }
+  },
+  "compact": [
+    { "text": "{shown_fps:f0} fps" },
+    { "text": "{latency_ms:f1} ms" },
+    { "text": "{mbps:mbit}" },
+    { "text": "{codec_tag}", "when": ["codec_tag"] },
+    { "text": "{reconnects:int} reconnect{reconnects:s}", "when": ["reconnects"] }
+  ],
+  "sections": [
+    {
+      "id": "stream",
+      "heading": "Stream",
+      "color": "accent",
+      "summary": {
+        "parts": [
+          { "text": "{codec_tag}", "when": ["codec_tag"] },
+          { "text": "{shown_fps:f0} fps" },
+          { "text": "{mbps:mbit}" },
+          { "text": "{reconnects:int} reconnect{reconnects:s}", "when": ["reconnects"] }
+        ],
+        "bad": ["stutter", "freeze"]
+      },
+      "rows": [
+        {
+          "id": "codec",
+          "label": "Codec",
+          "tooltip": {
+            "web": "How the video is compressed on the node. The suffix is how it travels: WT is WebTransport, RTC is WebRTC.",
+            "native": "How the video is compressed on the node. The suffix is how it travels: WT is WebTransport."
+          },
+          "value": "{codec_tag}"
+        },
+        {
+          "id": "size",
+          "label": "Size",
+          "tooltip": {
+            "web": "The resolution of the picture the browser is decoding, in pixels.",
+            "native": "The resolution of the picture this player is decoding, in pixels."
+          },
+          "value": "{width:int}×{height:int}"
+        },
+        {
+          "id": "fps",
+          "label": "Frame rate",
+          "tooltip": {
+            "web": "Frames per second arriving here, against the rate the node encodes at. A still screen sends few frames, so a low number on an idle desktop is normal.",
+            "native": "Frames per second shown here, against the rate the node encodes at. A still screen sends few frames, so a low number on an idle desktop is normal."
+          },
+          "value": [
+            { "text": "{shown_fps:f0}" },
+            { "text": " of {target_fps:f0}", "when": ["target_fps"] },
+            { "text": " fps" }
+          ],
+          "bad": ["stutter", "freeze"]
+        },
+        {
+          "id": "bitrate",
+          "label": "Bitrate",
+          "tooltip": "How much video data is arriving each second, in megabits. It rises with motion and falls on a still screen.",
+          "value": "{mbps:mbit}"
+        },
+        {
+          "id": "reconnects",
+          "label": "Reconnects",
+          "tooltip": "Times the stream dropped and came back by itself during this session.",
+          "value": "{reconnects:int}",
+          "when": ["reconnects"]
+        }
+      ]
+    },
+    {
+      "id": "latency",
+      "heading": "Latency",
+      "color": "chart-1",
+      "summary": {
+        "parts": [{ "text": "{latency_ms:f1} ms" }, { "text": "decode {decode_ms:f1} ms" }],
+        "bad": { "web": ["latency", "decode"], "native": ["latency", "decode", "jitter"] }
+      },
+      "rows": [
+        {
+          "id": "latency",
+          "label": { "web": "Send → shown", "native": "Received → shown" },
+          "tooltip": {
+            "web": "Time from the node sending a frame to it appearing on your screen (the median over the last second). It adds network, buffering and decoding, but not the time the app took to react to your input.",
+            "native": "Time from a frame arriving here to it appearing on your screen (the mean over the last second). It adds decoding and waiting for the display, but not the network or the time the app took to react to your input."
+          },
+          "value": "{latency_ms:f1} ms",
+          "bad": { "web": ["latency"], "native": ["latency", "jitter"] }
+        },
+        {
+          "id": "decode",
+          "label": "Decode",
+          "tooltip": {
+            "web": "Average time your browser takes to decode one frame. If this approaches the gap between frames, the picture will stutter.",
+            "native": "Average time this Mac takes to decode one frame (VideoToolbox, or the GPU for PyroWave). If this approaches the gap between frames, the picture will stutter."
+          },
+          "value": "{decode_ms:f2} ms",
+          "bad": ["decode"]
+        },
+        {
+          "id": "jitter-buffer",
+          "label": "Jitter buffer",
+          "tooltip": "Average time each frame waits in the browser to even out uneven network arrival. More wait is smoother video but adds delay.",
+          "value": "{jitter_buffer_ms:f2} ms",
+          "bad": ["jitter"],
+          "platforms": ["web"]
+        },
+        {
+          "id": "audio-buffer",
+          "label": "Audio buffer",
+          "tooltip": {
+            "web": "Average time sound waits in the browser's audio buffer to avoid crackles. More wait is steadier sound but later sound.",
+            "native": "Sound waiting in the player's buffer, which it keeps near 30 ms. It evens out uneven arrival: more is steadier sound but later sound."
+          },
+          "value": "{audio_jitter_ms:f0} ms",
+          "bad": { "web": ["audio"] },
+          "when": { "native": ["audio_jitter_ms"] }
+        },
+        {
+          "id": "audio-underruns",
+          "label": "Audio underruns",
+          "tooltip": "Times the sound ran dry and played silence until the buffer refilled.",
+          "value": "{audio_underruns:int}",
+          "when": ["audio_underruns"]
+        },
+        {
+          "id": "audio-dropped",
+          "label": "Audio dropped",
+          "tooltip": "Sound thrown away because it arrived faster than it played, to keep it from falling behind the picture.",
+          "value": "{audio_dropped_ms:int} ms",
+          "platforms": ["native"]
+        }
+      ]
+    },
+    {
+      "id": "network",
+      "heading": "Network",
+      "color": "chart-2",
+      "summary": {
+        "parts": [
+          { "text": "{rtt_ms:f1} ms", "when": { "native": ["rtt_ms"] } },
+          { "text": "{lost:int} lost", "when": ["lost"] },
+          { "text": "{dropped:int} dropped" }
+        ],
+        "bad": ["rtt", "loss", "skipped", "recovered", "dropped"]
+      },
+      "rows": [
+        {
+          "id": "rtt",
+          "label": "Round trip",
+          "tooltip": "How long a message takes to reach the node and come back. It is the network's base delay, with no processing included.",
+          "value": "{rtt_ms:f1} ms",
+          "bad": ["rtt"],
+          "when": { "native": ["rtt_ms"] }
+        },
+        {
+          "id": "lost",
+          "label": "Lost",
+          "tooltip": {
+            "web": "Network packets that never arrived. A few are harmless: lost video data is rebuilt from spare data or skipped.",
+            "native": "Frames given up on because their packets never arrived (PyroWave: skipped). A few are harmless: lost video data is rebuilt from spare data or skipped."
+          },
+          "value": "{lost:int}",
+          "bad": ["loss", "skipped"],
+          "when": ["lost"]
+        },
+        {
+          "id": "recovered",
+          "label": "Recovered",
+          "tooltip": "Frames that lost packets but were rebuilt from spare (parity) data. No harm, but the network is dropping packets.",
+          "value": "{recovered:int}",
+          "bad": ["recovered"],
+          "when": ["recovered"]
+        },
+        {
+          "id": "dropped",
+          "label": "Dropped",
+          "tooltip": {
+            "web": "Frames that arrived but were thrown away instead of shown, usually because they came too late or the browser fell behind.",
+            "native": "Frames that arrived and were decoded but replaced by a newer one before they could be shown, usually because this Mac fell behind."
+          },
+          "value": "{dropped:int}",
+          "bad": ["dropped"]
+        },
+        {
+          "id": "partial",
+          "label": "Partial frames",
+          "tooltip": "PyroWave frames shown from only some of their packets: softer where blocks are missing, whole again on the next frame.",
+          "value": "{partial:int}",
+          "bad": ["partial"],
+          "when": ["partial"]
+        },
+        {
+          "id": "decode-errors",
+          "label": "Decode errors",
+          "tooltip": "Frames the decoder could not decode. The player asks the node for a new key frame after each.",
+          "value": "{decode_errors:int}",
+          "platforms": ["native"]
+        }
+      ]
+    },
+    {
+      "id": "node",
+      "heading": "Node",
+      "color": "chart-3",
+      "when": ["node_cpu"],
+      "summary": {
+        "parts": [
+          { "text": "CPU {node_cpu:pct}" },
+          { "text": "GPU {node_gpu:pct}", "when": ["node_gpu"] },
+          { "text": "VRAM {node_vram_used:gb}/{node_vram_total:gb} GB", "when": ["node_vram_used", "node_vram_total"] },
+          { "text": "{node_temp:f0} °C", "when": ["node_temp"] }
+        ],
+        "hot": [
+          { "key": "node_cpu", "limit": 90 },
+          { "key": "node_gpu", "limit": 90 },
+          { "key": "node_vram_used", "of": "node_vram_total", "limit": 90 },
+          { "key": "node_temp", "limit": 85 }
+        ]
+      },
+      "rows": [
+        {
+          "id": "cpu",
+          "label": "CPU",
+          "tooltip": "How busy the node's processor is overall, across all cores.",
+          "value": [{ "text": "{node_cpu:pct}", "hot": { "key": "node_cpu", "limit": 90 } }]
+        },
+        {
+          "id": "load",
+          "label": "Load",
+          "tooltip": "The node's average number of busy processes over the last minute, next to its core count. Steadily above the core count means it is overloaded.",
+          "value": [{ "text": "{node_load1:f1}" }, { "text": " on {node_cores:int} cores", "tone": "dim" }],
+          "when": ["node_cores"]
+        },
+        {
+          "id": "ram",
+          "label": "RAM",
+          "tooltip": "Memory in use on the node out of its total.",
+          "value": [
+            { "text": "{node_mem_used:gb}", "hot": { "key": "node_mem_used", "of": "node_mem_total", "limit": 90 } },
+            { "text": " / {node_mem_total:gb} GB" }
+          ]
+        },
+        {
+          "id": "gpu",
+          "label": "GPU",
+          "tooltip": "How busy the node's graphics card is. Games and the desktop's rendering use this.",
+          "value": [{ "text": "{node_gpu:pct}", "hot": { "key": "node_gpu", "limit": 90 } }],
+          "when": ["node_gpu"]
+        },
+        {
+          "id": "vram",
+          "label": "VRAM",
+          "tooltip": "Graphics card memory in use out of its total.",
+          "value": [
+            { "text": "{node_vram_used:gb}", "hot": { "key": "node_vram_used", "of": "node_vram_total", "limit": 90 } },
+            { "text": " / {node_vram_total:gb} GB" }
+          ],
+          "when": ["node_vram_used", "node_vram_total"]
+        },
+        {
+          "id": "temp",
+          "label": "Temp",
+          "tooltip": "The graphics card's temperature. Much above 85 °C it may slow itself down.",
+          "value": [{ "text": "{node_temp:f0} °C", "hot": { "key": "node_temp", "limit": 85 } }],
+          "when": ["node_temp"]
+        },
+        {
+          "id": "power",
+          "label": "Power",
+          "tooltip": "What the graphics card is drawing now, out of the limit it is allowed.",
+          "value": [
+            { "text": "{node_power:f0}", "hot": { "key": "node_power", "of": "node_power_limit", "limit": 90 } },
+            { "text": " / {node_power_limit:f0}", "when": ["node_power_limit"] },
+            { "text": " W" }
+          ],
+          "when": ["node_power"]
+        },
+        {
+          "id": "clock",
+          "label": "Clock",
+          "tooltip": "The graphics card's current core speed. It drops when the card is idle, hot or at its power limit.",
+          "value": "{node_clock:f0} MHz",
+          "when": ["node_clock"]
+        },
+        {
+          "id": "nvenc",
+          "label": "NVENC",
+          "tooltip": "How busy the card's video encoder is. This is the part that compresses the stream.",
+          "value": [{ "text": "{node_enc:pct}", "hot": { "key": "node_enc", "limit": 90 } }],
+          "when": ["node_enc"]
+        },
+        {
+          "id": "nvdec",
+          "label": "NVDEC",
+          "tooltip": "How busy the card's video decoder is. It is used when the environment itself plays video.",
+          "value": [{ "text": "{node_dec:pct}", "hot": { "key": "node_dec", "limit": 90 } }],
+          "when": ["node_dec"]
+        },
+        {
+          "id": "streamer-cpu",
+          "label": "Streamer CPU",
+          "tooltip": "Processor used by the streaming program alone, in percent of one core, so it can pass 100.",
+          "value": "{node_streamer_cpu:pct}"
+        }
+      ]
+    }
+  ],
+  "report": {
+    "issue": "{title}: {detail}",
+    "lines": [
+      {
+        "id": "health",
+        "label": "Health",
+        "parts": [
+          { "text": "{health_grade} ({health_score:f0}/100)", "when": ["health_grade", "health_score"] },
+          { "text": "not measured", "unless": ["health_grade"] },
+          { "text": "{health_summary}" }
+        ]
+      },
+      {
+        "id": "stream",
+        "label": "Stream",
+        "parts": [
+          { "text": "{codec_tag}" },
+          { "text": "{width:int}×{height:int}" },
+          { "text": "{shown_fps:f0} of {target_fps:f0} fps", "when": ["target_fps"] },
+          { "text": "{shown_fps:f0} fps", "unless": ["target_fps"] },
+          { "text": "{mbps:mbit}" }
+        ]
+      },
+      {
+        "id": "latency",
+        "label": "Latency",
+        "parts": [
+          { "text": { "web": "send → shown {latency_ms:f1} ms", "native": "received → shown {latency_ms:f1} ms" } },
+          { "text": "decode {decode_ms:f2} ms" },
+          { "text": "jitter buffer {jitter_buffer_ms:f2} ms", "platforms": ["web"] },
+          { "text": "audio buffer {audio_jitter_ms:f0} ms" }
+        ]
+      },
+      {
+        "id": "network",
+        "label": "Network",
+        "parts": [
+          { "text": "round trip {rtt_ms:f1} ms" },
+          { "text": "{lost:int} lost", "when": ["lost"] },
+          { "text": "0 lost", "unless": ["lost"] },
+          { "text": "{dropped:int} dropped" }
+        ]
+      },
+      {
+        "id": "playback",
+        "label": "Playback",
+        "parts": [
+          { "text": "{decode_errors:int} decode errors", "platforms": ["native"] },
+          { "text": "{partial:int} partial frames", "when": ["partial"] },
+          { "text": "0 partial frames", "unless": ["partial"], "platforms": ["native"] },
+          { "text": "{audio_underruns:int} audio underruns", "when": ["audio_underruns"] },
+          { "text": "{audio_dropped_ms:int} ms audio dropped", "platforms": ["native"] }
+        ]
+      },
+      {
+        "id": "node",
+        "label": "Node",
+        "when": ["node_cpu"],
+        "parts": [
+          { "text": "CPU {node_cpu:pct}" },
+          { "text": "RAM {node_mem_used:gb}/{node_mem_total:gb} GB" },
+          { "text": "GPU {node_gpu:pct}", "when": ["node_gpu"] },
+          { "text": "VRAM {node_vram_used:gb}/{node_vram_total:gb} GB", "when": ["node_vram_used", "node_vram_total"] },
+          { "text": "{node_temp:f0} °C", "when": ["node_temp"] },
+          { "text": "{node_power:f0}/{node_power_limit:f0} W", "when": ["node_power", "node_power_limit"] },
+          { "text": "{node_power:f0} W", "when": ["node_power"], "unless": ["node_power_limit"] }
+        ]
+      }
+    ],
+    "agent": { "web": "Browser: {agent}", "native": "Player: {agent}" }
+  }
+}

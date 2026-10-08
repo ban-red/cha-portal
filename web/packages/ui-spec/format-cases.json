@@ -1,0 +1,35 @@
+{
+  "fill": [
+    { "name": "f0, f1 and f2 write that many decimals", "template": "{a:f0} {b:f1} {c:f2}", "values": { "a": 59.6, "b": 11.64, "c": 3.184 }, "expect": "60 11.6 3.18" },
+    { "name": "a missing number reads a dash", "template": "{a:f0} fps", "values": {}, "expect": "– fps" },
+    { "name": "a null number reads a dash too", "template": "{a:f1}/{b:f2}", "values": { "a": null, "b": null }, "expect": "–/–" },
+    { "name": "a NaN reads a dash, not NaN", "template": "{a:f1} {b:ms1}", "values": { "a": { "nan": true }, "b": { "nan": true } }, "expect": "– – ms" },
+    { "name": "a missing time keeps its unit", "template": "{a:ms0} {b:ms1} {c:f1} ms", "values": {}, "expect": "– ms – ms – ms" },
+    { "name": "a time writes its unit", "template": "{a:ms0} {b:ms1}", "values": { "a": 12.5, "b": 12.34 }, "expect": "13 ms 12.3 ms" },
+    { "name": "int drops the decimals and groups nothing", "template": "{a:int} {b:int} {c:int}", "values": { "a": 1234567, "b": 2.9, "c": 0 }, "expect": "1234567 2 0" },
+    { "name": "int truncates a negative toward zero and has no minus zero", "template": "{a:int} {b:int} {c:int}", "values": { "a": -0.9, "b": -2.5, "c": 987654321012 }, "expect": "0 -2 987654321012" },
+    { "name": "a missing int reads a dash", "template": "{w:int}×{h:int}", "values": {}, "expect": "–×–" },
+    { "name": "gb writes bytes as GiB with one decimal", "template": "{a:gb} {b:gb} {c:gb}", "values": { "a": 17179869184, "b": 10000000000, "c": 0 }, "expect": "16.0 9.3 0.0" },
+    { "name": "gb rounds a half up", "template": "{a:gb} {b:gb}", "values": { "a": 268435456, "b": 805306368 }, "expect": "0.3 0.8" },
+    { "name": "a missing gb reads a dash", "template": "{a:gb} GB", "values": {}, "expect": "– GB" },
+    { "name": "pct is a whole number and a percent sign", "template": "CPU {a:pct}, {b:pct}, {c:pct}", "values": { "a": 96.4, "b": 89.5, "c": 100 }, "expect": "CPU 96%, 90%, 100%" },
+    { "name": "a missing pct keeps its sign", "template": "{a:pct}", "values": {}, "expect": "–%" },
+    { "name": "mbit writes one decimal and the unit", "template": "{a:mbit} {b:mbit}", "values": { "a": 58.21, "b": 0 }, "expect": "58.2 Mbit/s 0.0 Mbit/s" },
+    { "name": "a missing mbit keeps its unit", "template": "{a:mbit}", "values": {}, "expect": "– Mbit/s" },
+    { "name": "s is the plural s, absent for exactly one", "template": "{a:int} reconnect{a:s} {b:int} reconnect{b:s} {c:int} reconnect{c:s}", "values": { "a": 1, "b": 2, "c": 0 }, "expect": "1 reconnect 2 reconnects 0 reconnects" },
+    { "name": "strings go in as they are", "template": "{codec}, {tag}", "values": { "codec": "HEVC/WT", "tag": "a b" }, "expect": "HEVC/WT, a b" },
+    { "name": "a missing string reads a dash", "template": "{codec}", "values": {}, "expect": "–" },
+    { "name": "a half rounds up, as toFixed does", "template": "{a:f0} {b:f1} {c:f2}", "values": { "a": 2.5, "b": 12.25, "c": 0.125 }, "expect": "3 12.3 0.13" },
+    { "name": "a brace that is not a placeholder stays", "template": "{ x } {X} {a:}", "values": { "a": 1 }, "expect": "{ x } {X} {a:}" },
+    { "name": "a string with braces is not filled again", "template": "{agent}", "values": { "agent": "{codec} {a:f0}" }, "expect": "{codec} {a:f0}" }
+  ],
+  "codec_tag": [
+    { "name": "the codec and WebTransport", "codec": "hevc", "transport": "webtransport", "expect": "HEVC/WT" },
+    { "name": "the codec and WebRTC", "codec": "h264", "transport": "webrtc", "expect": "H264/RTC" },
+    { "name": "PyroWave keeps its digits", "codec": "pyrowave444", "transport": "webtransport", "expect": "PYROWAVE444/WT" },
+    { "name": "a codec without a transport", "codec": "av1", "transport": null, "expect": "AV1" },
+    { "name": "a transport without a codec", "codec": null, "transport": "webtransport", "expect": "WT" },
+    { "name": "neither is empty", "codec": null, "transport": null, "expect": "" },
+    { "name": "the browser's stats name the transport after the codec", "platforms": ["web"], "codec": "HEVC · WebTransport", "transport": "webtransport", "expect": "HEVC/WT" }
+  ]
+}

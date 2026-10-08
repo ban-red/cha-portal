@@ -1,0 +1,1942 @@
+[
+  {
+    "name": "a healthy stream with a node, every row",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "node_cpu": 34,
+      "node_cores": 16,
+      "node_load1": 2.4,
+      "node_mem_used": 8589934592,
+      "node_mem_total": 34359738368,
+      "node_gpu": 50,
+      "node_vram_used": 4294967296,
+      "node_vram_total": 12884901888,
+      "node_temp": 70,
+      "node_power": 188,
+      "node_power_limit": 320,
+      "node_clock": 1980,
+      "node_enc": 20,
+      "node_dec": 0,
+      "node_streamer_cpu": 46
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [
+              {"id":"codec","label":"Codec","value":"HEVC/WT"},
+              {"id":"size","label":"Size","value":"2560×1440"},
+              {"id":"fps","label":"Frame rate","value":"60 of 60 fps"},
+              {"id":"bitrate","label":"Bitrate","value":"58.2 Mbit/s"}
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer","audio-underruns"],
+            "rows": [
+              {"id":"latency","label":"Send → shown","value":"11.6 ms"},
+              {"id":"decode","label":"Decode","value":"3.18 ms"},
+              {"id":"jitter-buffer","label":"Jitter buffer","value":"1.50 ms"},
+              {"id":"audio-buffer","label":"Audio buffer","value":"30 ms"},
+              {"id":"audio-underruns","label":"Audio underruns","value":"0"}
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 0 dropped",
+            "row_ids": ["rtt","lost","recovered","dropped"],
+            "rows": [
+              {"id":"rtt","label":"Round trip","value":"2.4 ms"},
+              {"id":"lost","label":"Lost","value":"0"},
+              {"id":"recovered","label":"Recovered","value":"0"},
+              {"id":"dropped","label":"Dropped","value":"0"}
+            ]
+          },
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 50% · VRAM 4.0/12.0 GB · 70 °C",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [
+              {"id":"cpu","label":"CPU","value":"34%"},
+              {"id":"load","label":"Load","parts":[["2.4"],[" on 16 cores","dim"]]},
+              {"id":"ram","label":"RAM","value":"8.0 / 32.0 GB"},
+              {"id":"gpu","label":"GPU","value":"50%"},
+              {"id":"vram","label":"VRAM","value":"4.0 / 12.0 GB"},
+              {"id":"temp","label":"Temp","value":"70 °C"},
+              {"id":"power","label":"Power","value":"188 / 320 W"},
+              {"id":"clock","label":"Clock","value":"1980 MHz"},
+              {"id":"nvenc","label":"NVENC","value":"20%"},
+              {"id":"nvdec","label":"NVDEC","value":"0%"},
+              {"id":"streamer-cpu","label":"Streamer CPU","value":"46%"}
+            ]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nNode: CPU 34%, RAM 8.0/32.0 GB, GPU 50%, VRAM 4.0/12.0 GB, 70 °C, 188/320 W\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [
+              {"id":"codec","label":"Codec","value":"HEVC/WT"},
+              {"id":"size","label":"Size","value":"2560×1440"},
+              {"id":"fps","label":"Frame rate","value":"60 of 60 fps"},
+              {"id":"bitrate","label":"Bitrate","value":"58.2 Mbit/s"}
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": ["latency","decode","audio-buffer","audio-underruns","audio-dropped"],
+            "rows": [
+              {"id":"latency","label":"Received → shown","value":"11.6 ms"},
+              {"id":"decode","label":"Decode","value":"3.18 ms"},
+              {"id":"audio-buffer","label":"Audio buffer","value":"30 ms"},
+              {"id":"audio-underruns","label":"Audio underruns","value":"0"},
+              {"id":"audio-dropped","label":"Audio dropped","value":"0 ms"}
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 0 dropped",
+            "row_ids": ["rtt","lost","recovered","dropped","decode-errors"],
+            "rows": [
+              {"id":"rtt","label":"Round trip","value":"2.4 ms"},
+              {"id":"lost","label":"Lost","value":"0"},
+              {"id":"recovered","label":"Recovered","value":"0"},
+              {"id":"dropped","label":"Dropped","value":"0"},
+              {"id":"decode-errors","label":"Decode errors","value":"0"}
+            ]
+          },
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 50% · VRAM 4.0/12.0 GB · 70 °C",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [
+              {"id":"cpu","label":"CPU","value":"34%"},
+              {"id":"load","label":"Load","parts":[["2.4"],[" on 16 cores","dim"]]},
+              {"id":"ram","label":"RAM","value":"8.0 / 32.0 GB"},
+              {"id":"gpu","label":"GPU","value":"50%"},
+              {"id":"vram","label":"VRAM","value":"4.0 / 12.0 GB"},
+              {"id":"temp","label":"Temp","value":"70 °C"},
+              {"id":"power","label":"Power","value":"188 / 320 W"},
+              {"id":"clock","label":"Clock","value":"1980 MHz"},
+              {"id":"nvenc","label":"NVENC","value":"20%"},
+              {"id":"nvdec","label":"NVDEC","value":"0%"},
+              {"id":"streamer-cpu","label":"Streamer CPU","value":"46%"}
+            ]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nNode: CPU 34%, RAM 8.0/32.0 GB, GPU 50%, VRAM 4.0/12.0 GB, 70 °C, 188/320 W\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "no node report leaves out the Node section and its report line",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "a Moonlight-like transport has no round trip, loss or audio",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 40,
+      "codec_tag": "HEVC",
+      "width": 1920,
+      "height": 1080,
+      "latency_ms": 9.2,
+      "decode_ms": 2,
+      "dropped": 4,
+      "decode_errors": 0,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 9.2 ms · 40.0 Mbit/s · HEVC",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC · 60 fps · 40.0 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [
+              {"id":"codec","label":"Codec","value":"HEVC"},
+              {"id":"size","label":"Size","value":"1920×1080"},
+              {"id":"fps","label":"Frame rate","value":"60 of 60 fps"},
+              {"id":"bitrate","label":"Bitrate","value":"40.0 Mbit/s"}
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "9.2 ms · decode 2.0 ms",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer","audio-underruns"],
+            "rows": [
+              {"id":"latency","label":"Send → shown","value":"9.2 ms"},
+              {"id":"decode","label":"Decode","value":"2.00 ms"},
+              {"id":"jitter-buffer","label":"Jitter buffer","value":"– ms"},
+              {"id":"audio-buffer","label":"Audio buffer","value":"– ms"},
+              {"id":"audio-underruns","label":"Audio underruns","value":"0"}
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "– ms · 4 dropped",
+            "row_ids": ["rtt","dropped"],
+            "rows": [{"id":"rtt","label":"Round trip","value":"– ms"},{"id":"dropped","label":"Dropped","value":"4"}]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC, 1920×1080, 60 of 60 fps, 40.0 Mbit/s\nLatency: send → shown 9.2 ms, decode 2.00 ms, jitter buffer – ms, audio buffer – ms\nNetwork: round trip – ms, 0 lost, 4 dropped\nPlayback: 0 audio underruns\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 9.2 ms · 40.0 Mbit/s · HEVC",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC · 60 fps · 40.0 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [
+              {"id":"codec","label":"Codec","value":"HEVC"},
+              {"id":"size","label":"Size","value":"1920×1080"},
+              {"id":"fps","label":"Frame rate","value":"60 of 60 fps"},
+              {"id":"bitrate","label":"Bitrate","value":"40.0 Mbit/s"}
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "9.2 ms · decode 2.0 ms",
+            "row_ids": ["latency","decode","audio-underruns","audio-dropped"],
+            "rows": [
+              {"id":"latency","label":"Received → shown","value":"9.2 ms"},
+              {"id":"decode","label":"Decode","value":"2.00 ms"},
+              {"id":"audio-underruns","label":"Audio underruns","value":"0"},
+              {"id":"audio-dropped","label":"Audio dropped","value":"0 ms"}
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "4 dropped",
+            "row_ids": ["dropped","decode-errors"],
+            "rows": [{"id":"dropped","label":"Dropped","value":"4"},{"id":"decode-errors","label":"Decode errors","value":"0"}]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC, 1920×1080, 60 of 60 fps, 40.0 Mbit/s\nLatency: received → shown 9.2 ms, decode 2.00 ms, audio buffer – ms\nNetwork: round trip – ms, 0 lost, 4 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "nothing measured yet reads dashes",
+    "values": {},
+    "health": {"grade":null,"score":null,"summary":"Measuring…","issues":[]},
+    "expect": {
+      "web": {
+        "grade_tone": "dim",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "– fps · – Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [
+              {"id":"codec","label":"Codec","value":"–"},
+              {"id":"size","label":"Size","value":"–×–"},
+              {"id":"fps","label":"Frame rate","value":"– fps"},
+              {"id":"bitrate","label":"Bitrate","value":"– Mbit/s"}
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "– ms · decode – ms",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer"],
+            "rows": [
+              {"id":"latency","label":"Send → shown","value":"– ms"},
+              {"id":"decode","label":"Decode","value":"– ms"},
+              {"id":"jitter-buffer","label":"Jitter buffer","value":"– ms"},
+              {"id":"audio-buffer","label":"Audio buffer","value":"– ms"}
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "– ms · – dropped",
+            "row_ids": ["rtt","dropped"],
+            "rows": [{"id":"rtt","label":"Round trip","value":"– ms"},{"id":"dropped","label":"Dropped","value":"–"}]
+          }
+        ],
+        "report": "Health: not measured, Measuring…\nStream: –, –×–, – fps, – Mbit/s\nLatency: send → shown – ms, decode – ms, jitter buffer – ms, audio buffer – ms\nNetwork: round trip – ms, 0 lost, – dropped\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "dim",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "– fps · – Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [
+              {"id":"codec","label":"Codec","value":"–"},
+              {"id":"size","label":"Size","value":"–×–"},
+              {"id":"fps","label":"Frame rate","value":"– fps"},
+              {"id":"bitrate","label":"Bitrate","value":"– Mbit/s"}
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "– ms · decode – ms",
+            "row_ids": ["latency","decode","audio-dropped"],
+            "rows": [
+              {"id":"latency","label":"Received → shown","value":"– ms"},
+              {"id":"decode","label":"Decode","value":"– ms"},
+              {"id":"audio-dropped","label":"Audio dropped","value":"– ms"}
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "– dropped",
+            "row_ids": ["dropped","decode-errors"],
+            "rows": [{"id":"dropped","label":"Dropped","value":"–"},{"id":"decode-errors","label":"Decode errors","value":"–"}]
+          }
+        ],
+        "report": "Health: not measured, Measuring…\nStream: –, –×–, – fps, – Mbit/s\nLatency: received → shown – ms, decode – ms, audio buffer – ms\nNetwork: round trip – ms, 0 lost, – dropped\nPlayback: – decode errors, 0 partial frames, – ms audio dropped\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "an empty history has no grade and the dim tone",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "health": {"grade":null,"score":null,"summary":"Measuring…","issues":[]},
+    "expect": {
+      "web": {
+        "grade_tone": "dim",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "dim",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "grade A is ok",
+    "values": {},
+    "health": {"grade":"A","score":100,"summary":"Smooth","issues":[]},
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","jitter-buffer","audio-buffer"]},
+          {"id":"network","summary":"– ms · – dropped","row_ids":["rtt","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","audio-dropped"]},
+          {"id":"network","summary":"– dropped","row_ids":["dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "grade B is ok",
+    "values": {},
+    "health": {"grade":"B","score":85,"summary":"Mostly smooth","issues":[]},
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","jitter-buffer","audio-buffer"]},
+          {"id":"network","summary":"– ms · – dropped","row_ids":["rtt","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","audio-dropped"]},
+          {"id":"network","summary":"– dropped","row_ids":["dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "grade C is warn",
+    "values": {},
+    "health": {"grade":"C","score":75,"summary":"Some stutter","issues":[]},
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","jitter-buffer","audio-buffer"]},
+          {"id":"network","summary":"– ms · – dropped","row_ids":["rtt","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","audio-dropped"]},
+          {"id":"network","summary":"– dropped","row_ids":["dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "grade D is warn",
+    "values": {},
+    "health": {"grade":"D","score":62,"summary":"Some stutter","issues":[]},
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","jitter-buffer","audio-buffer"]},
+          {"id":"network","summary":"– ms · – dropped","row_ids":["rtt","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","audio-dropped"]},
+          {"id":"network","summary":"– dropped","row_ids":["dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "grade F is danger",
+    "values": {},
+    "health": {"grade":"F","score":30,"summary":"Struggling","issues":[]},
+    "expect": {
+      "web": {
+        "grade_tone": "danger",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","jitter-buffer","audio-buffer"]},
+          {"id":"network","summary":"– ms · – dropped","row_ids":["rtt","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "danger",
+        "compact": "– fps · – ms · – Mbit/s",
+        "sections": [
+          {"id":"stream","summary":"– fps · – Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"– ms · decode – ms","row_ids":["latency","decode","audio-dropped"]},
+          {"id":"network","summary":"– dropped","row_ids":["dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "a node at its limits is amber, one under is not",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "node_cpu": 90,
+      "node_cores": 8,
+      "node_load1": 7.5,
+      "node_mem_used": 9663676416,
+      "node_mem_total": 10737418240,
+      "node_gpu": 89.9,
+      "node_vram_used": 9556302234,
+      "node_vram_total": 10737418240,
+      "node_temp": 85,
+      "node_power": 288,
+      "node_power_limit": 320,
+      "node_enc": 91,
+      "node_dec": 10,
+      "node_streamer_cpu": 130,
+      "node_clock": 1500
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]},
+          {
+            "id": "node",
+            "summary": "CPU 90% · GPU 90% · VRAM 8.9/10.0 GB · 85 °C",
+            "summary_tone": "warn",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [
+              {"id":"cpu","label":"CPU","value":"90%","tone":"warn"},
+              {"id":"load","label":"Load","parts":[["7.5"],[" on 8 cores","dim"]]},
+              {"id":"ram","label":"RAM","parts":[["9.0","warn"],[" / 10.0 GB"]]},
+              {"id":"gpu","label":"GPU","value":"90%"},
+              {"id":"vram","label":"VRAM","value":"8.9 / 10.0 GB"},
+              {"id":"temp","label":"Temp","value":"85 °C","tone":"warn"},
+              {"id":"power","label":"Power","parts":[["288","warn"],[" / 320 W"]]},
+              {"id":"nvenc","label":"NVENC","value":"91%","tone":"warn"},
+              {"id":"nvdec","label":"NVDEC","value":"10%"},
+              {"id":"streamer-cpu","label":"Streamer CPU","value":"130%"}
+            ]
+          }
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]},
+          {
+            "id": "node",
+            "summary": "CPU 90% · GPU 90% · VRAM 8.9/10.0 GB · 85 °C",
+            "summary_tone": "warn",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [
+              {"id":"cpu","label":"CPU","value":"90%","tone":"warn"},
+              {"id":"load","label":"Load","parts":[["7.5"],[" on 8 cores","dim"]]},
+              {"id":"ram","label":"RAM","parts":[["9.0","warn"],[" / 10.0 GB"]]},
+              {"id":"gpu","label":"GPU","value":"90%"},
+              {"id":"vram","label":"VRAM","value":"8.9 / 10.0 GB"},
+              {"id":"temp","label":"Temp","value":"85 °C","tone":"warn"},
+              {"id":"power","label":"Power","parts":[["288","warn"],[" / 320 W"]]},
+              {"id":"nvenc","label":"NVENC","value":"91%","tone":"warn"},
+              {"id":"nvdec","label":"NVDEC","value":"10%"},
+              {"id":"streamer-cpu","label":"Streamer CPU","value":"130%"}
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a node under every limit is not amber",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "node_cpu": 89.9,
+      "node_cores": 16,
+      "node_load1": 2.4,
+      "node_mem_used": 30064771072,
+      "node_mem_total": 34359738368,
+      "node_gpu": 50,
+      "node_vram_used": 4294967296,
+      "node_vram_total": 12884901888,
+      "node_temp": 84,
+      "node_power": 100,
+      "node_power_limit": 320,
+      "node_clock": 1980,
+      "node_enc": 20,
+      "node_dec": 0,
+      "node_streamer_cpu": 46
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]},
+          {
+            "id": "node",
+            "summary": "CPU 90% · GPU 50% · VRAM 4.0/12.0 GB · 84 °C",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [
+              {"id":"cpu","label":"CPU","value":"90%"},
+              {"id":"ram","label":"RAM","value":"28.0 / 32.0 GB"},
+              {"id":"temp","label":"Temp","value":"84 °C"},
+              {"id":"power","label":"Power","value":"100 / 320 W"}
+            ]
+          }
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]},
+          {
+            "id": "node",
+            "summary": "CPU 90% · GPU 50% · VRAM 4.0/12.0 GB · 84 °C",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [
+              {"id":"cpu","label":"CPU","value":"90%"},
+              {"id":"ram","label":"RAM","value":"28.0 / 32.0 GB"},
+              {"id":"temp","label":"Temp","value":"84 °C"},
+              {"id":"power","label":"Power","value":"100 / 320 W"}
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "only the summary's own signals make it amber",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "node_cpu": 34,
+      "node_cores": 16,
+      "node_load1": 2.4,
+      "node_mem_used": 33285996544,
+      "node_mem_total": 34359738368,
+      "node_gpu": 50,
+      "node_vram_used": 4294967296,
+      "node_vram_total": 12884901888,
+      "node_temp": 70,
+      "node_power": 310,
+      "node_power_limit": 320,
+      "node_clock": 1980,
+      "node_enc": 99,
+      "node_dec": 0,
+      "node_streamer_cpu": 46
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]},
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 50% · VRAM 4.0/12.0 GB · 70 °C",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [
+              {"id":"ram","label":"RAM","parts":[["31.0","warn"],[" / 32.0 GB"]]},
+              {"id":"power","label":"Power","parts":[["310","warn"],[" / 320 W"]]},
+              {"id":"nvenc","label":"NVENC","value":"99%","tone":"warn"}
+            ]
+          }
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]},
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 50% · VRAM 4.0/12.0 GB · 70 °C",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [
+              {"id":"ram","label":"RAM","parts":[["31.0","warn"],[" / 32.0 GB"]]},
+              {"id":"power","label":"Power","parts":[["310","warn"],[" / 320 W"]]},
+              {"id":"nvenc","label":"NVENC","value":"99%","tone":"warn"}
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a power draw with no limit, and no vram total, is never hot",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "node_cpu": 34,
+      "node_cores": 16,
+      "node_load1": 2.4,
+      "node_mem_used": 8589934592,
+      "node_mem_total": 34359738368,
+      "node_gpu": 50,
+      "node_vram_used": 4294967296,
+      "node_temp": 70,
+      "node_power": 400,
+      "node_clock": 1980,
+      "node_enc": 20,
+      "node_dec": 0,
+      "node_streamer_cpu": 46
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]},
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 50% · 70 °C",
+            "row_ids": ["cpu","load","ram","gpu","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [{"id":"power","label":"Power","value":"400 W"}]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nNode: CPU 34%, RAM 8.0/32.0 GB, GPU 50%, 70 °C, 400 W\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]},
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 50% · 70 °C",
+            "row_ids": ["cpu","load","ram","gpu","temp","power","clock","nvenc","nvdec","streamer-cpu"],
+            "rows": [{"id":"power","label":"Power","value":"400 W"}]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nNode: CPU 34%, RAM 8.0/32.0 GB, GPU 50%, 70 °C, 400 W\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "a node without a graphics card shows only the basics",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "node_cpu": 12,
+      "node_cores": 0,
+      "node_load1": 0.5,
+      "node_mem_used": 2147483648,
+      "node_mem_total": 8589934592,
+      "node_streamer_cpu": 5
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]},
+          {"id":"node","summary":"CPU 12%","row_ids":["cpu","load","ram","streamer-cpu"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nNode: CPU 12%, RAM 2.0/8.0 GB\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]},
+          {"id":"node","summary":"CPU 12%","row_ids":["cpu","load","ram","streamer-cpu"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nNode: CPU 12%, RAM 2.0/8.0 GB\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "a critical issue colours red, major and minor amber",
+    "values": {
+      "shown_fps": 31,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 60,
+      "decode_ms": 9,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 30
+    },
+    "health": {
+      "grade": "D",
+      "score": 55,
+      "summary": "Some stutter",
+      "issues": [
+        {"id":"stutter","severity":"critical"},
+        {"id":"latency","severity":"major"},
+        {"id":"decode","severity":"minor"},
+        {"id":"dropped","severity":"major"}
+      ]
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "31 fps · 60.0 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 31 fps · 58.2 Mbit/s","summary_tone":"danger","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "60.0 ms · decode 9.0 ms",
+            "summary_tone": "warn",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]
+          },
+          {"id":"network","summary":"2.4 ms · 0 lost · 30 dropped","summary_tone":"warn","row_ids":["rtt","lost","recovered","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "31 fps · 60.0 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 31 fps · 58.2 Mbit/s","summary_tone":"danger","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "60.0 ms · decode 9.0 ms",
+            "summary_tone": "warn",
+            "row_ids": ["latency","decode","audio-buffer","audio-underruns","audio-dropped"]
+          },
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 30 dropped",
+            "summary_tone": "warn",
+            "row_ids": ["rtt","lost","recovered","dropped","decode-errors"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "the first listed issue sets the colour when several match",
+    "values": {
+      "shown_fps": 45,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "health": {"grade":"C","score":70,"summary":"Some stutter","issues":[{"id":"freeze","severity":"critical"},{"id":"stutter","severity":"minor"}]},
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "45 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 45 fps · 58.2 Mbit/s",
+            "summary_tone": "danger",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [{"id":"fps","label":"Frame rate","value":"45 of 60 fps","tone":"danger"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "45 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 45 fps · 58.2 Mbit/s",
+            "summary_tone": "danger",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [{"id":"fps","label":"Frame rate","value":"45 of 60 fps","tone":"danger"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "a jitter issue colours the browser's jitter buffer and the player's latency",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "health": {"grade":"C","score":78,"summary":"Uneven latency","issues":[{"id":"jitter","severity":"major"}]},
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer","audio-underruns"],
+            "rows": [{"id":"latency","label":"Send → shown","value":"11.6 ms"},{"id":"jitter-buffer","label":"Jitter buffer","value":"1.50 ms","tone":"warn"}]
+          },
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "summary_tone": "warn",
+            "row_ids": ["latency","decode","audio-buffer","audio-underruns","audio-dropped"],
+            "rows": [{"id":"latency","label":"Received → shown","value":"11.6 ms","tone":"warn"}]
+          },
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "loss, skipped, recovered and partial each colour their own row",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 12,
+      "recovered": 30,
+      "dropped": 0,
+      "partial": 7
+    },
+    "health": {
+      "grade": "C",
+      "score": 70,
+      "summary": "Packet loss",
+      "issues": [
+        {"id":"skipped","severity":"major"},
+        {"id":"recovered","severity":"minor"},
+        {"id":"partial","severity":"major"},
+        {"id":"loss","severity":"critical"}
+      ]
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {
+            "id": "network",
+            "summary": "2.4 ms · 12 lost · 0 dropped",
+            "summary_tone": "warn",
+            "row_ids": ["rtt","lost","recovered","dropped","partial"],
+            "rows": [
+              {"id":"lost","label":"Lost","value":"12","tone":"warn"},
+              {"id":"recovered","label":"Recovered","value":"30","tone":"warn"},
+              {"id":"partial","label":"Partial frames","value":"7","tone":"warn"}
+            ]
+          }
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {
+            "id": "network",
+            "summary": "2.4 ms · 12 lost · 0 dropped",
+            "summary_tone": "warn",
+            "row_ids": ["rtt","lost","recovered","dropped","partial","decode-errors"],
+            "rows": [
+              {"id":"lost","label":"Lost","value":"12","tone":"warn"},
+              {"id":"recovered","label":"Recovered","value":"30","tone":"warn"},
+              {"id":"partial","label":"Partial frames","value":"7","tone":"warn"}
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a round trip issue colours the round trip and the network summary",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 140,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "health": {"grade":"C","score":80,"summary":"Slow network","issues":[{"id":"rtt","severity":"major"}]},
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {
+            "id": "network",
+            "summary": "140.0 ms · 0 lost · 0 dropped",
+            "summary_tone": "warn",
+            "row_ids": ["rtt","lost","recovered","dropped"],
+            "rows": [{"id":"rtt","label":"Round trip","value":"140.0 ms","tone":"warn"}]
+          }
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {
+            "id": "network",
+            "summary": "140.0 ms · 0 lost · 0 dropped",
+            "summary_tone": "warn",
+            "row_ids": ["rtt","lost","recovered","dropped","decode-errors"],
+            "rows": [{"id":"rtt","label":"Round trip","value":"140.0 ms","tone":"warn"}]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a browser-only issue colours the browser's audio buffer",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 180,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "health": {"grade":"C","score":80,"summary":"Sound buffering","issues":[{"id":"audio","severity":"major"}]},
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer","audio-underruns"],
+            "rows": [{"id":"audio-buffer","label":"Audio buffer","value":"180 ms","tone":"warn"}]
+          },
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": ["latency","decode","audio-buffer","audio-underruns","audio-dropped"],
+            "rows": [{"id":"audio-buffer","label":"Audio buffer","value":"180 ms"}]
+          },
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "folded sections still have a summary",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "node_cpu": 34,
+      "node_cores": 16,
+      "node_load1": 2.4,
+      "node_mem_used": 8589934592,
+      "node_mem_total": 34359738368,
+      "node_gpu": 95,
+      "node_vram_used": 11811160064,
+      "node_vram_total": 12884901888,
+      "node_temp": 70,
+      "node_power": 188,
+      "node_power_limit": 320,
+      "node_clock": 1980,
+      "node_enc": 20,
+      "node_dec": 0,
+      "node_streamer_cpu": 46,
+      "reconnects": 1
+    },
+    "health": {"grade":"C","score":78,"summary":"Some stutter","issues":[{"id":"stutter","severity":"major"},{"id":"dropped","severity":"minor"}]},
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT · 1 reconnect",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s · 1 reconnect",
+            "summary_tone": "warn",
+            "row_ids": ["codec","size","fps","bitrate","reconnects"]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","summary_tone":"warn","row_ids":["rtt","lost","recovered","dropped"]},
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 95% · VRAM 11.0/12.0 GB · 70 °C",
+            "summary_tone": "warn",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"]
+          }
+        ]
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT · 1 reconnect",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s · 1 reconnect",
+            "summary_tone": "warn",
+            "row_ids": ["codec","size","fps","bitrate","reconnects"]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 0 dropped",
+            "summary_tone": "warn",
+            "row_ids": ["rtt","lost","recovered","dropped","decode-errors"]
+          },
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 95% · VRAM 11.0/12.0 GB · 70 °C",
+            "summary_tone": "warn",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "one reconnect is singular, two are plural",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "reconnects": 1
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT · 1 reconnect",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s · 1 reconnect",
+            "row_ids": ["codec","size","fps","bitrate","reconnects"],
+            "rows": [{"id":"reconnects","label":"Reconnects","value":"1"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT · 1 reconnect",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s · 1 reconnect",
+            "row_ids": ["codec","size","fps","bitrate","reconnects"],
+            "rows": [{"id":"reconnects","label":"Reconnects","value":"1"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "two reconnects are plural everywhere",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "reconnects": 2
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT · 2 reconnects",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s · 2 reconnects",
+            "row_ids": ["codec","size","fps","bitrate","reconnects"],
+            "rows": [{"id":"reconnects","label":"Reconnects","value":"2"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT · 2 reconnects",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s · 2 reconnects",
+            "row_ids": ["codec","size","fps","bitrate","reconnects"],
+            "rows": [{"id":"reconnects","label":"Reconnects","value":"2"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "no target frame rate leaves out the 'of'",
+    "values": {
+      "shown_fps": 58,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "58 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 58 fps · 58.2 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [{"id":"fps","label":"Frame rate","value":"58 fps"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 58 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "58 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 58 fps · 58.2 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [{"id":"fps","label":"Frame rate","value":"58 fps"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 58 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "rounding edges: a half goes up, NaN is a dash",
+    "values": {
+      "shown_fps": 59.5,
+      "target_fps": 60,
+      "mbps": 0.95,
+      "codec_tag": "HEVC/WT",
+      "width": 1,
+      "height": 1,
+      "latency_ms": 0.05,
+      "decode_ms": 1.005,
+      "jitter_buffer_ms": 0.125,
+      "audio_jitter_ms": 30.5,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": {"nan":true},
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 0.1 ms · 0.9 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 0.9 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [
+              {"id":"size","label":"Size","value":"1×1"},
+              {"id":"fps","label":"Frame rate","value":"60 of 60 fps"},
+              {"id":"bitrate","label":"Bitrate","value":"0.9 Mbit/s"}
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "0.1 ms · decode 1.0 ms",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer","audio-underruns"],
+            "rows": [
+              {"id":"latency","label":"Send → shown","value":"0.1 ms"},
+              {"id":"decode","label":"Decode","value":"1.00 ms"},
+              {"id":"jitter-buffer","label":"Jitter buffer","value":"0.13 ms"},
+              {"id":"audio-buffer","label":"Audio buffer","value":"31 ms"}
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "– ms · 0 lost · 0 dropped",
+            "row_ids": ["rtt","lost","recovered","dropped"],
+            "rows": [{"id":"rtt","label":"Round trip","value":"– ms"}]
+          }
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 0.1 ms · 0.9 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 0.9 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [
+              {"id":"size","label":"Size","value":"1×1"},
+              {"id":"fps","label":"Frame rate","value":"60 of 60 fps"},
+              {"id":"bitrate","label":"Bitrate","value":"0.9 Mbit/s"}
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "0.1 ms · decode 1.0 ms",
+            "row_ids": ["latency","decode","audio-buffer","audio-underruns","audio-dropped"],
+            "rows": [
+              {"id":"latency","label":"Received → shown","value":"0.1 ms"},
+              {"id":"decode","label":"Decode","value":"1.00 ms"},
+              {"id":"audio-buffer","label":"Audio buffer","value":"31 ms"}
+            ]
+          },
+          {"id":"network","summary":"0 lost · 0 dropped","row_ids":["lost","recovered","dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "big counters have no grouping",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 1234567,
+      "recovered": 12000,
+      "dropped": 987654,
+      "partial": 1000000
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {
+            "id": "network",
+            "summary": "2.4 ms · 1234567 lost · 987654 dropped",
+            "row_ids": ["rtt","lost","recovered","dropped","partial"],
+            "rows": [
+              {"id":"lost","label":"Lost","value":"1234567"},
+              {"id":"recovered","label":"Recovered","value":"12000"},
+              {"id":"dropped","label":"Dropped","value":"987654"},
+              {"id":"partial","label":"Partial frames","value":"1000000"}
+            ]
+          }
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {
+            "id": "network",
+            "summary": "2.4 ms · 1234567 lost · 987654 dropped",
+            "row_ids": ["rtt","lost","recovered","dropped","partial","decode-errors"],
+            "rows": [
+              {"id":"lost","label":"Lost","value":"1234567"},
+              {"id":"recovered","label":"Recovered","value":"12000"},
+              {"id":"dropped","label":"Dropped","value":"987654"},
+              {"id":"partial","label":"Partial frames","value":"1000000"}
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "counters only the player keeps",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 2,
+      "audio_dropped_ms": 40,
+      "decode_errors": 3,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer","audio-underruns"],
+            "rows": [{"id":"audio-underruns","label":"Audio underruns","value":"2"}]
+          },
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 2 audio underruns\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": ["latency","decode","audio-buffer","audio-underruns","audio-dropped"],
+            "rows": [{"id":"audio-underruns","label":"Audio underruns","value":"2"},{"id":"audio-dropped","label":"Audio dropped","value":"40 ms"}]
+          },
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 0 dropped",
+            "row_ids": ["rtt","lost","recovered","dropped","decode-errors"],
+            "rows": [{"id":"decode-errors","label":"Decode errors","value":"3"}]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 3 decode errors, 0 partial frames, 2 audio underruns, 40 ms audio dropped\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "partial frames show when measured, even at zero",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "partial": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 0 dropped",
+            "row_ids": ["rtt","lost","recovered","dropped","partial"],
+            "rows": [{"id":"partial","label":"Partial frames","value":"0"}]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 partial frames, 0 audio underruns\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 0 dropped",
+            "row_ids": ["rtt","lost","recovered","dropped","partial","decode-errors"],
+            "rows": [{"id":"partial","label":"Partial frames","value":"0"}]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "a missing size reads dashes",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "60 fps · 58.2 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [{"id":"codec","label":"Codec","value":"–"},{"id":"size","label":"Size","value":"–×–"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ]
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "60 fps · 58.2 Mbit/s",
+            "row_ids": ["codec","size","fps","bitrate"],
+            "rows": [{"id":"codec","label":"Codec","value":"–"},{"id":"size","label":"Size","value":"–×–"}]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ]
+      }
+    }
+  },
+  {
+    "name": "the copy report lists every issue with its hint",
+    "values": {
+      "shown_fps": 52,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0,
+      "node_cpu": 34,
+      "node_cores": 16,
+      "node_load1": 2.4,
+      "node_mem_used": 8589934592,
+      "node_mem_total": 34359738368,
+      "node_gpu": 50,
+      "node_vram_used": 4294967296,
+      "node_vram_total": 12884901888,
+      "node_temp": 70,
+      "node_power": 188,
+      "node_power_limit": 320,
+      "node_clock": 1980,
+      "node_enc": 20,
+      "node_dec": 0,
+      "node_streamer_cpu": 46
+    },
+    "health": {"grade":"C","score":77,"summary":"Some stutter","issues":[{"id":"stutter","severity":"major"},{"id":"latency","severity":"minor"}]},
+    "report_issues": [
+      {"title":"Stuttering picture","detail":"52 fps shown of 60 sent","hint":"Frames are arriving late."},
+      {"title":"High latency","detail":"60 ms from sent to shown","hint":"Check the network."}
+    ],
+    "agent": "Test Agent/1.0 (X11)",
+    "expect": {
+      "web": {
+        "grade_tone": "warn",
+        "compact": "52 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 52 fps · 58.2 Mbit/s","summary_tone":"warn","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "summary_tone": "warn",
+            "row_ids": ["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]
+          },
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]},
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 50% · VRAM 4.0/12.0 GB · 70 °C",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"]
+          }
+        ],
+        "report": "Stuttering picture: 52 fps shown of 60 sent\nFrames are arriving late.\n\nHigh latency: 60 ms from sent to shown\nCheck the network.\n\nHealth: C (77/100), Some stutter\nStream: HEVC/WT, 2560×1440, 52 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nNode: CPU 34%, RAM 8.0/32.0 GB, GPU 50%, VRAM 4.0/12.0 GB, 70 °C, 188/320 W\nBrowser: Test Agent/1.0 (X11)"
+      },
+      "native": {
+        "grade_tone": "warn",
+        "compact": "52 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {"id":"stream","summary":"HEVC/WT · 52 fps · 58.2 Mbit/s","summary_tone":"warn","row_ids":["codec","size","fps","bitrate"]},
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "summary_tone": "warn",
+            "row_ids": ["latency","decode","audio-buffer","audio-underruns","audio-dropped"]
+          },
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]},
+          {
+            "id": "node",
+            "summary": "CPU 34% · GPU 50% · VRAM 4.0/12.0 GB · 70 °C",
+            "row_ids": ["cpu","load","ram","gpu","vram","temp","power","clock","nvenc","nvdec","streamer-cpu"]
+          }
+        ],
+        "report": "Stuttering picture: 52 fps shown of 60 sent\nFrames are arriving late.\n\nHigh latency: 60 ms from sent to shown\nCheck the network.\n\nHealth: C (77/100), Some stutter\nStream: HEVC/WT, 2560×1440, 52 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nNode: CPU 34%, RAM 8.0/32.0 GB, GPU 50%, VRAM 4.0/12.0 GB, 70 °C, 188/320 W\nPlayer: Test Agent/1.0 (X11)"
+      }
+    }
+  },
+  {
+    "name": "a report for the browser only: no grade, a Mozilla line",
+    "platforms": ["web"],
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "health": {"grade":null,"score":null,"summary":"Paused while the tab is hidden","issues":[]},
+    "agent": "Mozilla/5.0 {braces} stay",
+    "expect": {
+      "grade_tone": "dim",
+      "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+      "sections": [
+        {"id":"stream","summary":"HEVC/WT · 60 fps · 58.2 Mbit/s","row_ids":["codec","size","fps","bitrate"]},
+        {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+        {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+      ],
+      "report": "Health: not measured, Paused while the tab is hidden\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nBrowser: Mozilla/5.0 {braces} stay"
+    }
+  }
+]

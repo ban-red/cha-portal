@@ -21,7 +21,7 @@ use egui::{
 };
 use winit::event::{ElementState, WindowEvent};
 
-use super::overlay::{Look, StatsSnapshot};
+use super::stats::{Look, StatsSnapshot};
 use crate::health::Assessment;
 use crate::input::pads::{InputAccess, PadInfo};
 use crate::stream_prefs::{FRAME_RATES, OVERLAY_MAX};

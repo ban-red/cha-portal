@@ -10,9 +10,13 @@ The in-stream UI's spec, shared by the browser player (`web/apps/portal`) and Ch
 | `health-cases.ts` | Types for the cases and the neutral snapshot, and the history expander the TypeScript runner uses (`@cha/ui-spec/health-cases`, kept out of the portal's bundle). |
 | `fill-cases.json` | Template cases (`fill` and the number formatters), run on both sides. |
 | `themes/*.json` | The built-in colour themes, generated from the portal's CSS by `scripts/export-player-themes.ts`; never edit them by hand. |
-| `index.ts` | Types for the JSON, `ICONS`, `HEALTH`, and `fill`. |
+| `stats-panel.json` | The stats panel: value keys, sections, rows (labels, tooltips, value templates, colouring), folded summaries, the compact line and the copy report. |
+| `stats-panel-cases.json` | Shared cases for the panel model: values and health in, the rows, summaries, compact line and report out, per platform. |
+| `format-cases.json` | The panel's number formatters (`fill` with "–" for a missing value) and the codec tag, run on both sides. |
+| `panel.ts`, `panel-cases.ts` | `buildPanel`, `panelReport`, `fillPanel` and the spec's types; and the cases' types and helper (`@cha/ui-spec/panel-cases`, kept out of the portal's bundle). |
+| `index.ts` | Types for the JSON, `ICONS`, `HEALTH`, `fill` and the formatters. |
 
-TypeScript imports this package (`import { ICONS, HEALTH, fill } from "@cha/ui-spec"`); `crates/cha-ui-spec` compiles the same files in with `include_str!` and gives them types (`cha_ui_spec::health::spec()`, parsed once), and its `build.rs` turns the icon ids into a Rust enum, so a misspelt id is a compile error.
+TypeScript imports this package (`import { ICONS, HEALTH, fill, buildPanel } from "@cha/ui-spec"`); `crates/cha-ui-spec` compiles the same files in with `include_str!` and gives them types (`cha_ui_spec::health::spec()`, parsed once), and its `build.rs` turns the icon ids into a Rust enum, so a misspelt id is a compile error.
 
 ## Changing the in-stream UI
 
@@ -62,6 +66,27 @@ Add an object to `cases` in `health-cases.json`:
 - `history` is a list of entries, oldest first. Each entry is the file's `base` (a healthy 60 fps LAN stream) with its fields set, `repeat` times (default 1). A field may be an array of `repeat` values for one per snapshot (`"lost": [0, 3, 6, 9, 12, 15, 18, 21]`). `node` merges into the base's node field by field (`null` removes one); `"node": null` is no report. `"NaN"` stands for a NaN.
 - `expect` lists the issues exactly, most severe first. `details` and `hints` give exact strings for the issues named; pin a few in every case that has issues so wording drift is caught.
 - Work out the expectation by reasoning, then run both runners; if one disagrees, that is the point of the case. Fix the check (or the spec), not the expectation, unless the expectation was wrong.
+
+## The stats panel
+
+`stats-panel.json` says what the panel shows; `buildPanel(spec, values, health, platform)` (`panel.ts`) and `build_panel` (`crates/cha-ui-spec/src/panel.rs`) turn what a player measured into the sections, rows, summaries, compact line and copy report. The renderers draw only what that returns: `StatsOverlay.vue` loops over `panel.sections` and `section.rows`, and `crates/cha-player/src/ui/stats/sections.rs` does the same in egui. Both players' mappings from their own snapshot to value keys are the only translation (`web/apps/portal/src/statsValues.ts`, `StatsSnapshot::values` in `ui/stats/snapshot.rs`).
+
+- **Value keys** are snake_case, declared in `values` with a `kind` (`number` or `string`) and the platforms that fill them. A key a player doesn't have, can't measure yet or got NaN for is left out: its template reads "–" (with its unit: "– ms") and a `when` that needs it hides the row. Names match the neutral snapshot in `health-cases.ts` where the meaning is the same (`shown_fps`, `latency_ms`, `lost`, ...); the node's are `node_cpu`, `node_mem_used`, and so on.
+- **Templates** are `fill`'s `{name:formatter}`, with `f0 f1 f2 ms0 ms1` and the panel's `int` (no digit grouping), `gb` (bytes as GiB, one decimal), `pct` (whole number and "%"), `mbit` (one decimal and " Mbit/s") and `s` (the plural "s", for `reconnect{n:s}`). A string takes none. Text that differs by platform is `{ "web": "...", "native": "..." }`, as in the health spec.
+- **A row** has `id`, `label`, `tooltip`, `value` (a template, or a list of pieces: `{ text, when?, unless?, hot?, tone? }`), `bad` (issue ids that colour it, the first listed issue wins; a list or per platform), `platforms` and `when` (value keys that must be present, a list or per platform). A piece is `hot` at or over `limit`, in the value or in percent of the key `of`; `tone: "dim"` is the secondary ink. Neighbouring pieces of one tone become one segment.
+- **A section** has `id` (it must be in `SECTIONS` in `statsOverlay.ts` and `Section` in `overlay_prefs.rs`), `heading`, `color` (a theme role: `accent`, `chart-1`..`chart-3`), optional `when`, and a `summary` (`parts` joined with " · ", plus `bad` or `hot` for its colour) shown when it is folded.
+- **The report** is `lines` (a `label` and `parts` joined with ", ", dropped when empty), the `issue` line template and the `agent` line (`Browser: {agent}` or `Player: {agent}`; the caller passes the user agent or "Cha Player 0.1.0, macOS 15.5").
+
+### Adding a row
+
+1. If it needs a new number, declare the key in `values` (kind, platforms) and fill it in both mappings (`statsValues.ts`, `snapshot.rs`); each side's coverage test fails until the filled keys and the spec's agree.
+2. Add the row to its section in `stats-panel.json`: id (kebab-case, unique), label, tooltip (per platform where the words differ), value, `bad`, `platforms`, `when`. A row only one player measures says so in `platforms`; the tooltip says what it measures.
+3. Add or extend a case in `stats-panel-cases.json` that shows it, hides it and colours it. Work the expected text out by hand, or run a scratch script over `buildPanel`, then read it before pasting. Run `bun scripts/check-ui-spec.ts`, `bun run --cwd web/apps/portal test` and `cargo test -p cha-ui-spec -p cha-player`; the two runners must agree.
+4. Nothing else: the Vue loop and the egui drawing pick the row up.
+
+### Adding a section
+
+As a row, plus the section: add its id to `SECTIONS` (`statsOverlay.ts`) and `Section` (`overlay_prefs.rs`, `section_of` in `ui/stats/sections.rs`) so it can be folded and saved, and a class for its colour in `COLOR_TEXT` in `StatsOverlay.vue` if it uses a new role.
 
 ## The logo
 

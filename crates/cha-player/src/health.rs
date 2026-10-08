@@ -142,13 +142,6 @@ impl Default for Assessment {
     }
 }
 
-impl Assessment {
-    /// The first issue with one of these ids: what makes a value read bad.
-    pub fn bad(&self, ids: &[&str]) -> Option<&Issue> {
-        self.issues.iter().find(|i| ids.contains(&i.id))
-    }
-}
-
 /// Snapshots judged: the last few seconds.
 pub fn health_window() -> usize {
     spec().window
@@ -806,22 +799,5 @@ mod tests {
             Assessment::default().summary,
             spec().text.measuring.as_str()
         );
-    }
-
-    #[test]
-    fn bad_finds_the_first_listed_issue() {
-        let a = assess(
-            &(0..8)
-                .map(|_| StatsSnapshot {
-                    present_fps: 30.0,
-                    sent_fps: Some(60.0),
-                    target_fps: Some(60),
-                    decode_ms: Some(20.0),
-                    ..StatsSnapshot::default()
-                })
-                .collect::<Vec<_>>(),
-        );
-        assert_eq!(a.bad(&["decode"]).map(|i| i.id), Some("decode"));
-        assert!(a.bad(&["rtt"]).is_none());
     }
 }
