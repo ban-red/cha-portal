@@ -279,6 +279,9 @@ fn test_inventory() -> Inventory {
         // An older node's: the portal reads its GPU as the one device.
         devices: None,
         gamestream: None,
+        images: Vec::new(),
+        agent_version: None,
+        placement: None,
     }
 }
 

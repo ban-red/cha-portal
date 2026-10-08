@@ -533,7 +533,7 @@ impl Agent {
                 }
                 said = next_event(&mut progress) => {
                     if let Some(Progress { id, detail }) = said {
-                        sink.send(encode(&ToPortal::EnvironmentProgress { id, detail })?).await?;
+                        sink.send(encode(&ToPortal::EnvironmentProgress { id, detail, done: None, total: None, unit: None })?).await?;
                     }
                 }
                 said = next_event(&mut warnings) => {

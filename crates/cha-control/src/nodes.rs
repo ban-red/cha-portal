@@ -60,7 +60,9 @@ type Reply = Result<NodeResponse, String>;
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Reply>>>>;
 
 enum Outgoing {
-    Message(ToNode),
+    /// Boxed: a request carries a whole environment spec, far larger than
+    /// a close.
+    Message(Box<ToNode>),
     Close(u16, &'static str),
 }
 
@@ -132,7 +134,7 @@ impl NodeHub {
             let conn = conns.get(node_id).ok_or_else(offline)?;
             conn.pending.lock().await.insert(id, reply_tx);
             conn.tx
-                .send(Outgoing::Message(ToNode::Request { id, request }))
+                .send(Outgoing::Message(Box::new(ToNode::Request { id, request })))
                 .map_err(|_| offline())?;
             Arc::clone(&conn.pending)
         };
@@ -155,7 +157,7 @@ impl NodeHub {
         if let Some(conn) = self.connections.lock().await.get(node_id) {
             let _ = conn
                 .tx
-                .send(Outgoing::Message(ToNode::Response { id, result }));
+                .send(Outgoing::Message(Box::new(ToNode::Response { id, result })));
         }
     }
 
@@ -456,7 +458,7 @@ async fn pump(
                             Err(err) => warn!(%node_id, "reconciling: {err}"),
                         }
                     }
-                    ToPortal::EnvironmentProgress { id, detail } => {
+                    ToPortal::EnvironmentProgress { id, detail, .. } => {
                         let detail: String = detail.chars().take(200).collect();
                         db::set_environment_progress(&state.db, &id, node_id, &detail).await?;
                     }

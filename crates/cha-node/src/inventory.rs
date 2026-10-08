@@ -23,6 +23,10 @@ pub fn collect() -> Inventory {
         devices: None,
         // Likewise: the agent says whether it runs a GameStream host.
         gamestream: None,
+        // The agent lists them and its placement mode (ADR 0017).
+        images: Vec::new(),
+        agent_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        placement: None,
     };
     // NVIDIA and the CPU; the agent adds the VA-API devices it probes.
     let mut devices = inventory.devices_or_derived();

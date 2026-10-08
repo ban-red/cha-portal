@@ -2526,6 +2526,7 @@ mod tests {
         EnvironmentSpec {
             id: "e1".into(),
             image: "cha/env-chrome:dev".into(),
+            image_candidates: Vec::new(),
             security,
             shm_mb: 1024,
             width: 2560,

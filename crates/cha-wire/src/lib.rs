@@ -191,6 +191,15 @@ pub enum ToPortal {
     EnvironmentProgress {
         id: String,
         detail: String,
+        /// How far along, when it can be counted (an image download):
+        /// `done` of `total`, in `unit` (`bytes`). Absent from nodes that
+        /// predate them, and for steps that can't be counted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        done: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unit: Option<String>,
     },
     /// Something the user should know about a running environment: set when
     /// it appears, `None` when it is gone (or has been stopped). The portal
@@ -428,8 +437,17 @@ pub struct GatewaySpec {
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentSpec {
     pub id: String,
-    /// The app's image, e.g. `cha/env-chrome:dev`.
+    /// The app's image, e.g. `cha/env-chrome:dev`: the first of
+    /// [`Self::image_candidates`] when there are any, for nodes that predate
+    /// them.
     pub image: String,
+    /// The images to try, in order (ADR 0017): a local dev build, then the
+    /// published reference, which may hold `{version}` for the node to fill
+    /// with its agent's release. The node runs the first it has, else pulls
+    /// the first that names a registry. Empty from a portal that predates
+    /// them: the node uses [`Self::image`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_candidates: Vec<String>,
     pub security: SecurityProfile,
     /// `/dev/shm` for the app (browsers need more than Docker's 64 MB).
     pub shm_mb: u32,
@@ -701,6 +719,27 @@ pub struct Inventory {
     /// sends none of the `GameStream*` requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamestream: Option<GameStreamInfo>,
+    /// The images the node holds (`repo:tag`, at most 500), so placement can
+    /// prefer a node that needn't download (ADR 0017). Empty from nodes that
+    /// predate it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    /// The agent's release (`0.1.0`), which fills `{version}` in image
+    /// candidates. Absent from nodes that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+    /// `manual`: never the automatic choice, only by hand (`CHA_PLACEMENT`),
+    /// for test beds. Absent means automatic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementMode>,
+}
+
+/// Whether placement may pick a node by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlacementMode {
+    Auto,
+    Manual,
 }
 
 impl Inventory {
@@ -1372,6 +1411,7 @@ mod tests {
             environment: EnvironmentSpec {
                 id: "e1".into(),
                 image: "cha/env-chrome:dev".into(),
+                image_candidates: Vec::new(),
                 security: SecurityProfile::Browser,
                 shm_mb: 1024,
                 width: 2560,
@@ -1448,6 +1488,7 @@ mod tests {
         let spec = |gamepad| EnvironmentSpec {
             id: "e1".into(),
             image: "i".into(),
+            image_candidates: Vec::new(),
             security: SecurityProfile::Standard,
             shm_mb: 64,
             width: 1,
@@ -1505,6 +1546,7 @@ mod tests {
         let spec = EnvironmentSpec {
             id: "e1".into(),
             image: "cha/env-steam:dev".into(),
+            image_candidates: Vec::new(),
             security: SecurityProfile::Steam,
             shm_mb: 2048,
             width: 2560,
@@ -1611,6 +1653,9 @@ mod tests {
         let progress = serde_json::to_value(ToPortal::EnvironmentProgress {
             id: "e1".into(),
             detail: "moving your files".into(),
+            done: None,
+            total: None,
+            unit: None,
         })
         .unwrap();
         assert_eq!(

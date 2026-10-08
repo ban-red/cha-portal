@@ -598,6 +598,7 @@ fn environment_spec(
     EnvironmentSpec {
         id,
         image: template.image.clone(),
+        image_candidates: Vec::new(),
         security: template.security,
         shm_mb: template.shm_mb,
         width: WIDTH,
