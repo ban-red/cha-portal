@@ -281,6 +281,17 @@ pub fn probe(spec: &str, pyrowave: bool) -> Result<()> {
             result.frames, result.keyframes, result.bytes, result.encode_ms_avg, result.first_nals
         );
     }
+    if kind == DeviceKind::Vaapi {
+        // libva's vendor string names the driver, not the GPU; Mesa's
+        // GL_RENDERER names the GPU. Keep the vendor string if there is none.
+        match crate::compositor::gl_renderer(&device) {
+            Ok(renderer) => match gpu_name(&renderer) {
+                Some(name) => Arc::get_mut(&mut device).expect("no other holder yet").name = name,
+                None => tracing::debug!(renderer, "GL_RENDERER is not a GPU name"),
+            },
+            Err(why) => tracing::debug!("no GL_RENDERER for the GPU's name: {why:#}"),
+        }
+    }
     if kind == DeviceKind::Nvidia {
         Arc::get_mut(&mut device)
             .expect("no other holder yet")
@@ -288,6 +299,25 @@ pub fn probe(spec: &str, pyrowave: bool) -> Result<()> {
     }
     println!("{}", serde_json::to_string(&device.report(pyrowave))?);
     Ok(())
+}
+
+/// A GPU's name from Mesa's GL_RENDERER: "Mesa Intel(R) UHD Graphics 630
+/// (CFL GT2)" becomes "Intel UHD Graphics 630". None for a software renderer
+/// (llvmpipe, softpipe) or an empty string, which name no GPU.
+fn gpu_name(renderer: &str) -> Option<String> {
+    let mut s = renderer.trim();
+    s = s.strip_prefix("Mesa ").unwrap_or(s);
+    // The trailing detail: "(CFL GT2)", "(radeonsi, navi33, LLVM 19.1.1, ...)".
+    if s.ends_with(')')
+        && let Some(open) = s.rfind(" (")
+    {
+        s = &s[..open];
+    }
+    let s = s.replace("(R)", "").replace("(TM)", "");
+    let name = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = name.to_ascii_lowercase();
+    let software = ["llvmpipe", "softpipe", "swrast", "software"];
+    (!name.is_empty() && !software.iter().any(|w| lower.contains(w))).then_some(name)
 }
 
 /// The render node's PCI slot (`0000:01:00.0`), so CUDA picks the same GPU.
@@ -431,6 +461,26 @@ mod tests {
     fn the_cpu_offers_av1_when_svtav1_loads() {
         assert_eq!(cpu_codecs(false), [Codec::H264]);
         assert_eq!(cpu_codecs(true), [Codec::H264, Codec::Av1]);
+    }
+
+    #[test]
+    fn tidies_gl_renderer_into_a_gpu_name() {
+        let name = |s| gpu_name(s).unwrap();
+        assert_eq!(
+            name("Mesa Intel(R) UHD Graphics 630 (CFL GT2)"),
+            "Intel UHD Graphics 630"
+        );
+        assert_eq!(
+            name("AMD Radeon RX 7600 (radeonsi, navi33, LLVM 19.1.1, DRM 3.59, 6.8.0)"),
+            "AMD Radeon RX 7600"
+        );
+        assert_eq!(
+            name("Intel(R) Arc(TM) A380 Graphics (DG2)"),
+            "Intel Arc A380 Graphics"
+        );
+        assert_eq!(name("  Some  GPU "), "Some GPU");
+        assert_eq!(gpu_name(""), None);
+        assert_eq!(gpu_name("llvmpipe (LLVM 19.1.1, 256 bits)"), None);
     }
 
     #[test]

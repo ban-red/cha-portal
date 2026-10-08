@@ -414,6 +414,29 @@ fn egl_display(device: &Device) -> Result<(EGLDisplay, Option<DrmNode>)> {
     Ok((egl, Some(node)))
 }
 
+/// The GL_RENDERER string of an EGL context on the device (Mesa's name for the
+/// GPU, "Mesa Intel(R) UHD Graphics 630 (CFL GT2)"). Opens a context and
+/// drops it again; for `--probe-device`, not for a start.
+pub fn gl_renderer(device: &Device) -> Result<String> {
+    let (egl, _) = egl_display(device)?;
+    let context = EGLContext::new(&egl).context("creating the EGL context")?;
+    // SAFETY: the context is only used on this thread.
+    let mut renderer = unsafe { GlesRenderer::new(context) }.context("creating the renderer")?;
+    renderer
+        .with_context(|gl| {
+            // SAFETY: GetString returns a NUL-terminated string that lives as
+            // long as the context, or null.
+            let ptr = unsafe { gl.GetString(smithay::backend::renderer::gles::ffi::RENDERER) };
+            (!ptr.is_null()).then(|| {
+                unsafe { std::ffi::CStr::from_ptr(ptr.cast()) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .context("making the context current")?
+        .context("GL_RENDERER is empty")
+}
+
 impl State {
     fn new(
         config: &Config,
