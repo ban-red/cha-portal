@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use cha_client::{Codec, Ended, Input, PadState, Session};
 use cha_client_stream::control::LineBuf;
-use cha_client_stream::{Target, connect};
+use cha_client_stream::{Target, connect, connect_at};
 use cha_proto::{DatagramHeader, Flags, Fragmenter, HEADER_LEN, Kind};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -443,6 +443,17 @@ async fn pings_are_answered_and_the_clock_syncs() {
     let report = next_line(&mut streamer, "report").await;
     assert!(report["r"].is_number());
     assert!(report.get("d").is_none());
+    session.control.stop(false);
+}
+
+/// The streamer says 60 fps in its hello; a player that wants 120 asks for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_players_frame_rate_is_asked_for() {
+    let mut streamer = start_streamer(Script::Quiet, false);
+    let session = connect_at(&target(streamer.port, &streamer.hash), 1280, 720, Some(120))
+        .await
+        .expect("connect");
+    assert_eq!(next_line(&mut streamer, "fps").await["fps"], 120);
     session.control.stop(false);
 }
 

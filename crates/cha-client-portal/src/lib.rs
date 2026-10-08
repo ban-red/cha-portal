@@ -500,9 +500,14 @@ impl Inner {
                 cert_hash: connection.cert_hash,
                 codec,
             };
-            let mut session = cha_client_stream::connect(&target, config.width, config.height)
-                .await
-                .context("connecting to the streamer")?;
+            let mut session = cha_client_stream::connect_at(
+                &target,
+                config.width,
+                config.height,
+                Some(config.fps),
+            )
+            .await
+            .context("connecting to the streamer")?;
             session.control = Box::new(QuitsEnvironment {
                 inner: session.control,
                 client,

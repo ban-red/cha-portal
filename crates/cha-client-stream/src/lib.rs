@@ -52,4 +52,4 @@ pub mod receiver;
 mod session;
 pub mod video;
 
-pub use session::{Target, connect};
+pub use session::{Target, connect, connect_at};

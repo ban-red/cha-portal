@@ -114,6 +114,18 @@ impl SessionControl for Control {
 /// them down to a multiple of 8 within 320x240 .. 3840x2160 and the returned
 /// session says what it made of them.
 pub async fn connect(target: &Target, width: u32, height: u32) -> Result<Session> {
+    connect_at(target, width, height, None).await
+}
+
+/// [`connect`], also asking for `fps` (60, 90 or 120) once this session has
+/// the controls, as the browser's frame-rate menu does. The environment
+/// starts at its own rate; the streamer answers whether it changed.
+pub async fn connect_at(
+    target: &Target,
+    width: u32,
+    height: u32,
+    fps: Option<u32>,
+) -> Result<Session> {
     let hash = net::parse_hash(&target.cert_hash)?;
     let link = net::race(&target.urls, hash, net::CONNECT_TIMEOUT).await?;
     let began = Instant::now();
@@ -171,6 +183,7 @@ pub async fn connect(target: &Target, width: u32, height: u32) -> Result<Session
         numbering: Numbering::default(),
         codec: target.codec,
         want: (width, height),
+        want_fps: fps.filter(|f| control::FPS_CHOICES.contains(f)),
         ready: Some(ready_tx),
         hello: None,
         hello_at: None,
@@ -263,6 +276,8 @@ struct Task {
     codec: Codec,
     /// The size the player asked for.
     want: (u32, u32),
+    /// The frame rate the player asked for, if the streamer offers it.
+    want_fps: Option<u32>,
     ready: Option<oneshot::Sender<Result<Ready, String>>>,
     hello: Option<Hello>,
     hello_at: Option<Instant>,
@@ -460,6 +475,11 @@ impl Task {
             ServerMsg::Codec { codec, error } => {
                 debug!(%codec, ?error, "codec message (switching isn't asked for)");
             }
+            ServerMsg::Fps { fps, error: None } => info!(fps, "the streamer's frame rate"),
+            ServerMsg::Fps {
+                fps,
+                error: Some(error),
+            } => warn!(fps, %error, "the streamer kept its frame rate"),
             ServerMsg::Clipboard | ServerMsg::Cursor | ServerMsg::Other(_) => {}
         }
     }
@@ -499,6 +519,14 @@ impl Task {
         }
         let first = !self.got_floor;
         self.got_floor = true;
+        let hello_fps = self.hello.as_ref().map(|h| h.fps);
+        if first
+            && control
+            && let Some(want) = self.want_fps
+            && hello_fps.is_some_and(|f| f != want)
+        {
+            self.say(control::fps(want));
+        }
         let hello_size = self.hello.as_ref().map(|h| (h.width, h.height));
         if first && let Some(hello_size) = hello_size {
             let target = control::fit_size(self.want.0, self.want.1);

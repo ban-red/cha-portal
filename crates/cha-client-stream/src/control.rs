@@ -87,9 +87,14 @@ pub enum ServerMsg {
         codec: String,
         error: Option<String>,
     },
+    /// Answer to an `fps` request: the rate now, and why not if refused.
+    Fps {
+        fps: u32,
+        error: Option<String>,
+    },
     Clipboard,
     Cursor,
-    /// `stats`, `system`, `status`, `fps`, `overlay`, `pointer`, `haptic`,
+    /// `stats`, `system`, `status`, `overlay`, `pointer`, `haptic`,
     /// `players`, `trigger`, and anything newer: not used.
     Other(String),
 }
@@ -150,6 +155,10 @@ pub fn parse(line: &str) -> Option<ServerMsg> {
             codec: v.get("codec")?.as_str()?.to_string(),
             error: v.get("error").and_then(Value::as_str).map(str::to_string),
         },
+        "fps" => ServerMsg::Fps {
+            fps: u32_of(&v, "fps"),
+            error: v.get("error").and_then(Value::as_str).map(str::to_string),
+        },
         "clipboard" => ServerMsg::Clipboard,
         "cursor" => ServerMsg::Cursor,
         other => ServerMsg::Other(other.to_string()),
@@ -202,6 +211,14 @@ pub fn cursor(client: bool) -> String {
     json!({"t": "cursor", "client": client}).to_string()
 }
 
+/// The frame rates a streamer runs at (`framerate::CHOICES` there).
+pub const FPS_CHOICES: [u32; 3] = [60, 90, 120];
+
+/// Asks for a frame rate, one of [`FPS_CHOICES`] (controller only).
+pub fn fps(fps: u32) -> String {
+    json!({"t": "fps", "fps": fps}).to_string()
+}
+
 pub fn resize(w: u32, h: u32) -> String {
     json!({"t": "resize", "w": w, "h": h}).to_string()
 }
@@ -216,6 +233,25 @@ pub fn fit_size(w: u32, h: u32) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fps_asks_and_answers() {
+        assert_eq!(fps(120), r#"{"fps":120,"t":"fps"}"#);
+        assert_eq!(
+            parse(r#"{"t":"fps","fps":90}"#),
+            Some(ServerMsg::Fps {
+                fps: 90,
+                error: None
+            })
+        );
+        assert_eq!(
+            parse(r#"{"t":"fps","fps":60,"error":"nope"}"#),
+            Some(ServerMsg::Fps {
+                fps: 60,
+                error: Some("nope".into())
+            })
+        );
+    }
 
     #[test]
     fn hello_and_floor() {
