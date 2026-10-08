@@ -25,7 +25,10 @@
 # that file and asks the streamer's broker for the device (uinput-shim/).
 FROM rust:1.93-trixie AS build
 WORKDIR /src
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+# Every workspace member's manifest and sources must be there for --locked.
+COPY spikes/ spikes/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
@@ -90,31 +93,45 @@ RUN make OUT=/out/opt/cha
 
 FROM base
 USER root
-COPY --from=gamescope /out/gamescope_*.deb /tmp/
-COPY --from=mangoapp /out/runtime-packages /tmp/
-RUN dpkg --add-architecture i386 \
+# The final stage is three layers, ordered by how often they change, so a new
+# gamescope patch or mangoapp build doesn't make a node pull the multi-hundred
+# megabyte i386 libraries and Steam's runtime libraries again.
+# 1. The i386 architecture and the 32-bit Mesa that games fall back to.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    dpkg --add-architecture i386 \
  && sed -i 's/^Components: main.*/Components: main restricted universe multiverse/' /etc/apt/sources.list.d/ubuntu.sources \
  && apt-get update && apt-get install -y --no-install-recommends \
       curl xwayland dbus dbus-user-session \
       libgl1:i386 libegl1:i386 libgbm1:i386 libvulkan1:i386 libgl1-mesa-dri:i386 mesa-vulkan-drivers:i386 \
       libpulse0:i386 libxkbcommon0:i386 \
-      xdg-user-dirs xdg-utils file xz-utils lsof pciutils python3 zenity \
+      xdg-user-dirs xdg-utils file xz-utils lsof pciutils python3 zenity
+# 2. Valve's Steam package, which adds Valve's apt repository (the second
+# `apt-get update` reads it), and the runtime libraries from there.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
  && curl -fsSL -o /tmp/steam.deb https://repo.steampowered.com/steam/archive/stable/steam_latest.deb \
  && apt-get install -y /tmp/steam.deb \
+ && apt-get update && apt-get install -y --no-install-recommends steam-libs-amd64 steam-libs-i386 \
+ && rm -f /tmp/steam.deb
+# 3. What this repository builds or patches.
+COPY --from=gamescope /out/gamescope_*.deb /tmp/
+COPY --from=mangoapp /out/runtime-packages /tmp/
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
  # The patched gamescope (its version carries +cha), held so a later apt-get
  # upgrade doesn't put Ubuntu's back, and what mangoapp loads.
  && apt-get install -y --no-install-recommends /tmp/gamescope_*.deb $(cat /tmp/runtime-packages) \
  && apt-mark hold gamescope \
- && apt-get update && apt-get install -y --no-install-recommends steam-libs-amd64 steam-libs-i386 \
- && rm -rf /tmp/steam.deb /tmp/gamescope_*.deb /tmp/runtime-packages /var/lib/apt/lists/* \
+ && rm -f /tmp/gamescope_*.deb /tmp/runtime-packages \
  # The launcher would run steamdeps, which offers to apt-install anything
  # missing and waits in an xterm for a key press: everything is installed.
  && rm /usr/bin/steamdeps \
  # pressure-vessel needs a real bubblewrap (its own): no stand-in. This is
  # what the `steam` profile's cha-sandbox AppArmor profile is for.
  && rm /usr/local/bin/bwrap
-# gamescope's Xwayland runs unprivileged and can't create the socket dirs.
-RUN install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
 COPY --from=build /usr/local/bin/cha-x11-clipboard /usr/local/bin/
 COPY --from=mangoapp /out/usr/bin/mangoapp /usr/local/bin/
 COPY --from=uinput-shim /out/opt/cha /opt/cha

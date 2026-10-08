@@ -1,7 +1,10 @@
 # The test-pattern environment: our own Wayland client (crates/cha-testpattern).
 FROM rust:1.93-trixie AS build
 WORKDIR /src
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+# Every workspace member's manifest and sources must be there for --locked.
+COPY spikes/ spikes/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \

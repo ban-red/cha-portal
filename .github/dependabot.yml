@@ -9,3 +9,17 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # The environments' base image is pinned by digest (images/base/Dockerfile).
+  # The digest moves when Canonical rebuilds ubuntu:26.04; the PR changes the
+  # Dockerfile, which changes the base's inputs hash and so rebuilds every
+  # environment at the next release. The rust:1.93-trixie builder stages are
+  # not listed: their version follows rust-version in Cargo.toml, by hand.
+  - package-ecosystem: docker
+    directory: /images/base
+    schedule:
+      interval: monthly
+    ignore:
+      # Stay on 26.04: take the digest, not 26.10.
+      - dependency-name: ubuntu
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

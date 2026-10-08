@@ -20,6 +20,16 @@
 # throughout. Upstream images and packages aren't in the hash: tick "rebuild"
 # when running by hand, or bump REBUILD_EPOCH in the script, to rebuild all.
 #
+# The environments are pushed with zstd-compressed layers (the base and each
+# environment below); cha-portal, cha-node, cha-streamer and cha-gateway stay
+# gzip. The environments' layers are large, and zstd is smaller than gzip at
+# the same effort and decompresses several times faster on a pull. Docker
+# Engine pulls zstd layers from 23.0, and a node needs 26 anyway (SETUP.md).
+# The other four are small and the portal may run on older Docker (a NAS).
+# Reused images are only re-tagged, so moving to zstd took a REBUILD_EPOCH
+# bump to reach images whose inputs hadn't changed; do the same for a similar
+# change.
+#
 # The Chrome and Steam images contain Google Chrome and Valve's Steam
 # bootstrap, which are under their owners' terms, not ours.
 name: publish
@@ -224,7 +234,12 @@ jobs:
           context: .
           file: images/base/Dockerfile
           platforms: linux/amd64
-          push: true
+          # The tags above are the image exporter's names. zstd layers need
+          # OCI media types; force-compression recompresses base layers that
+          # came as gzip (Ubuntu's), so the whole image is zstd. On the Steam
+          # image's layers, level 12 is 15% smaller than gzip and level 3 is
+          # 6% smaller; the encoder has no finer steps above about 10.
+          outputs: type=image,push=true,oci-mediatypes=true,compression=zstd,compression-level=12,force-compression=true
           tags: |
             ${{ steps.meta.outputs.tags }}
             ghcr.io/${{ github.repository_owner }}/cha-env-base:inputs-${{ fromJSON(needs.plan.outputs.inputs)['cha-env-base'] }}
@@ -329,7 +344,12 @@ jobs:
           build-contexts: |
             base=docker-image://ghcr.io/${{ github.repository_owner }}/cha-env-base@${{ needs.env-base.outputs.digest }}
           platforms: linux/amd64
-          push: true
+          # The tags above are the image exporter's names. zstd layers need
+          # OCI media types; force-compression recompresses base layers that
+          # came as gzip (Ubuntu's), so the whole image is zstd. On the Steam
+          # image's layers, level 12 is 15% smaller than gzip and level 3 is
+          # 6% smaller; the encoder has no finer steps above about 10.
+          outputs: type=image,push=true,oci-mediatypes=true,compression=zstd,compression-level=12,force-compression=true
           tags: |
             ${{ steps.meta.outputs.tags }}
             ghcr.io/${{ github.repository_owner }}/cha-env-${{ matrix.name }}:inputs-${{ fromJSON(needs.plan.outputs.inputs)[format('cha-env-{0}', matrix.name)] }}

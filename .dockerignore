@@ -5,3 +5,7 @@ target/
 .claude/
 docs/
 data/
+# Spikes: only the servers' manifests and sources, which are workspace members
+# (cargo --locked needs every member); not their clips, streams and web apps.
+spikes/*/*
+!spikes/*/server

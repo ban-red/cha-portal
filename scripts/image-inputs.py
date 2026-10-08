@@ -35,7 +35,8 @@ import subprocess
 import sys
 
 # Bump to rebuild every image on the next run.
-REBUILD_EPOCH = 1
+# 2: the environments (and their base) are now pushed with zstd layers.
+REBUILD_EPOCH = 2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUST = ["Cargo.toml", "Cargo.lock", ".dockerignore"]
