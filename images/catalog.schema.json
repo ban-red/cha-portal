@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portal.cha.sh/schemas/catalog-1.json",
+  "title": "Cha Portal catalog, version 1",
+  "description": "A list of environments a Cha Portal can launch. The same document is the built-in images/catalog.json and an external catalog an admin loads (docs/image-spec.md, section 6). The portal ignores fields it doesn't know, so no object here forbids extra properties; the schema lists what the portal reads.",
+  "type": "object",
+  "required": ["templates"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": {
+      "description": "The catalog format. Absent means 1; the portal refuses any other value.",
+      "const": 1
+    },
+    "id": {
+      "description": "External catalogs only: the namespace the catalog suggests for itself. The admin chooses the real one when loading it; templates then appear as <catalog>.<template id>.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+    },
+    "name": {
+      "description": "External catalogs only: a display name for the catalog.",
+      "type": "string",
+      "minLength": 1
+    },
+    "templates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/template" }
+    }
+  },
+  "$defs": {
+    "template": {
+      "description": "One thing a user can launch.",
+      "type": "object",
+      "required": ["id", "name", "description", "image", "class", "security", "shmMb"],
+      "properties": {
+        "id": {
+          "description": "Unique in the document. Local to it: the portal prefixes an external catalog's ids with the catalog's slug. It becomes a URL path segment, a directory name under the node's data root and part of Docker labels, hence the pattern (the portal itself only rejects empty and repeated ids).",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+        },
+        "name": {
+          "description": "What the card says.",
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "description": "One or two sentences under the name.",
+          "type": "string"
+        },
+        "image": {
+          "description": "The image reference to run. In an external catalog it must name a registry (its first path part has a '.' or ':', or is 'localhost'). '{version}' is replaced by the node agent's release.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "localImage": {
+          "description": "Built-in catalog only; an external catalog that sets it is refused. A dev build the node runs when it already has it, before pulling 'image'.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "class": {
+          "description": "Groups the card. The portal gives 'browser', 'desktop', 'gaming' and 'test' their own icon and lists 'desktop' templates under Desktops; any other value is accepted and gets a generic icon.",
+          "type": "string",
+          "examples": ["browser", "desktop", "gaming", "test"]
+        },
+        "icon": {
+          "description": "The app's logo. Built-in catalog: the file name of an SVG in the template's directory under images/ (the portal embeds it). External catalog: an https:// URL, or a path relative to the catalog's URL; SVG only, at most 256 KiB, with a viewBox. Absent: the card shows a generic icon for the class.",
+          "type": "string",
+          "minLength": 1
+        },
+        "security": {
+          "description": "The confinement profile of the app container. 'standard': Docker's default seccomp profile. 'browser': also allows creating namespaces, for Chrome's and Firefox's sandboxes. 'steam': 'browser' plus the cha-sandbox AppArmor profile and a high open-files limit. In an external catalog, 'browser' and 'steam' stay unavailable until an admin approves them.",
+          "enum": ["standard", "browser", "steam"]
+        },
+        "shmMb": {
+          "description": "Size of /dev/shm in MiB. Docker's default is 64; browsers need 512 to 1024.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "persistent": {
+          "description": "The default for whether users keep their home (/home/cha) between launches. Users and admins can change it. Default false.",
+          "type": "boolean",
+          "default": false
+        },
+        "fixedSize": {
+          "description": "The app's display has a fixed size (CHA_WIDTH x CHA_HEIGHT): the page never asks for a resize and the browser letterboxes the picture. Default false.",
+          "type": "boolean",
+          "default": false
+        },
+        "shared": {
+          "description": "A directory shared by all users of this app, mounted when its access isn't 'none'. These are defaults; an admin can change the access.",
+          "type": "object",
+          "required": ["access"],
+          "properties": {
+            "access": {
+              "description": "'none': not mounted. 'read': mounted read-only. 'write': mounted read-write.",
+              "enum": ["none", "read", "write"]
+            },
+            "perUser": {
+              "description": "Paths inside the shared directory (relative, no leading slash) that each user keeps their own copy of, mounted over it from the user's home. Default empty.",
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
+            }
+          }
+        },
+        "gamepad": {
+          "description": "The virtual controller the app gets unless the user picks another. Default 'xbox360'.",
+          "enum": ["xbox360", "dualsense", "steam"]
+        },
+        "fps": {
+          "description": "The frame rate the app gets unless the user picks another. Default 60. Any other number is ignored and 60 is used.",
+          "enum": [60, 90, 120]
+        },
+        "needsGpu": {
+          "description": "The app needs real 3D and never runs on the CPU device. Default false.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  }
+}

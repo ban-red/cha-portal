@@ -125,6 +125,7 @@ To point a real node at a dev portal on your LAN, start the portal with `bun run
 - [`deploy/proxmox/README.md`](deploy/proxmox/README.md): nodes on Proxmox VE, in a container or a VM
 - [`docs/guides/tailscale.md`](docs/guides/tailscale.md): remote access over Tailscale
 - [`images/README.md`](images/README.md): the environment images and the contract between an app and the streamer
+- [`docs/image-spec.md`](docs/image-spec.md): how to build an environment image that runs on a node, and write its catalog entry (example in [`images/example/`](images/example))
 - [`docs/controllers.md`](docs/controllers.md), [`docs/devices.md`](docs/devices.md): gamepads; GPUs and placement
 - [`crates/cha-streamer/README.md`](crates/cha-streamer/README.md), [`web/packages/player/README.md`](web/packages/player/README.md), [`web/apps/portal/README.md`](web/apps/portal/README.md), [`crates/cha-player/README.md`](crates/cha-player/README.md): the engine, the browser player, the web app and its themes, Cha Player
 - [`docs/PLAN.md`](docs/PLAN.md): architecture and roadmap

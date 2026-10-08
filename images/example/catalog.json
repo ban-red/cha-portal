@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": "example",
+  "name": "Cha example catalog",
+  "templates": [
+    {
+      "id": "foot",
+      "name": "Foot terminal",
+      "description": "A small Wayland terminal. The smallest image that runs on a Cha node.",
+      "image": "ghcr.io/your-name/cha-env-foot:{version}",
+      "class": "desktop",
+      "security": "standard",
+      "shmMb": 128
+    }
+  ]
+}
