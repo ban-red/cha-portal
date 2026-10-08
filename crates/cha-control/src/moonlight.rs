@@ -189,8 +189,8 @@ fn template_for(row: &MoonlightHostRow, app: &MoonlightApp) -> Template {
 
 /// The template `id` names: a catalog one, or one of an adopted host's apps.
 pub async fn resolve_template(state: &AppState, id: &str) -> ApiResult<Option<Template>> {
-    if let Some(template) = crate::environments::template(id) {
-        return Ok(Some(template.clone()));
+    if let Some(template) = crate::environments::find(state, id) {
+        return Ok(Some(template));
     }
     let Some((host, app)) = parse_template_id(id) else {
         return Ok(None);

@@ -708,7 +708,7 @@ async fn launch_for_client(
 ) -> Result<PortalResponse, String> {
     let user = paired_user(state, node_id, user_id).await?;
     // Only what a node offers: catalog apps, never a Moonlight gateway.
-    let template = environments::template(template_id)
+    let template = environments::find(state, template_id)
         .filter(|t| t.class != moonlight::CLASS)
         .ok_or("no such app")?;
     let (row, created) = {

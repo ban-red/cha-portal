@@ -57,6 +57,7 @@ ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "s
 quinn-udp = { version = "0.5" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem", "ring"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustix = { version = "1", features = ["event", "fs", "net", "system"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs", "ring", "std", "tls12"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }

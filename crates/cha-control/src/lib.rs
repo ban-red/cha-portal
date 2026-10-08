@@ -9,6 +9,7 @@
 pub mod api;
 pub mod apps;
 pub mod auth;
+pub mod catalogs;
 pub mod claim;
 pub mod controllers;
 pub mod db;
@@ -80,6 +81,8 @@ pub struct AppState {
     pub gamestream: Arc<gamestream::State>,
     /// Requests to the share links' unauthenticated routes, per address.
     pub share_limit: Arc<shares::RateLimit>,
+    /// Catalogs an admin loaded (ADR 0019).
+    pub catalogs: Arc<catalogs::Registry>,
 }
 
 impl AppState {
@@ -87,6 +90,8 @@ impl AppState {
     /// first visitor creates the first admin.
     pub async fn new(config: Config, db: SqlitePool) -> Result<Self> {
         let media_key = Arc::new(media_key(&db).await?);
+        let catalogs = catalogs::Registry::default();
+        catalogs.reload(&db).await?;
         Ok(Self {
             db,
             config: Arc::new(config),
@@ -97,6 +102,7 @@ impl AppState {
             moonlight: Arc::default(),
             gamestream: Arc::default(),
             share_limit: Arc::default(),
+            catalogs: Arc::new(catalogs),
         })
     }
 }

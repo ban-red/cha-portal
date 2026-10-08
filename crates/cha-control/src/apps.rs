@@ -16,7 +16,7 @@ use serde_json::json;
 use crate::AppState;
 use crate::auth::{ClientInfo, CurrentUser, PlayerUser};
 use crate::db::{self, Role};
-use crate::environments::{Template, catalog, template};
+use crate::environments::{self, Template};
 use crate::error::{ApiError, ApiResult};
 
 /// The frame rates a user can choose.
@@ -84,7 +84,7 @@ async fn list(
     }
     let choices = db::user_fps(&state.db, &user.id).await?;
     Ok(Json(UserApps {
-        apps: catalog()
+        apps: environments::all(&state)
             .iter()
             .map(|t| user_app(t, choices.get(&t.id).copied()))
             .collect(),
@@ -113,7 +113,9 @@ async fn set(
             "guests can't launch environments, so they have no app settings",
         ));
     }
-    let template = template(&id).ok_or_else(|| ApiError::NotFound("no such template".into()))?;
+    let template = environments::find(&state, &id)
+        .ok_or_else(|| ApiError::NotFound("no such template".into()))?;
+    let template = &template;
     let fps = match &req.fps {
         serde_json::Value::Null => None,
         v => Some(
@@ -139,6 +141,7 @@ async fn set(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::environments::template;
 
     #[test]
     fn the_catalog_default_is_60_unless_it_says_otherwise() {

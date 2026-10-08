@@ -99,7 +99,7 @@ async fn issue_ticket(
 ) -> ApiResult<Json<Value>> {
     let req = body.map(|Json(b)| b).unwrap_or_default();
     if let Some(launch) = &req.launch
-        && crate::environments::template(launch).is_none()
+        && crate::environments::find(&state, launch).is_none()
     {
         return Err(ApiError::bad_request(
             "unknown_template",

@@ -33,7 +33,9 @@ use tracing::info;
 use crate::AppState;
 use crate::auth::{AdminUser, ClientInfo, CurrentUser, PlayerUser};
 use crate::db::{self, AppStorageRow, NodeRow, Role, User};
-use crate::environments::{Template, catalog, template};
+use crate::environments::{self, Template};
+#[cfg(test)]
+use crate::environments::{catalog, template};
 use crate::error::{ApiError, ApiResult};
 
 /// Deleting a big home (a Steam library) takes a while.
@@ -307,7 +309,7 @@ async fn list(
     let live = db::live_templates(&state.db, &user.id).await?;
     Ok(Json(UserStorage {
         root: nodes.root,
-        apps: catalog()
+        apps: environments::all(&state)
             .iter()
             .map(|t| user_app(t, &rows, &choices, &live, &nodes.shared_paths))
             .collect(),
@@ -315,14 +317,14 @@ async fn list(
 }
 
 /// The app, for a user who may keep data for it: not a guest, and in the catalog.
-fn launchable(user: &User, id: &str) -> ApiResult<&'static Template> {
+fn launchable(state: &AppState, user: &User, id: &str) -> ApiResult<Template> {
     if user.role == Role::Guest {
         return Err(ApiError::forbidden(
             "guests_cannot_launch",
             "guests can't launch environments, so they keep no data",
         ));
     }
-    template(id).ok_or_else(|| ApiError::NotFound("no such template".into()))
+    environments::find(state, id).ok_or_else(|| ApiError::NotFound("no such template".into()))
 }
 
 fn live_error() -> ApiError {
@@ -360,7 +362,7 @@ async fn set(
     Path(id): Path<String>,
     Json(req): Json<SetPersistent>,
 ) -> ApiResult<Json<UserApp>> {
-    let template = launchable(&user, &id)?;
+    let template = launchable(&state, &user, &id)?;
     if db::live_environment_of(&state.db, &user.id, &template.id)
         .await?
         .is_some()
@@ -377,7 +379,7 @@ async fn set(
         client.ip.as_deref(),
     )
     .await?;
-    Ok(Json(show(&state, &user, template).await?))
+    Ok(Json(show(&state, &user, &template).await?))
 }
 
 /// `POST /api/storage/{template}/reset`: deletes the user's data for the app on
@@ -392,7 +394,7 @@ async fn reset(
     client: ClientInfo,
     Path(id): Path<String>,
 ) -> ApiResult<Json<UserApp>> {
-    let template = launchable(&user, &id)?;
+    let template = launchable(&state, &user, &id)?;
     if db::live_environment_of(&state.db, &user.id, &template.id)
         .await?
         .is_some()
@@ -440,7 +442,7 @@ async fn reset(
         client.ip.as_deref(),
     )
     .await?;
-    Ok(Json(show(&state, &user, template).await?))
+    Ok(Json(show(&state, &user, &template).await?))
 }
 
 // ---- The admin's settings ----
@@ -484,7 +486,7 @@ async fn admin_list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Js
     let nodes = node_storage(&state).await?;
     Ok(Json(AdminStorage {
         root: nodes.root,
-        apps: catalog()
+        apps: environments::all(&state)
             .iter()
             .map(|t| admin_app(t, &rows, &nodes.shared_paths))
             .collect(),
@@ -507,7 +509,9 @@ async fn admin_set(
     Path(id): Path<String>,
     Json(req): Json<AdminUpdate>,
 ) -> ApiResult<Json<AdminApp>> {
-    let template = template(&id).ok_or_else(|| ApiError::NotFound("no such template".into()))?;
+    let template = environments::find(&state, &id)
+        .ok_or_else(|| ApiError::NotFound("no such template".into()))?;
+    let template = &template;
     if req.default_persistent.is_none() && req.shared_access.is_none() {
         return Err(ApiError::bad_request(
             "nothing_to_set",

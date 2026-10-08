@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::AppState;
 use crate::auth::CurrentUser;
 use crate::db::{self, Role};
-use crate::environments::{Template, catalog, template};
+use crate::environments::{self, Template};
 use crate::error::{ApiError, ApiResult};
 use crate::storage;
 
@@ -436,15 +436,15 @@ async fn list(
     }
     let nodes = online_nodes(&state).await?;
     if let Some(id) = query.template {
-        let template =
-            template(&id).ok_or_else(|| ApiError::NotFound("no such template".into()))?;
-        let placements = for_template(&state, &user.id, template, &nodes).await?;
+        let template = environments::find(&state, &id)
+            .ok_or_else(|| ApiError::NotFound("no such template".into()))?;
+        let placements = for_template(&state, &user.id, &template, &nodes).await?;
         return Ok(Json(
             serde_json::to_value(placements).map_err(anyhow::Error::from)?,
         ));
     }
     let mut all = serde_json::Map::new();
-    for template in catalog() {
+    for template in &environments::all(&state) {
         let placements = for_template(&state, &user.id, template, &nodes).await?;
         all.insert(
             template.id.clone(),

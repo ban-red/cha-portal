@@ -24,6 +24,10 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 # Browses the LAN for unclaimed nodes (ADR 0007).
 mdns-sd = "0.21"
+# Fetches admin-loaded catalogs and their icons (ADR 0019). TLS is rustls with
+# the ring provider, trusting the system's roots, as in cha-node.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"

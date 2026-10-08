@@ -122,17 +122,22 @@ impl Template {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Catalog {
-    /// Absent means 1.
-    #[serde(default)]
-    version: Option<u32>,
-    templates: Vec<Template>,
+/// A catalog document as read: the templates, and the optional `id` (a
+/// suggested namespace) and `name` an external one may carry.
+#[derive(Debug)]
+pub struct Document {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub templates: Vec<Template>,
 }
 
 /// The catalog format this portal reads.
 pub const CATALOG_VERSION: u32 = 1;
+
+/// The most an external catalog document may be, and how many templates it may
+/// hold.
+pub const MAX_CATALOG_BYTES: usize = 1 << 20;
+pub const MAX_CATALOG_TEMPLATES: usize = 64;
 
 /// Where a catalog came from, which decides what it may hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,19 +160,82 @@ pub fn names_registry(image: &str) -> bool {
     !rest.is_empty() && (first.contains('.') || first.contains(':') || first == "localhost")
 }
 
+/// The registry host (with its port, if any) an image names, if it names one.
+pub fn image_host(image: &str) -> Option<&str> {
+    names_registry(image).then(|| image.split_once('/').map_or(image, |(host, _)| host))
+}
+
+/// A template id inside an external catalog: `^[a-z0-9][a-z0-9-]{0,39}$`.
+pub fn valid_local_id(id: &str) -> bool {
+    let b = id.as_bytes();
+    (1..=40).contains(&b.len())
+        && b[0] != b'-'
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
+/// The slug an admin gives a catalog: `^[a-z0-9][a-z0-9-]{0,31}$`.
+pub fn valid_slug(slug: &str) -> bool {
+    slug.len() <= 32 && valid_local_id(slug)
+}
+
 /// Reads a catalog document and checks it for `source`.
 pub fn parse_catalog(json: &str, source: CatalogSource) -> Result<Vec<Template>, String> {
-    let catalog: Catalog = serde_json::from_str(json).map_err(|e| format!("not a catalog: {e}"))?;
-    match catalog.version {
-        None | Some(CATALOG_VERSION) => {}
+    parse_document(json, source).map(|d| d.templates)
+}
+
+/// Reads a catalog document and checks it for `source`. An external catalog's
+/// errors say which template and which field.
+pub fn parse_document(json: &str, source: CatalogSource) -> Result<Document, String> {
+    if source == CatalogSource::External && json.len() > MAX_CATALOG_BYTES {
+        return Err(format!(
+            "the catalog is {} bytes; the most is {MAX_CATALOG_BYTES}",
+            json.len()
+        ));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("not a catalog: {e}"))?;
+    let Some(object) = value.as_object() else {
+        return Err("not a catalog: expected a JSON object with a `templates` list".into());
+    };
+    match object.get("version") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(v) if v.as_u64() == Some(CATALOG_VERSION.into()) => {}
         Some(other) => {
             return Err(format!(
                 "catalog version {other} isn't one this portal reads (it reads {CATALOG_VERSION})"
             ));
         }
     }
+    let text = |key: &str| -> Result<Option<String>, String> {
+        match object.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(format!("not a catalog: `{key}` must be a string")),
+        }
+    };
+    let (id, name) = (text("id")?, text("name")?);
+    let Some(items) = object.get("templates").and_then(|t| t.as_array()) else {
+        return Err("not a catalog: no `templates` list".into());
+    };
+    if source == CatalogSource::External && items.len() > MAX_CATALOG_TEMPLATES {
+        return Err(format!(
+            "the catalog has {} templates; the most is {MAX_CATALOG_TEMPLATES}",
+            items.len()
+        ));
+    }
+    let mut templates = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let label = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map_or_else(|| format!("template #{}", i + 1), str::to_string);
+        let t: Template =
+            serde_json::from_value(item.clone()).map_err(|e| format!("{label}: {e}"))?;
+        templates.push(t);
+    }
     let mut seen = std::collections::HashSet::new();
-    for t in &catalog.templates {
+    for t in &templates {
         if t.id.is_empty() || !seen.insert(t.id.as_str()) {
             return Err(format!("template id {:?} is empty or repeated", t.id));
         }
@@ -175,20 +243,88 @@ pub fn parse_catalog(json: &str, source: CatalogSource) -> Result<Vec<Template>,
             return Err(format!("{}: no image", t.id));
         }
         if source == CatalogSource::External {
-            if t.local_image.is_some() {
-                return Err(format!("{}: localImage is for the built-in catalog", t.id));
-            }
-            if !names_registry(&t.image) {
-                return Err(format!(
-                    "{}: image {:?} must name a registry (like ghcr.io/owner/name:tag)",
-                    t.id, t.image
-                ));
-            }
+            check_external(t)?;
         }
     }
-    Ok(catalog.templates)
+    Ok(Document {
+        id,
+        name,
+        templates,
+    })
 }
 
+/// What an external template may hold, beyond what every template must.
+fn check_external(t: &Template) -> Result<(), String> {
+    let id = &t.id;
+    if !valid_local_id(id) {
+        return Err(format!(
+            "template id {id:?} must be lower-case letters, digits and hyphens, 1 to 40 characters, not starting with a hyphen"
+        ));
+    }
+    if t.local_image.is_some() {
+        return Err(format!("{id}: localImage is for the built-in catalog"));
+    }
+    if !names_registry(&t.image) {
+        return Err(format!(
+            "{id}: image {:?} must name a registry (like ghcr.io/owner/name:tag)",
+            t.image
+        ));
+    }
+    if t.image.len() > 255 || t.image.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!(
+            "{id}: image {:?} must be one reference of at most 255 characters, with no spaces",
+            t.image
+        ));
+    }
+    if t.name.trim().is_empty()
+        || t.name.chars().count() > 80
+        || t.name.chars().any(char::is_control)
+    {
+        return Err(format!("{id}: name must be 1 to 80 characters"));
+    }
+    if t.description.chars().count() > 500 {
+        return Err(format!("{id}: description is at most 500 characters"));
+    }
+    let class_ok = !t.class.is_empty()
+        && t.class.len() <= 24
+        && t.class
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-');
+    if !class_ok {
+        return Err(format!(
+            "{id}: class must be lower-case letters, digits and hyphens, at most 24 characters"
+        ));
+    }
+    if t.class == moonlight::CLASS {
+        return Err(format!(
+            "{id}: class {:?} is the portal's own, for Moonlight hosts",
+            t.class
+        ));
+    }
+    if t.shm_mb > 16384 {
+        return Err(format!("{id}: shmMb is at most 16384"));
+    }
+    if let Some(fps) = t.fps
+        && !apps::FPS_CHOICES.contains(&fps)
+    {
+        return Err(format!("{id}: fps is 60, 90 or 120"));
+    }
+    if let Some(shared) = &t.shared
+        && (shared.per_user.len() > 16
+            || !shared
+                .per_user
+                .iter()
+                .all(|p| cha_wire::valid_relative_path(p)))
+    {
+        return Err(format!(
+            "{id}: shared.perUser holds at most 16 relative paths of plain characters"
+        ));
+    }
+    Ok(())
+}
+
+/// The built-in catalog (`images/catalog.json`). Loaded catalogs come on top
+/// of it through [`all`] and [`find`].
 pub fn catalog() -> &'static [Template] {
     static CATALOG: OnceLock<Vec<Template>> = OnceLock::new();
     CATALOG.get_or_init(|| {
@@ -200,12 +336,35 @@ pub fn catalog() -> &'static [Template] {
     })
 }
 
+/// A built-in template by id.
 pub(crate) fn template(id: &str) -> Option<&'static Template> {
     catalog().iter().find(|t| t.id == id)
 }
 
-async fn list_catalog(_: PlayerUser) -> Json<&'static [Template]> {
-    Json(catalog())
+/// Every template a user can launch: the built-in ones, then the available
+/// ones of loaded catalogs (`<catalog>.<app>`).
+pub(crate) fn all(state: &AppState) -> Vec<Template> {
+    let mut all = catalog().to_vec();
+    all.extend(state.catalogs.available());
+    all
+}
+
+/// The template `id` names, built in or from a loaded catalog, if a user can
+/// launch it.
+pub(crate) fn find(state: &AppState, id: &str) -> Option<Template> {
+    template(id)
+        .cloned()
+        .or_else(|| state.catalogs.available_by_id(id))
+}
+
+/// Like [`find`], but also templates waiting for approval: for naming
+/// environments that already exist.
+pub(crate) fn find_any(state: &AppState, id: &str) -> Option<Template> {
+    template(id).cloned().or_else(|| state.catalogs.by_id(id))
+}
+
+async fn list_catalog(State(state): State<AppState>, _: PlayerUser) -> Json<Vec<Template>> {
+    Json(all(&state))
 }
 
 /// The logos the catalog names, built in like the catalog itself. A test
@@ -222,8 +381,18 @@ const ICONS: &[(&str, &[u8])] = &[
 ];
 
 /// A template's logo. Served as an inert image: no scripts, nothing fetched.
-async fn catalog_icon(_: PlayerUser, Path(id): Path<String>) -> ApiResult<Response> {
-    let Some((_, svg)) = ICONS.iter().find(|(t, _)| *t == id) else {
+async fn catalog_icon(
+    State(state): State<AppState>,
+    _: PlayerUser,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let loaded;
+    let svg: &[u8] = if let Some((_, svg)) = ICONS.iter().find(|(t, _)| *t == id) {
+        svg
+    } else if let Some(svg) = state.catalogs.icon(&id) {
+        loaded = svg;
+        &loaded
+    } else {
         return Err(ApiError::NotFound("no icon for that template".into()));
     };
     Ok((
@@ -236,7 +405,7 @@ async fn catalog_icon(_: PlayerUser, Path(id): Path<String>) -> ApiResult<Respon
                 "default-src 'none'; style-src 'unsafe-inline'",
             ),
         ],
-        *svg,
+        svg.to_vec(),
     )
         .into_response())
 }
@@ -378,6 +547,7 @@ pub(crate) async fn codecs_of(
         .await?
         .ok_or_else(|| ApiError::NotFound("no such environment".into()))?;
     Ok(view(
+        state,
         row,
         &nodes_by_id(state).await?,
         &owner,
@@ -387,6 +557,7 @@ pub(crate) async fn codecs_of(
 }
 
 fn view(
+    state: &AppState,
     row: EnvironmentRow,
     nodes: &HashMap<String, NodeRow>,
     viewer: &User,
@@ -425,10 +596,10 @@ fn view(
         .flatten()
         .and_then(|j| serde_json::from_str(j).ok());
     EnvironmentView {
-        template_name: template(&row.template_id)
-            .map(|t| t.name.as_str())
-            .or_else(|| moonlight.name(&row.template_id))
-            .map_or_else(|| row.template_id.clone(), str::to_string),
+        template_name: find_any(state, &row.template_id)
+            .map(|t| t.name)
+            .or_else(|| moonlight.name(&row.template_id).map(str::to_string))
+            .unwrap_or_else(|| row.template_id.clone()),
         node_name: node.map(|n| n.name.clone()),
         id: row.id,
         template_id: row.template_id,
@@ -475,7 +646,7 @@ async fn list(
     let index = moonlight::Index::load(&state).await?;
     let mut views: Vec<_> = rows
         .into_iter()
-        .map(|r| view(r, &nodes, &user, &index))
+        .map(|r| view(&state, r, &nodes, &user, &index))
         .collect();
     for v in &mut views {
         attach_usage(&state, v);
@@ -490,6 +661,7 @@ async fn show(
 ) -> ApiResult<Json<EnvironmentView>> {
     let row = visible(&state, &user, &id).await?;
     let mut v = view(
+        &state,
         row,
         &nodes_by_id(&state).await?,
         &user,
@@ -542,6 +714,7 @@ async fn launch(
     };
     let row = launch_environment(&state, &user, caller, &req).await?;
     Ok(Json(view(
+        &state,
         row,
         &nodes_by_id(&state).await?,
         &user,
@@ -625,6 +798,18 @@ pub(crate) async fn launch_environment(
             format!(
                 "{} can't keep or share app data yet: update its agent (it reports its data root once it can)",
                 node.name
+            ),
+        ));
+    }
+    // The node keeps app data in directories named by the template id, and
+    // only takes ids of its own shape (no dots): a loaded catalog's app can't
+    // have a home or a shared directory yet (ADR 0019).
+    if app_data.is_some() && !cha_wire::valid_template_id(&template.id) {
+        return Err(ApiError::conflict(
+            "storage_unsupported",
+            format!(
+                "{} comes from a loaded catalog, and nodes can't keep app data for those yet: turn its saved data and sharing off",
+                template.name
             ),
         ));
     }
@@ -741,6 +926,7 @@ async fn stop(
     stop_environment(&state, &user, caller, &row).await?;
     let row = visible(&state, &user, &id).await?;
     Ok(Json(view(
+        &state,
         row,
         &nodes_by_id(&state).await?,
         &user,

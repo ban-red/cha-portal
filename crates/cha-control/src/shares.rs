@@ -253,8 +253,8 @@ async fn info(
         Some(row) => environments::codecs_of(&state, row).await?,
         None => None,
     };
-    let app = environments::template(&share.template_id)
-        .map(|t| t.name.clone())
+    let app = environments::find_any(&state, &share.template_id)
+        .map(|t| t.name)
         .unwrap_or(share.template_id);
     Ok(Json(json!({
         "app": app,
