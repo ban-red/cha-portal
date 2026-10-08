@@ -625,7 +625,11 @@ pub async fn transition_environment(
     for f in from {
         query = query.bind(*f);
     }
-    Ok(query.execute(db).await?.rows_affected() > 0)
+    let moved = query.execute(db).await?.rows_affected() > 0;
+    if moved && state != "running" {
+        end_environment_shares(db, id).await?;
+    }
+    Ok(moved)
 }
 
 /// An environment that stopped on its own, as its node tells it: moves it to
@@ -654,6 +658,9 @@ pub async fn record_exit(
     .await?
     .rows_affected()
         > 0;
+    if moved {
+        end_environment_shares(db, id).await?;
+    }
     if moved || !failed || log.is_none() {
         return Ok(moved);
     }
@@ -697,7 +704,14 @@ pub async fn fail_node_environments(
     node_id: &str,
     detail: &str,
 ) -> Result<u64, sqlx::Error> {
-    Ok(sqlx::query(
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM environments \
+         WHERE node_id = ? AND state IN ('starting', 'running', 'stopping')",
+    )
+    .bind(node_id)
+    .fetch_all(db)
+    .await?;
+    let moved = sqlx::query(
         "UPDATE environments SET state = 'failed', detail = ?, warning = NULL, updated_at = ? \
          WHERE node_id = ? AND state IN ('starting', 'running', 'stopping')",
     )
@@ -706,7 +720,172 @@ pub async fn fail_node_environments(
     .bind(node_id)
     .execute(db)
     .await?
-    .rows_affected())
+    .rows_affected();
+    for id in ids {
+        end_environment_shares(db, &id).await?;
+    }
+    Ok(moved)
+}
+
+// ---- Share links (0014) ----
+
+/// A share, without its token (only the hash is kept).
+#[derive(Debug, FromRow)]
+pub struct ShareRow {
+    pub id: String,
+    pub environment_id: String,
+    pub created_by: String,
+    pub role: String,
+    pub slot: i64,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+const SHARE_COLUMNS: &str = "id, environment_id, created_by, role, slot, created_at, expires_at";
+
+/// Makes a share on a slot of an environment, revoking the live one there.
+/// Returns the revoked share's id, if there was one.
+pub async fn replace_share(
+    db: &SqlitePool,
+    share: &ShareRow,
+    token_hash: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let old: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM shares WHERE environment_id = ? AND slot = ? AND revoked_at IS NULL",
+    )
+    .bind(&share.environment_id)
+    .bind(share.slot)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(old) = &old {
+        sqlx::query("UPDATE shares SET revoked_at = ? WHERE id = ?")
+            .bind(now())
+            .bind(old)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO shares (id, environment_id, created_by, role, slot, token_hash, created_at, expires_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&share.id)
+    .bind(&share.environment_id)
+    .bind(&share.created_by)
+    .bind(&share.role)
+    .bind(share.slot)
+    .bind(token_hash)
+    .bind(share.created_at)
+    .bind(share.expires_at)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(old)
+}
+
+/// An environment's shares that haven't been revoked or expired.
+pub async fn live_shares(
+    db: &SqlitePool,
+    environment_id: &str,
+) -> Result<Vec<ShareRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {SHARE_COLUMNS} FROM shares \
+         WHERE environment_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY slot"
+    ))
+    .bind(environment_id)
+    .bind(now())
+    .fetch_all(db)
+    .await
+}
+
+/// A live share of an environment, by id.
+pub async fn live_share(
+    db: &SqlitePool,
+    environment_id: &str,
+    id: &str,
+) -> Result<Option<ShareRow>, sqlx::Error> {
+    Ok(live_shares(db, environment_id)
+        .await?
+        .into_iter()
+        .find(|s| s.id == id))
+}
+
+/// Revokes one live share of an environment; whether there was one.
+pub async fn revoke_share(
+    db: &SqlitePool,
+    environment_id: &str,
+    id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE shares SET revoked_at = ? \
+         WHERE id = ? AND environment_id = ? AND revoked_at IS NULL",
+    )
+    .bind(now())
+    .bind(id)
+    .bind(environment_id)
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// The live share a token names, with its environment's state and owner.
+#[derive(Debug, FromRow)]
+pub struct SharedAccess {
+    #[sqlx(flatten)]
+    pub share: ShareRow,
+    pub state: String,
+    pub template_id: String,
+    pub owner_name: String,
+}
+
+/// `None` for an unknown, revoked or expired token, or an environment that is
+/// stopping or over.
+pub async fn share_by_token_hash(
+    db: &SqlitePool,
+    token_hash: &str,
+) -> Result<Option<SharedAccess>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT s.id, s.environment_id, s.created_by, s.role, s.slot, s.created_at, s.expires_at, \
+                e.state, e.template_id, u.display_name AS owner_name \
+         FROM shares s \
+         JOIN environments e ON e.id = s.environment_id \
+         JOIN users u ON u.id = e.owner_id \
+         WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ? \
+           AND e.state IN ('starting', 'running')",
+    )
+    .bind(token_hash)
+    .bind(now())
+    .fetch_optional(db)
+    .await
+}
+
+/// An environment left `running`: every live share on it ends, and each is
+/// audited (no actor: the portal did it).
+pub async fn end_environment_shares(
+    db: &SqlitePool,
+    environment_id: &str,
+) -> Result<(), sqlx::Error> {
+    let ids: Vec<String> = sqlx::query_scalar(
+        "UPDATE shares SET revoked_at = ? WHERE environment_id = ? AND revoked_at IS NULL \
+         RETURNING id",
+    )
+    .bind(now())
+    .bind(environment_id)
+    .fetch_all(db)
+    .await?;
+    for id in ids {
+        audit(
+            db,
+            None,
+            "share.revoked",
+            Some(environment_id),
+            Some(serde_json::json!({ "share": id, "reason": "environment_ended" })),
+            None,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 // ---- App data settings (0004) ----

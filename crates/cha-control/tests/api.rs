@@ -2693,3 +2693,720 @@ async fn a_device_token_updates_its_last_use_at_most_once_a_minute() {
         .unwrap();
     assert_eq!(used, recent);
 }
+
+// ---- Share links for players (ADR 0014) ----
+
+impl TestPortal {
+    /// Makes a share on `slot` of environment `env` as `cookie`; its reply.
+    async fn share(&self, cookie: &str, env: &str, slot: i64) -> Reply {
+        self.call(
+            "POST",
+            &format!("/api/environments/{env}/shares"),
+            Some(cookie),
+            Some(json!({ "role": "player", "slot": slot })),
+        )
+        .await
+    }
+}
+
+/// The token in a share's `url`.
+fn token_of(share: &Reply) -> String {
+    share.body["url"]
+        .as_str()
+        .and_then(|u| u.strip_prefix("/s/"))
+        .unwrap_or_else(|| panic!("no share url in {}", share.body))
+        .to_string()
+}
+
+#[tokio::test]
+async fn only_the_owner_or_an_admin_makes_a_share_of_a_running_environment() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+    let (_, env) = p.live_environment(&alice_id, "chrome").await;
+
+    let made = p.share(&alice, &env, 1).await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    assert_eq!(made.body["role"], "player");
+    assert_eq!(made.body["slot"], 1);
+    let ttl = made.body["expires_at"].as_i64().unwrap() - db::now();
+    assert!((24 * 3600 - 5..=24 * 3600).contains(&ttl), "{ttl}");
+    // 256 bits, base64url.
+    assert_eq!(token_of(&made).len(), 43);
+
+    // An admin may; another user can't see the environment; nobody else is signed in.
+    assert_eq!(p.share(&admin, &env, 2).await.status, StatusCode::OK);
+    assert_eq!(p.share(&bob, &env, 3).await.status, StatusCode::NOT_FOUND);
+    let anon = p
+        .call(
+            "POST",
+            &format!("/api/environments/{env}/shares"),
+            None,
+            Some(json!({ "role": "player", "slot": 1 })),
+        )
+        .await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
+    let listed = p
+        .call(
+            "GET",
+            &format!("/api/environments/{env}/shares"),
+            Some(&bob),
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, StatusCode::NOT_FOUND);
+
+    // Only player 2 to 4, and only the player role.
+    for slot in [0, 4, -1] {
+        let bad = p.share(&alice, &env, slot).await;
+        assert_eq!(bad.status, StatusCode::BAD_REQUEST, "slot {slot}");
+        assert_eq!(bad.body["error"], "bad_slot");
+    }
+    let viewer = p
+        .call(
+            "POST",
+            &format!("/api/environments/{env}/shares"),
+            Some(&alice),
+            Some(json!({ "role": "viewer", "slot": 1 })),
+        )
+        .await;
+    assert_eq!(viewer.body["error"], "bad_role");
+
+    // The list shows the live ones and never a token.
+    let listed = p
+        .call(
+            "GET",
+            &format!("/api/environments/{env}/shares"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    let listed = listed.body.as_array().unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0]["slot"], 1);
+    assert_eq!(listed[1]["slot"], 2);
+    for share in listed {
+        assert!(share.get("url").is_none() && share.get("token").is_none());
+        assert!(share["id"].is_string() && share["created_at"].is_i64());
+    }
+
+    // Only a running environment can be shared.
+    let (_, starting) = p.live_environment(&alice_id, "chrome").await;
+    db::transition_environment(&p.db, &starting, &["running"], "stopping", None)
+        .await
+        .unwrap();
+    let refused = p.share(&alice, &starting, 1).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(refused.body["error"], "not_running");
+}
+
+#[tokio::test]
+async fn a_new_share_on_a_slot_replaces_the_old() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (_, env) = p.live_environment(&alice_id, "chrome").await;
+
+    let first = p.share(&alice, &env, 1).await;
+    let other_slot = p.share(&alice, &env, 2).await;
+    let second = p.share(&alice, &env, 1).await;
+    assert_ne!(token_of(&first), token_of(&second));
+
+    let old = p
+        .call(
+            "GET",
+            &format!("/api/shares/{}", token_of(&first)),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(old.status, StatusCode::NOT_FOUND);
+    for live in [&second, &other_slot] {
+        let ok = p
+            .call(
+                "GET",
+                &format!("/api/shares/{}", token_of(live)),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+    }
+    let listed = p
+        .call(
+            "GET",
+            &format!("/api/environments/{env}/shares"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    let ids: Vec<_> = listed
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].clone())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![second.body["id"].clone(), other_slot.body["id"].clone()]
+    );
+}
+
+#[tokio::test]
+async fn a_token_shows_what_it_is_for_and_every_dead_one_is_the_same_404() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (_, env) = p.live_environment(&alice_id, "chrome").await;
+    let me = p.call("GET", "/api/me", Some(&alice), None).await;
+
+    let made = p.share(&alice, &env, 2).await;
+    // No cookie: the token is the credential.
+    let info = p
+        .call(
+            "GET",
+            &format!("/api/shares/{}", token_of(&made)),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(info.status, StatusCode::OK, "{}", info.body);
+    assert_eq!(info.body["owner"], me.body["displayName"]);
+    assert_eq!(info.body["role"], "player");
+    assert_eq!(info.body["slot"], 2);
+    assert_eq!(info.body["state"], "running");
+    let catalog = p.call("GET", "/api/catalog", Some(&alice), None).await;
+    let name = catalog
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "chrome")
+        .unwrap()["name"]
+        .clone();
+    assert_eq!(info.body["app"], name);
+
+    // Unknown, revoked, expired and stopped answer alike.
+    let unknown = p.call("GET", "/api/shares/not-a-token", None, None).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.body["error"], "unknown_share");
+
+    let revoked = p.share(&alice, &env, 1).await;
+    p.call(
+        "DELETE",
+        &format!(
+            "/api/environments/{env}/shares/{}",
+            revoked.body["id"].as_str().unwrap()
+        ),
+        Some(&alice),
+        None,
+    )
+    .await;
+    let expired = p.share(&alice, &env, 3).await;
+    sqlx::query("UPDATE shares SET expires_at = ? WHERE id = ?")
+        .bind(db::now() - 1)
+        .bind(expired.body["id"].as_str().unwrap())
+        .execute(&p.db)
+        .await
+        .unwrap();
+    for token in [token_of(&revoked), token_of(&expired)] {
+        let dead = p
+            .call("GET", &format!("/api/shares/{token}"), None, None)
+            .await;
+        assert_eq!(dead.status, StatusCode::NOT_FOUND);
+        assert_eq!(dead.body, unknown.body);
+    }
+    // An expired one isn't listed either.
+    let listed = p
+        .call(
+            "GET",
+            &format!("/api/environments/{env}/shares"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    assert_eq!(listed.body.as_array().unwrap().len(), 1);
+
+    // Stopped, whether or not the revoking has happened yet.
+    sqlx::query("UPDATE environments SET state = 'stopping' WHERE id = ?")
+        .bind(&env)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    let stopped = p
+        .call(
+            "GET",
+            &format!("/api/shares/{}", token_of(&made)),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(stopped.status, StatusCode::NOT_FOUND);
+    assert_eq!(stopped.body, unknown.body);
+}
+
+#[tokio::test]
+async fn revoking_a_share_ends_it_for_the_owner_and_admins_only() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+    let (_, env) = p.live_environment(&alice_id, "chrome").await;
+    let made = p.share(&alice, &env, 1).await;
+    let path = format!(
+        "/api/environments/{env}/shares/{}",
+        made.body["id"].as_str().unwrap()
+    );
+
+    assert_eq!(
+        p.call("DELETE", &path, Some(&bob), None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        p.call(
+            "GET",
+            &format!("/api/shares/{}", token_of(&made)),
+            None,
+            None
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        p.call("DELETE", &path, Some(&alice), None).await.status,
+        StatusCode::NO_CONTENT
+    );
+    // Again: it is gone.
+    assert_eq!(
+        p.call("DELETE", &path, Some(&alice), None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        p.call(
+            "GET",
+            &format!("/api/shares/{}", token_of(&made)),
+            None,
+            None
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    // The slot is free for a new link, and an admin may revoke it.
+    let again = p.share(&alice, &env, 1).await;
+    let path = format!(
+        "/api/environments/{env}/shares/{}",
+        again.body["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        p.call("DELETE", &path, Some(&admin), None).await.status,
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn an_environment_that_leaves_running_revokes_its_shares() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let token_after = |how: &'static str| {
+        let (p, alice, alice_id, admin) = (&p, alice.clone(), alice_id.clone(), admin.clone());
+        async move {
+            let (_, env) = p.live_environment(&alice_id, "chrome").await;
+            let made = p.share(&alice, &env, 1).await;
+            let token = token_of(&made);
+            // Stopping through the API, the node's exit report, or the node going.
+            match how {
+                "stop" => {
+                    let stopped = p
+                        .call(
+                            "DELETE",
+                            &format!("/api/environments/{env}"),
+                            Some(&alice),
+                            None,
+                        )
+                        .await;
+                    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.body);
+                }
+                "exit" => {
+                    db::record_exit(&p.db, &env, false, "the app exited", None)
+                        .await
+                        .unwrap();
+                }
+                "failed" => {
+                    db::transition_environment(&p.db, &env, &["running"], "failed", Some("x"))
+                        .await
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let live: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM shares WHERE environment_id = ? AND revoked_at IS NULL",
+            )
+            .bind(&env)
+            .fetch_one(&p.db)
+            .await
+            .unwrap();
+            assert_eq!(live, 0, "{how}");
+            let reply = p
+                .call("GET", &format!("/api/shares/{token}"), None, None)
+                .await;
+            assert_eq!(reply.status, StatusCode::NOT_FOUND, "{how}");
+            let listed = p
+                .call(
+                    "GET",
+                    &format!("/api/environments/{env}/shares"),
+                    Some(&admin),
+                    None,
+                )
+                .await;
+            assert_eq!(listed.body, json!([]), "{how}");
+        }
+    };
+    for how in ["stop", "exit", "failed"] {
+        token_after(how).await;
+    }
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let revoked = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "share.revoked")
+        .count();
+    assert_eq!(revoked, 3);
+}
+
+#[tokio::test]
+async fn sharing_is_audited_and_the_token_never_is() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (_, env) = p.live_environment(&alice_id, "chrome").await;
+    let first = p.share(&alice, &env, 1).await;
+    let second = p.share(&alice, &env, 1).await;
+    p.call(
+        "DELETE",
+        &format!(
+            "/api/environments/{env}/shares/{}",
+            second.body["id"].as_str().unwrap()
+        ),
+        Some(&alice),
+        None,
+    )
+    .await;
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let actions: Vec<&str> = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .filter(|a| a.starts_with("share."))
+        .collect();
+    // Newest first: created, replaced (revoked), created, revoked.
+    assert_eq!(
+        actions,
+        [
+            "share.revoked",
+            "share.created",
+            "share.revoked",
+            "share.created"
+        ]
+    );
+    let text = audit.body.to_string();
+    assert!(!text.contains(&token_of(&first)) && !text.contains(&token_of(&second)));
+    // Only the hash is stored.
+    let stored: Vec<String> = sqlx::query_scalar("SELECT token_hash FROM shares")
+        .fetch_all(&p.db)
+        .await
+        .unwrap();
+    assert!(!stored.contains(&token_of(&first)) && stored.len() == 2);
+}
+
+#[tokio::test]
+async fn the_unauthenticated_share_routes_are_limited_per_address() {
+    let p = portal().await;
+    for _ in 0..30 {
+        let r = p
+            .call_from("203.0.113.7:1000", "/api/shares/guess", None)
+            .await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND);
+    }
+    let limited = p
+        .call_from("203.0.113.7:1000", "/api/shares/guess", None)
+        .await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.body["error"], "rate_limited");
+    // The connect route shares the budget.
+    let connect = p
+        .call_from(
+            "203.0.113.7:1001",
+            "/api/shares/guess/connect",
+            Some(json!({ "codec": "h264", "offer": { "sdp": "x" } })),
+        )
+        .await;
+    assert_eq!(connect.status, StatusCode::TOO_MANY_REQUESTS);
+    // Another address has its own.
+    let other = p
+        .call_from("203.0.113.8:1000", "/api/shares/guess", None)
+        .await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND);
+}
+
+/// A node, connected over a real WebSocket, that answers a connect.
+mod node {
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use cha_wire::{NodeKey, NodeRequest, NodeResponse, ToNode, ToPortal};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    pub type Socket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    async fn next(ws: &mut Socket) -> ToNode {
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("the portal said nothing for five seconds")
+                .expect("the connection ended")
+                .expect("a websocket error");
+            if let Message::Text(text) = msg {
+                return serde_json::from_str(&text).unwrap();
+            }
+        }
+    }
+
+    /// Connects as the enrolled node `id` with `key`.
+    pub async fn join(addr: SocketAddr, id: &str, key: &NodeKey) -> Socket {
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}{}", cha_wire::CONNECT_PATH))
+                .await
+                .unwrap();
+        let ToNode::Challenge { nonce, protocol } = next(&mut ws).await else {
+            panic!("expected a challenge");
+        };
+        let hello = ToPortal::Hello {
+            node_id: id.into(),
+            signature: key.sign_b64(&cha_wire::hello_message(&nonce, id)),
+            agent_version: "test".into(),
+            protocol,
+        };
+        ws.send(Message::text(serde_json::to_string(&hello).unwrap()))
+            .await
+            .unwrap();
+        next(&mut ws).await; // the welcome
+        ws
+    }
+
+    /// The next request the portal makes of the node.
+    pub async fn request(ws: &mut Socket) -> (u64, NodeRequest) {
+        loop {
+            if let ToNode::Request { id, request } = next(ws).await {
+                return (id, request);
+            }
+        }
+    }
+
+    pub async fn respond(ws: &mut Socket, id: u64, result: Result<NodeResponse, String>) {
+        let msg = ToPortal::Response { id, result };
+        ws.send(Message::text(serde_json::to_string(&msg).unwrap()))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_guest_connects_with_a_player_token_that_carries_the_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        database: dir.path().join("cha.db"),
+        web_dir: None,
+        secure_cookies: false,
+        session_days: 14,
+        ice: Default::default(),
+        dev_login: false,
+        discover_nodes: false,
+        public_url: None,
+    };
+    let pool = db::open(&config.database).await.unwrap();
+    let state = AppState::new(config, pool.clone()).await.unwrap();
+    let portal_key = state.media_key.public_b64();
+    let router = app(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = router.clone();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            served.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let p = TestPortal {
+        app: router,
+        db: pool.clone(),
+        discovered: Default::default(),
+        _dir: dir,
+    };
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).unwrap();
+    let key = cha_wire::NodeKey::from_secret(secret);
+    let node_id = db::new_id();
+    sqlx::query("INSERT INTO nodes (id, name, public_key, enrolled_at) VALUES (?, 'box', ?, 0)")
+        .bind(&node_id)
+        .bind(key.public_b64())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let env = db::new_id();
+    db::insert_environment(&pool, &env, &alice_id, "chrome", &node_id, None, "running")
+        .await
+        .unwrap();
+    let mut ws = node::join(addr, &node_id, &key).await;
+
+    let made = p.share(&alice, &env, 2).await;
+    let share_id = made.body["id"].as_str().unwrap().to_string();
+    let path = format!("/api/shares/{}/connect", token_of(&made));
+
+    // WebRTC: the node is handed the offer and a token for a player on slot 2.
+    let guest = {
+        let app = p.app.clone();
+        let path = path.clone();
+        tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .extension(ConnectInfo(
+                    "198.51.100.4:4000".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::from(
+                    json!({ "codec": "h264", "offer": { "type": "offer", "sdp": "v=0" } })
+                        .to_string(),
+                ))
+                .unwrap();
+            let res = app.oneshot(req).await.unwrap();
+            let status = res.status();
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        })
+    };
+    let (id, request) = node::request(&mut ws).await;
+    let cha_wire::NodeRequest::Connect {
+        environment_id,
+        media_token,
+        codec,
+        ..
+    } = request
+    else {
+        panic!("expected a connect, got {request:?}");
+    };
+    assert_eq!(
+        (environment_id.as_str(), codec.as_str()),
+        (env.as_str(), "h264")
+    );
+    let claims = cha_wire::verify_media_token(&portal_key, &media_token, &env, db::now()).unwrap();
+    assert_eq!(claims.role, "player");
+    assert_eq!(claims.slot, Some(2));
+    assert_eq!(claims.sub, format!("share:{share_id}"));
+    assert_eq!(claims.env, env);
+    node::respond(
+        &mut ws,
+        id,
+        Ok(cha_wire::NodeResponse::Answer {
+            answer: json!({ "type": "answer", "sdp": "v=0" }),
+        }),
+    )
+    .await;
+    let (status, body) = guest.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["transport"], "webrtc");
+    assert_eq!(body["answer"]["type"], "answer");
+
+    // WebTransport: the token rides in the URLs.
+    let guest = {
+        let app = p.app.clone();
+        let path = path.clone();
+        tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "codec": "h264", "transport": "webtransport" }).to_string(),
+                ))
+                .unwrap();
+            let res = app.oneshot(req).await.unwrap();
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        })
+    };
+    let (id, request) = node::request(&mut ws).await;
+    assert!(matches!(
+        request,
+        cha_wire::NodeRequest::StreamerInfo { .. }
+    ));
+    node::respond(
+        &mut ws,
+        id,
+        Ok(cha_wire::NodeResponse::StreamerInfo {
+            info: json!({ "wt_port": 7602, "cert_hash_hex": "ab", "addresses": ["192.168.1.20"] }),
+        }),
+    )
+    .await;
+    let body = guest.await.unwrap();
+    let url = body["urls"][0].as_str().unwrap();
+    let token = url.split("token=").nth(1).unwrap();
+    let claims = cha_wire::verify_media_token(&portal_key, token, &env, db::now()).unwrap();
+    assert_eq!((claims.role.as_str(), claims.slot), ("player", Some(2)));
+
+    // Each join is audited with the address and no token.
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let joined: Vec<_> = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "share.joined")
+        .collect();
+    assert_eq!(joined.len(), 2);
+    assert!(joined.iter().any(|e| e["ip"] == "198.51.100.4"));
+    assert!(!audit.body.to_string().contains(&token_of(&made)));
+
+    // A revoked link connects no more, and the node isn't asked.
+    p.call(
+        "DELETE",
+        &format!("/api/environments/{env}/shares/{share_id}"),
+        Some(&alice),
+        None,
+    )
+    .await;
+    let gone = p
+        .call(
+            "POST",
+            &path,
+            None,
+            Some(json!({ "codec": "h264", "offer": { "sdp": "v=0" } })),
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert_eq!(gone.body["error"], "unknown_share");
+    let silent = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        node::request(&mut ws),
+    )
+    .await;
+    assert!(silent.is_err());
+}

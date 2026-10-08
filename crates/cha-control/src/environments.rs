@@ -269,6 +269,23 @@ fn device_codecs(device: Device) -> Vec<String> {
     codecs
 }
 
+/// The codecs `row`'s device encodes (None: unknown), as its view shows them.
+pub(crate) async fn codecs_of(
+    state: &AppState,
+    row: EnvironmentRow,
+) -> ApiResult<Option<Vec<String>>> {
+    let owner = db::user_by_id(&state.db, &row.owner_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("no such environment".into()))?;
+    Ok(view(
+        row,
+        &nodes_by_id(state).await?,
+        &owner,
+        &moonlight::Index::load(state).await?,
+    )
+    .codecs)
+}
+
 fn view(
     row: EnvironmentRow,
     nodes: &HashMap<String, NodeRow>,
@@ -339,7 +356,7 @@ async fn nodes_by_id(state: &AppState) -> ApiResult<HashMap<String, NodeRow>> {
 }
 
 /// The environment, if this user may see it (its owner, or an admin).
-async fn visible(state: &AppState, user: &User, id: &str) -> ApiResult<EnvironmentRow> {
+pub(crate) async fn visible(state: &AppState, user: &User, id: &str) -> ApiResult<EnvironmentRow> {
     db::environment_by_id(&state.db, id)
         .await?
         .filter(|e| e.owner_id == user.id || user.role == Role::Admin)
@@ -670,7 +687,7 @@ enum Transport {
 }
 
 #[derive(Deserialize)]
-struct ConnectRequest {
+pub(crate) struct ConnectRequest {
     /// `h264`, `hevc` or `av1`: what this browser decodes best.
     codec: String,
     #[serde(default)]
@@ -682,9 +699,9 @@ struct ConnectRequest {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ConnectResponse {
+pub(crate) struct ConnectResponse {
     codec: String,
-    transport: &'static str,
+    pub(crate) transport: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     answer: Option<serde_json::Value>,
     /// WebTransport: one URL per address of the node, best first, each with
@@ -733,6 +750,47 @@ async fn connect(
     Json(req): Json<ConnectRequest>,
 ) -> ApiResult<Json<ConnectResponse>> {
     let row = visible(&state, &user, &id).await?;
+    let role = if row.owner_id == user.id {
+        "owner"
+    } else {
+        "admin"
+    };
+    let guest = Guest {
+        sub: user.id.clone(),
+        role,
+        slot: None,
+    };
+    let (codec, response) = broker(&state, &row, req, guest).await?;
+    db::audit(
+        &state.db,
+        Some(&user.id),
+        "environment.connected",
+        Some(&id),
+        Some(json!({ "codec": codec, "transport": response.transport })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok(Json(response))
+}
+
+/// Who a media token is for: its `sub`, `role` and, for a player, gamepad slot.
+pub(crate) struct Guest {
+    pub(crate) sub: String,
+    pub(crate) role: &'static str,
+    pub(crate) slot: Option<u8>,
+}
+
+/// Connects `guest` to a running environment, for the owner's or an admin's
+/// own request and for a share link alike: checks the request, signs a media
+/// token and has the environment's node broker the connection. Returns the
+/// codec asked for too.
+pub(crate) async fn broker(
+    state: &AppState,
+    row: &EnvironmentRow,
+    req: ConnectRequest,
+    guest: Guest,
+) -> ApiResult<(String, ConnectResponse)> {
+    let id = row.id.clone();
     if row.state != "running" {
         return Err(ApiError::conflict(
             "not_running",
@@ -758,17 +816,13 @@ async fn connect(
     }
     let node_id = row
         .node_id
+        .clone()
         .ok_or_else(|| ApiError::conflict("no_node", "the environment's node was removed"))?;
     let claims = MediaClaims {
         env: id.clone(),
-        sub: user.id.clone(),
-        role: if row.owner_id == user.id {
-            "owner"
-        } else {
-            "admin"
-        }
-        .into(),
-        slot: None,
+        sub: guest.sub,
+        role: guest.role.into(),
+        slot: guest.slot,
         exp: db::now() + MEDIA_TOKEN_SECS,
     };
     let media_token = sign_media_token(&state.media_key, &claims);
@@ -832,16 +886,7 @@ async fn connect(
             }
         }
     };
-    db::audit(
-        &state.db,
-        Some(&user.id),
-        "environment.connected",
-        Some(&id),
-        Some(json!({ "codec": req.codec, "transport": response.transport })),
-        client.ip.as_deref(),
-    )
-    .await?;
-    Ok(Json(response))
+    Ok((req.codec, response))
 }
 
 /// Where a launch runs: the device the request names, or the best one

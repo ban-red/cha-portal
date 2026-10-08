@@ -17,6 +17,7 @@ export {
 } from "./player";
 export { OVERLAY_LEVELS, type OverlayLevel, type OverlayState } from "./overlay";
 export { CaptureMode, type CaptureState, type CaptureView } from "./captureMode";
+export type { InputMode } from "./inputMode";
 export {
   assessHealth,
   HEALTH_WINDOW,

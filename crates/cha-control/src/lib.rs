@@ -23,6 +23,7 @@ pub mod nodes;
 pub mod placement;
 pub mod prefs;
 pub mod settings;
+pub mod shares;
 pub mod storage;
 
 use std::net::SocketAddr;
@@ -77,6 +78,8 @@ pub struct AppState {
     pub moonlight: Arc<moonlight::State>,
     /// Pairing requests from the nodes' GameStream hosts (ADR 0009).
     pub gamestream: Arc<gamestream::State>,
+    /// Requests to the share links' unauthenticated routes, per address.
+    pub share_limit: Arc<shares::RateLimit>,
 }
 
 impl AppState {
@@ -93,6 +96,7 @@ impl AppState {
             discovered: Arc::default(),
             moonlight: Arc::default(),
             gamestream: Arc::default(),
+            share_limit: Arc::default(),
         })
     }
 }

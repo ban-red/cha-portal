@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
-import { ArrowUpDown, LayoutGrid, List, Monitor, MonitorPlay, Pin, Search, Square, X } from "lucide-vue-next";
+import { ArrowUpDown, LayoutGrid, List, Monitor, MonitorPlay, Pin, Search, Share2, Square, X } from "lucide-vue-next";
 import { computed, nextTick, reactive, ref } from "vue";
 
 import { ApiError, api, type Environment, type EnvironmentState, type PlacementChoice, type StorageApp, type Template } from "../api";
@@ -10,6 +10,7 @@ import EnvironmentUsage from "../components/EnvironmentUsage.vue";
 import FormError from "../components/FormError.vue";
 import GpuBadge from "../components/GpuBadge.vue";
 import MoonlightHostSection from "../components/MoonlightHostSection.vue";
+import ShareDialog from "../components/ShareDialog.vue";
 import SegmentedControl from "../components/SegmentedControl.vue";
 import WarningNote from "../components/WarningNote.vue";
 import { ago, dateTime } from "../format";
@@ -26,6 +27,9 @@ import { useTheme } from "../themes/runtime";
 
 const session = useSession();
 const queryClient = useQueryClient();
+
+/** The running environment whose Share dialog is open. */
+const sharing = ref<Environment | null>(null);
 
 const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 });
 
@@ -327,6 +331,16 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             Connect
           </RouterLink>
           <button
+            v-if="e.state === 'running'"
+            class="btn-ghost min-h-9 shrink-0 px-3 pointer-coarse:min-h-11"
+            :aria-label="`Share ${e.templateName}`"
+            title="Invite a friend to play on a second gamepad"
+            @click="sharing = e"
+          >
+            <Share2 class="size-4" aria-hidden="true" />
+            Share
+          </button>
+          <button
             class="btn-ghost min-h-9 shrink-0 px-3 hover:border-danger/60 hover:text-danger pointer-coarse:min-h-11"
             :disabled="e.state === 'stopping' || (stop.isPending.value && stop.variables.value?.id === e.id)"
             @click="stop.mutate(e)"
@@ -338,6 +352,13 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
         </li>
       </ul>
     </section>
+
+    <ShareDialog
+      :open="sharing !== null"
+      :environment-id="sharing?.id ?? ''"
+      :name="sharing?.templateName ?? ''"
+      @close="sharing = null"
+    />
 
     <section class="space-y-4" aria-labelledby="launch-heading">
       <h2 id="launch-heading" class="sr-only">Launch</h2>

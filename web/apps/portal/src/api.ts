@@ -377,6 +377,58 @@ export interface DeviceCodeInfo {
   expiresAt: number;
 }
 
+export interface ConnectBody {
+  codec: string;
+  offer?: RTCSessionDescriptionInit;
+  transport?: "webrtc" | "webtransport";
+}
+
+export interface ConnectResult {
+  codec: string;
+  transport: "webrtc" | "webtransport";
+  answer?: RTCSessionDescriptionInit;
+  /** WebTransport: the streamer's URLs, best first, and its certificate's hash. */
+  urls?: string[];
+  certHash?: string;
+}
+
+/** A live share link of an environment (never its token). */
+export interface Share {
+  id: string;
+  role: "player";
+  /** 1 to 3: player 2 to 4. */
+  slot: number;
+  createdAt: number;
+  expiresAt: number;
+}
+
+interface RawShare {
+  id: string;
+  role: "player";
+  slot: number;
+  created_at?: number;
+  expires_at: number;
+}
+
+const toShare = (r: RawShare): Share => ({
+  id: r.id,
+  role: r.role,
+  slot: r.slot,
+  createdAt: r.created_at ?? 0,
+  expiresAt: r.expires_at,
+});
+
+/** What a share link is for, for its guest. */
+export interface ShareInfo {
+  app: string;
+  owner: string;
+  role: "player";
+  slot: number;
+  state: string;
+  /** What the environment's device encodes (null: unknown). */
+  codecs: string[] | null;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -512,22 +564,29 @@ export const api = {
   /** STUN and TURN for the next connection (TURN credentials last a day). */
   iceServers: () => request<{ iceServers: RTCIceServer[] }>("GET", "/ice"),
   /** Brokers a WebRTC connection to the environment's streamer. */
-  connect: (
-    id: string,
-    body: { codec: string; offer?: RTCSessionDescriptionInit; transport?: "webrtc" | "webtransport" },
-  ) =>
-    request<{
-      codec: string;
-      transport: "webrtc" | "webtransport";
-      answer?: RTCSessionDescriptionInit;
-      /** WebTransport: the streamer's URLs, best first, and its certificate's hash. */
-      urls?: string[];
-      certHash?: string;
-    }>(
-      "POST",
-      `/environments/${encodeURIComponent(id)}/connect`,
-      body,
-    ),
+  connect: (id: string, body: ConnectBody) =>
+    request<ConnectResult>("POST", `/environments/${encodeURIComponent(id)}/connect`, body),
+
+  // Share links for players (ADR 0014).
+  shares: async (environmentId: string): Promise<Share[]> => {
+    const rows = await request<RawShare[]>("GET", `/environments/${encodeURIComponent(environmentId)}/shares`);
+    return rows.map(toShare);
+  },
+  /** Makes a link for a slot (1 to 3); the full `url` comes back only now. */
+  createShare: async (environmentId: string, slot: number): Promise<Share & { url: string }> => {
+    const r = await request<RawShare & { url: string }>("POST", `/environments/${encodeURIComponent(environmentId)}/shares`, {
+      role: "player",
+      slot,
+    });
+    return { ...toShare(r), url: r.url };
+  },
+  revokeShare: (environmentId: string, shareId: string) =>
+    request<null>("DELETE", `/environments/${encodeURIComponent(environmentId)}/shares/${encodeURIComponent(shareId)}`),
+  /** What a link is for (no sign-in); 404 when it is unknown, revoked, expired or its game stopped. */
+  shareInfo: (token: string) => request<ShareInfo>("GET", `/shares/${encodeURIComponent(token)}`),
+  /** Brokers a guest's connection (no sign-in), like `connect`. */
+  shareConnect: (token: string, body: ConnectBody) =>
+    request<ConnectResult>("POST", `/shares/${encodeURIComponent(token)}/connect`, body),
 };
 
 /** A catalog template's logo (only for templates with `icon`). */

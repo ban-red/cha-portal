@@ -6,6 +6,8 @@ declare module "vue-router" {
   interface RouteMeta {
     /** Reachable signed out (sign-in, setup). */
     public?: boolean;
+    /** A share link's page: open to anyone, signed in or not, and never redirected. */
+    guest?: boolean;
     admin?: boolean;
     title?: string;
     /** One plain line under the page title in the shell header. */
@@ -43,11 +45,14 @@ export const router = createRouter({
       component: () => import("./views/SessionView.vue"),
       meta: { title: "Session" },
     },
+    // A guest with a share link plays with no account (ADR 0014).
+    { path: "/s/:token", name: "join", component: () => import("./views/JoinView.vue"), meta: { guest: true, title: "Join" } },
     { path: "/:rest(.*)*", redirect: "/" },
   ],
 });
 
 router.beforeEach(async (to) => {
+  if (to.meta.guest) return true;
   const session = useSession();
   await session.load();
   if (session.setupNeeded) return to.name === "setup" ? true : { name: "setup" };

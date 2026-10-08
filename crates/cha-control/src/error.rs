@@ -27,6 +27,9 @@ pub enum ApiError {
     /// A node the portal waited on didn't finish in time.
     #[error("{1}")]
     GatewayTimeout(&'static str, String),
+    /// Too many requests from one address.
+    #[error("{1}")]
+    TooManyRequests(&'static str, String),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -64,6 +67,7 @@ impl ApiError {
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             Self::NotFoundCode(code, _) => (StatusCode::NOT_FOUND, code),
             Self::Conflict(code, _) => (StatusCode::CONFLICT, code),
+            Self::TooManyRequests(code, _) => (StatusCode::TOO_MANY_REQUESTS, code),
             Self::BadGateway(code, _) => (StatusCode::BAD_GATEWAY, code),
             Self::GatewayTimeout(code, _) => (StatusCode::GATEWAY_TIMEOUT, code),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),

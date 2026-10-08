@@ -20,6 +20,7 @@ import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
 import { PyroPresenter } from "./pyro";
 import type { FromWorker, ToWorker } from "./wt-worker";
+import { capturesDevices, inputAllowed, sendsControls, type InputMode } from "./inputMode";
 
 /** Hardware codecs (every transport) and PyroWave (WebTransport only). */
 export type Codec = "hevc" | "h264" | "av1" | "pyrowave420" | "pyrowave444";
@@ -106,7 +107,13 @@ export interface PlayerOptions {
    * environment does), and how many sessions watch. Without the controls the
    * picture is view-only; `takeControl()` asks for them.
    */
-  onFloor?: (control: boolean, viewers: number) => void;
+  onFloor?: (control: boolean, viewers: number, player?: number) => void;
+  /**
+   * What the page sends up. `"all"` (the default): keyboard, mouse, controllers and the rest, as
+   * far as it has the controls. `"pads"` (a share link's guest, ADR 0014): only controllers, with
+   * their feedback; no keyboard, mouse, wheel, pointer lock, clipboard or resize.
+   */
+  input?: InputMode;
   /**
    * What the app's long setup is doing while its picture may still be black
    * (a first-run download), or `null` once there is nothing to show. Every
@@ -157,6 +164,8 @@ interface ServerMessage {
   kind?: "hidden" | "named" | "image";
   control?: boolean;
   viewers?: number;
+  /** A share link's player: the pad index it plays on (1 is "player 2"). */
+  player?: number;
   drawn?: boolean;
   name?: string;
   w?: number;
@@ -800,8 +809,12 @@ export class Player {
     this.send({ t: "presence", active });
   }
 
+  private get inputMode(): InputMode {
+    return this.options.input ?? "all";
+  }
+
   private sendInput(msg: Record<string, unknown>): void {
-    if (this.hasControl) this.send({ t: "input", ...msg });
+    if (inputAllowed(this.inputMode, this.hasControl, msg)) this.send({ t: "input", ...msg });
   }
 
   /** The controllers this page sends, once connected. */
@@ -826,11 +839,13 @@ export class Player {
 
   private onControlOpen(): void {
     const { video } = this.options;
-    this.input = new InputCapture(video, (m) => this.sendInput(m), {
-      onPaste: (text) => this.send({ t: "clipboard", text }),
-      onCapture: (view) => this.options.onMouseCapture?.(view),
-    });
-    this.input.setMouseEnabled(this.mouseEnabled);
+    if (capturesDevices(this.inputMode)) {
+      this.input = new InputCapture(video, (m) => this.sendInput(m), {
+        onPaste: (text) => this.send({ t: "clipboard", text }),
+        onCapture: (view) => this.options.onMouseCapture?.(view),
+      });
+      this.input.setMouseEnabled(this.mouseEnabled);
+    }
     this.pads?.stop();
     const pads = new ControllerManager({ send: (m) => this.sendInput(m) });
     pads.onChange((list) => this.options.onControllers?.(list));
@@ -840,7 +855,7 @@ export class Player {
     // Desktop mode draws the cursor here, with no stream delay; a locked
     // pointer (games) leaves it to the picture.
     const cursorMode = () => {
-      if (this.hasControl) this.send({ t: "cursor", client: !this.input?.locked });
+      if (this.hasControl && sendsControls(this.inputMode)) this.send({ t: "cursor", client: !this.input?.locked });
       this.applyCursor();
       this.placePointer();
     };
@@ -964,7 +979,7 @@ export class Player {
   /** Asks for a picture the element's size, after resizing settles. */
   private requestSize(): void {
     clearTimeout(this.resizeTimer);
-    if (this.options.fixedSize) return;
+    if (this.options.fixedSize || !sendsControls(this.inputMode)) return;
     // The controller's page sizes the picture; viewers scale it.
     if (!this.hasControl) return;
     this.resizeTimer = setTimeout(() => {
@@ -1012,7 +1027,7 @@ export class Player {
         this.probe?.acknowledged(msg.id as number, msg.s_us!);
         break;
       case "clipboard":
-        if (typeof msg.text === "string") void this.copied(msg.text);
+        if (typeof msg.text === "string" && sendsControls(this.inputMode)) void this.copied(msg.text);
         break;
       case "cursor":
         this.cursor = msg;
@@ -1026,13 +1041,13 @@ export class Player {
           // Our turn: our size and cursor mode.
           this.lastSize = "";
           this.requestSize();
-          this.send({ t: "cursor", client: !this.input?.locked });
+          if (sendsControls(this.inputMode)) this.send({ t: "cursor", client: !this.input?.locked });
           // Pads were sent nothing while the controls were elsewhere.
           this.pads?.resync();
         }
         this.applyCursor();
         this.placePointer();
-        this.options.onFloor?.(this.hasControl, msg.viewers ?? 1);
+        this.options.onFloor?.(this.hasControl, msg.viewers ?? 1, typeof msg.player === "number" ? msg.player : undefined);
         break;
       }
       case "system": {

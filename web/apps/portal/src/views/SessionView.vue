@@ -33,6 +33,7 @@ import { backoffDelay, classifyConnectError } from "../reconnect";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import GpuBadge from "../components/GpuBadge.vue";
 import PowerOffDialog from "../components/PowerOffDialog.vue";
+import ShareDialog from "../components/ShareDialog.vue";
 import RecordingDialog from "../components/RecordingDialog.vue";
 import StatsOverlay from "../components/StatsOverlay.vue";
 import { useSession } from "../stores/session";
@@ -240,6 +241,7 @@ function toggleMouse() {
 }
 // ---- Power off: a short countdown the user can cancel, then the environment is stopped ----
 
+const sharing = ref(false);
 const powerOff = ref(false);
 const powerOffError = ref<string | null>(null);
 function askPowerOff() {
@@ -857,6 +859,17 @@ const STATUS: Record<PlayerState, string> = {
           <path d="M4.6 3.9a5.5 5.5 0 1 0 6.8 0" />
         </svg>
       </button>
+      <button
+        :class="ICON_BTN"
+        aria-label="Share"
+        title="Invite a friend to play on a second gamepad"
+        @click="sharing = true"
+      >
+        <svg viewBox="0 0 16 16" class="size-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="4" cy="8" r="1.8" /><circle cx="12" cy="3.8" r="1.8" /><circle cx="12" cy="12.2" r="1.8" />
+          <path d="M5.6 7.1l4.8-2.4M5.6 8.9l4.8 2.4" />
+        </svg>
+      </button>
       <span class="max-w-48 truncate px-2 text-sm font-medium">{{ env.data.value?.templateName ?? "…" }}</span>
       <GpuBadge v-if="env.data.value?.device" :kind="env.data.value.device.kind" :name="env.data.value.device.name" tense="is" />
       <span v-if="viewers > 1" class="px-2 text-xs text-ink-2" :title="`${viewers} sessions are watching this environment`">
@@ -1116,6 +1129,7 @@ const STATUS: Record<PlayerState, string> = {
       @cancel="powerOff = false"
       @confirm="confirmPowerOff"
     />
+    <ShareDialog :open="sharing" :environment-id="id" :name="env.data.value?.templateName ?? 'the app'" @close="sharing = false" />
     <RecordingDialog :summary="recordingResult" @close="recordingResult = null" />
 
     <!-- Stats: under the toolbar (z-30) -->
