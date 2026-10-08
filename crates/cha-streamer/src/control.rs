@@ -7,11 +7,12 @@
 //! DataChannel, WebTransport on the session's first bidirectional stream.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::codec::VideoCodec;
@@ -22,7 +23,7 @@ use crate::media::Media;
 use crate::overlay::Level;
 use crate::status::{Status, StatusWatch};
 use crate::system::SystemSample;
-use crate::viewers::Seat;
+use crate::viewers::{Role, Seat};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -127,6 +128,9 @@ pub enum ServerMsg {
     Floor {
         control: bool,
         viewers: usize,
+        /// A share link's player: the pad index (1 to 3) its pad is put on.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player: Option<u8>,
     },
     /// Where the pointer is (0..1), for a viewer's page to draw it when the
     /// picture doesn't show it (`drawn` false).
@@ -208,9 +212,43 @@ pub struct Control {
     pub gamepads: Option<Arc<Gamepads>>,
     /// This session's place among the viewers; leaving when dropped.
     pub seat: Seat,
+    /// A player session has sent a pad (so its slot has something to release).
+    player_pad_used: AtomicBool,
+}
+
+impl Drop for Control {
+    /// A player who leaves puts its slot's pad back to rest.
+    fn drop(&mut self) {
+        if let (Role::Player(slot), Some(pads)) = (self.seat.role, &self.gamepads)
+            && self.player_pad_used.load(Ordering::Relaxed)
+        {
+            pads.update(&PadState {
+                i: usize::from(slot),
+                gone: true,
+                ..PadState::default()
+            });
+        }
+    }
 }
 
 impl Control {
+    pub fn new(
+        epoch: Instant,
+        codec: VideoCodec,
+        media: Arc<Media>,
+        gamepads: Option<Arc<Gamepads>>,
+        seat: Seat,
+    ) -> Self {
+        Self {
+            epoch,
+            codec,
+            media,
+            gamepads,
+            seat,
+            player_pad_used: AtomicBool::new(false),
+        }
+    }
+
     /// Handles one line from the page; replies go through `reply`.
     pub fn handle_line(
         &self,
@@ -222,6 +260,25 @@ impl Control {
             return;
         };
         let kind = msg.get("t").and_then(|t| t.as_str());
+        // A player (share link) sends its pad and the session's own upkeep;
+        // everything else is ignored, even `take_control`.
+        if let Role::Player(slot) = self.seat.role {
+            match kind {
+                Some("input") => {
+                    stats.inputs += 1;
+                    match (&self.gamepads, player_pad(slot, &msg)) {
+                        (Some(pads), Some(state)) => {
+                            self.player_pad_used.store(true, Ordering::Relaxed);
+                            pads.update(&state);
+                        }
+                        _ => stats.inputs_unmapped += 1,
+                    }
+                    return;
+                }
+                Some("ping" | "presence" | "keyframe") => {}
+                _ => return,
+            }
+        }
         // A viewer watches: what it sends doesn't reach the environment.
         if matches!(
             kind,
@@ -287,7 +344,12 @@ impl Control {
                 stats.inputs += 1;
                 if msg.get("k").and_then(|k| k.as_str()) == Some("pad") {
                     match (&self.gamepads, serde_json::from_value::<PadState>(msg)) {
-                        (Some(pads), Ok(state)) => pads.update(&state),
+                        // A slot a player session holds isn't the floor's.
+                        (Some(pads), Ok(state))
+                            if pad_is_free(self.seat.player_pads(), state.i) =>
+                        {
+                            pads.update(&state)
+                        }
                         _ => stats.inputs_unmapped += 1,
                     }
                     return;
@@ -316,6 +378,29 @@ impl Control {
     pub fn now_us(&self) -> u64 {
         self.epoch.elapsed().as_micros() as u64
     }
+}
+
+/// A player session's pad message as the state to apply: its pad index 0
+/// goes on its `slot`; any other index, and any other message, is `None`.
+pub fn player_pad(slot: u8, msg: &serde_json::Value) -> Option<PadState> {
+    if msg.get("t")?.as_str()? != "input" || msg.get("k")?.as_str()? != "pad" {
+        return None;
+    }
+    let mut state = PadState::deserialize(msg).ok()?;
+    if state.i != 0 {
+        return None;
+    }
+    state.i = usize::from(slot);
+    Some(state)
+}
+
+/// Whether the floor's pad `i` may be applied: not if a player session holds
+/// that index (`reserved`: one bit per index).
+pub fn pad_is_free(reserved: u8, i: usize) -> bool {
+    u32::try_from(i)
+        .ok()
+        .and_then(|i| 1u8.checked_shl(i))
+        .is_none_or(|bit| reserved & bit == 0)
 }
 
 /// The answer to a `{"t":"fps","fps":N}` request: the rate now, or why it
@@ -537,20 +622,35 @@ impl PadFeed {
     /// Call whenever the session's floor may have changed (and once when its
     /// control channel opens): the lightbar, player LEDs and trigger effects
     /// the apps set before the session had the controls, when it has just
-    /// gained them. Empty otherwise.
+    /// gained them. Empty otherwise. (The sessions use `replay_for`.)
+    #[cfg(test)]
     pub fn replay_on_gain(&mut self, has_control: bool) -> Vec<ServerMsg> {
-        let gained = has_control && !self.had_control;
-        self.had_control = has_control;
+        self.replay_for(&PadAudience {
+            player: None,
+            has_control,
+            reserved: 0,
+        })
+    }
+
+    /// As `replay_on_gain`, for who the session is: a player hears its own
+    /// slot's state, once, when it joins.
+    pub fn replay_for(&mut self, audience: &PadAudience) -> Vec<ServerMsg> {
+        let listening = audience.player.is_some() || audience.has_control;
+        let gained = listening && !self.had_control;
+        self.had_control = listening;
         let Some(memory) = self.memory.as_ref().filter(|_| gained) else {
             return Vec::new();
         };
         let events = memory.lock().unwrap_or_else(|e| e.into_inner()).replay();
-        events.into_iter().map(pad_msg).collect()
+        events
+            .iter()
+            .filter_map(|event| audience.message(event))
+            .collect()
     }
 
-    /// The next message (rumble, haptics, lightbar, ...); never resolves
-    /// without pads.
-    pub async fn next(&mut self) -> ServerMsg {
+    /// The next event (rumble, haptics, lightbar, ...); never resolves
+    /// without pads. `PadAudience::message` says who hears it.
+    pub async fn next(&mut self) -> PadEvent {
         loop {
             let due = self.limit.due();
             let Some(rx) = &mut self.rx else {
@@ -574,23 +674,49 @@ impl PadFeed {
                 self.rx = None;
             }
             if let Some(event) = ready {
-                return pad_msg(event);
+                return event;
             }
         }
     }
 }
 
-/// An event for the page.
-fn pad_msg(event: PadEvent) -> ServerMsg {
+/// Who a session is when it comes to the apps' pad feedback.
+#[derive(Debug, Clone, Copy)]
+pub struct PadAudience {
+    /// A player session's pad index (1 to 3).
+    pub player: Option<u8>,
+    pub has_control: bool,
+    /// The pad indices live player sessions hold, one bit each.
+    pub reserved: u8,
+}
+
+impl PadAudience {
+    /// The pad index the page sees for an event on `slot`, if it hears it: a
+    /// player hears its own slot, as 0; the floor holder hears the others.
+    pub fn index(&self, slot: usize) -> Option<usize> {
+        match self.player {
+            Some(own) => (usize::from(own) == slot).then_some(0),
+            None => (self.has_control && pad_is_free(self.reserved, slot)).then_some(slot),
+        }
+    }
+
+    /// The message for the page, if it hears the event.
+    pub fn message(&self, event: &PadEvent) -> Option<ServerMsg> {
+        Some(pad_msg(*event, self.index(event.slot())?))
+    }
+}
+
+/// An event for the page, on its pad index `i`.
+fn pad_msg(event: PadEvent, i: usize) -> ServerMsg {
     match event {
         PadEvent::Rumble(r) => ServerMsg::Rumble {
-            i: r.slot,
+            i,
             lo: r.lo,
             hi: r.hi,
             ms: r.ms,
         },
         PadEvent::Haptic(h) => ServerMsg::Haptic {
-            i: h.slot,
+            i,
             side: h.side.name(),
             amp: h.amp,
             on_us: h.on_us,
@@ -598,20 +724,29 @@ fn pad_msg(event: PadEvent) -> ServerMsg {
             count: h.count,
         },
         PadEvent::Led(l) => ServerMsg::Led {
-            i: l.slot,
+            i,
             r: l.r,
             g: l.g,
             b: l.b,
         },
-        PadEvent::Players(p) => ServerMsg::Players {
-            i: p.slot,
-            mask: p.mask,
-        },
+        PadEvent::Players(p) => ServerMsg::Players { i, mask: p.mask },
         PadEvent::Trigger(t) => ServerMsg::Trigger {
-            i: t.slot,
+            i,
             side: t.side.name(),
             effect: t.effect,
         },
+    }
+}
+
+/// What the session's seat means for the apps' pad feedback.
+pub fn pad_audience(seat: &Seat) -> PadAudience {
+    PadAudience {
+        player: match seat.role {
+            Role::Player(slot) => Some(slot),
+            _ => None,
+        },
+        has_control: seat.has_control(),
+        reserved: seat.player_pads(),
     }
 }
 
@@ -620,6 +755,10 @@ pub fn floor_msg(seat: &Seat) -> ServerMsg {
     ServerMsg::Floor {
         control: seat.has_control(),
         viewers: seat.viewers(),
+        player: match seat.role {
+            Role::Player(slot) => Some(slot),
+            _ => None,
+        },
     }
 }
 
@@ -750,7 +889,10 @@ mod tests {
                 effect: [2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             }),
         ];
-        let lines: Vec<String> = events.iter().map(|e| line(&pad_msg(*e))).collect();
+        let lines: Vec<String> = events
+            .iter()
+            .map(|e| line(&pad_msg(*e, e.slot())))
+            .collect();
         assert_eq!(
             lines,
             [
@@ -1014,5 +1156,167 @@ mod tests {
             none.replay_on_gain(true).is_empty(),
             "no pads, nothing to say"
         );
+    }
+
+    #[test]
+    fn a_players_pad_zero_goes_on_its_slot_and_nothing_else_does() {
+        let pad = |s: &str| player_pad(2, &serde_json::from_str(s).unwrap());
+        let state = pad(r#"{"t":"input","k":"pad","i":0,"b":[1,0],"a":[0.5,0,0,0]}"#).unwrap();
+        assert_eq!(state.i, 2, "pad 0 is player 3's pad");
+        assert_eq!(state.b, [1.0, 0.0]);
+        assert!(!state.gone);
+        let gone = pad(r#"{"t":"input","k":"pad","i":0,"gone":true}"#).unwrap();
+        assert!(gone.gone && gone.i == 2, "gone releases the slot");
+        for other in [
+            r#"{"t":"input","k":"pad","i":1}"#,
+            r#"{"t":"input","k":"pad","i":2}"#,
+            r#"{"t":"input","k":"pad","i":3}"#,
+            r#"{"t":"input","k":"pad","i":9}"#,
+            r#"{"t":"input","k":"key","code":"KeyA","down":true}"#,
+            r#"{"t":"input","k":"move","x":0.5,"y":0.5}"#,
+            r#"{"t":"input","k":"wheel","dx":0,"dy":1}"#,
+            r#"{"t":"resize","w":800,"h":600}"#,
+            r#"{"t":"clipboard","text":"x"}"#,
+            r#"{"t":"take_control"}"#,
+            r#"{"k":"pad","i":0}"#,
+            r#"{"t":"input","k":"pad"}"#,
+        ] {
+            assert!(pad(other).is_none(), "{other}");
+        }
+    }
+
+    #[test]
+    fn the_floors_pads_on_a_players_slot_are_dropped() {
+        let reserved = 0b0110;
+        assert!(pad_is_free(reserved, 0));
+        assert!(!pad_is_free(reserved, 1));
+        assert!(!pad_is_free(reserved, 2));
+        assert!(pad_is_free(reserved, 3));
+        assert!(pad_is_free(reserved, 40), "out of range isn't reserved");
+        assert!((0..MAX_PADS).all(|i| pad_is_free(0, i)));
+    }
+
+    #[test]
+    fn pad_feedback_goes_to_the_slots_holder() {
+        use crate::gamepad::{Led, Rumble};
+        let rumble = |slot| {
+            PadEvent::Rumble(Rumble {
+                slot,
+                lo: 1.0,
+                hi: 0.5,
+                ms: 100,
+            })
+        };
+        let led = PadEvent::Led(Led {
+            slot: 1,
+            r: 1,
+            g: 2,
+            b: 3,
+        });
+        let text = |a: &PadAudience, e: &PadEvent| a.message(e).map(|m| line(&m));
+
+        let player = PadAudience {
+            player: Some(1),
+            has_control: false,
+            reserved: 0b0010,
+        };
+        assert_eq!(
+            text(&player, &rumble(1)).as_deref(),
+            Some(r#"{"t":"rumble","i":0,"lo":1.0,"hi":0.5,"ms":100}"#),
+            "renumbered to its own pad 0"
+        );
+        assert_eq!(
+            text(&player, &led).as_deref(),
+            Some(r#"{"t":"led","i":0,"r":1,"g":2,"b":3}"#)
+        );
+        assert!(text(&player, &rumble(0)).is_none(), "not the controller's");
+        assert!(text(&player, &rumble(2)).is_none());
+
+        let floor = PadAudience {
+            player: None,
+            has_control: true,
+            reserved: 0b0010,
+        };
+        assert!(text(&floor, &rumble(0)).unwrap().contains(r#""i":0"#));
+        assert!(text(&floor, &rumble(1)).is_none(), "a player's slot");
+        assert!(text(&floor, &led).is_none());
+        assert!(text(&floor, &rumble(2)).unwrap().contains(r#""i":2"#));
+
+        let watcher = PadAudience {
+            player: None,
+            has_control: false,
+            reserved: 0,
+        };
+        assert!(text(&watcher, &rumble(0)).is_none());
+    }
+
+    #[test]
+    fn a_player_hears_its_slots_state_once_when_it_joins() {
+        use crate::gamepad::{Led, Players};
+        let memory = Arc::new(Mutex::new(PadMemory::default()));
+        {
+            let mut m = memory.lock().unwrap();
+            for slot in 0..3 {
+                m.remember(PadEvent::Led(Led {
+                    slot,
+                    r: slot as u8,
+                    g: 0,
+                    b: 0,
+                }));
+            }
+            m.remember(PadEvent::Players(Players { slot: 2, mask: 4 }));
+        }
+        let mut feed = PadFeed {
+            rx: None,
+            limit: PadLimit::default(),
+            memory: Some(Arc::clone(&memory)),
+            had_control: false,
+        };
+        let player = PadAudience {
+            player: Some(2),
+            has_control: false,
+            reserved: 0b0100,
+        };
+        let heard: Vec<_> = feed.replay_for(&player).iter().map(line).collect();
+        assert_eq!(
+            heard,
+            [
+                r#"{"t":"led","i":0,"r":2,"g":0,"b":0}"#,
+                r#"{"t":"players","i":0,"mask":4}"#
+            ]
+        );
+        assert!(feed.replay_for(&player).is_empty(), "once");
+
+        // The floor's replay leaves out the player's slot.
+        let mut floor_feed = PadFeed {
+            rx: None,
+            limit: PadLimit::default(),
+            memory: Some(memory),
+            had_control: false,
+        };
+        let floor = PadAudience {
+            player: None,
+            has_control: true,
+            reserved: 0b0100,
+        };
+        let heard: Vec<_> = floor_feed.replay_for(&floor).iter().map(line).collect();
+        assert_eq!(heard.len(), 2);
+        assert!(heard.iter().all(|l| !l.contains(r#""i":2"#)));
+    }
+
+    #[test]
+    fn the_floor_message_names_a_players_slot() {
+        let floor = |player| {
+            line(&ServerMsg::Floor {
+                control: false,
+                viewers: 2,
+                player,
+            })
+        };
+        assert_eq!(
+            floor(Some(1)),
+            r#"{"t":"floor","control":false,"viewers":2,"player":1}"#
+        );
+        assert_eq!(floor(None), r#"{"t":"floor","control":false,"viewers":2}"#);
     }
 }

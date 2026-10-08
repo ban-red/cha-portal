@@ -37,7 +37,7 @@ use crate::codec::VideoCodec;
 use crate::congestion::MediaWindowFactory;
 use crate::control::{
     Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
-    next_pointer, next_status, percentile,
+    next_pointer, next_status, pad_audience, percentile,
 };
 use crate::framerate;
 use crate::gamepad::Gamepads;
@@ -248,13 +248,13 @@ async fn run(
         }
     });
 
-    let mut handler = Control {
+    let mut handler = Control::new(
         epoch,
         codec,
-        media: Arc::clone(&sessions.media),
-        gamepads: sessions.gamepads.clone(),
+        Arc::clone(&sessions.media),
+        sessions.gamepads.clone(),
         seat,
-    };
+    );
     let (w, h) = sessions.media.size();
     let _ = out.send(ServerMsg::Hello {
         stream: serde_json::json!({
@@ -289,7 +289,7 @@ async fn run(
     let mut status = Some(sessions.media.status());
     let mut rumble = PadFeed::new(sessions.gamepads.as_deref());
     let _ = out.send(floor_msg(&handler.seat));
-    for msg in rumble.replay_on_gain(handler.seat.has_control()) {
+    for msg in rumble.replay_for(&pad_audience(&handler.seat)) {
         let _ = out.send(msg);
     }
     let mut stats = StreamerStats::default();
@@ -350,13 +350,14 @@ async fn run(
             }
             () = handler.seat.changed() => {
                 let _ = out.send(floor_msg(&handler.seat));
-                for msg in rumble.replay_on_gain(handler.seat.has_control()) {
+                for msg in rumble.replay_for(&pad_audience(&handler.seat)) {
                     let _ = out.send(msg);
                 }
             }
-            // What the apps do to the pads (rumble, lightbar, ...) is the controller's alone.
-            msg = rumble.next() => {
-                if handler.seat.has_control() {
+            // What the apps do to the pads (rumble, lightbar, ...) is the
+            // controller's, or for a player's slot the player's alone.
+            event = rumble.next() => {
+                if let Some(msg) = pad_audience(&handler.seat).message(&event) {
                     let _ = out.send(msg);
                 }
             }

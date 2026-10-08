@@ -8,7 +8,9 @@
 //! controller leaves, the newest session that may control gets it. Owners
 //! and admins can take it back (`{"t":"take_control"}`).
 //!
-//! Share links and their roles (viewer, controller, player-N) are Phase 3.
+//! A share link's `player` role (ADR 0014) is one gamepad slot and nothing
+//! else: such a session never holds or takes the floor, and `control` routes
+//! its pad to the slot and the slot's feedback back to it.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -28,23 +30,33 @@ pub struct Viewer {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Role {
+    /// A share link's gamepad, on pad index 1 to 3 (player 2 to 4). Ranks
+    /// below every role, so the derived order never lets it near the floor.
+    Player(u8),
     Viewer,
     Admin,
     Owner,
 }
 
 impl Role {
-    pub fn from_claim(role: &str) -> Self {
-        match role {
-            "owner" => Role::Owner,
-            "admin" => Role::Admin,
+    /// The role a media token's claims name; anything unknown is a viewer.
+    pub fn from_claims(role: &str, slot: Option<u8>) -> Self {
+        match (role, slot) {
+            ("owner", _) => Role::Owner,
+            ("admin", _) => Role::Admin,
+            ("player", Some(slot @ 1..=3)) => Role::Player(slot),
             _ => Role::Viewer,
         }
     }
 
     fn may_control(self) -> bool {
-        self >= Role::Admin
+        matches!(self, Role::Admin | Role::Owner)
     }
+}
+
+/// The share id in a share token's `sub` (`share:<id>`), for logs.
+fn share_id(user: &str) -> &str {
+    user.strip_prefix("share:").unwrap_or(user)
 }
 
 struct Entry {
@@ -113,6 +125,9 @@ impl Viewers {
         let id = inner.next_id;
         let role = viewer.role;
         info!(id, user = %viewer.user, ?role, webrtc, "viewer joined");
+        if let Role::Player(slot) = role {
+            info!(id, slot, share = share_id(&viewer.user), "player joined");
+        }
         inner.entries.push(Entry {
             id,
             viewer,
@@ -171,13 +186,31 @@ impl Viewers {
         inner.settle();
     }
 
+    /// The pad indices live player sessions hold, one bit each (bit 1 is
+    /// player 2's); the floor's pads on those are dropped.
+    fn player_pads(&self) -> u8 {
+        self.lock()
+            .entries
+            .iter()
+            .filter_map(|e| match e.viewer.role {
+                Role::Player(slot) => Some(1u8 << slot),
+                _ => None,
+            })
+            .fold(0, |mask, bit| mask | bit)
+    }
+
     fn controller(&self) -> Option<u64> {
         *self.floor.borrow()
     }
 
     fn leave(&self, id: u64) {
         let mut inner = self.lock();
-        inner.entries.retain(|e| e.id != id);
+        if let Some(at) = inner.entries.iter().position(|e| e.id == id) {
+            let gone = inner.entries.remove(at).viewer;
+            if let Role::Player(slot) = gone.role {
+                info!(id, slot, share = share_id(&gone.user), "player left");
+            }
+        }
         inner.settle();
         if self.controller() == Some(id) {
             // The newest of the highest role that may control.
@@ -233,6 +266,11 @@ impl Seat {
     /// Takes the floor, if this role may; true if it has it now.
     pub fn take_control(&self) -> bool {
         self.viewers.take(self.id, self.role)
+    }
+
+    /// The pad slots live player sessions hold, one bit per pad index.
+    pub fn player_pads(&self) -> u8 {
+        self.viewers.player_pads()
     }
 
     /// How many sessions watch, this one included.
@@ -377,5 +415,72 @@ mod tests {
             .await
             .expect("tv hears that the mac left");
         assert!(tv.has_control());
+    }
+
+    #[test]
+    fn claims_make_roles() {
+        assert_eq!(Role::from_claims("owner", None), Role::Owner);
+        assert_eq!(Role::from_claims("admin", None), Role::Admin);
+        assert_eq!(Role::from_claims("player", Some(2)), Role::Player(2));
+        assert_eq!(Role::from_claims("player", Some(1)), Role::Player(1));
+        assert_eq!(Role::from_claims("player", Some(3)), Role::Player(3));
+        for slot in [None, Some(0), Some(4), Some(255)] {
+            assert_eq!(Role::from_claims("player", slot), Role::Viewer, "{slot:?}");
+        }
+        assert_eq!(Role::from_claims("viewer", None), Role::Viewer);
+        assert_eq!(Role::from_claims("wat", Some(1)), Role::Viewer);
+    }
+
+    #[test]
+    fn a_player_ranks_below_every_role_and_may_not_control() {
+        for slot in 1..=3 {
+            let p = Role::Player(slot);
+            assert!(p < Role::Viewer && p < Role::Admin && p < Role::Owner);
+            assert!(!p.may_control());
+        }
+        assert!(!Role::Viewer.may_control());
+        assert!(Role::Admin.may_control() && Role::Owner.may_control());
+    }
+
+    #[tokio::test]
+    async fn a_player_never_gets_or_takes_the_floor() {
+        let viewers = Viewers::new(Box::new(|| ()));
+        let p1 = viewers
+            .join(viewer("share:a", Role::Player(1)), false)
+            .await
+            .unwrap();
+        assert!(!p1.has_control(), "not even alone");
+        assert!(!p1.take_control() && !p1.has_control());
+        let owner = viewers.join(viewer("o", Role::Owner), false).await.unwrap();
+        assert!(owner.has_control());
+        let p2 = viewers
+            .join(viewer("share:b", Role::Player(2)), false)
+            .await
+            .unwrap();
+        assert!(owner.has_control() && !p2.has_control());
+        assert!(!p2.take_control() && owner.has_control());
+        assert_eq!(viewers.player_pads(), 0b0110);
+        assert_eq!(p1.player_pads(), 0b0110);
+        // The floor passes over players: the controller leaves, nobody else may.
+        drop(owner);
+        assert!(!p1.has_control() && !p2.has_control());
+        let admin = viewers.join(viewer("a", Role::Admin), false).await.unwrap();
+        assert!(admin.has_control(), "an admin takes the empty floor");
+        let viewer_seat = viewers
+            .join(viewer("v", Role::Viewer), false)
+            .await
+            .unwrap();
+        assert!(viewer_seat.viewers() == 4);
+        drop(admin);
+        assert!(
+            !p1.has_control() && !p2.has_control() && !viewer_seat.has_control(),
+            "players and viewers are passed over"
+        );
+        drop(p1);
+        assert_eq!(
+            viewers.player_pads(),
+            0b0100,
+            "a leaving player frees its slot"
+        );
     }
 }

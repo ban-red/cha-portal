@@ -30,7 +30,7 @@ use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorWatch, PointerWatch};
 use crate::control::{
     Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msg, next_clipboard, next_cursor,
-    next_pointer, next_status, percentile,
+    next_pointer, next_status, pad_audience, percentile,
 };
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace};
@@ -219,13 +219,13 @@ impl Session {
         let rumble = PadFeed::new(params.gamepads.as_deref());
         let rate = RateControl::new(MIN_BPS, params.media.bitrate_bps());
         let fps = params.media.fps();
-        let handler = Control {
+        let handler = Control::new(
             epoch,
-            codec: VideoCodec::Hw(params.codec),
-            media: Arc::clone(&params.media),
-            gamepads: params.gamepads.clone(),
+            VideoCodec::Hw(params.codec),
+            Arc::clone(&params.media),
+            params.gamepads.clone(),
             seat,
-        };
+        );
         Self {
             rtc,
             peer,
@@ -348,9 +348,10 @@ impl Session {
                     self.send_control(&msg);
                     self.replay_pads();
                 }
-                // What the apps do to the pads (rumble, lightbar, ...) is the controller's alone.
-                msg = self.rumble.next() => {
-                    if self.handler.seat.has_control() {
+                // What the apps do to the pads (rumble, lightbar, ...) is the
+                // controller's, or for a player's slot the player's alone.
+                event = self.rumble.next() => {
+                    if let Some(msg) = pad_audience(&self.handler.seat).message(&event) {
                         self.send_control(&msg);
                     }
                 }
@@ -607,7 +608,7 @@ impl Session {
         if self.control.is_none() {
             return;
         }
-        for msg in self.rumble.replay_on_gain(self.handler.seat.has_control()) {
+        for msg in self.rumble.replay_for(&pad_audience(&self.handler.seat)) {
             self.send_control(&msg);
         }
     }

@@ -699,7 +699,7 @@ fn authorize(auth: &Auth, presented: &str) -> std::result::Result<Viewer, String
                 Ok(claims) => {
                     info!(user = %claims.sub, role = %claims.role, "media token accepted");
                     Ok(Viewer {
-                        role: Role::from_claim(&claims.role),
+                        role: Role::from_claims(&claims.role, claims.slot),
                         user: claims.sub,
                     })
                 }
