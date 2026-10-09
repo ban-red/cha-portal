@@ -8,7 +8,7 @@ There are two ways to run a Cha Node on a Proxmox VE host. Which one fits depend
 | Apps | Everything, Steam included (slow on an integrated GPU) | Everything, Steam included |
 | Encoding | VA-API H.264 (HEVC/AV1 where the GPU has them), or CPU H.264 | NVENC: H.264, HEVC, AV1, PyroWave |
 | Setup | One script on the host | Passthrough set up on the host, then the [Quick start](../../SETUP.md#quick-start) in the VM |
-| Tested | Intel UHD 630 on Proxmox 9.1: the script ran end to end with `--doctor` clean; Chrome, the test pattern and Steam's Big Picture stream from a container set up the same way. Gamepads and playing a game not yet | RTX 4090: everything |
+| Tested | Intel UHD 630 on Proxmox 9.1: the script ran end to end with `--doctor` clean; Chrome, the test pattern and Steam's Big Picture stream from a container set up the same way. AMD Radeon 780M (Ryzen 7 8845HS) on Proxmox 9.2: the script ran end to end with `--doctor` clean, VA-API H.264 and HEVC, Steam's Big Picture up on RADV. Gamepads and playing a game not yet | RTX 4090: everything |
 
 Either can run the whole quick start (the portal and a node) or just a node for a portal you already have.
 
@@ -64,6 +64,7 @@ For a node alone, the directory is `/opt/cha-portal/deploy/node`. Run compose fr
 
 - **The container is privileged.** Root in it is root on the host. A Cha Node is root-equivalent on its machine anyway, since the agent drives Docker ([SECURITY.md](../../SECURITY.md)), and Docker and the passed-in devices need privileges an unprivileged container doesn't have. Run only Cha Portal in it.
 - **Steam works without its AppArmor profile.** Docker in a container has no AppArmor, so there is nothing for the `cha-sandbox` profile to relax, and Steam's sandboxes (bubblewrap, pressure-vessel) work because Proxmox doesn't restrict user namespaces. Its other confinement stays: no capabilities, its seccomp filter and no-new-privileges. On an Intel or AMD GPU, Steam needs a release after 0.2.0, whose agent passes the GPU's primary node to it. An integrated GPU is slow for games.
+- **A GPU bound to `vfio-pci`** (set aside for a VM's passthrough, in `/etc/modprobe.d/`) has no `/dev/dri` on the host, so the script finds none to pass in. Remove its IDs from the `vfio-pci` options, run `update-initramfs -u -k all`, reboot, and check that `lspci -k` says `Kernel driver in use: amdgpu` (or `i915`/`xe`). A VM set to start at boot with that GPU (`hostpci`) takes it back when it starts.
 - **No NVIDIA.** The script never passes an NVIDIA GPU to a container: the container's driver would have to match the host's exactly, and CDI expects to own it. If the host has one, the script says so; give it to a VM.
 - **GPU sharing.** An Intel or AMD GPU passed into a container is still the host's. Other containers, Plex for example, can use it at the same time, and they compete for its encoder.
 - **Gamepads haven't been tried in a container yet.** The devices they need are passed in and allowed, but no pad has been played there yet.
