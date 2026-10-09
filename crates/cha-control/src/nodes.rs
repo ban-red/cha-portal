@@ -742,6 +742,52 @@ struct NodeView {
     update_blocked: Option<String>,
     /// How an update asked of it is going.
     update_progress: Option<UpdateProgress>,
+    /// The shared directories it keeps outside its data root, with what its
+    /// agent found when it checked each; empty when it keeps none.
+    shared: Vec<SharedView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedView {
+    /// The template (data) id.
+    template: String,
+    /// The app's name.
+    name: String,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<cha_wire::SharedDirState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fs_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checked_at: Option<i64>,
+}
+
+fn shared_views(state: &AppState, inventory: Option<&Inventory>) -> Vec<SharedView> {
+    let Some(inv) = inventory else {
+        return Vec::new();
+    };
+    inv.shared_dirs
+        .iter()
+        .map(|(template, path)| {
+            let status = inv.shared_status.get(template);
+            SharedView {
+                template: template.clone(),
+                name: crate::environments::find_any(state, template)
+                    .map_or_else(|| template.clone(), |t| t.name.clone()),
+                path: path.clone(),
+                state: status.map(|s| s.state),
+                fs_type: status.and_then(|s| s.fs_type.clone()),
+                source: status.and_then(|s| s.source.clone()),
+                detail: status.and_then(|s| s.detail.clone()),
+                checked_at: status.map(|s| s.checked_at),
+            }
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -786,6 +832,7 @@ async fn list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<Vec
             UpdateOffer::None => (None, None),
         };
         out.push(NodeView {
+            shared: shared_views(&state, inventory.as_ref()),
             update_to,
             update_blocked,
             update_progress: state.nodes.update_run(&node.id).map(|r| r.progress),

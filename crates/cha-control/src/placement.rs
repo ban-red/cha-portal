@@ -10,8 +10,15 @@
 //! keep the app's data. A GPU with little VRAM free, or a node whose image
 //! disk is nearly full, stays allowed (the user may know better) but is never
 //! the automatic choice.
+//!
+//! An app that shares data between users (Steam's library) is also placed by
+//! where that shared directory is. A node that keeps it outside its data root
+//! (a NAS share) and finds it unusable is never the automatic choice and
+//! scores 40 less. A node that keeps it locally, while another online node
+//! keeps it on a share, scores 25 less, with a note: that is the node whose
+//! library is empty, and `auto` prefers the nodes on the share.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -19,7 +26,7 @@ use axum::{Json, Router};
 use cha_wire::{
     Device, DeviceKind, GpuUsage, HostOptions, HostPolicy, Inventory, NodeUsage,
     SPEC_FEATURE_DATA_TEMPLATE, SPEC_FEATURE_ENV, SPEC_FEATURE_HOST_OPTIONS, SecurityProfile,
-    Storage,
+    SharedDirState, SharedDirStatus, Storage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +50,10 @@ const PER_ENVIRONMENT: f64 = 10.0;
 /// it breaks a tie and beats a slightly busier node, but a much faster device
 /// still wins.
 const HAS_IMAGE: i64 = 15;
+/// What a shared folder the node finds unusable costs.
+const SHARED_BROKEN: i64 = 40;
+/// What keeping the shared folder locally costs when other nodes share one.
+const SHARED_LOCAL: i64 = 25;
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/placements", get(list))
@@ -130,6 +141,11 @@ pub struct NodeView {
     /// Whether it reports `/dev/kvm`. An older agent doesn't, and drops its
     /// connection on a profile it doesn't know, so it is never sent a `vm`.
     pub kvm: bool,
+    /// Template (data) id → where it keeps that app's shared directory, when
+    /// its owner keeps it outside the data root.
+    pub shared_dirs: BTreeMap<String, String>,
+    /// What its agent found when it checked each of those.
+    pub shared_status: BTreeMap<String, SharedDirStatus>,
 }
 
 impl NodeView {
@@ -168,6 +184,16 @@ pub struct Needs {
     pub data_template: bool,
     /// The host options (ADR 0021) it asks the node for.
     pub host: Option<HostOptions>,
+    /// The app shares a directory between users: its data id and name.
+    pub shared: Option<SharedUse>,
+}
+
+/// An app's shared directory, as placement asks about it.
+#[derive(Clone, Debug)]
+pub struct SharedUse {
+    /// `Template::data_id`, the key of `Inventory::shared_dirs`.
+    pub data: String,
+    pub name: String,
 }
 
 impl Needs {
@@ -180,6 +206,12 @@ impl Needs {
             env: !template.env.is_empty(),
             data_template: storage.is_some_and(|s| s.data_template.is_some()),
             host: template.host_options().cloned(),
+            shared: storage
+                .is_some_and(|s| s.shared.is_some())
+                .then(|| SharedUse {
+                    data: template.data_id().to_string(),
+                    name: template.name.clone(),
+                }),
         }
     }
 }
@@ -227,6 +259,66 @@ pub fn spec_refusal(needs: &Needs, inventory: Option<&Inventory>) -> Option<Stri
         needs,
         inventory.map_or(&[], |i| &i.spec_features),
         inventory.and_then(|i| i.host_options.as_ref()),
+    )
+}
+
+/// A shared folder's state in words, for a reason.
+fn shared_state_words(state: SharedDirState) -> &'static str {
+    match state {
+        SharedDirState::Ok => "it is fine",
+        SharedDirState::Missing => "it isn't mounted",
+        SharedDirState::Incomplete => "it lacks folders the app needs",
+        SharedDirState::Unreachable => "it didn't answer in time",
+        SharedDirState::ReadOnly => "it can't be written to",
+    }
+}
+
+/// What a node's shared folder for the app means for a launch there: a reason
+/// and a score change, or a note and a score change, or nothing. `nodes` are
+/// the online ones.
+fn shared_verdict(
+    shared: &SharedUse,
+    node: &NodeView,
+    nodes: &[NodeView],
+) -> (Option<String>, Option<String>, i64) {
+    if node.shared_dirs.contains_key(&shared.data) {
+        // An older agent sends no status: nothing known against it.
+        return match node.shared_status.get(&shared.data) {
+            Some(status) if status.state != SharedDirState::Ok => {
+                let why = status
+                    .detail
+                    .clone()
+                    .unwrap_or_else(|| shared_state_words(status.state).to_string());
+                (
+                    Some(format!(
+                        "{}'s shared folder isn't usable on this node: {why}",
+                        shared.name
+                    )),
+                    None,
+                    -SHARED_BROKEN,
+                )
+            }
+            _ => (None, None, 0),
+        };
+    }
+    let mut others: Vec<&str> = nodes
+        .iter()
+        .filter(|n| n.id != node.id && n.shared_dirs.contains_key(&shared.data))
+        .map(|n| n.name.as_str())
+        .collect();
+    if others.is_empty() {
+        return (None, None, 0);
+    }
+    others.sort_unstable();
+    (
+        None,
+        Some(format!(
+            "keeps {}'s shared folder on this node, not on the share {} {}",
+            shared.name,
+            others.join(", "),
+            if others.len() == 1 { "uses" } else { "use" }
+        )),
+        -SHARED_LOCAL,
     )
 }
 
@@ -326,6 +418,19 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                     free as f64 / f64::from(1u32 << 30)
                 ));
             }
+            let mut shared_note: Option<String> = None;
+            let mut shared_score = 0;
+            if let Some(shared) = needs.shared.as_ref().filter(|_| node.keeps_app_data) {
+                let (why, note, delta) = shared_verdict(shared, node, nodes);
+                if let Some(why) = why {
+                    reason = Some(match reason {
+                        Some(r) => format!("{r}; {why}"),
+                        None => why,
+                    });
+                }
+                shared_note = note;
+                shared_score = delta;
+            }
             if node.manual && allowed {
                 notes.push("picked by hand only");
             }
@@ -341,6 +446,9 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
             {
                 notes.push("downloads the image first");
             }
+            if let Some(note) = shared_note.as_deref() {
+                notes.push(note);
+            }
             options.push(PlacementOption {
                 node: node.id.clone(),
                 node_name: node.name.clone(),
@@ -351,7 +459,8 @@ pub fn options(needs: &Needs, nodes: &[NodeView]) -> Vec<PlacementOption> {
                 reason,
                 note: (!notes.is_empty()).then(|| notes.join("; ")),
                 score: score(device.kind, usage.map(|u| u.cpu), gpu, running)
-                    + if has_image { HAS_IMAGE } else { 0 },
+                    + if has_image { HAS_IMAGE } else { 0 }
+                    + shared_score,
                 manual: node.manual,
             });
         }
@@ -482,6 +591,14 @@ pub async fn online_nodes(state: &AppState) -> ApiResult<Vec<NodeView>> {
                 .unwrap_or_default(),
             host_policy: inventory.as_ref().and_then(|inv| inv.host_options.clone()),
             kvm: inventory.as_ref().is_some_and(|inv| inv.kvm == Some(true)),
+            shared_dirs: inventory
+                .as_ref()
+                .map(|inv| inv.shared_dirs.clone())
+                .unwrap_or_default(),
+            shared_status: inventory
+                .as_ref()
+                .map(|inv| inv.shared_status.clone())
+                .unwrap_or_default(),
             id: row.id,
             name: row.name,
             devices,
@@ -585,6 +702,8 @@ mod tests {
             spec_features: Vec::new(),
             host_policy: None,
             kvm: false,
+            shared_dirs: BTreeMap::new(),
+            shared_status: BTreeMap::new(),
         }
     }
 
@@ -613,6 +732,7 @@ mod tests {
         env: false,
         data_template: false,
         host: None,
+        shared: None,
     };
     const GAME: Needs = Needs {
         gpu: true,
@@ -622,6 +742,7 @@ mod tests {
         env: false,
         data_template: false,
         host: None,
+        shared: None,
     };
 
     #[test]
@@ -848,6 +969,7 @@ mod tests {
             data_template: false,
             host: None,
             vm: false,
+            shared: None,
         }
     }
 
@@ -998,5 +1120,148 @@ mod tests {
     fn nothing_online_says_so() {
         assert_eq!(placements(&PLAIN, &[]).auto, None);
         assert_eq!(nothing_allowed(&[]), "no node is online");
+    }
+
+    fn status(state: SharedDirState, detail: Option<&str>) -> SharedDirStatus {
+        SharedDirStatus {
+            state,
+            fs_type: Some("nfs4".into()),
+            source: None,
+            detail: detail.map(String::from),
+            checked_at: 1_791_000_000,
+        }
+    }
+
+    /// A node with a GPU that keeps Steam's shared folder on a share
+    /// (`external`), with `check` as its status, or locally.
+    fn steam_node(name: &str, external: bool, check: Option<SharedDirStatus>) -> NodeView {
+        let mut n = node(name, vec![rtx()]);
+        if external {
+            n.shared_dirs
+                .insert("steam".into(), "/mnt/games/steam".into());
+        }
+        if let Some(check) = check {
+            n.shared_status.insert("steam".into(), check);
+        }
+        n
+    }
+
+    fn shares_steam() -> Needs {
+        Needs {
+            app_data: true,
+            shared: Some(SharedUse {
+                data: "steam".into(),
+                name: "Steam".into(),
+            }),
+            ..PLAIN_NEEDS()
+        }
+    }
+
+    fn of<'a>(options: &'a [PlacementOption], node: &str) -> &'a PlacementOption {
+        options.iter().find(|o| o.node_name == node).unwrap()
+    }
+
+    #[test]
+    fn an_unusable_shared_folder_is_a_reason_and_keeps_auto_away() {
+        let nodes = [
+            steam_node("good", true, Some(status(SharedDirState::Ok, None))),
+            steam_node(
+                "broken",
+                true,
+                Some(status(
+                    SharedDirState::Missing,
+                    Some("/mnt/games isn't mounted"),
+                )),
+            ),
+            steam_node(
+                "unreach",
+                true,
+                Some(status(SharedDirState::Unreachable, None)),
+            ),
+        ];
+        let o = options(&shares_steam(), &nodes);
+        let (good, broken, unreach) = (of(&o, "good"), of(&o, "broken"), of(&o, "unreach"));
+        assert_eq!(good.reason, None);
+        assert_eq!(good.note, None);
+        assert_eq!(
+            broken.reason.as_deref(),
+            Some("Steam's shared folder isn't usable on this node: /mnt/games isn't mounted")
+        );
+        assert_eq!(
+            unreach.reason.as_deref(),
+            Some("Steam's shared folder isn't usable on this node: it didn't answer in time")
+        );
+        assert!(broken.allowed && unreach.allowed);
+        assert_eq!(good.score - broken.score, 40);
+        assert_eq!(
+            placements(&shares_steam(), &nodes).auto.unwrap().node,
+            "id-good"
+        );
+    }
+
+    #[test]
+    fn a_node_off_the_share_scores_less_with_a_note() {
+        let nodes = [
+            steam_node("local", false, None),
+            steam_node("nas-a", true, Some(status(SharedDirState::Ok, None))),
+            steam_node("nas-b", true, Some(status(SharedDirState::Ok, None))),
+        ];
+        let o = options(&shares_steam(), &nodes);
+        let local = of(&o, "local");
+        assert_eq!(
+            local.note.as_deref(),
+            Some("keeps Steam's shared folder on this node, not on the share nas-a, nas-b use")
+        );
+        assert_eq!(local.reason, None);
+        assert!(local.allowed);
+        assert_eq!(of(&o, "nas-a").score - local.score, 25);
+        assert_eq!(of(&o, "nas-a").note, None);
+        assert_ne!(
+            placements(&shares_steam(), &nodes).auto.unwrap().node,
+            "id-local"
+        );
+
+        // With one other node the note says "uses"; a note joins another.
+        let mut manual = steam_node("local", false, None);
+        manual.manual = true;
+        let o = options(
+            &shares_steam(),
+            &[
+                manual,
+                steam_node("nas", true, Some(status(SharedDirState::Ok, None))),
+            ],
+        );
+        assert_eq!(
+            of(&o, "local").note.as_deref(),
+            Some(
+                "picked by hand only; keeps Steam's shared folder on this node, not on the share nas uses"
+            )
+        );
+    }
+
+    #[test]
+    fn shared_folders_matter_only_where_the_app_shares_and_the_agent_says() {
+        // Old agents report no status: external counts as fine. A lone local
+        // node has no share to differ from. An app that shares nothing is
+        // left alone.
+        let old = [
+            steam_node("old", true, None),
+            steam_node("local", false, None),
+        ];
+        let o = options(&shares_steam(), &old);
+        assert_eq!(of(&o, "old").reason, None);
+        assert_eq!(of(&o, "old").score, of(&o, "local").score + 25);
+        let alone = [steam_node("local", false, None)];
+        assert_eq!(options(&shares_steam(), &alone)[0].note, None);
+        let broken = [steam_node(
+            "broken",
+            true,
+            Some(status(SharedDirState::Missing, None)),
+        )];
+        let o = options(&PLAIN, &broken);
+        assert_eq!((o[0].reason.clone(), o[0].note.clone()), (None, None));
+        // An offline node isn't in the list, so it doesn't make the others "off".
+        let o = options(&shares_steam(), &[steam_node("local", false, None)]);
+        assert_eq!(o[0].note, None);
     }
 }

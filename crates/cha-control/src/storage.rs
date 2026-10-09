@@ -25,7 +25,10 @@ use std::time::Duration;
 use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use cha_wire::{DEFAULT_DATA_ROOT, Inventory, NodeRequest, NodeResponse, Shared, Storage};
+use cha_wire::{
+    DEFAULT_DATA_ROOT, Inventory, NodeRequest, NodeResponse, Shared, SharedDirState,
+    SharedDirStatus, Storage,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::info;
@@ -215,6 +218,20 @@ struct NodeStorage {
     /// connected nodes first, else from ones that last said so. A template
     /// with none here keeps it under the data root.
     shared_paths: HashMap<String, String>,
+    /// Every node that keeps app data, online or not, for the admin's
+    /// per-node view of where each app's shared directory is.
+    nodes: Vec<NodeShared>,
+}
+
+/// A node that keeps app data and what it says about its shared directories.
+struct NodeShared {
+    id: String,
+    name: String,
+    online: bool,
+    data_root: String,
+    /// Template (data) id → the external path.
+    dirs: std::collections::BTreeMap<String, String>,
+    status: std::collections::BTreeMap<String, SharedDirStatus>,
 }
 
 async fn node_storage(state: &AppState) -> ApiResult<NodeStorage> {
@@ -222,6 +239,7 @@ async fn node_storage(state: &AppState) -> ApiResult<NodeStorage> {
     let mut offline_root = None;
     let mut online = HashMap::new();
     let mut offline = HashMap::new();
+    let mut per_node = Vec::new();
     for node in db::list_nodes(&state.db).await? {
         let Some(inventory) = node_inventory(&node) else {
             continue;
@@ -232,13 +250,22 @@ async fn node_storage(state: &AppState) -> ApiResult<NodeStorage> {
         } else {
             (&mut offline_root, &mut offline)
         };
-        if let Some(data_root) = inventory.data_root {
-            root.get_or_insert(data_root);
+        if let Some(data_root) = &inventory.data_root {
+            root.get_or_insert(data_root.clone());
+            per_node.push(NodeShared {
+                id: node.id.clone(),
+                name: node.name.clone(),
+                online: connected,
+                data_root: data_root.clone(),
+                dirs: inventory.shared_dirs.clone(),
+                status: inventory.shared_status.clone(),
+            });
         }
         for (template, path) in inventory.shared_dirs {
             paths.entry(template).or_insert(path);
         }
     }
+    per_node.sort_by(|a, b| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
     for (template, path) in offline {
         online.entry(template).or_insert(path);
     }
@@ -247,6 +274,7 @@ async fn node_storage(state: &AppState) -> ApiResult<NodeStorage> {
             .or(offline_root)
             .unwrap_or_else(|| DEFAULT_DATA_ROOT.to_string()),
         shared_paths: online,
+        nodes: per_node,
     })
 }
 
@@ -505,13 +533,74 @@ struct AdminApp {
     /// As in [`UserApp`].
     #[serde(skip_serializing_if = "Option::is_none")]
     shared_path: Option<String>,
+    /// Where each node that keeps app data holds the app's shared directory,
+    /// by node name.
+    nodes: Vec<AdminAppNode>,
 }
 
-fn admin_app(
-    template: &Template,
-    rows: &[AppStorageRow],
-    shared_paths: &HashMap<String, String>,
-) -> AdminApp {
+#[derive(Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+struct AdminAppNode {
+    node_id: String,
+    node_name: String,
+    online: bool,
+    /// `external` (its owner keeps it outside the data root) or `local`.
+    location: &'static str,
+    /// The external path, or the directory under the node's data root.
+    path: String,
+    /// What the node's check of an external directory found; absent for a
+    /// local one and from agents that report none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<SharedDirState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fs_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checked_at: Option<i64>,
+}
+
+fn admin_app_nodes(data: &str, nodes: &[NodeShared]) -> Vec<AdminAppNode> {
+    nodes
+        .iter()
+        .map(|n| {
+            let status = n.status.get(data);
+            let external = n.dirs.get(data);
+            AdminAppNode {
+                node_id: n.id.clone(),
+                node_name: n.name.clone(),
+                online: n.online,
+                location: if external.is_some() {
+                    "external"
+                } else {
+                    "local"
+                },
+                path: external.cloned().unwrap_or_else(|| {
+                    format!(
+                        "{}/{}",
+                        n.data_root.trim_end_matches('/'),
+                        cha_wire::shared_dir(data)
+                    )
+                }),
+                state: status.filter(|_| external.is_some()).map(|s| s.state),
+                fs_type: status
+                    .filter(|_| external.is_some())
+                    .and_then(|s| s.fs_type.clone()),
+                source: status
+                    .filter(|_| external.is_some())
+                    .and_then(|s| s.source.clone()),
+                detail: status
+                    .filter(|_| external.is_some())
+                    .and_then(|s| s.detail.clone()),
+                checked_at: status.filter(|_| external.is_some()).map(|s| s.checked_at),
+            }
+        })
+        .collect()
+}
+
+fn admin_app(template: &Template, rows: &[AppStorageRow], nodes: &NodeStorage) -> AdminApp {
     let data = template.data_id();
     let app = app_settings(template, rows.iter().find(|r| r.template_id == data));
     AdminApp {
@@ -519,7 +608,8 @@ fn admin_app(
         name: template.name.clone(),
         default_persistent: app.default_persistent,
         shared_access: app.shared_access,
-        shared_path: shared_paths.get(data).cloned(),
+        shared_path: nodes.shared_paths.get(data).cloned(),
+        nodes: admin_app_nodes(data, &nodes.nodes),
     }
 }
 
@@ -527,12 +617,13 @@ fn admin_app(
 async fn admin_list(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<AdminStorage>> {
     let rows = db::app_storage(&state.db).await?;
     let nodes = node_storage(&state).await?;
+    let apps = environments::all(&state)
+        .iter()
+        .map(|t| admin_app(t, &rows, &nodes))
+        .collect();
     Ok(Json(AdminStorage {
         root: nodes.root,
-        apps: environments::all(&state)
-            .iter()
-            .map(|t| admin_app(t, &rows, &nodes.shared_paths))
-            .collect(),
+        apps,
     }))
 }
 
@@ -588,7 +679,7 @@ async fn admin_set(
     .await?;
     let rows = db::app_storage(&state.db).await?;
     let nodes = node_storage(&state).await?;
-    Ok(Json(admin_app(template, &rows, &nodes.shared_paths)))
+    Ok(Json(admin_app(template, &rows, &nodes)))
 }
 
 #[cfg(test)]

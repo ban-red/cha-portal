@@ -1361,6 +1361,7 @@ async fn admins_set_the_defaults_and_the_sharing_per_app() {
             "name": "Steam",
             "defaultPersistent": true,
             "sharedAccess": "write",
+            "nodes": [],
         })
     );
     assert_eq!(app_of(&listed.body, "chrome")["sharedAccess"], "none");
@@ -1382,6 +1383,7 @@ async fn admins_set_the_defaults_and_the_sharing_per_app() {
             "name": "Steam",
             "defaultPersistent": true,
             "sharedAccess": "read",
+            "nodes": [],
         })
     );
     let default = p
@@ -4633,4 +4635,125 @@ async fn the_instance_limit_follows_the_user() {
             .unwrap()
             .contains("4 environments")
     );
+}
+
+// ---- Shared directories across nodes ----
+
+impl TestPortal {
+    /// A node row whose last inventory has a data root and, for Steam, an
+    /// external shared directory with `status` (a `sharedStatus` entry), if any.
+    async fn node_with_shared(
+        &self,
+        name: &str,
+        external: Option<&str>,
+        status: Option<Value>,
+    ) -> String {
+        let id = self.node_row(name).await;
+        let mut inv = json!({
+            "hostname": name, "os": "linux", "arch": "x86_64", "cpus": 8, "memoryMb": 1,
+            "gpus": [], "addresses": [], "dataRoot": format!("/srv/{name}"),
+        });
+        if let Some(path) = external {
+            inv["sharedDirs"] = json!({ "steam": path });
+        }
+        if let Some(status) = status {
+            inv["sharedStatus"] = json!({ "steam": status });
+        }
+        db::set_node_inventory(&self.db, &id, &inv.to_string())
+            .await
+            .unwrap();
+        id
+    }
+}
+
+#[tokio::test]
+async fn the_admin_sees_where_each_node_keeps_an_apps_shared_directory() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let ok = json!({ "state": "ok", "fsType": "nfs4", "source": "nas:/games/steam", "checkedAt": 1_791_000_000 });
+    let missing =
+        json!({ "state": "missing", "detail": "not mounted", "checkedAt": 1_791_000_001 });
+    let nas = p
+        .node_with_shared("b-nas", Some("/mnt/games/steam"), Some(ok))
+        .await;
+    let broken = p
+        .node_with_shared("a-broken", Some("/mnt/games/steam"), Some(missing))
+        .await;
+    let local = p.node_with_shared("c-local", None, None).await;
+    // A node whose agent predates storage holds no app data: not listed.
+    p.node_row("d-old").await;
+
+    let listed = p
+        .call("GET", "/api/admin/storage", Some(&admin), None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let steam = listed.body["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["template"] == "steam")
+        .unwrap();
+    assert_eq!(
+        steam["nodes"],
+        json!([
+            { "nodeId": broken, "nodeName": "a-broken", "online": false, "location": "external",
+              "path": "/mnt/games/steam", "state": "missing", "detail": "not mounted",
+              "checkedAt": 1_791_000_001 },
+            { "nodeId": nas, "nodeName": "b-nas", "online": false, "location": "external",
+              "path": "/mnt/games/steam", "state": "ok", "fsType": "nfs4",
+              "source": "nas:/games/steam", "checkedAt": 1_791_000_000 },
+            { "nodeId": local, "nodeName": "c-local", "online": false, "location": "local",
+              "path": "/srv/c-local/shared/steam" },
+        ])
+    );
+    // Apps that share nothing still list where a node would keep it.
+    let chrome = listed.body["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["template"] == "chrome")
+        .unwrap();
+    assert_eq!(chrome["nodes"][0]["location"], "local");
+    assert_eq!(chrome["nodes"][0]["path"], "/srv/a-broken/shared/chrome");
+    // The single path stays.
+    assert_eq!(steam["sharedPath"], "/mnt/games/steam");
+}
+
+#[tokio::test]
+async fn the_nodes_list_carries_each_nodes_external_shared_directories() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let missing = json!({ "state": "read_only", "fsType": "cifs", "checkedAt": 5 });
+    p.node_with_shared("nas", Some("/mnt/games/steam"), Some(missing))
+        .await;
+    p.node_with_shared("plain", None, None).await;
+    // An older agent: a path and no check.
+    p.node_with_shared("old", Some("/mnt/x/steam"), None).await;
+
+    let listed = p.call("GET", "/api/nodes", Some(&admin), None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let by = |name: &str| {
+        listed
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["name"] == name)
+            .unwrap()["shared"]
+            .clone()
+    };
+    assert_eq!(
+        by("nas"),
+        json!([{ "template": "steam", "name": "Steam", "path": "/mnt/games/steam",
+                 "state": "read_only", "fsType": "cifs", "checkedAt": 5 }])
+    );
+    assert_eq!(by("plain"), json!([]));
+    assert_eq!(
+        by("old"),
+        json!([{ "template": "steam", "name": "Steam", "path": "/mnt/x/steam" }])
+    );
+    // Admin-only, as the list always was.
+    let (alice, _) = p.account(&admin, "alice", "user").await;
+    let denied = p.call("GET", "/api/nodes", Some(&alice), None).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
 }
