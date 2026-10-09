@@ -261,6 +261,8 @@ The node tells the portal its mode and what it names (mount names and whether ea
 
 Added capabilities (`NET_ADMIN`, `NET_RAW`, `SYS_NICE`…) reach the app's own processes, which still run as uid 1000. The agent starts the app as root with only those, and the image's `cha-run` drops to uid 1000 keeping them. This works only for images built on the Cha base (entrypoint `cha-run`, user `cha`); the agent refuses capabilities for any other image. `NET_ADMIN` acts on the container's own network unless the environment also uses the host's network. A VPN client also needs `/dev/net/tun` as a device.
 
+A Steam environment (the `steam` security profile) takes no added capabilities: the portal won't save them and the agent refuses them. Every process Steam starts would hold them, and Steam's bubblewrap sandbox (its start-up check, its web helper and Proton's pressure-vessel) stops when it has capabilities without being setuid. Steam then exits at start, and its log says it "requires user namespaces". Its other host options work as for any app.
+
 ### Virtual machine environments
 
 A template with the `vm` profile (a QEMU/KVM guest inside the app, from a catalog an admin approved) runs only on a node that has `/dev/kvm`: the host's `kvm_intel` or `kvm_amd` module loaded and virtualisation on in the firmware. The agent reports it, and the portal offers other nodes' placements as "no KVM". `/dev/udmabuf` is optional; the app gets it when the host has it. The app is limited to `CHA_VM_MEMORY_MB` and given 90 s to stop. `cha-node --doctor` says whether the node has KVM. A node under Proxmox, as a VM or an LXC container, needs the outer host to pass KVM through.

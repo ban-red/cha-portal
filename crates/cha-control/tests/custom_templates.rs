@@ -329,6 +329,13 @@ fn media_host() -> Value {
     })
 }
 
+/// [`media_host`] without its capability, which Steam can't take.
+fn media_host_no_caps() -> Value {
+    let mut host = media_host();
+    host.as_object_mut().unwrap().remove("capAdd");
+    host
+}
+
 /// Waits until `check` holds of `path`, as `cookie`.
 async fn wait_for(p: &Portal, path: &str, cookie: &str, check: impl Fn(&Value) -> bool) -> Value {
     for _ in 0..100 {
@@ -419,12 +426,12 @@ async fn an_admin_creates_lists_updates_and_deletes_one() {
         .admin(
             "PUT",
             "/api/admin/custom-templates/custom.steam-big",
-            Some(json!({ "overrides": { "fps": 120 }, "shareData": false, "host": media_host() })),
+            Some(json!({ "overrides": { "fps": 120 }, "shareData": false, "host": media_host_no_caps() })),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["overrides"], json!({ "fps": 120 }));
-    assert_eq!(r.body["host"]["capAdd"], json!(["SYS_NICE"]));
+    assert_eq!(r.body["host"]["ports"][0]["container"], 27015);
     let cards = p.catalog(&player).await;
     let card = cards
         .iter()
@@ -537,6 +544,73 @@ async fn wider_security_and_host_options_are_in_the_audit_log() {
     assert!(
         host.contains("SYS_NICE") && host.contains("/mnt/media"),
         "{host}"
+    );
+}
+
+#[tokio::test]
+async fn steam_takes_no_added_capabilities() {
+    let p = Portal::start().await;
+    let refused = |r: &Reply| {
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+        assert_eq!(r.body["error"], "bad_host", "{:?}", r.body);
+        let message = r.body["message"].as_str().unwrap();
+        assert!(message.contains("bubblewrap"), "{message}");
+    };
+    let create = |slug: &str, base: &str, overrides: Value| json!({ "slug": slug, "base": base, "shareData": false, "overrides": overrides, "host": media_host() });
+    // Steam as the base, or as the profile a custom one moves to.
+    refused(
+        &p.admin(
+            "POST",
+            "/api/admin/custom-templates",
+            Some(create("steam-cap", "steam", json!({}))),
+        )
+        .await,
+    );
+    refused(
+        &p.admin(
+            "POST",
+            "/api/admin/custom-templates",
+            Some(create(
+                "chrome-cap",
+                "chrome",
+                json!({ "security": "steam" }),
+            )),
+        )
+        .await,
+    );
+    // Its other host options are fine, and so are capabilities elsewhere.
+    let r = p
+        .admin(
+            "POST",
+            "/api/admin/custom-templates",
+            Some(json!({ "slug": "steam-media", "base": "steam", "shareData": false, "overrides": {}, "host": media_host_no_caps() })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let r = p
+        .admin(
+            "POST",
+            "/api/admin/custom-templates",
+            Some(create("xfce-cap", "xfce", json!({}))),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    // Nor can a change add them.
+    refused(
+        &p.admin(
+            "PUT",
+            "/api/admin/custom-templates/custom.steam-media",
+            Some(json!({ "overrides": {}, "shareData": false, "host": media_host() })),
+        )
+        .await,
+    );
+    refused(
+        &p.admin(
+            "PUT",
+            "/api/admin/custom-templates/custom.xfce-cap",
+            Some(json!({ "overrides": { "security": "steam" }, "shareData": false, "host": media_host() })),
+        )
+        .await,
     );
 }
 

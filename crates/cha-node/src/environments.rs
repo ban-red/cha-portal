@@ -1850,6 +1850,9 @@ impl DockerRuntime {
         let config = &self.config.host_options;
         let refuse = |why: String| anyhow!("host options refused: {why}");
         req.check_shape().map_err(refuse)?;
+        if spec.security == SecurityProfile::Steam && !req.cap_add.is_empty() {
+            return Err(refuse(STEAM_CAPS_REFUSED.into()));
+        }
         if config.mode == HostOptionsMode::Off {
             return Err(refuse(
                 "this node allows no host options (CHA_HOST_OPTIONS=off)".into(),
@@ -2766,6 +2769,15 @@ const AMBIENT_CAPS_ENV: &str = "CHA_AMBIENT_CAPS";
 /// What `cha-run` needs, besides the app's own capabilities, to drop to uid
 /// 1000 and trim its bounding set to them.
 const DROP_CAPS: [&str; 3] = ["SETUID", "SETGID", "SETPCAP"];
+
+/// Why a `steam` app gets no added capabilities: `cha-run` keeps them as
+/// ambient ones, so every process Steam starts holds them, and Steam's
+/// bubblewrap (its start-up check, steamwebhelper's runtime, Proton's
+/// pressure-vessel) stops when it has capabilities without being setuid.
+/// Steam then exits at start, and gamescope with it. The portal refuses them
+/// too; this is for one that doesn't know to.
+const STEAM_CAPS_REFUSED: &str = "Steam can't run with added capabilities (its bubblewrap \
+     sandbox stops when it holds any, so Steam would exit at start)";
 
 /// Whether `image` can be started as root for added capabilities: only one
 /// whose entrypoint is our base's `cha-run` and whose user is `cha`, so it is
@@ -6926,6 +6938,22 @@ mod tests {
         assert_eq!(device["CgroupPermissions"], "rwm");
         // The node's own mounts are all still there.
         assert!(target(mounts, "/run/cha").is_some());
+    }
+
+    #[test]
+    fn a_steam_app_takes_no_added_capabilities() {
+        let rt = full();
+        let caps = HostOptions {
+            cap_add: vec!["NET_RAW".into()],
+            ..Default::default()
+        };
+        let steam = EnvironmentSpec {
+            host: Some(Box::new(caps.clone())),
+            ..spec(SecurityProfile::Steam)
+        };
+        let err = refusal(&rt, &steam);
+        assert!(err.contains("bubblewrap"), "{err}");
+        assert!(rt.plan_host(&with_host(caps), &HashSet::new()).is_ok());
     }
 
     #[test]

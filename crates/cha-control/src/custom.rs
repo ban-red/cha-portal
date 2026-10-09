@@ -333,7 +333,33 @@ fn resolve(state: &AppState, row: &Stored) -> Result<(Template, Option<String>),
         ));
     };
     let unavailable = unavailable.map(|why| format!("its base {} {why}", base.name));
-    Ok((apply(&base, row), unavailable))
+    let template = apply(&base, row);
+    let unavailable =
+        unavailable.or_else(|| steam_caps_refusal(template.security, row.host.as_ref()));
+    Ok((template, unavailable))
+}
+
+/// Why host options that add capabilities can't go with the `steam` security
+/// profile, if they do. The node gives added capabilities to the app as
+/// ambient ones (`cha-run`), so every process Steam starts holds them, and
+/// Steam's bubblewrap (its start-up check, steamwebhelper's runtime and
+/// Proton's pressure-vessel) refuses to run with capabilities while not
+/// setuid: Steam exits at once, and nothing in it could use them anyway.
+/// Refused until the Steam image can keep them to a helper beside Steam.
+fn steam_caps_refusal(security: SecurityProfile, host: Option<&HostOptions>) -> Option<String> {
+    (security == SecurityProfile::Steam && host.is_some_and(|h| !h.cap_add.is_empty())).then(|| {
+        "adds capabilities, which Steam can't run with: its bubblewrap sandbox stops when it holds \
+         any, so Steam exits at start; remove them from its host options"
+            .to_string()
+    })
+}
+
+/// [`steam_caps_refusal`] as a 400 for a save.
+fn check_steam_caps(security: SecurityProfile, host: Option<&HostOptions>) -> ApiResult<()> {
+    match steam_caps_refusal(security, host) {
+        Some(why) => Err(ApiError::bad_request("bad_host", format!("host: {why}"))),
+        None => Ok(()),
+    }
 }
 
 /// The custom templates a user can launch.
@@ -597,6 +623,7 @@ async fn create(
     }
     let overrides = parse_overrides(req.overrides)?;
     let host = parse_host(req.host)?;
+    check_steam_caps(overrides.security.unwrap_or(base.security), host.as_ref())?;
     if state.customs.get(&id).is_some() {
         return Err(ApiError::conflict(
             "slug_taken",
@@ -670,6 +697,12 @@ async fn update(
     let old = existing(&state, &id)?;
     let overrides = parse_overrides(req.overrides)?;
     let host = parse_host(req.host)?;
+    if let Some(security) = overrides
+        .security
+        .or_else(|| base_status(&state, &old.base).map(|(base, _)| base.security))
+    {
+        check_steam_caps(security, host.as_ref())?;
+    }
     if req.share_data != old.share_data && live_of(&state.db, &[&id, &old.base]).await? > 0 {
         return Err(ApiError::conflict(
             "live",
