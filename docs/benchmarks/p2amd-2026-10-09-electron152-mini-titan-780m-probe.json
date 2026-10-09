@@ -1,0 +1,56 @@
+{
+ "benchmark": "P2 AMD node: click → screen and click → sound through the portal-brokered session, Radeon 780M vs RTX 4090, same browser and output",
+ "date": "2026-10-09",
+ "client": {
+  "browser": "Claude app's built-in browser, Chromium 152.0.7977.130 (Electron), on the M4 Pro",
+  "note": "Probe started by hand with the pane in front; runs where the pane was not painted are marked"
+ },
+ "path": "WebTransport, AV1, 60 fps, test-pattern environment; the stream follows the pane's element (1192×1440, coded 1216×1440 on radeonsi)",
+ "runs": [
+  {
+   "node": "cha-amd (Radeon 780M, LXC on Proxmox, video clocks held high)",
+   "clickToShownMs": {
+    "p50": 16.7,
+    "p95": 17.9
+   },
+   "clickToSoundMs": {
+    "p50": 93.2,
+    "p95": 93.5
+   },
+   "avOffsetMs": 76.6,
+   "samples": 25,
+   "missed": 0,
+   "note": "the pane showed a black picture during this run"
+  },
+  {
+   "node": "iolinux (RTX 4090, GPU shared, another session's cha/streamer:dev)",
+   "clickToShownMs": {
+    "p50": 24.2,
+    "p95": 25.0
+   },
+   "clickToSoundMs": {
+    "p50": 64.2,
+    "p95": 64.7
+   },
+   "avOffsetMs": 39.9,
+   "samples": 25,
+   "missed": 0
+  },
+  {
+   "node": "cha-amd, a new session",
+   "clickToShownMs": {
+    "p50": 16.0,
+    "p95": 17.6
+   },
+   "clickToSoundMs": {
+    "p50": 74.1,
+    "p95": 75.4
+   },
+   "avOffsetMs": 58.3,
+   "samples": 25,
+   "missed": 0,
+   "note": "picture showing"
+  }
+ ],
+ "note": "Click → shown on the 780M (16.0-16.7 ms) matches the 4090's best in this browser (15.8 ms, p15). Click → sound varies 19 ms between sessions on the same node: the test pattern's 20 ms sound-server buffer puts each click at a different point of its refills, so one run per node can't separate them."
+}
