@@ -329,7 +329,11 @@ export class InputCapture {
     if (down) {
       this.video.focus();
       if (!this.locked) {
-        this.video.setPointerCapture(e.pointerId);
+        try {
+          this.video.setPointerCapture(e.pointerId);
+        } catch {
+          // No live pointer for the id (synthetic events, cursor off-window): the click goes on.
+        }
         this.send({ k: "move", ...this.position(e) });
       }
       this.buttons.add(e.button);

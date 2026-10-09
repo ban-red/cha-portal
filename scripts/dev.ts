@@ -8,7 +8,8 @@
 //   with `--dev-login`: the sign-in page offers "Login as Local Dev", and a
 //   button for each existing admin account (to see your own data locally).
 // - The SPA on Vite at http://localhost:7678 (PORT to change), hot reloading,
-//   proxying /api to cha-control (vite.config.ts).
+//   proxying /api to cha-control (vite.config.ts). It listens on 0.0.0.0 too
+//   (CHA_WEB_HOST=127.0.0.1 keeps it to this machine).
 //
 // It listens on every interface, so a node on another machine can enroll
 // (CHA_LISTEN=127.0.0.1:7677 keeps it to this machine). A node agent on this
@@ -31,6 +32,7 @@ const CONTROL_PORT = LISTEN.slice(LISTEN.lastIndexOf(":") + 1);
 const CONTROL = `127.0.0.1:${CONTROL_PORT}`;
 const LAN = !/^(127\.|localhost:|\[::1\]:)/.test(LISTEN);
 const WEB_PORT = process.env.PORT ?? "7678";
+const WEB_HOST = process.env.CHA_WEB_HOST ?? "0.0.0.0";
 
 mkdirSync(join(root, "data"), { recursive: true });
 
@@ -115,7 +117,7 @@ while (!stopping) {
 }
 
 if (!stopping) {
-  const web = start("web", 35, ["bun", "run", "--cwd", "web/apps/portal", "dev", "--port", WEB_PORT, "--strictPort"], {
+  const web = start("web", 35, ["bun", "run", "--cwd", "web/apps/portal", "dev", "--host", WEB_HOST, "--port", WEB_PORT, "--strictPort"], {
     CHA_CONTROL: `http://${CONTROL}`,
   });
   children.push(web);

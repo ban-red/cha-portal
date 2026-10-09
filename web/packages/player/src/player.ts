@@ -16,6 +16,8 @@ import { AudioOut } from "./audio-out";
 import { presenceActive } from "./presence";
 import { ControllerManager, type ManagedController } from "./controllers";
 import type { CaptureView } from "./captureMode";
+import { installHarness } from "./harness";
+import { startDevBridge } from "./dev-bridge";
 import { InputCapture } from "./input";
 import { judgeLiveness, RESUME_ANSWER_MS, shouldReconnectOnResume } from "./liveness";
 import { overlayAnswer, parseOverlay, type OverlayLevel, type OverlayState } from "./overlay";
@@ -933,6 +935,10 @@ export class Player {
         onEscHold: (progress) => this.options.onEscHold?.(progress),
       });
       this.input.setMouseEnabled(this.mouseEnabled);
+      if (import.meta.env.DEV) {
+        installHarness(video, (m) => this.sendInput(m));
+        startDevBridge();
+      }
     }
     this.pads?.stop();
     if (readsPads(this.inputMode)) {

@@ -36,3 +36,7 @@ Icons come from [Lucide](https://lucide.dev) (`lucide-vue-next`, ISC), imported 
 
 Environments has search, a filter (All, Applications, Desktops, Pinned), a sort (Name, Recently used) and a grid or list view. Each card lays itself out by its own width (container queries). **Pin** keeps an app first in every sort. Pins, view and sort are saved per user with the theme choices in `GET`/`PUT /api/me/prefs`: `pinned` (up to 64 different app ids, `a-z`, `0-9` and `-`), `envView` (`grid` or `list`) and `envSort` (`name` or `recent`). The small "Saved" badge is separate: it means the app keeps your data between launches.
 
+
+## Dev harness over MCP
+
+With `CHA_DEV_MCP=1` on the dev server, each session page gets an MCP endpoint at `/environments/<id>/session/mcp` (loopback only, 404 otherwise; `CHA_DEV_MCP_LAN=1` also admits other machines on the LAN, since the endpoint has no login). The session page must be open and signed in with controls, and its picture clicked once; the page then runs `window.__chaHarness` for the endpoint. Tools: `view_frame` (a PNG of the picture or a region), `input` (hold, tap, chord, look, move_to, click, wait, seed), `wait_for_change` and `status`. Register it per session with `claude mcp add --transport http <name> http://localhost:7678/environments/<id>/session/mcp`. Code: `dev-mcp/` here and `web/packages/player/src/dev-bridge.ts`.
