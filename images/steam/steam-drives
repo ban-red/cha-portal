@@ -1,0 +1,209 @@
+#!/usr/bin/python3
+"""Gives every Proton prefix a drive letter for the shared game library.
+
+Proton runs a game in Steam's pressure-vessel container, whose `/` is a tmpfs
+the size of half the node's RAM, and Wine maps `z:` to `/`. A Windows launcher
+(HoYoPlay, say) that looks at `Z:\\` sees that tmpfs's free space, a few dozen
+GB, and refuses to install on the library's terabytes: it checks the drive
+root's free space, not the folder the user chose. The shared directory
+(CHA_SHARED_DIR, usually a NAS) is bind-mounted at the same path inside
+pressure-vessel, so a symlink to it in a prefix's `dosdevices` gives it a
+drive of its own: `D:\\` then reports the share's real size.
+
+For each prefix, `<library>/steamapps/compatdata/<id>/pfx/dosdevices`:
+- **Already there:** if some letter points at the shared directory (the real
+  paths are compared), nothing is done.
+- **Else `d:`**, and if `d:` is taken by something else, the first free letter
+  from `e:` to `y:`. `c:`, `z:` and every other existing entry are never
+  touched, and nothing is written outside `dosdevices` (the shared directory
+  is never written at all). The link is made under a temp name and renamed, so
+  a half-made one is never seen. A prefix that fails (permissions, Proton
+  deleting it meanwhile) is logged and skipped.
+
+The libraries searched are Steam's own, `~/.local/share/Steam`; the shared
+directory itself (its `steamapps/compatdata` is the per-user folder the node
+mounts over the shared one); and every other library in `libraryfolders.vdf`
+(read with steam-library's parser; if that can't be loaded, only the first two).
+
+Run mode: one pass at start, then another every 2 seconds, for as long as the
+container lives (`start-steam` runs this in the background). Proton makes a
+game's prefix at its first launch, and Wine looks `D:\\...` up through
+`dosdevices` whenever a path is opened, so a link that arrives a second later
+still works for paths; a file dialog's list of drives may only show D: from the
+next launch. A pass is cheap: a prefix that was handled is skipped while its
+`dosdevices` directory's mtime is the same, so a quiet library costs a listing
+of its `compatdata` and one stat per prefix.
+
+Environment: HOME, CHA_DRIVES_INTERVAL (seconds between passes; default 2),
+for the tests.
+
+Usage: steam-drives [--once] DIRECTORY
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import re
+import sys
+import time
+
+STEAM_DIR = ".local/share/Steam"
+LIST = "steamapps/libraryfolders.vdf"
+COMPATDATA = "steamapps/compatdata"
+DRIVE = re.compile(r"[a-z]:", re.IGNORECASE)
+# d: first; z: is the root and c: the prefix itself.
+LETTERS = "defghijklmnopqrstuvwxy"
+
+
+def say(message):
+    print(f"steam-drives: {message}", file=sys.stderr, flush=True)
+
+
+def load_parser():
+    """steam-library's module (it sits beside this), or None."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "steam-library")
+    try:
+        loader = importlib.machinery.SourceFileLoader("steam_library", path)
+        spec = importlib.util.spec_from_loader("steam_library", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+    except Exception as e:  # a missing or broken file must not stop the drives
+        say(f"can't load steam-library, so only the home's and the shared library are searched: {e}")
+        return None
+
+
+def real(path):
+    return os.path.realpath(path)
+
+
+def make_link(dosdevices, letter, target):
+    """`letter:` -> target, whole or not at all."""
+    temp = os.path.join(dosdevices, f".steam-drives-{os.getpid()}-{letter}.tmp")
+    final = os.path.join(dosdevices, f"{letter}:")
+    try:
+        os.symlink(target, temp)
+        if os.path.lexists(final):  # made by someone since we looked
+            raise FileExistsError(final)
+        os.rename(temp, final)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+def link_drive(dosdevices, target):
+    """Gives `target` a letter in this dosdevices; the letter made, or None if it has one."""
+    target_real = real(target)
+    taken = set()
+    for name in os.listdir(dosdevices):
+        taken.add(name.lower())
+        if DRIVE.fullmatch(name) and real(os.path.join(dosdevices, name)) == target_real:
+            return None
+    for letter in LETTERS:
+        if f"{letter}:" not in taken:
+            make_link(dosdevices, letter, target)
+            return letter
+    raise OSError("d: to y: are all taken")
+
+
+class Drives:
+    def __init__(self, target, home):
+        self.target = os.path.abspath(target)
+        self.home = home
+        self.parser = load_parser()
+        # prefix's dosdevices path -> its mtime when last handled
+        self.handled = {}
+        # list file -> (mtime, library paths)
+        self.lists = {}
+
+    def libraries(self):
+        """Library roots to search, each once."""
+        steam = os.path.join(self.home, STEAM_DIR)
+        roots = [steam, self.target]
+        if self.parser:
+            roots += self.listed(os.path.join(steam, LIST))
+        seen, out = set(), []
+        for root in roots:
+            key = real(root)
+            if key not in seen:
+                seen.add(key)
+                out.append(root)
+        return out
+
+    def listed(self, path):
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            return []
+        cached = self.lists.get(path)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        paths = []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                pairs = self.parser.parse(f.read())
+            paths = self.parser.listed(self.parser.find_root(pairs))
+        except (OSError, ValueError) as e:
+            say(f"can't read {path}: {e}")
+        self.lists[path] = (mtime, paths)
+        return paths
+
+    def one_pass(self):
+        """Handles every prefix not handled yet; the letters made."""
+        made = []
+        for root in self.libraries():
+            compat = os.path.join(root, COMPATDATA)
+            try:
+                ids = os.listdir(compat)
+            except OSError:
+                continue
+            for name in ids:
+                dosdevices = os.path.join(compat, name, "pfx", "dosdevices")
+                try:
+                    mtime = os.stat(dosdevices).st_mtime_ns
+                except OSError:
+                    self.handled.pop(dosdevices, None)
+                    continue
+                if self.handled.get(dosdevices) == mtime:
+                    continue
+                try:
+                    letter = link_drive(dosdevices, self.target)
+                    if letter:
+                        say(f"{letter}: -> {self.target} in {dosdevices}")
+                        made.append(dosdevices)
+                    mtime = os.stat(dosdevices).st_mtime_ns
+                except OSError as e:
+                    say(f"can't link a drive in {dosdevices}: {e}")
+                # Failures too: tried again only if the directory changes.
+                self.handled[dosdevices] = mtime
+        return made
+
+
+def main(argv):
+    args = argv[1:]
+    once = "--once" in args
+    args = [a for a in args if a != "--once"]
+    if len(args) > 1:
+        print(__doc__.strip().splitlines()[-1], file=sys.stderr)
+        return 2
+    if not args or not args[0]:
+        return 0
+    drives = Drives(args[0], os.environ.get("HOME", "/home/cha"))
+    interval = float(os.environ.get("CHA_DRIVES_INTERVAL", "2"))
+    while True:
+        try:
+            drives.one_pass()
+        except Exception as e:  # a surprise in one pass must not end the helper
+            if once:
+                raise
+            say(f"a pass failed: {e!r}")
+        if once:
+            return 0
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

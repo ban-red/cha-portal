@@ -6,6 +6,8 @@
 # that XFCE uses bridges it (crates/cha-x11-clipboard). steam-status shows the
 # first launch's download to the page; steam-library lists the library the node
 # shares across users (CHA_SHARED_DIR) among Steam's library folders;
+# steam-drives gives each Proton prefix a drive letter for it (Z:\ shows the
+# game's tmpfs, not the library's free space);
 # steam-per-user-dirs stops a start whose per-user folders over it aren't mounted;
 # steam-run keeps a session's output and reports its crash; steam-session runs
 # the sessions (steam-gaming, steam-desktop) and steamos-session-select, which
@@ -147,7 +149,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 COPY --from=build /usr/local/bin/cha-x11-clipboard /usr/local/bin/
 COPY --from=mangoapp /out/usr/bin/mangoapp /usr/local/bin/
 COPY --from=uinput-shim /out/opt/cha /opt/cha
-COPY images/steam/start-steam images/steam/steam-session images/steam/steam-gaming images/steam/steam-desktop images/steam/steam-desktop-client images/steam/steamos-session-select images/steam/steamos-select-branch images/steam/dbus-send images/steam/steam-touch-mode images/steam/steam-focus images/steam/steam-status images/steam/steam-library images/steam/steam-per-user-dirs images/steam/steam-run /usr/local/bin/
+COPY images/steam/start-steam images/steam/steam-session images/steam/steam-gaming images/steam/steam-desktop images/steam/steam-desktop-client images/steam/steamos-session-select images/steam/steamos-select-branch images/steam/dbus-send images/steam/steam-touch-mode images/steam/steam-focus images/steam/steam-status images/steam/steam-library images/steam/steam-drives images/steam/steam-per-user-dirs images/steam/steam-run /usr/local/bin/
 # SteamOS's updater stand-in, at the absolute path Steam runs.
 COPY images/steam/steamos-update /usr/bin/steamos-polkit-helpers/steamos-update
 COPY images/steam/desktop/cha-return-to-gaming-mode.desktop /usr/share/applications/

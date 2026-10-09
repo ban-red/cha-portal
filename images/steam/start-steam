@@ -15,6 +15,15 @@ steam-per-user-dirs || exit 1
 if [ -n "${CHA_SHARED_DIR:-}" ]; then
   steam-library "$CHA_SHARED_DIR" || echo "start-steam: couldn't list the shared library" >&2
 fi
+# Proton's pressure-vessel has a tmpfs for `/` (half the node's RAM) and Wine's
+# z: is that, so a Windows installer looking at Z:\ finds no room. steam-drives
+# links the shared library as D: (or the next free letter) in every Proton
+# prefix, now and for each one Proton makes later. It lives for the container,
+# across both sessions: steam-session's clean_up ends only a session's own
+# process group (this isn't in it) and processes named `steam`.
+if [ -n "${CHA_SHARED_DIR:-}" ]; then
+  steam-drives "$CHA_SHARED_DIR" &
+fi
 # GTK 4's Vulkan renderer fails under gamescope's WSI layer (Steam's zenity
 # dialogs crashed): GL instead.
 export GSK_RENDERER=gl
