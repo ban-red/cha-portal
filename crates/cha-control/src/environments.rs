@@ -39,7 +39,9 @@ use crate::storage::{self, SharedDefaults};
 /// the node's data root copies their old home in (a Steam library is
 /// gigabytes).
 const START_TIMEOUT: Duration = Duration::from_secs(600);
-const STOP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longer than the node's longest stop grace: a `vm` app's 90 s, for the
+/// guest to shut down. Other apps stop within seconds.
+const STOP_TIMEOUT: Duration = Duration::from_secs(120);
 /// Environments one user may have live at once.
 const MAX_LIVE_PER_USER: i64 = 4;
 const LIST_LIMIT: i64 = 50;

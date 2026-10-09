@@ -103,7 +103,7 @@ Anything else you set with `ENV` in the image stays. The image's own `ENV` is re
 | `/dev/shm` | `shmMb` MiB |
 | Open files | `nofile` 524288 for `steam`; Docker's default otherwise |
 | Memory, `vm` only | The container's RAM and swap are both limited to 12 GiB by default (`CHA_VM_MEMORY_MB` on the node); a guest that outgrows it is killed, not the node |
-| Stop | SIGTERM, then SIGKILL after 5 s; 30 s for `vm`, so the guest can shut down |
+| Stop | SIGTERM, then SIGKILL after 5 s; 90 s for `vm`, so the guest can shut down |
 | Capabilities | none (`CapDrop: ALL`) |
 | Privilege gain | blocked (`no-new-privileges`) |
 | Init | Docker's `tini` is PID 1 (`Init: true`) |

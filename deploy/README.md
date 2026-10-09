@@ -249,7 +249,7 @@ Added capabilities (`NET_ADMIN`, `NET_RAW`, `SYS_NICE`…) reach the app's own p
 
 ### Virtual machine environments
 
-A template with the `vm` profile (a QEMU/KVM guest inside the app, from a catalog an admin approved) runs only on a node that has `/dev/kvm`: the host's `kvm_intel` or `kvm_amd` module loaded and virtualisation on in the firmware. The agent reports it, and the portal offers other nodes' placements as "no KVM". `/dev/udmabuf` is optional; the app gets it when the host has it. The app is limited to `CHA_VM_MEMORY_MB` and given 30 s to stop. `cha-node --doctor` says whether the node has KVM. A node under Proxmox, as a VM or an LXC container, needs the outer host to pass KVM through.
+A template with the `vm` profile (a QEMU/KVM guest inside the app, from a catalog an admin approved) runs only on a node that has `/dev/kvm`: the host's `kvm_intel` or `kvm_amd` module loaded and virtualisation on in the firmware. The agent reports it, and the portal offers other nodes' placements as "no KVM". `/dev/udmabuf` is optional; the app gets it when the host has it. The app is limited to `CHA_VM_MEMORY_MB` and given 90 s to stop. `cha-node --doctor` says whether the node has KVM. A node under Proxmox, as a VM or an LXC container, needs the outer host to pass KVM through.
 
 ### When an environment dies
 

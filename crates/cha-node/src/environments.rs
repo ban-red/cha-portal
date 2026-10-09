@@ -425,9 +425,10 @@ pub(crate) fn app_host_config(security: SecurityProfile, shm_mb: u32, vm_memory_
 /// `CHA_VM_MEMORY_MB` doesn't say.
 pub const DEFAULT_VM_MEMORY_MB: u64 = 12 * 1024;
 
-/// How long a `vm` app has to stop on SIGTERM, so the guest can shut down;
-/// other apps get [`STOP_GRACE_SECS`]. Under the portal's stop timeout.
-const VM_STOP_GRACE_SECS: u32 = 30;
+/// How long a `vm` app has to stop on SIGTERM, so the guest can shut down
+/// (Windows with a browser open took over 25 s); other apps get
+/// [`STOP_GRACE_SECS`]. Under the portal's stop timeout (120 s).
+const VM_STOP_GRACE_SECS: u32 = 90;
 const STOP_GRACE_SECS: u32 = 5;
 
 /// The host's KVM device, which `vm` apps run their guests on.
@@ -3534,7 +3535,7 @@ mod tests {
         let labels = |app: &Value| -> std::collections::HashMap<String, String> {
             serde_json::from_value(app["Labels"].clone()).unwrap()
         };
-        assert_eq!(stop_grace(&labels(&app)), 30);
+        assert_eq!(stop_grace(&labels(&app)), 90);
         assert_eq!(stop_grace(&labels(&chrome)), 5);
         assert_eq!(stop_grace(&Default::default()), 5);
     }
