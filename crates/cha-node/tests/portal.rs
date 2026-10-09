@@ -277,6 +277,7 @@ fn test_inventory() -> Inventory {
         // The agent adds these.
         data_root: None,
         shared_dirs: Default::default(),
+        shared_status: Default::default(),
         // An older node's: the portal reads its GPU as the one device.
         devices: None,
         gamestream: None,

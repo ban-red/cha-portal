@@ -23,6 +23,8 @@ pub fn collect() -> Inventory {
         // Only the agent knows it: it adds this when it reports.
         data_root: None,
         shared_dirs: Default::default(),
+        // The agent checks each and adds it.
+        shared_status: Default::default(),
         devices: None,
         // Likewise: the agent says whether it runs a GameStream host.
         gamestream: None,

@@ -791,6 +791,12 @@ pub struct Inventory {
     /// path on the node, and in the app's container too.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shared_dirs: BTreeMap<String, String>,
+    /// Template id → how that shared directory looks from the agent, for
+    /// each one in [`Self::shared_dirs`]: checked at start, with every
+    /// inventory refresh and when a launch finds it unusable. Absent from
+    /// agents that predate it: the portal then knows only the paths.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shared_status: BTreeMap<String, SharedDirStatus>,
     /// What environments can run on here. Absent from nodes that predate
     /// devices: [`Self::devices_or_derived`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -982,6 +988,41 @@ pub struct Device {
     /// The core count, for `cpu`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cores: Option<u32>,
+}
+
+/// Whether a shared directory kept outside the data root (`CHA_SHARED_DIRS`,
+/// a NAS share) can be used by launches on this node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedDirState {
+    /// Mounted, readable, and the app's per-user places are there.
+    Ok,
+    /// Can't be opened: not mounted, or not bound into the agent.
+    Missing,
+    /// Opens, but a per-user place is absent or not a plain directory.
+    Incomplete,
+    /// The check didn't answer in time (a `hard` NFS mount whose server is away).
+    Unreachable,
+    /// The agent's uid 1000 (what apps write as) can't write there.
+    ReadOnly,
+}
+
+/// One shared directory's check, from the agent ([`Inventory::shared_status`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedDirStatus {
+    pub state: SharedDirState,
+    /// The filesystem, from the mount table (`nfs4`, `cifs`, `ext4`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_type: Option<String>,
+    /// What is mounted there (`192.168.11.120:/mnt/user/games/steam`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Why it isn't `ok`, in a sentence for the portal to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// When it was checked, Unix seconds.
+    pub checked_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1930,6 +1971,41 @@ mod tests {
         let json = serde_json::to_value(&with).unwrap();
         assert_eq!(json["dataRoot"], "/srv/cha-portal");
         assert_eq!(json["sharedDirs"]["steam"], "/mnt/games/steam");
+        assert_eq!(serde_json::from_value::<Inventory>(json).unwrap(), with);
+    }
+
+    #[test]
+    fn shared_status_is_optional_and_round_trips() {
+        let old = serde_json::json!({
+            "hostname": "h", "os": "o", "arch": "a", "cpus": 1, "memoryMb": 2,
+            "gpus": [], "addresses": [], "sharedDirs": {"steam": "/mnt/games/steam"},
+        });
+        let inv: Inventory = serde_json::from_value(old).unwrap();
+        assert!(inv.shared_status.is_empty());
+        assert!(
+            serde_json::to_value(&inv)
+                .unwrap()
+                .get("sharedStatus")
+                .is_none()
+        );
+        let with = Inventory {
+            shared_status: [(
+                "steam".to_string(),
+                SharedDirStatus {
+                    state: SharedDirState::Missing,
+                    fs_type: None,
+                    source: None,
+                    detail: Some("not mounted".into()),
+                    checked_at: 1_791_000_000,
+                },
+            )]
+            .into(),
+            ..inv
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["sharedStatus"]["steam"]["state"], "missing");
+        assert_eq!(json["sharedStatus"]["steam"]["checkedAt"], 1_791_000_000);
+        assert!(json["sharedStatus"]["steam"].get("fsType").is_none());
         assert_eq!(serde_json::from_value::<Inventory>(json).unwrap(), with);
     }
 
