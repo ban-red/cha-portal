@@ -2410,7 +2410,10 @@ impl DockerRuntime {
         let vm_gids: Vec<u32> = vm_devices(spec, udmabuf)
             .iter()
             .filter_map(|d| d["PathOnHost"].as_str())
-            .filter_map(|path| render_gid(path).or_else(|| self.probes.known_gid(path)))
+            // The probe's answer first: it stats the host's node, and
+            // create_containers asks it before the app is made. The agent's
+            // own stat (it may not have the node) is the fallback.
+            .filter_map(|path| self.probes.known_gid(path).or_else(|| render_gid(path)))
             .collect();
         let mut groups: Vec<String> = Vec::new();
         for gid in self
