@@ -40,6 +40,27 @@ if [ ! -e "$launcher" ]; then
   sum="$(sha256sum "$launcher" | cut -d' ' -f1)"
   dbus-run-session -- gio set "$launcher" metadata::xfce-exe-checksum "$sum" 2>/dev/null || true
 fi
+# xfwm4's compositor needs GLX_EXT_texture_from_pixmap, which the node's
+# NVIDIA GLX doesn't have on Xwayland (the GPU-less XFCE image has Mesa's,
+# which does): libepoxy aborts xfwm4 at start, and without a window manager no
+# window takes the keyboard and no title bar button works. So the compositor is
+# off, in the home's xfwm4 settings, before xfconfd (which keeps them in
+# memory and writes them back) starts.
+wm="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml"
+if [ -e "$wm" ]; then
+  sed -i 's|\(name="use_compositing" type="bool" value="\)true"|\1false"|' "$wm"
+else
+  mkdir -p "${wm%/*}"
+  cat > "$wm" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+  </property>
+</channel>
+EOF
+fi
 dbus-run-session startxfce4
 code=$?
 kill "$xpid" 2>/dev/null
