@@ -22,6 +22,7 @@ pub mod hostopts;
 pub mod image_check;
 pub mod inventory;
 pub mod moonlight;
+pub mod relay;
 pub mod storage;
 pub mod update;
 pub mod usage;
@@ -165,11 +166,15 @@ pub fn check_portal_transport(portal_url: &str, allow_insecure: bool) -> Result<
     )
 }
 
-fn connect_url(portal_url: &str) -> String {
-    let ws = portal_url
+/// The portal's URL with the WebSocket scheme.
+fn ws_base(portal_url: &str) -> String {
+    portal_url
         .replacen("https://", "wss://", 1)
-        .replacen("http://", "ws://", 1);
-    format!("{ws}{CONNECT_PATH}")
+        .replacen("http://", "ws://", 1)
+}
+
+fn connect_url(portal_url: &str) -> String {
+    format!("{}{CONNECT_PATH}", ws_base(portal_url))
 }
 
 /// Redeems a join token with a fresh key.
@@ -676,9 +681,11 @@ impl Agent {
                                 let runtime = self.runtime.clone();
                                 let moonlight = self.moonlight.clone();
                                 let gamestream = self.gamestream.clone();
+                                let identity = self.identity.clone();
                                 let out = out_tx.clone();
                                 tokio::spawn(async move {
-                                    let result = handle(runtime, moonlight, gamestream, request).await;
+                                    let result =
+                                        handle(runtime, moonlight, gamestream, &identity, request).await;
                                     let _ = out.send(ToPortal::Response { id, result });
                                 });
                             }
@@ -706,6 +713,7 @@ async fn handle(
     runtime: Option<Arc<dyn Runtime>>,
     moonlight: Option<Arc<dyn Control>>,
     gamestream: GameStreamHandle,
+    identity: &Identity,
     request: NodeRequest,
 ) -> Result<NodeResponse, String> {
     const NO_MOONLIGHT: &str = "this node doesn't look for Moonlight hosts (CHA_MOONLIGHT=false)";
@@ -758,6 +766,20 @@ async fn handle(
                 .await
                 .map(|info| NodeResponse::StreamerInfo { info })
                 .map_err(|e| format!("{e:#}"))
+        }
+        NodeRequest::OpenRelay {
+            relay_id,
+            environment_id,
+            codec,
+            media_token,
+        } => {
+            let runtime = runtime.ok_or(NO_RUNTIME)?;
+            let port = runtime
+                .streamer_http_port(&environment_id)
+                .ok_or("unknown environment")?;
+            relay::open(identity, port, &relay_id, &codec, &media_token)
+                .await
+                .map(|()| NodeResponse::RelayOpened)
         }
         NodeRequest::DeleteUserData { user, template } => {
             let runtime = runtime.ok_or(NO_RUNTIME)?;

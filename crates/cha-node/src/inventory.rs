@@ -34,6 +34,8 @@ pub fn collect() -> Inventory {
         // its own is.
         disks: Vec::new(),
         platform: platform(),
+        // The agent answers `OpenRelay` (ADR 0022).
+        relay: true,
         // The agent adds it: it asks Docker about its own container.
         update: None,
         spec_features: vec![

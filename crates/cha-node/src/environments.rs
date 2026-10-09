@@ -205,6 +205,12 @@ pub trait Runtime: Send + Sync + 'static {
         let _ = environment_id;
         Box::pin(async { bail!("this runtime can't describe its streamers") })
     }
+    /// The loopback HTTP port of the environment's streamer, if it runs here
+    /// (the media relay dials its `/ws/media`).
+    fn streamer_http_port(&self, environment_id: &str) -> Option<u16> {
+        let _ = environment_id;
+        None
+    }
     /// The Docker engine behind this runtime, to read what environments use;
     /// `None` from a runtime that has none.
     fn engine(&self) -> Option<Docker> {
@@ -2662,6 +2668,15 @@ impl Runtime for DockerRuntime {
 
     fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Value>> {
         Box::pin(self.connect_environment(request))
+    }
+
+    fn streamer_http_port(&self, environment_id: &str) -> Option<u16> {
+        self.state
+            .lock()
+            .expect("state lock")
+            .ports
+            .get(environment_id)
+            .copied()
     }
 
     fn streamer_info(&self, environment_id: String) -> BoxFuture<'_, Result<Value>> {

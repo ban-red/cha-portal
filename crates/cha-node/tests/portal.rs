@@ -41,6 +41,7 @@ async fn portal() -> Portal {
         dev_login: false,
         discover_nodes: false,
         public_url: None,
+        tunnel: Default::default(),
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool).await.unwrap();
@@ -284,6 +285,7 @@ fn test_inventory() -> Inventory {
         placement: None,
         disks: Vec::new(),
         platform: None,
+        relay: true,
         update: None,
         spec_features: Vec::new(),
         host_options: None,
