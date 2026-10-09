@@ -175,6 +175,8 @@ One logical session with the same messages on every transport. Only the carrier 
 | **Input**: key/button edges, text | Reliable DataChannel `control` | Control stream | Framed |
 | **Feedback**: per-frame receive reports (first/last fragment arrival, fragments received, decode-done, presented-at), clock-sync pings | RTCP/TWCC + `getStats()`/`requestVideoFrameCallback` summaries on `control` | Datagrams, batched about every frame | Framed |
 
+*Status (2026-10-08): the WebSocket column is built for share links over the internet ([ADR 0022](adr/0022-share-links-over-a-cloudflare-tunnel.md), [contract](plans/wan-sharing.md)). The streamer serves `GET /ws/media` on its loopback HTTP port: JSON control lines as text messages, `cha-stream/1` datagrams (no FEC, fragments of at most 64 KiB) as binary ones, H.264/HEVC/AV1 only, rate control from its own send queue. The portal and the node each pass the messages through untouched (`/api/media/<ticket>` in, `/api/node/relay/<id>` out), and `@cha/player` decodes them on its WebTransport path. It is the last resort in the player's transport list, not an owner default; the tunnel and the relay are covered by `crates/cha-control/tests/wan.rs`, a run through Cloudflare itself is still to do.*
+
 The WebTransport and native QUIC paths share one `wtransport`/quinn endpoint in the streamer. The WebRTC path is a str0m endpoint (ICE-lite) on the same node. Keyframes on the QUIC path go either on short-lived uni streams or on datagrams with FEC; the Phase 0 spike decides, watching for datagram-before-stream starvation (Nestri).
 
 Rules carried in from the research (Nestri `media-transport.md`, Punktfunk, Vibepollo):
@@ -263,6 +265,8 @@ What PyroWave is to GPU nodes, JPEG XS (ISO/IEC 21122) could be to CPU-only node
   - `viewer` (no input)
 
   Roles are carried in the media token. Share links are signed and expiring, Selkies-secure-mode style.
+
+*Status (2026-10-08): share links exist for players, viewers and controllers (ADRs 0014, 0015), and since [ADR 0022](adr/0022-share-links-over-a-cloudflare-tunnel.md) a link can be made **over the internet**: the portal runs `cloudflared` (a quick tunnel, or the owner's named one) while such a link is live, and the tunnel reaches a guest-only listener (`CHA_GUEST_LISTEN`) that knows internet links and nothing else. Guests also get ICE servers (`GET /api/shares/{token}/ice`). Built in `crates/cha-control` and tested against a fake `cloudflared`; the operator side is in `deploy/README.md` ("Links over the internet").*
 
 ### 3.5 Input, audio, cursor, clipboard
 

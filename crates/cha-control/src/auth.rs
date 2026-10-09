@@ -117,25 +117,48 @@ pub struct ClientInfo {
     /// The request carries a proxy's forwarding header, so `ip` is the
     /// proxy's address rather than the client's.
     pub forwarded: bool,
+    /// The request came in on the guest-only listener (ADR 0022).
+    pub guest_listener: bool,
 }
+
+/// Marks a request as having come in on the guest-only listener, where the
+/// client's address is the one the tunnel names in `CF-Connecting-IP`
+/// (everything arrives from loopback).
+#[derive(Clone, Copy)]
+pub struct GuestListener;
 
 impl<S: Send + Sync> FromRequestParts<S> for ClientInfo {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        let guest_listener = parts.extensions.get::<GuestListener>().is_some();
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| addr.ip().to_string());
+        let ip = if guest_listener {
+            parts
+                .headers
+                .get("cf-connecting-ip")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<std::net::IpAddr>().ok())
+                .map(|ip| ip.to_string())
+                .or(peer)
+        } else {
+            peer
+        };
         Ok(Self {
-            ip: parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ConnectInfo(addr)| addr.ip().to_string()),
+            ip,
+            guest_listener,
             user_agent: parts
                 .headers
                 .get(USER_AGENT)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.chars().take(300).collect()),
-            forwarded: ["forwarded", "x-forwarded-for", "x-real-ip"]
-                .iter()
-                .any(|h| parts.headers.contains_key(*h)),
+            forwarded: guest_listener
+                || ["forwarded", "x-forwarded-for", "x-real-ip"]
+                    .iter()
+                    .any(|h| parts.headers.contains_key(*h)),
         })
     }
 }

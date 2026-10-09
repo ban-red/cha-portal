@@ -31,13 +31,24 @@ pub struct IceConfig {
     pub turn_secret: Option<String>,
 }
 
+impl IceConfig {
+    /// Whether TURN credentials can be minted.
+    pub fn has_turn(&self) -> bool {
+        !self.turn.is_empty() && self.turn_secret.is_some()
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new().route("/ice", get(ice_servers))
 }
 
 /// `RTCIceServer`s for this user's next connection.
 async fn ice_servers(State(state): State<AppState>, PlayerUser(user): PlayerUser) -> Json<Value> {
-    let ice = &state.config.ice;
+    Json(servers(&state.config.ice, &user.id))
+}
+
+/// The same for a guest of a share link (`sub` is `share:<id>`).
+pub fn servers(ice: &IceConfig, sub: &str) -> Value {
     let mut servers = Vec::new();
     if !ice.stun.is_empty() {
         servers.push(json!({ "urls": ice.stun }));
@@ -47,10 +58,10 @@ async fn ice_servers(State(state): State<AppState>, PlayerUser(user): PlayerUser
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs())
             + TURN_CREDENTIAL_SECS;
-        let (username, credential) = turn_credential(secret, expiry, &user.id);
+        let (username, credential) = turn_credential(secret, expiry, sub);
         servers.push(json!({ "urls": ice.turn, "username": username, "credential": credential }));
     }
-    Json(json!({ "iceServers": servers }))
+    json!({ "iceServers": servers })
 }
 
 fn turn_credential(secret: &str, expiry: u64, user: &str) -> (String, String) {

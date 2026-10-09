@@ -42,6 +42,8 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::settings::routes())
         .merge(crate::placement::routes())
         .merge(crate::shares::routes())
+        .merge(crate::relay::routes())
+        .merge(crate::tunnel::routes())
         .fallback(|| async { ApiError::NotFound("no such API".into()) })
 }
 

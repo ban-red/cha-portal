@@ -26,6 +26,7 @@ use crate::auth::{self, ClientInfo, CurrentUser, token_hash};
 use crate::db::{self, ShareRow};
 use crate::environments::{self, ConnectRequest, ConnectResponse, Guest};
 use crate::error::{ApiError, ApiResult};
+use crate::tunnel::{Mode, TunnelError};
 
 /// How long a link lasts at most.
 const SHARE_TTL_SECS: i64 = 24 * 3600;
@@ -41,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/environments/{id}/shares", get(list).post(create))
         .route("/environments/{id}/shares/{share}", delete(revoke))
         .route("/shares/{token}", get(info))
+        .route("/shares/{token}/ice", get(ice))
         .route("/shares/{token}/connect", post(connect))
 }
 
@@ -99,6 +101,9 @@ struct CreateRequest {
     /// A player's slot; left out (or null) for the other roles.
     #[serde(default)]
     slot: Option<i64>,
+    /// An internet link, on the tunnel's hostname (ADR 0022).
+    #[serde(default)]
+    wan: bool,
 }
 
 async fn create(
@@ -137,6 +142,28 @@ async fn create(
             format!("the environment is {}", row.state),
         ));
     }
+    // An internet link needs the tunnel up first: its URL is the tunnel's.
+    let mut origin = None;
+    if req.wan {
+        if state.tunnel.mode() == Mode::Off {
+            return Err(ApiError::conflict(
+                "tunnel_off",
+                "internet links are turned off on this portal",
+            ));
+        }
+        let up = state.tunnel.ensure_up().await.map_err(|err| match err {
+            TunnelError::Off => {
+                ApiError::conflict("tunnel_off", "internet links are turned off on this portal")
+            }
+            TunnelError::Failed(why) => ApiError::Unavailable("tunnel_failed", why),
+        })?;
+        if state.tunnel.mode() == Mode::Quick {
+            // A quick tunnel's hostname is new each time it starts, so links
+            // made on an earlier one lead nowhere.
+            db::end_stale_wan_shares(&state.db, up.started_at).await?;
+        }
+        origin = Some(up.url);
+    }
     let token = auth::random_token()?;
     let now = db::now();
     let share = ShareRow {
@@ -147,6 +174,7 @@ async fn create(
         slot: req.slot,
         created_at: now,
         expires_at: now + SHARE_TTL_SECS,
+        wan: req.wan,
     };
     let replaced = db::replace_share(&state.db, &share, &token_hash(&token)).await?;
     if let Some(old) = replaced {
@@ -165,16 +193,23 @@ async fn create(
         Some(&user.id),
         "share.created",
         Some(&env_id),
-        Some(json!({ "share": share.id, "role": share.role, "slot": share.slot })),
+        Some(
+            json!({ "share": share.id, "role": share.role, "slot": share.slot, "wan": share.wan }),
+        ),
         client.ip.as_deref(),
     )
     .await?;
+    let url = match origin {
+        Some(origin) => format!("{origin}/s/{token}"),
+        None => format!("/s/{token}"),
+    };
     Ok(Json(json!({
         "id": share.id,
-        "url": format!("/s/{token}"),
+        "url": url,
         "role": share.role,
         "slot": share.slot,
         "expires_at": share.expires_at,
+        "wan": share.wan,
     })))
 }
 
@@ -185,6 +220,7 @@ struct ShareView {
     slot: Option<i64>,
     created_at: i64,
     expires_at: i64,
+    wan: bool,
 }
 
 async fn list(
@@ -202,6 +238,7 @@ async fn list(
                 slot: s.slot,
                 created_at: s.created_at,
                 expires_at: s.expires_at,
+                wan: s.wan,
             })
             .collect(),
     ))
@@ -233,20 +270,22 @@ async fn revoke(
 
 // ---- The guest (the token is the credential) ----
 
-/// The live share a token names; one 404 for every way it can be dead.
-async fn access(state: &AppState, token: &str) -> ApiResult<db::SharedAccess> {
+/// The live share a token names; one 404 for every way it can be dead. On the
+/// guest listener only internet links exist.
+async fn access(state: &AppState, client: &ClientInfo, token: &str) -> ApiResult<db::SharedAccess> {
     db::share_by_token_hash(&state.db, &token_hash(token))
         .await?
+        .filter(|s| s.share.wan || !client.guest_listener)
         .ok_or_else(unknown_share)
 }
 
-async fn info(
+pub(crate) async fn info(
     State(state): State<AppState>,
     client: ClientInfo,
     Path(token): Path<String>,
 ) -> ApiResult<Json<Value>> {
     check_rate(&state, &client)?;
-    let share = access(&state, &token).await?;
+    let share = access(&state, &client, &token).await?;
     // What the guest's browser can pick from: the codec the owner plays
     // shares its encoder.
     let codecs = match db::environment_by_id(&state.db, &share.share.environment_id).await? {
@@ -263,17 +302,34 @@ async fn info(
         "slot": share.share.slot,
         "state": share.state,
         "codecs": codecs,
+        "wan": share.share.wan,
+        "turn": state.config.ice.has_turn(),
     })))
 }
 
-async fn connect(
+/// ICE servers for a guest, as `/api/ice` gives the owner, with TURN
+/// credentials for `share:<id>`.
+pub(crate) async fn ice(
+    State(state): State<AppState>,
+    client: ClientInfo,
+    Path(token): Path<String>,
+) -> ApiResult<Json<Value>> {
+    check_rate(&state, &client)?;
+    let share = access(&state, &client, &token).await?;
+    Ok(Json(crate::ice::servers(
+        &state.config.ice,
+        &format!("share:{}", share.share.id),
+    )))
+}
+
+pub(crate) async fn connect(
     State(state): State<AppState>,
     client: ClientInfo,
     Path(token): Path<String>,
     Json(req): Json<ConnectRequest>,
 ) -> ApiResult<Json<ConnectResponse>> {
     check_rate(&state, &client)?;
-    let access = access(&state, &token).await?;
+    let access = access(&state, &client, &token).await?;
     let row = db::environment_by_id(&state.db, &access.share.environment_id)
         .await?
         .ok_or_else(unknown_share)?;

@@ -1040,6 +1040,8 @@ pub(crate) async fn stop_environment(
     Ok(())
 }
 
+// The wire names are `webrtc`, `webtransport` and `websocket`.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum Transport {
@@ -1048,6 +1050,9 @@ enum Transport {
     /// `cha-stream/1` over WebTransport: the browser connects to the streamer
     /// itself, with the URLs and certificate hash this returns.
     WebTransport,
+    /// `cha-stream/1` over a WebSocket through the portal and the node
+    /// (ADR 0022): the browser opens the one-use ticket this returns.
+    WebSocket,
 }
 
 #[derive(Deserialize)]
@@ -1182,9 +1187,17 @@ pub(crate) async fn broker(
         .node_id
         .clone()
         .ok_or_else(|| ApiError::conflict("no_node", "the environment's node was removed"))?;
+    if req.transport == Transport::WebSocket
+        && !crate::relay::node_supports_relay(state, &node_id).await
+    {
+        return Err(ApiError::conflict(
+            "node_outdated",
+            "The node needs updating to stream over the internet",
+        ));
+    }
     let claims = MediaClaims {
         env: id.clone(),
-        sub: guest.sub,
+        sub: guest.sub.clone(),
         role: guest.role.into(),
         slot: guest.slot,
         exp: db::now() + MEDIA_TOKEN_SECS,
@@ -1247,6 +1260,22 @@ pub(crate) async fn broker(
                 answer: None,
                 urls,
                 cert_hash: Some(cert_hash),
+            }
+        }
+        Transport::WebSocket => {
+            let ticket = state.relays.issue(crate::relay::Ticket {
+                environment_id: id.clone(),
+                node_id,
+                codec: req.codec.clone(),
+                media_token,
+                sub: guest.sub,
+            })?;
+            ConnectResponse {
+                codec: req.codec.clone(),
+                transport: "websocket",
+                answer: None,
+                urls: vec![format!("/api/media/{ticket}")],
+                cert_hash: None,
             }
         }
     };

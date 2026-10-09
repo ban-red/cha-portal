@@ -24,9 +24,11 @@ pub mod moonlight;
 pub mod nodes;
 pub mod placement;
 pub mod prefs;
+pub mod relay;
 pub mod settings;
 pub mod shares;
 pub mod storage;
+pub mod tunnel;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -34,7 +36,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use axum::Router;
+use axum::routing::{get, post};
+use axum::{Extension, Router};
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
@@ -62,6 +65,9 @@ pub struct Config {
     /// The URL nodes are told to reach the portal at when claimed; without
     /// it, the one the claiming admin's browser is using.
     pub public_url: Option<String>,
+    /// Internet share links: the Cloudflare Tunnel and the listener it
+    /// reaches (ADR 0022).
+    pub tunnel: tunnel::TunnelConfig,
 }
 
 #[derive(Clone)]
@@ -86,6 +92,10 @@ pub struct AppState {
     pub catalogs: Arc<catalogs::Registry>,
     /// Custom environments an admin made (ADR 0021).
     pub customs: Arc<custom::Registry>,
+    /// The `cloudflared` child that serves internet share links (ADR 0022).
+    pub tunnel: Arc<tunnel::Tunnel>,
+    /// Tickets for WebSocket media and the relays waiting on their nodes.
+    pub relays: Arc<relay::Relays>,
 }
 
 impl AppState {
@@ -97,6 +107,7 @@ impl AppState {
         catalogs.reload(&db).await?;
         let customs = custom::Registry::default();
         customs.reload(&db).await?;
+        let tunnel = tunnel::Tunnel::new(config.tunnel.clone());
         Ok(Self {
             db,
             config: Arc::new(config),
@@ -109,6 +120,8 @@ impl AppState {
             share_limit: Arc::default(),
             catalogs: Arc::new(catalogs),
             customs: Arc::new(customs),
+            tunnel: Arc::new(tunnel),
+            relays: Arc::default(),
         })
     }
 }
@@ -132,20 +145,66 @@ async fn media_key(db: &SqlitePool) -> Result<cha_wire::NodeKey> {
 /// The whole HTTP surface: `/api/*` plus the SPA (any other path serves
 /// `index.html`, so client-side routes work on reload).
 pub fn app(state: AppState) -> Router {
-    let mut router = Router::new().nest("/api", api::routes());
-    if let Some(dir) = state
+    let router = Router::new().nest("/api", api::routes());
+    serve_spa(router, &state)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+/// What the Cloudflare Tunnel reaches (ADR 0022): the SPA's static files and
+/// the guest routes of internet share links, and nothing else. No sign-in, no
+/// dev login, no admin API, no node channel; `/api` is a 404 beyond the four
+/// routes, and a share that isn't an internet link is unknown here. The
+/// client's address is `CF-Connecting-IP` ([`auth::GuestListener`]).
+pub fn guest_app(state: AppState) -> Router {
+    let api = Router::new()
+        .route("/shares/{token}", get(shares::info))
+        .route("/shares/{token}/ice", get(shares::ice))
+        .route("/shares/{token}/connect", post(shares::connect))
+        .route("/media/{ticket}", get(relay::media))
+        .fallback(|| async { error::ApiError::NotFound("no such API".into()) });
+    let router = Router::new().nest("/api", api);
+    serve_spa(router, &state)
+        .layer(Extension(auth::GuestListener))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+fn serve_spa(router: Router<AppState>, state: &AppState) -> Router<AppState> {
+    match state
         .config
         .web_dir
         .clone()
         .filter(|d| d.join("index.html").exists())
     {
-        router = router
-            .fallback_service(ServeDir::new(&dir).fallback(ServeFile::new(dir.join("index.html"))));
+        Some(dir) => router
+            .fallback_service(ServeDir::new(&dir).fallback(ServeFile::new(dir.join("index.html")))),
+        None => router,
     }
-    router.layer(TraceLayer::new_for_http()).with_state(state)
 }
 
-pub async fn run(config: Config) -> Result<()> {
+pub async fn run(mut config: Config) -> Result<()> {
+    if let Err(why) = config.tunnel.validate() {
+        anyhow::bail!("{why}");
+    }
+    // The guest listener is bound whenever internet links are on. If its
+    // address is taken (a second portal on this machine), run without them
+    // rather than not at all.
+    let guest_listener = if config.tunnel.enabled {
+        match tokio::net::TcpListener::bind(config.tunnel.guest_listen).await {
+            Ok(listener) => Some(listener),
+            Err(err) => {
+                warn!(
+                    "can't bind the guest listener on {}: {err}; internet share links are off (set CHA_GUEST_LISTEN, or CHA_TUNNEL=off to silence this)",
+                    config.tunnel.guest_listen
+                );
+                config.tunnel.enabled = false;
+                None
+            }
+        }
+    } else {
+        None
+    };
     let db = db::open(&config.database).await?;
     let state = AppState::new(config.clone(), db.clone()).await?;
     if db::user_count(&db).await? == 0 {
@@ -170,6 +229,24 @@ pub async fn run(config: Config) -> Result<()> {
     }
     tokio::spawn(moonlight::refresh_loop(state.clone()));
     tokio::spawn(settings::idle_loop(state.clone()));
+    if let Some(listener) = guest_listener {
+        info!(
+            "guest listener on http://{} (internet share links only)",
+            config.tunnel.guest_listen
+        );
+        let guest = guest_app(state.clone());
+        tokio::spawn(async move {
+            if let Err(err) = axum::serve(
+                listener,
+                guest.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            {
+                warn!("guest listener: {err}");
+            }
+        });
+        tokio::spawn(tunnel::idle_loop(state.clone()));
+    }
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;

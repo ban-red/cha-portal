@@ -108,8 +108,21 @@ A friend can play on a second gamepad, watch, or use the controls without an acc
 - **What the guest gets.** The page names the app and who invited them; *Join* plays the stream. Only their first gamepad is sent, as that slot's pad, and it gets that pad's rumble and lights. No keyboard, mouse, clipboard or window size, and they never take the controls. Your own pads on that slot are dropped while they play. It needs a node whose streamer knows share links; an older one lets the guest watch but not play.
 - **How long it lasts.** Until you revoke it (*Revoke* in the same dialog), the environment stops, or 24 hours pass. A guest already playing keeps playing until their stream drops; a revoked link can't start a new one. Tokens last 60 seconds once traded for a stream.
 - **Watch and control links.** *Invite to watch* makes a link (as many as you like) that sees and hears the stream and sends nothing. *Invite to control* makes the one controller link (a new one revokes the old). A controller guest can use your keyboard and mouse whenever you aren't holding the controls, or when you hand them over: when you hold them, the toolbar lists who is watching with *Hand controls* by a guest controller, and *Take back* returns them. A guest controller can take the controls when nobody holds them or another guest does, never from you. Both need a streamer that knows these roles; an older one shows the guest the picture only.
-- **Treat the link like a password.** It is the only credential, and 256 random bits, kept hashed. The two guest routes (`GET /api/shares/{token}` and `POST /api/shares/{token}/connect`) allow 30 requests a minute per address, held in memory. Behind a reverse proxy the portal sees the proxy's address, so everyone shares that budget. Making, joining and revoking links are in the audit log (`share.created`, `share.joined` with the address, `share.revoked`); the token never is.
-- **Reaching the portal.** The guest needs the portal's address, so a link only works for people who can reach it (the LAN, your tailnet or a port-forward), the same as everything else here. A guest page has no TURN credentials: behind a strict NAT it relies on WebTransport or a direct path.
+- **Treat the link like a password.** It is the only credential, and 256 random bits, kept hashed. The two guest routes (`GET /api/shares/{token}` and `POST /api/shares/{token}/connect`) allow 30 requests a minute per address, held in memory. Behind a reverse proxy the portal sees the proxy's address, so everyone shares that budget. Making, joining and revoking links are in the audit log (`share.created`, `share.joined` with the address and transport, `share.revoked`); the token never is.
+- **Reaching the portal.** The guest needs the portal's address, so a link only works for people who can reach it (the LAN, your tailnet or a port-forward), the same as everything else here. A guest page gets the portal's STUN and TURN servers (the `turn` profile), so a guest who can reach the node through them still uses WebRTC. To invite someone who can't reach the portal at all, tick *Over the internet* ([below](#links-over-the-internet)).
+
+### Links over the internet
+
+Tick **Over the internet** in the Share dialog for a friend who is nowhere near your network ([ADR 0022](../docs/adr/0022-share-links-over-a-cloudflare-tunnel.md); the contract is [`docs/plans/wan-sharing.md`](../docs/plans/wan-sharing.md)). Nothing is forwarded on your router and no address of yours is published: the portal runs `cloudflared`, which dials out to Cloudflare, and the link is an `https://` address on Cloudflare's side.
+
+- **What runs.** Making the first internet link starts `cloudflared` (it takes a few seconds; the dialog says *Opening the tunnel…*). It stops a minute after the last internet link ends. The portal image carries a pinned `cloudflared`; outside Docker, install it yourself or point `CHA_CLOUDFLARED` at it.
+- **A quick tunnel** needs no account: the link looks like `https://<random words>.trycloudflare.com/s/<token>`. The address changes every time the tunnel starts, so a restart of the tunnel, or of the portal, ends the internet links made before it. Fine for a one-off game night.
+- **A named tunnel** keeps one address. In Cloudflare's Zero Trust dashboard make a tunnel (*Networks → Tunnels*, type *Cloudflared*), copy its token, and add a *Public hostname* such as `play.example.com` whose service is `http://localhost:7680`. Then set `CHA_TUNNEL_TOKEN` to the token and `CHA_TUNNEL_HOSTNAME` to that hostname. Both are needed; the portal refuses to start with only one. The token is passed to `cloudflared` in its environment (`TUNNEL_TOKEN`), never on its command line, and is not logged or shown by the API. Put no Cloudflare Access rule on the hostname: guests have no Cloudflare login.
+- **What the tunnel reaches.** A second listener, `CHA_GUEST_LISTEN` (default `127.0.0.1:7680`), that serves the portal's pages and only the guest routes of internet links: a link's details, its ICE servers, joining, and the media WebSocket. Everything else, including sign-in, the API and the nodes' channel, answers 404 there, and a link that isn't an internet link is unknown on it. Cloudflare passes the guest's address in `CF-Connecting-IP`, which the portal uses for the rate limit and the audit log on that listener; keep it on loopback (anyone who can reach it could set that header). If the address is taken, the portal logs it and runs without internet links.
+- **How the stream gets there.** Cloudflare Tunnel carries HTTP and WebSocket only, so the stream is not WebRTC: the guest's browser tries WebRTC (it works if it can reach the node or your TURN) and otherwise opens a WebSocket to the portal, which relays it to the node over a second WebSocket the node opens to the portal. H.264, HEVC and AV1 only, not PyroWave. It needs a node and streamer from this release; an older node answers *The host's node needs updating to stream over the internet*.
+- **Privacy and latency.** Cloudflare ends the TLS connection, so it can see the stream; the Share dialog says so. The stream crosses Cloudflare, your portal and the node over TCP, so a lost packet stalls what is behind it and the delay is higher than on your network. It is for watching and playing with a friend, not for your own competitive play. Every internet guest's bitrate goes in and out of the portal's machine.
+- **Off switch.** `CHA_TUNNEL=off` removes the option from the Share dialog, opens no second listener and never starts `cloudflared`. `GET /api/tunnel` (signed in) reports `mode` (`off`, `quick`, `named`), `state` (`stopped`, `starting`, `up`, `failed`), the address and the last error.
+- `cloudflared` needs to reach Cloudflare outbound on port 7844 (TCP and UDP). Quick tunnels are for testing by Cloudflare's own description, with no uptime promise; use a named one for anything you rely on.
 
 ## Published images
 
@@ -172,6 +185,7 @@ The stream goes straight from the node to the browser; the portal only brokers i
 | Same LAN | Nothing |
 | A tailnet or WireGuard | Nothing: streamers offer the mesh address too ([guide](../docs/guides/tailscale.md)) |
 | Internet, with a port-forward | Forward UDP 7600–7647 to the node (WebRTC and WebTransport, two ports per environment), and set `CHA_PUBLIC_ADDRESS` on it |
+| Internet, nothing forwarded | Share links over a Cloudflare Tunnel, media over WebSocket ([Links over the internet](#links-over-the-internet)): for guests, not your own play |
 | Internet, UDP to the node blocked | The portal's `turn` profile (coturn), with `CHA_TURN_SECRET`, `CHA_TURN_URLS` and `CHA_TURN_PEERS` |
 
 ## Ports
@@ -288,6 +302,11 @@ An environment runs on one **device** of a node (`docs/devices.md`), and the use
 | `CHA_STUN_URLS` | | STUN for players, comma-separated |
 | `CHA_TURN_URLS`, `CHA_TURN_SECRET` | | TURN for players; the portal mints credentials per connection |
 | `CHA_TURN_PEERS` | | coturn relays only to these addresses (the nodes) |
+| `CHA_TUNNEL` | `on` | `off` turns internet share links off ([Links over the internet](#links-over-the-internet)) |
+| `CHA_CLOUDFLARED` | `cloudflared` | The `cloudflared` binary (the image has one) |
+| `CHA_TUNNEL_TOKEN` | | A named Cloudflare Tunnel's token (secret); without it, quick tunnels |
+| `CHA_TUNNEL_HOSTNAME` | | The named tunnel's public hostname, e.g. `play.example.com`; required with the token |
+| `CHA_GUEST_LISTEN` | `127.0.0.1:7680` | The guest-only listener the tunnel points at; keep it on loopback |
 
 ## App data
 

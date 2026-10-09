@@ -33,6 +33,7 @@ async fn portal_with(dev_login: bool) -> TestPortal {
         dev_login,
         discover_nodes: true,
         public_url: None,
+        tunnel: Default::default(),
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool.clone()).await.unwrap();
@@ -3295,6 +3296,7 @@ async fn a_guest_connects_with_a_player_token_that_carries_the_slot() {
         dev_login: false,
         discover_nodes: false,
         public_url: None,
+        tunnel: Default::default(),
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool.clone()).await.unwrap();
@@ -3777,6 +3779,7 @@ async fn viewer_and_controller_guests_get_tokens_without_a_slot() {
         dev_login: false,
         discover_nodes: false,
         public_url: None,
+        tunnel: Default::default(),
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool.clone()).await.unwrap();

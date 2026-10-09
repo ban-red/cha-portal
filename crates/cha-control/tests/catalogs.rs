@@ -30,6 +30,7 @@ async fn portal() -> Portal {
         dev_login: false,
         discover_nodes: false,
         public_url: None,
+        tunnel: Default::default(),
     };
     let pool = db::open(&config.database).await.unwrap();
     let state = AppState::new(config, pool.clone()).await.unwrap();
@@ -268,6 +269,7 @@ async fn adding_by_document_namespaces_the_templates() {
         dev_login: false,
         discover_nodes: false,
         public_url: None,
+        tunnel: Default::default(),
     };
     let state = AppState::new(config, p.db.clone()).await.unwrap();
     assert!(state.catalogs.available_by_id("acme.notes").is_some());

@@ -44,6 +44,24 @@ struct Args {
     /// https://portal.example. Default: the URL the claiming admin is using.
     #[arg(long, env = "CHA_PUBLIC_URL")]
     public_url: Option<String>,
+    /// `off` turns internet share links off (ADR 0022): no guest listener,
+    /// no `cloudflared`.
+    #[arg(long, env = "CHA_TUNNEL", default_value = "on", value_parser = ["on", "off"])]
+    tunnel: String,
+    /// The `cloudflared` binary.
+    #[arg(long, env = "CHA_CLOUDFLARED", default_value = "cloudflared")]
+    cloudflared: String,
+    /// A named Cloudflare Tunnel's token; without it, internet links use a
+    /// quick tunnel (a new `*.trycloudflare.com` address on every start).
+    #[arg(long, env = "CHA_TUNNEL_TOKEN", hide_env_values = true)]
+    tunnel_token: Option<String>,
+    /// The named tunnel's public hostname, e.g. play.example.com.
+    #[arg(long, env = "CHA_TUNNEL_HOSTNAME")]
+    tunnel_hostname: Option<String>,
+    /// The listener for internet share links only, which the tunnel points
+    /// at. Keep it on loopback.
+    #[arg(long, env = "CHA_GUEST_LISTEN", default_value = "127.0.0.1:7680")]
+    guest_listen: SocketAddr,
 }
 
 #[tokio::main]
@@ -77,6 +95,13 @@ async fn main() -> Result<()> {
         dev_login: args.dev_login,
         discover_nodes: args.discover_nodes,
         public_url: args.public_url.filter(|u| !u.trim().is_empty()),
+        tunnel: cha_control::tunnel::TunnelConfig {
+            enabled: args.tunnel == "on",
+            cloudflared: args.cloudflared,
+            token: args.tunnel_token.filter(|t| !t.trim().is_empty()),
+            hostname: args.tunnel_hostname.filter(|h| !h.trim().is_empty()),
+            guest_listen: args.guest_listen,
+        },
     })
     .await
 }

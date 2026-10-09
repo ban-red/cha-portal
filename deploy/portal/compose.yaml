@@ -16,6 +16,14 @@
 # and random), CHA_TURN_URLS (how browsers reach coturn, e.g.
 # turn:turn.example.com:3478?transport=udp) and CHA_TURN_PEERS (the nodes'
 # addresses, e.g. 192.168.1.10-192.168.1.20: the only ones it relays to).
+#
+# Internet share links (ADR 0022) run a Cloudflare Tunnel from this container,
+# only while a link made with "Over the internet" is live. Nothing to set up
+# for a quick tunnel (a new *.trycloudflare.com address each time it starts,
+# which ends the links made on the old one). For a stable address make a
+# named tunnel in Cloudflare, point its public hostname at
+# http://localhost:7680, and set CHA_TUNNEL_TOKEN and CHA_TUNNEL_HOSTNAME
+# (deploy/README.md, "Sharing a game"). CHA_TUNNEL=off turns the feature off.
 name: cha-portal
 
 services:
@@ -42,6 +50,15 @@ services:
       CHA_STUN_URLS: ${CHA_STUN_URLS:-}
       CHA_TURN_URLS: ${CHA_TURN_URLS:-}
       CHA_TURN_SECRET: ${CHA_TURN_SECRET:-}
+      # Internet share links. on | off.
+      CHA_TUNNEL: ${CHA_TUNNEL:-on}
+      # A named tunnel: its token (secret) and its public hostname, e.g.
+      # play.example.com. Both or neither; without them, quick tunnels.
+      CHA_TUNNEL_TOKEN: ${CHA_TUNNEL_TOKEN:-}
+      CHA_TUNNEL_HOSTNAME: ${CHA_TUNNEL_HOSTNAME:-}
+      # What the tunnel points at: guest routes only, never the portal.
+      # Keep it on loopback.
+      CHA_GUEST_LISTEN: ${CHA_GUEST_LISTEN:-127.0.0.1:7680}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - data:/var/lib/cha

@@ -76,6 +76,13 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const CONNECT_PATH: &str = "/api/node/connect";
 /// The enrollment endpoint's path on the portal.
 pub const ENROLL_PATH: &str = "/api/node/enroll";
+/// Where a node dials back for a media relay (ADR 0022), followed by the
+/// relay id: `/api/node/relay/<relay id>`.
+pub const RELAY_PATH: &str = "/api/node/relay";
+/// The headers a node's relay connection proves itself with: its id, and its
+/// signature of [`relay_message`].
+pub const RELAY_NODE_HEADER: &str = "x-cha-node";
+pub const RELAY_SIGNATURE_HEADER: &str = "x-cha-signature";
 
 /// WebSocket close codes the portal uses to tell a node why it hung up.
 pub mod close {
@@ -327,6 +334,19 @@ pub enum NodeRequest {
     StreamerInfo {
         environment_id: String,
     },
+    /// A browser is waiting on the portal for a WebSocket stream (ADR 0022):
+    /// open the streamer's `GET /ws/media` with the media token, dial the
+    /// portal back on [`RELAY_PATH`]`/<relay_id>` and pass messages both ways
+    /// until either end closes. Answered with [`NodeResponse::RelayOpened`]
+    /// once both are open. Sent only to a node whose inventory says
+    /// [`Inventory::relay`].
+    OpenRelay {
+        relay_id: String,
+        environment_id: String,
+        /// `h264`, `hevc` or `av1`.
+        codec: String,
+        media_token: String,
+    },
     /// Delete what a user keeps for an app on this node: their directory
     /// `users/<user>/<template>` under the data root, the app's home and
     /// everything else of theirs in it. Nothing if there is none. Refused
@@ -408,6 +428,8 @@ pub enum NodeResponse {
     StreamerInfo {
         info: serde_json::Value,
     },
+    /// Both ends of a [`NodeRequest::OpenRelay`] are open.
+    RelayOpened,
     UserDataDeleted {
         user: String,
         template: String,
@@ -813,6 +835,11 @@ pub struct Inventory {
     /// agents that predate it, which allow nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_options: Option<HostPolicy>,
+    /// The agent answers [`NodeRequest::OpenRelay`] (ADR 0022). An agent that
+    /// predates it can't read that request and drops the connection, so the
+    /// portal sends it only when this is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relay: bool,
     /// The node has `/dev/kvm`, so it can run `vm` environments. Absent from
     /// agents that predate it, which can't, and which drop the connection on
     /// a profile they don't know: the portal sends none a `vm` spec.
@@ -1037,6 +1064,12 @@ pub struct GpuUsage {
 /// challenge and to the node id.
 pub fn hello_message(nonce: &str, node_id: &str) -> Vec<u8> {
     format!("cha-node-hello/v{PROTOCOL_VERSION}:{nonce}:{node_id}").into_bytes()
+}
+
+/// The bytes a node signs to open the media relay `relay_id`
+/// ([`NodeRequest::OpenRelay`]).
+pub fn relay_message(relay_id: &str, node_id: &str) -> Vec<u8> {
+    format!("cha-node-relay/v{PROTOCOL_VERSION}:{relay_id}:{node_id}").into_bytes()
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -763,9 +763,12 @@ pub struct ShareRow {
     pub slot: Option<i64>,
     pub created_at: i64,
     pub expires_at: i64,
+    /// On the tunnel's hostname, for guests on the internet (0018).
+    pub wan: bool,
 }
 
-const SHARE_COLUMNS: &str = "id, environment_id, created_by, role, slot, created_at, expires_at";
+const SHARE_COLUMNS: &str =
+    "id, environment_id, created_by, role, slot, created_at, expires_at, wan";
 
 /// Makes a share, revoking the live one it replaces: a player's on the same
 /// slot, a controller's on the same environment; viewer links replace nothing.
@@ -806,8 +809,8 @@ pub async fn replace_share(
             .await?;
     }
     sqlx::query(
-        "INSERT INTO shares (id, environment_id, created_by, role, slot, token_hash, created_at, expires_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO shares (id, environment_id, created_by, role, slot, token_hash, created_at, expires_at, wan) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&share.id)
     .bind(&share.environment_id)
@@ -817,6 +820,7 @@ pub async fn replace_share(
     .bind(token_hash)
     .bind(share.created_at)
     .bind(share.expires_at)
+    .bind(share.wan)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -887,7 +891,7 @@ pub async fn share_by_token_hash(
     token_hash: &str,
 ) -> Result<Option<SharedAccess>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT s.id, s.environment_id, s.created_by, s.role, s.slot, s.created_at, s.expires_at, \
+        "SELECT s.id, s.environment_id, s.created_by, s.role, s.slot, s.created_at, s.expires_at, s.wan, \
                 e.state, e.template_id, u.display_name AS owner_name \
          FROM shares s \
          JOIN environments e ON e.id = s.environment_id \
@@ -899,6 +903,43 @@ pub async fn share_by_token_hash(
     .bind(now())
     .fetch_optional(db)
     .await
+}
+
+/// How many internet links are live: the tunnel stays up while there are any.
+pub async fn live_wan_shares(db: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM shares WHERE wan = 1 AND revoked_at IS NULL AND expires_at > ?",
+    )
+    .bind(now())
+    .fetch_one(db)
+    .await
+}
+
+/// A quick tunnel started anew, so internet links made before `since` (Unix
+/// seconds) point at a hostname that no longer exists: revokes them and
+/// audits each (no actor: the portal did it).
+pub async fn end_stale_wan_shares(db: &SqlitePool, since: i64) -> Result<(), sqlx::Error> {
+    let ended: Vec<(String, String)> = sqlx::query_as(
+        "UPDATE shares SET revoked_at = ? \
+         WHERE wan = 1 AND revoked_at IS NULL AND created_at < ? \
+         RETURNING id, environment_id",
+    )
+    .bind(now())
+    .bind(since)
+    .fetch_all(db)
+    .await?;
+    for (id, environment_id) in ended {
+        audit(
+            db,
+            None,
+            "share.revoked",
+            Some(&environment_id),
+            Some(serde_json::json!({ "share": id, "reason": "tunnel_restarted" })),
+            None,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// An environment left `running`: every live share on it ends, and each is
