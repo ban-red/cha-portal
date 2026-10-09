@@ -18,9 +18,10 @@
 //! picks `EncSlice` or `EncSliceLP`; `CHA_VAAPI_PACKED_HEADERS=off|slice`
 //! turns the packed SPS/PPS off (the driver writes its own, which we then
 //! rewrite) or adds the packed slice header; `CHA_VAAPI_PACKED_EMULATION=driver`
-//! hands the packed headers over without emulation prevention bytes. HEVC takes
-//! one more: `CHA_VAAPI_PACKED_HEADERS=headers` packs the VPS, SPS and PPS and
-//! leaves the slice header to the driver (the default packs it too); HEVC also
+//! hands the packed headers over without emulation prevention bytes.
+//! `CHA_VAAPI_PACKED_HEADERS=headers` packs the parameter sets and leaves the
+//! slice header to the driver, where the default packs it too (HEVC, and H.264
+//! on Mesa); HEVC also
 //! reads `CHA_VAAPI_HEVC_TOOLS=sao,amp,sdh,tskip,nocuqp,nottmvp,nossm`, coding
 //! tools to turn on (or, `no…`, off) against the defaults.
 
@@ -107,7 +108,7 @@ enum Packed {
     None,
     /// SPS and PPS are ours.
     Headers,
-    /// And the slice header too (an experiment for H.264; HEVC's default).
+    /// And the slice header too (HEVC's default, and H.264's on Mesa).
     HeadersAndSlice,
 }
 
@@ -398,15 +399,18 @@ impl Stream {
 }
 
 /// Which headers to pack, from what the driver offers. HEVC packs the slice
-/// header too unless told not to: its POC bits depend on our SPS.
-fn packed_mode(offered: u32, setting: Option<&str>, codec: Codec) -> Packed {
+/// header too unless told not to: its POC bits depend on our SPS. So does
+/// H.264 on Mesa (radeonsi), which otherwise ignores `idr_pic_flag` after the
+/// first picture and makes a P where we asked for an IDR (Radeon 780M, Mesa
+/// 26.0).
+fn packed_mode(offered: u32, setting: Option<&str>, codec: Codec, mesa: bool) -> Packed {
     let both = ffi::PACKED_HEADER_SEQUENCE | ffi::PACKED_HEADER_PICTURE;
     let slice = offered & both == both && offered & ffi::PACKED_HEADER_SLICE != 0;
     match setting {
         Some("off") => Packed::None,
         Some("slice") if slice => Packed::HeadersAndSlice,
         Some("headers") if offered & both == both => Packed::Headers,
-        None if codec == Codec::Hevc && slice => Packed::HeadersAndSlice,
+        None if (codec == Codec::Hevc || mesa) && slice => Packed::HeadersAndSlice,
         _ if offered & both == both => Packed::Headers,
         _ => Packed::None,
     }
@@ -597,6 +601,7 @@ impl Vaapi {
             offered,
             std::env::var("CHA_VAAPI_PACKED_HEADERS").ok().as_deref(),
             params.codec,
+            display.vendor().starts_with("Mesa"),
         );
         let mut attribs = vec![
             (ffi::ATTRIB_RT_FORMAT, ffi::RT_FORMAT_YUV420),
@@ -1318,27 +1323,40 @@ mod tests {
         let seq_pic = ffi::PACKED_HEADER_SEQUENCE | ffi::PACKED_HEADER_PICTURE;
         let all = seq_pic | ffi::PACKED_HEADER_SLICE | 0x18;
         let h264 = Codec::H264;
-        assert_eq!(packed_mode(all, None, h264), Packed::Headers);
-        assert_eq!(packed_mode(seq_pic, None, h264), Packed::Headers);
+        assert_eq!(packed_mode(all, None, h264, false), Packed::Headers);
+        assert_eq!(packed_mode(seq_pic, None, h264, false), Packed::Headers);
         // Only the sequence header: the driver writes its own.
         assert_eq!(
-            packed_mode(ffi::PACKED_HEADER_SEQUENCE, None, h264),
+            packed_mode(ffi::PACKED_HEADER_SEQUENCE, None, h264, false),
             Packed::None
         );
-        assert_eq!(packed_mode(0, None, h264), Packed::None);
+        assert_eq!(packed_mode(0, None, h264, false), Packed::None);
         // The knobs.
-        assert_eq!(packed_mode(all, Some("off"), h264), Packed::None);
+        assert_eq!(packed_mode(all, Some("off"), h264, false), Packed::None);
         assert_eq!(
-            packed_mode(all, Some("slice"), h264),
+            packed_mode(all, Some("slice"), h264, false),
             Packed::HeadersAndSlice
         );
-        assert_eq!(packed_mode(seq_pic, Some("slice"), h264), Packed::Headers);
+        assert_eq!(
+            packed_mode(seq_pic, Some("slice"), h264, false),
+            Packed::Headers
+        );
         // HEVC packs the slice header unless told not to.
         let hevc = Codec::Hevc;
-        assert_eq!(packed_mode(all, None, hevc), Packed::HeadersAndSlice);
-        assert_eq!(packed_mode(all, Some("headers"), hevc), Packed::Headers);
-        assert_eq!(packed_mode(all, Some("off"), hevc), Packed::None);
-        assert_eq!(packed_mode(seq_pic, None, hevc), Packed::Headers);
+        assert_eq!(packed_mode(all, None, hevc, false), Packed::HeadersAndSlice);
+        assert_eq!(
+            packed_mode(all, Some("headers"), hevc, false),
+            Packed::Headers
+        );
+        assert_eq!(packed_mode(all, Some("off"), hevc, false), Packed::None);
+        assert_eq!(packed_mode(seq_pic, None, hevc, false), Packed::Headers);
+        // H.264 on Mesa packs the slice header too, unless told not to.
+        assert_eq!(packed_mode(all, None, h264, true), Packed::HeadersAndSlice);
+        assert_eq!(packed_mode(seq_pic, None, h264, true), Packed::Headers);
+        assert_eq!(
+            packed_mode(all, Some("headers"), h264, true),
+            Packed::Headers
+        );
         assert_eq!(Packed::None.attribute(), None);
         assert_eq!(Packed::Headers.attribute(), Some(3));
         assert_eq!(Packed::HeadersAndSlice.attribute(), Some(7));
