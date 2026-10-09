@@ -29,6 +29,7 @@ import { transportOrder } from "./transports";
 import { resolveWsUrl } from "./ws-url";
 import { capturesDevices, inputAllowed, readsPads, sendsControls, type InputMode } from "./inputMode";
 import { parseWatchers, type Watcher } from "./watchers";
+import { cropFrame, cropSize, pictureSize, setStreamSize, viewBox, type Size } from "./crop";
 
 /** Hardware codecs (every transport) and PyroWave (WebTransport only). */
 export type Codec = "hevc" | "h264" | "av1" | "pyrowave420" | "pyrowave444";
@@ -327,6 +328,8 @@ export class Player {
   /** WebRTC: frames' send → complete (their last packet in), for the streamer's rate control. */
   private readonly rtcDelivery: { at: number; ms: number }[] = [];
   private lastSize = "";
+  /** The picture's true size as the streamer reports it (hello, `resized`); AV1 from some encoders is coded larger (crop.ts). */
+  private streamSize: Size | null = null;
   /** The frame rate the streamer encodes at, once it has said. */
   private streamFps: number | null = null;
   /** A frame rate change asked for, waiting for the streamer's answer. */
@@ -677,6 +680,7 @@ export class Player {
     this.latencies.length = 0;
     this.rtcDelivery.length = 0;
     this.lastSize = "";
+    this.noteStreamSize(null);
     if (this.state !== "idle") this.setState("idle");
   }
 
@@ -739,8 +743,12 @@ export class Player {
     const latencyMs = percentile(this.latencies.slice(-(this.streamFps ?? 60)), 0.5);
     let snapshot: StatsSnapshot;
     if (this.wt) snapshot = this.webTransportStats(latencyMs);
-    else if (this.pc) snapshot = await this.stats.read(this.pc, latencyMs);
-    else return null;
+    else if (this.pc) {
+      snapshot = await this.stats.read(this.pc, latencyMs);
+      // The decoder's size includes any padding (crop.ts); show the picture's.
+      const crop = cropSize({ w: snapshot.width ?? 0, h: snapshot.height ?? 0 }, this.streamSize);
+      if (crop) [snapshot.width, snapshot.height] = [crop.w, crop.h];
+    } else return null;
     const ageMs = this.nodeStats ? performance.now() - this.nodeStats.at : Infinity;
     snapshot.targetFps = this.streamFps;
     const sent = this.sentRates(latencyMs ?? 0);
@@ -1005,6 +1013,10 @@ export class Player {
     };
     video.requestVideoFrameCallback(onFrame);
     this.cleanup.push(() => (watching = false));
+    // The decoded size changes (a resize, a new stream): the crop follows.
+    const onVideoSize = () => this.applyViewBox();
+    video.addEventListener("resize", onVideoSize);
+    this.cleanup.push(() => video.removeEventListener("resize", onVideoSize));
   }
 
   /**
@@ -1188,9 +1200,15 @@ export class Player {
         this.pointerSpot = { x: msg.x ?? 0, y: msg.y ?? 0, drawn: !!msg.drawn };
         this.placePointer();
         break;
-      case "hello":
+      case "hello": {
+        const s = msg.stream as unknown as { width?: number; height?: number } | undefined;
+        this.noteStreamSize(typeof s?.width === "number" && typeof s?.height === "number" ? { w: s.width, h: s.height } : null);
         this.noteFps((msg.stream as unknown as { fps?: number } | undefined)?.fps);
         this.noteOverlay(parseOverlay((msg.stream as unknown as { overlay?: unknown } | undefined)?.overlay));
+        break;
+      }
+      case "resized":
+        if (typeof msg.w === "number" && typeof msg.h === "number") this.noteStreamSize({ w: msg.w, h: msg.h });
         break;
       case "stats":
         this.noteFps(msg.fps);
@@ -1238,6 +1256,22 @@ export class Player {
     }
   }
 
+  /** Records the true picture size and crops the `<video>` to it if the decoder left padding in (WebRTC). */
+  private noteStreamSize(size: Size | null): void {
+    this.streamSize = size;
+    const { video } = this.options;
+    setStreamSize(video, size);
+    this.applyViewBox();
+  }
+
+  /** The element's CSS crop: the padded right and bottom edges fall outside it; none if the picture has no padding. */
+  private applyViewBox(): void {
+    const { video } = this.options;
+    const box = viewBox({ w: video.videoWidth, h: video.videoHeight }, this.streamSize);
+    // `object-view-box` is Chrome 104+, Safari 18+, Firefox 128+; without it the padding shows.
+    video.style.setProperty("object-view-box", box);
+  }
+
   /** The environment's cursor as the element's CSS cursor, at its on-screen size. */
   private applyCursor(): void {
     const msg = this.cursor;
@@ -1264,7 +1298,8 @@ export class Player {
       }
       // Stream pixels per CSS pixel, so the cursor is as big as in the picture.
       const r = video.getBoundingClientRect();
-      const k = 1 / Math.min(r.width / (video.videoWidth || r.width), r.height / (video.videoHeight || r.height));
+      const pic = pictureSize(video);
+      const k = 1 / Math.min(r.width / (pic?.w || r.width), r.height / (pic?.h || r.height));
       const scaled = `image-set(url("${image.url}") ${k.toFixed(3)}x) ${Math.round(image.x / k)} ${Math.round(image.y / k)}, default`;
       video.style.cursor = CSS.supports("cursor", scaled) ? scaled : `url("${image.url}") ${image.x} ${image.y}, default`;
     }
@@ -1295,8 +1330,9 @@ export class Player {
     // Where the picture sits in the element (object-fit: contain).
     const r = video.getBoundingClientRect();
     const p = parent.getBoundingClientRect();
-    const vw = video.videoWidth || r.width;
-    const vh = video.videoHeight || r.height;
+    const pic = pictureSize(video);
+    const vw = pic?.w || r.width;
+    const vh = pic?.h || r.height;
     const scale = Math.min(r.width / vw, r.height / vh);
     const left = r.left - p.left + (r.width - vw * scale) / 2 + spot.x * vw * scale;
     const top = r.top - p.top + (r.height - vh * scale) / 2 + spot.y * vh * scale;
@@ -1608,7 +1644,7 @@ export class Player {
           this.pushDecodeMs(wt, performance.now() - sent.decodeAt);
           this.noteDelivery(wt, sent.ts);
         }
-        this.writeFrame(wt, frame); // the sink closes it
+        this.writeFrame(wt, cropFrame(frame, this.streamSize)); // the sink closes it
       },
       error: () => {
         // An error closes the decoder: a new one, from the next keyframe. Too many in a row, or a
@@ -1888,8 +1924,8 @@ export class Player {
     const decode = wt.decodeMs.length ? wt.decodeMs.reduce((a, b) => a + b, 0) / wt.decodeMs.length : null;
     return {
       codec: `${this.codec.toUpperCase()} · ${this.transport === "websocket" ? "WebSocket" : "WebTransport"}`,
-      width: video.videoWidth || null,
-      height: video.videoHeight || null,
+      width: pictureSize(video)?.w ?? null,
+      height: pictureSize(video)?.h ?? null,
       fps: wt.shown.length,
       targetFps: null,
       sentFps: null,

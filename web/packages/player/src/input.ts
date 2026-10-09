@@ -11,6 +11,7 @@
 import { TOOLBAR } from "@cha/ui-spec";
 
 import { CaptureMode, type CaptureView } from "./captureMode";
+import { pictureSize } from "./crop";
 import { EscHold, type EscStep } from "./escHold";
 
 type Send = (msg: Record<string, unknown>) => void;
@@ -282,8 +283,9 @@ export class InputCapture {
   /** Where `e` falls on the picture (object-fit: contain), 0..1. */
   private position(e: MouseEvent): { x: number; y: number } {
     const r = this.video.getBoundingClientRect();
-    const vw = this.video.videoWidth || r.width;
-    const vh = this.video.videoHeight || r.height;
+    const pic = pictureSize(this.video);
+    const vw = pic?.w || r.width;
+    const vh = pic?.h || r.height;
     const scale = Math.min(r.width / vw, r.height / vh);
     const w = vw * scale;
     const h = vh * scale;
@@ -299,8 +301,9 @@ export class InputCapture {
       // The picture is letterboxed (object-fit: contain), so scale by its
       // drawn size, not the element's.
       const r = this.video.getBoundingClientRect();
-      const vw = this.video.videoWidth || r.width;
-      const vh = this.video.videoHeight || r.height;
+      const pic = pictureSize(this.video);
+      const vw = pic?.w || r.width;
+      const vh = pic?.h || r.height;
       const scale = 1 / Math.min(r.width / vw, r.height / vh);
       if (e.movementX || e.movementY) this.send({ k: "rel", dx: e.movementX * scale, dy: e.movementY * scale });
     } else {

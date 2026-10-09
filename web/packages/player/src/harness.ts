@@ -74,6 +74,7 @@
 // like a thumb does (rise, tremor, spring release with overshoot), triggers
 // pull like a finger, mashes tire, and everything cancels on releaseAll.
 
+import { pictureSize } from "./crop";
 import { round3 } from "./controllers/types";
 
 /** A small seeded generator (mulberry32): the same seed gives the same run. */
@@ -1069,8 +1070,9 @@ export class Harness {
    */
   async moveTo(fx: number, fy: number, ms?: number, style: "auto" | "flick" | "track" = "auto"): Promise<void> {
     const r = this.video.getBoundingClientRect();
-    const vw = this.video.videoWidth || r.width;
-    const vh = this.video.videoHeight || r.height;
+    const pic = pictureSize(this.video);
+    const vw = pic?.w || r.width;
+    const vh = pic?.h || r.height;
     const scale = Math.min(r.width / vw, r.height / vh);
     const w = vw * scale;
     const h = vh * scale;
