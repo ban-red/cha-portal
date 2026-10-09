@@ -15,6 +15,7 @@ import {
   serverMessage,
   sharedPath,
 } from "../storage";
+import { TONE_CLASS, differNote, locationsDiffer, stateBadge, whereLine } from "../sharedDirs";
 
 const queryClient = useQueryClient();
 const storage = useQuery({ queryKey: ADMIN_STORAGE_KEY, queryFn: api.adminStorage });
@@ -83,10 +84,31 @@ function setSharedAccess(app: AdminStorageApp, event: Event) {
     <ul v-else class="card divide-y divide-line">
       <li v-for="app in apps" :key="app.template" class="px-4 py-4 sm:px-5">
         <h2 :id="`${app.template}-name`" class="text-base font-semibold">{{ app.name }}</h2>
-        <p v-if="app.sharedAccess !== 'none'" class="mt-0.5 font-mono text-xs break-all text-ink-3">
-          {{ sharedPath(root, app) }}
-          <span v-if="app.sharedPath" class="font-sans">· set on the node (CHA_SHARED_DIRS)</span>
-        </p>
+        <template v-if="app.sharedAccess !== 'none'">
+          <div v-if="app.nodes?.length">
+            <p v-if="locationsDiffer(app.nodes)" class="mt-1 text-xs text-warn" role="note">
+              {{ differNote(app.nodes) }}
+            </p>
+            <ul class="mt-2 space-y-2" :aria-label="`${app.name} shared folder per node`">
+              <li v-for="n in app.nodes" :key="n.nodeId" class="text-xs" :class="n.online ? '' : 'opacity-60'">
+                <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <span class="text-sm font-medium">{{ n.nodeName }}<span v-if="!n.online" class="font-normal text-ink-3"> (offline)</span></span>
+                  <span class="rounded-full border px-2 py-0.5 text-2xs" :class="TONE_CLASS[stateBadge(n.state, n.location).tone]">
+                    {{ stateBadge(n.state, n.location).label }}
+                  </span>
+                </div>
+                <p class="mt-0.5 text-ink-3">
+                  {{ whereLine(n) }}: <span class="font-mono break-all">{{ n.path }}</span>
+                </p>
+                <p v-if="n.detail && n.state && n.state !== 'ok'" class="mt-0.5 text-warn">{{ n.detail }}</p>
+              </li>
+            </ul>
+          </div>
+          <p v-else class="mt-0.5 font-mono text-xs break-all text-ink-3">
+            {{ sharedPath(root, app) }}
+            <span v-if="app.sharedPath" class="font-sans">· set on the node (CHA_SHARED_DIRS)</span>
+          </p>
+        </template>
 
         <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-8">
           <div class="flex items-center gap-3">

@@ -146,6 +146,37 @@ export interface NodeInfo {
   /** Why an older agent can't be updated from here. */
   updateBlocked?: string | null;
   updateProgress?: AgentUpdateProgress | null;
+  /** The node's shared directories and whether each is usable; absent from older portals. */
+  shared?: NodeSharedDir[];
+}
+
+/** What a node's check of a shared directory found. */
+export type SharedDirState = "ok" | "missing" | "incomplete" | "unreachable" | "read_only";
+
+/** The check's result, as the node reports it; all absent from older agents. */
+export interface SharedDirCheck {
+  state?: SharedDirState;
+  fsType?: string;
+  source?: string;
+  detail?: string;
+  /** Unix seconds. */
+  checkedAt?: number;
+}
+
+export interface NodeSharedDir extends SharedDirCheck {
+  template: string;
+  name: string;
+  path: string;
+}
+
+/** One node's view of an app's shared directory (admin storage). */
+export interface AdminStorageNode extends SharedDirCheck {
+  nodeId: string;
+  nodeName: string;
+  online: boolean;
+  /** "external" when set with CHA_SHARED_DIRS (a share), "local" under the data root. */
+  location: "external" | "local";
+  path: string;
 }
 
 /** A node's CPU, RAM and GPU use (percent 0..100, bytes, watts, °C), refreshed every few seconds. */
@@ -320,6 +351,8 @@ export interface AdminStorageApp {
   sharedAccess: SharedAccess;
   /** As in `StorageApp`. */
   sharedPath?: string;
+  /** Per node; absent from older portals. */
+  nodes?: AdminStorageNode[];
 }
 
 export interface AdminStorageInfo {

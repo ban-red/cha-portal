@@ -10,6 +10,7 @@ import MoonlightHostsCard from "../components/MoonlightHostsCard.vue";
 import NodeUsage from "../components/NodeUsage.vue";
 import { HOST_OPTIONS_KEY } from "../customEnv";
 import { MODE_LABEL, policySummary } from "../hostOptions";
+import { TONE_CLASS, stateBadge } from "../sharedDirs";
 import { diskView, platformLine } from "../nodeInfo";
 import { expectedVersion, updateLine, updateRunning } from "../nodeUpdate";
 import { normalizePairingCode } from "../pairingCode";
@@ -470,6 +471,23 @@ function status(node: NodeInfo): { text: string; dot: string } {
           <dd class="font-mono text-xs leading-5 break-all text-ink-2">{{ node.inventory.addresses.join(", ") || "—" }}</dd>
         </dl>
         <p v-else class="mt-4 text-sm text-ink-3">No inventory reported yet.</p>
+
+        <div v-if="node.shared?.length" class="mt-4 text-sm">
+          <h3 class="text-ink-3">Shared folders</h3>
+          <ul class="mt-1.5 space-y-2">
+            <li v-for="d in node.shared" :key="d.template">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <span class="font-medium">{{ d.name }}</span>
+                <span class="rounded-full border px-2 py-0.5 text-2xs" :class="TONE_CLASS[stateBadge(d.state, 'external').tone]">
+                  {{ stateBadge(d.state, "external").label }}
+                </span>
+                <span v-if="d.checkedAt" class="text-2xs text-ink-3" :title="dateTime(d.checkedAt)">checked {{ ago(d.checkedAt) }}</span>
+              </div>
+              <p class="mt-0.5 font-mono text-xs break-all text-ink-2">{{ d.path }}</p>
+              <p v-if="d.detail && d.state && d.state !== 'ok'" class="mt-0.5 text-xs text-warn">{{ d.detail }}</p>
+            </li>
+          </ul>
+        </div>
 
         <NodeUsage v-if="node.usage" :usage="node.usage" />
         <p v-else-if="node.online" class="mt-4 text-xs text-ink-3">No live data</p>
