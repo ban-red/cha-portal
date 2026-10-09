@@ -424,11 +424,11 @@ Nodes on published 0.3.0 images can take the **Update** button on **Admin → No
 - **Virtual machines**: catalogs can offer them through the `vm` profile, on nodes with KVM, behind the admin's approval ([ADR 0020](docs/adr/0020-vm-environments.md)).
 - **Images**: the environment images get a new base: `cha-run` can keep a custom environment's capabilities as it drops to the app's user.
 - **Steam**: Power → "Switch to Desktop" works as on SteamOS: one environment alternates between Big Picture and an XFCE desktop with the normal client, over the same saved data.
-- **Database**: it gains custom environments and their published ports (migration 0017), applied on start.
+- **Database**: it gains custom environments and their published ports, applied on start.
 
 ### From 0.2.1 to 0.3.0
 
-Upgrade by hand this once, with the steps above: 0.3.0 is the first release whose agents the portal can update ([Updating nodes from the portal](deploy/README.md#updating-nodes-from-the-portal)); from then on, **Admin → Nodes** offers an **Update** button for nodes on published images. What else changes: Intel and AMD nodes also encode HEVC; the Nodes page shows each node's platform and disk space, and a node with under 5 GB free for images is warned about at launch and not picked automatically; admins can load catalogs of apps from a URL or a pasted document (**Admin → Catalogs**); `cha-node --check-image` checks that an image runs as an environment; the environment images are published with zstd layers (Docker 23 or newer reads them; nodes need 26 anyway). The database gains loaded catalogs (migration 0016), applied on start.
+Upgrade by hand this once, with the steps above: 0.3.0 is the first release whose agents the portal can update ([Updating nodes from the portal](deploy/README.md#updating-nodes-from-the-portal)); from then on, **Admin → Nodes** offers an **Update** button for nodes on published images. What else changes: Intel and AMD nodes also encode HEVC; the Nodes page shows each node's platform and disk space, and a node with under 5 GB free for images is warned about at launch and not picked automatically; admins can load catalogs of apps from a URL or a pasted document (**Admin → Catalogs**); `cha-node --check-image` checks that an image runs as an environment; the environment images are published with zstd layers (Docker 23 or newer reads them; nodes need 26 anyway). The database gains loaded catalogs, applied on start.
 
 ### From 0.2.0 to 0.2.1
 
@@ -438,7 +438,7 @@ Nothing needs doing by hand. Steam starts on Intel and AMD nodes (gamescope gets
 
 Nothing needs doing by hand beyond the steps above. What changes:
 
-- **The database** gains Moonlight hosts and devices, signed-in Cha Player devices and share links (migrations 0011–0015).
+- **The database** gains Moonlight hosts and devices, signed-in Cha Player devices and share links, applied on start.
 - **Images download as they're needed.** A node that lacks an app's image pulls the published one at launch, with a progress bar in the portal, and placement prefers a node that already has it. `setup.sh` still pulls them all up front unless you pass `--no-pull`.
 - **The agent's compose service** gains `pid: host` (per-app VRAM) and the Moonlight settings (`CHA_MOONLIGHT`, `CHA_GAMESTREAM`, ...). All of them have defaults, so `.env` needs nothing new.
 - **Intel, AMD and CPU-only nodes** now pass `--doctor`: the NVIDIA checks are informational on a machine without NVIDIA.
