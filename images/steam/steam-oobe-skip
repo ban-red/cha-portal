@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Marks Steam's first-run setup (the OOBE) as done in the home's registry.vdf.
+
+`steam -steamos3` makes Steam act as SteamOS, and SteamOS's first-run setup has
+a network step (Language, Timezone, Network, Update). The Network page asks
+`SteamClient.System.Network` to scan for networks, which on SteamOS is
+NetworkManager's; the container has no system bus, so the page dies with "Something
+went wrong while displaying this content ... SteamClient.System.Network?.
+StartScanningForNetworks is not a function" and the setup can't be finished.
+The setup has nothing to do here (the node's network is the container's, the
+clock too), so start-steam runs this before every Steam start: it sets
+HKCU/Software/Valve/Steam/CompletedOOBE to 1, the flag Steam writes itself once
+the setup is over. A home whose setup died on that page is repaired by the next
+start. The second part of the setup (controllers, display, audio, shown after
+the first sign-in) isn't touched.
+
+Usage: steam-oobe-skip [registry.vdf]   (default ~/.steam/registry.vdf)
+Tested by test_steam_oobe_skip.py.
+"""
+
+import os
+import re
+import sys
+import tempfile
+
+KEY_PATH = ("HKCU", "Software", "Valve", "Steam")
+KEY = "CompletedOOBE"
+
+TOKEN = re.compile(r'"((?:[^"\\]|\\.)*)"|([{}])|(//[^\n]*)|(\S)')
+
+
+def parse(text):
+    """VDF text to a list of (key, value) pairs; a value is a string or a list."""
+    tokens = []
+    for m in TOKEN.finditer(text):
+        if m.group(1) is not None:
+            tokens.append(("s", m.group(1)))
+        elif m.group(2):
+            tokens.append((m.group(2), None))
+        elif m.group(4):
+            raise ValueError(f"unexpected {m.group(4)!r}")
+    pos = 0
+
+    def block():
+        nonlocal pos
+        items = []
+        while pos < len(tokens) and tokens[pos][0] != "}":
+            kind, key = tokens[pos]
+            if kind != "s":
+                raise ValueError("expected a key")
+            pos += 1
+            if pos >= len(tokens):
+                raise ValueError("missing value")
+            kind, val = tokens[pos]
+            if kind == "{":
+                pos += 1
+                val = block()
+                if pos >= len(tokens):
+                    raise ValueError("unclosed block")
+                pos += 1
+            elif kind == "s":
+                pos += 1
+            else:
+                raise ValueError("expected a value")
+            items.append((key, val))
+        return items
+
+    items = block()
+    if pos != len(tokens):
+        raise ValueError("unbalanced braces")
+    return items
+
+
+def dump(items, depth=0):
+    out = []
+    pad = "\t" * depth
+    for key, val in items:
+        if isinstance(val, list):
+            out.append(f'{pad}"{key}"\n{pad}{{\n{dump(val, depth + 1)}{pad}}}\n')
+        else:
+            out.append(f'{pad}"{key}"\t\t"{val}"\n')
+    return "".join(out)
+
+
+def set_flag(items):
+    """Sets the flag in the tree; True if that changed anything."""
+    level = items
+    for name in KEY_PATH:
+        for i, (k, v) in enumerate(level):
+            if k.lower() == name.lower() and isinstance(v, list):
+                level = v
+                break
+        else:
+            sub = []
+            level.append((name, sub))
+            level = sub
+    for i, (k, v) in enumerate(level):
+        if k.lower() == KEY.lower():
+            if v == "1":
+                return False
+            level[i] = (k, "1")
+            return True
+    level.append((KEY, "1"))
+    return True
+
+
+def main(argv):
+    path = argv[1] if len(argv) > 1 else os.path.expanduser("~/.steam/registry.vdf")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    try:
+        reg = parse(text)
+    except ValueError as e:
+        # Never rewrite a file we can't read: Steam keeps the sign-in
+        # choices and the language in it.
+        print(f"steam-oobe-skip: can't read {path} ({e}); leaving it", file=sys.stderr)
+        return 0
+    if reg and not any(k == "Registry" and isinstance(v, list) for k, v in reg):
+        print(f"steam-oobe-skip: {path} has no Registry; leaving it", file=sys.stderr)
+        return 0
+    if not reg:
+        reg = [("Registry", [])]
+    root = next(v for k, v in reg if k == "Registry")
+    if not set_flag(root):
+        return 0
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".registry.")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(dump(reg))
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, path)
+    print("steam-oobe-skip: marked Steam's first-run setup as done", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

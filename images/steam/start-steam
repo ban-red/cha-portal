@@ -24,6 +24,10 @@ fi
 if [ -n "${CHA_SHARED_DIR:-}" ]; then
   steam-drives "$CHA_SHARED_DIR" &
 fi
+# -steamos3 gives Steam SteamOS's first-run setup, whose Network page needs
+# NetworkManager and dies without it (steam-oobe-skip's header): mark the setup
+# done before Steam starts. Not fatal: Steam still starts, with the setup.
+steam-oobe-skip || echo "start-steam: couldn't mark Steam's first-run setup as done" >&2
 # GTK 4's Vulkan renderer fails under gamescope's WSI layer (Steam's zenity
 # dialogs crashed): GL instead.
 export GSK_RENDERER=gl

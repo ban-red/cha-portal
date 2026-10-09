@@ -149,7 +149,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 COPY --from=build /usr/local/bin/cha-x11-clipboard /usr/local/bin/
 COPY --from=mangoapp /out/usr/bin/mangoapp /usr/local/bin/
 COPY --from=uinput-shim /out/opt/cha /opt/cha
-COPY images/steam/start-steam images/steam/steam-session images/steam/steam-gaming images/steam/steam-desktop images/steam/steam-desktop-client images/steam/steamos-session-select images/steam/steamos-select-branch images/steam/dbus-send images/steam/steam-touch-mode images/steam/steam-focus images/steam/steam-status images/steam/steam-library images/steam/steam-drives images/steam/steam-per-user-dirs images/steam/steam-run /usr/local/bin/
+COPY images/steam/start-steam images/steam/steam-session images/steam/steam-gaming images/steam/steam-desktop images/steam/steam-desktop-client images/steam/steamos-session-select images/steam/steamos-select-branch images/steam/dbus-send images/steam/steam-touch-mode images/steam/steam-focus images/steam/steam-status images/steam/steam-library images/steam/steam-drives images/steam/steam-per-user-dirs images/steam/steam-oobe-skip images/steam/steam-run /usr/local/bin/
 # SteamOS's updater stand-in, at the absolute path Steam runs.
 COPY images/steam/steamos-update /usr/bin/steamos-polkit-helpers/steamos-update
 COPY images/steam/desktop/cha-return-to-gaming-mode.desktop /usr/share/applications/
