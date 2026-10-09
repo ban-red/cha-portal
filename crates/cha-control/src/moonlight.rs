@@ -243,6 +243,7 @@ impl Index {
 /// uses none), so the environment is recorded on a device of its own.
 pub async fn place(
     state: &AppState,
+    user_id: &str,
     template: &Template,
 ) -> ApiResult<(NodeRow, Device, GatewaySpec)> {
     let (host_id, app_id) = parse_template_id(&template.id)
@@ -254,6 +255,17 @@ pub async fn place(
     let node = db::node_by_id(&state.db, &row.node_id)
         .await?
         .ok_or_else(|| no_node(format!("the node of {} was removed", row.name)))?;
+    if let Some(allowed) = db::allowed_nodes(&state.db, user_id, &template.id).await?
+        && !allowed.contains(&node.id)
+    {
+        return Err(ApiError::forbidden(
+            "node_not_allowed",
+            format!(
+                "your account can't use {}, which {} streams through",
+                node.name, row.name
+            ),
+        ));
+    }
     if state.nodes.connected_since(&node.id).await.is_none() {
         return Err(no_node(format!(
             "{} is offline, and {} streams through it",
@@ -678,7 +690,20 @@ async fn hosts(
     }
     let mut views = Vec::new();
     for row in db::moonlight_hosts(&state.db).await? {
-        views.push(host_view(&state, &row).await?);
+        let mut view = host_view(&state, &row).await?;
+        // A restricted user sees only the apps on nodes they may use.
+        let mut apps = Vec::new();
+        for app in view.apps.drain(..) {
+            match db::allowed_nodes(&state.db, &user.id, &app.template_id).await? {
+                Some(allowed) if !allowed.contains(&row.node_id) => {}
+                _ => apps.push(app),
+            }
+        }
+        view.apps = apps;
+        if view.apps.is_empty() && !apps_of(&row).is_empty() {
+            continue;
+        }
+        views.push(view);
     }
     Ok(Json(json!({ "hosts": views })))
 }

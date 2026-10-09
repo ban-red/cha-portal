@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { ArrowUpDown, LayoutGrid, List, Monitor, MonitorPlay, Pin, Search, Share2, Square, X } from "lucide-vue-next";
 import { computed, nextTick, reactive, ref } from "vue";
 
-import { ApiError, api, type Environment, type EnvironmentState, type PlacementChoice, type StorageApp, type Template } from "../api";
+import { ApiError, api, type Environment, type EnvironmentState, type StorageApp, type Template } from "../api";
 import AppCard from "../components/AppCard.vue";
 import DuplicateDialog from "../components/DuplicateDialog.vue";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
@@ -79,6 +79,21 @@ const appFps = useAppFps();
 // Where each app would run, and the best place: refreshed with the nodes' live
 // usage while the page is visible. Guests can't launch, so they ask for none.
 const placements = usePlacements(computed(() => session.user?.role !== "guest"));
+
+// Apps an admin shared from a node this user is otherwise kept off. Guests can't launch.
+const myGrants = useQuery({
+  queryKey: ["my-grants"],
+  queryFn: api.myGrants,
+  enabled: computed(() => session.user?.role !== "guest"),
+  retry: (count, err) => !(err instanceof ApiError) && count < 2,
+});
+const sharedCards = computed(() => {
+  const byId = new Map((catalog.data.value ?? []).map((t) => [t.id, t]));
+  return (myGrants.data.value ?? []).flatMap((g) => {
+    const template = byId.get(g.templateId);
+    return template ? [{ grant: g, template }] : [];
+  });
+});
 
 const live = computed(() =>
   (environments.data.value ?? []).filter((e) => e.state !== "destroyed" && e.state !== "failed"),
@@ -221,7 +236,7 @@ const baseNameOf = (t: Template) =>
   t.custom ? ((catalog.data.value ?? []).find((x) => x.id === t.custom!.base)?.name ?? t.custom.base) : undefined;
 
 const launch = useMutation({
-  mutationFn: (v: { template: Template; choice: PlacementChoice | null }) =>
+  mutationFn: (v: { template: Template; choice: { node: string; device?: string } | null }) =>
     api.launch(v.template.id, v.choice ?? undefined),
   onMutate: () => (error.value = null),
   onSuccess: () => {
@@ -458,6 +473,41 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
           </ul>
         </div>
       </template>
+    </section>
+
+    <section v-if="sharedCards.length" class="space-y-4" aria-labelledby="shared-heading">
+      <div>
+        <h2 id="shared-heading" class="text-xl font-semibold tracking-tight">Shared with you</h2>
+        <p class="text-sm text-ink-2">Apps an admin lets you run on a specific node.</p>
+      </div>
+      <div class="@container">
+        <ul
+          :class="
+            view === 'grid' ? 'grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-4' : 'flex flex-col gap-3'
+          "
+        >
+          <li v-for="{ grant, template: t } in sharedCards" :key="grant.id" class="flex min-w-0 flex-col gap-1.5">
+            <p class="flex items-center gap-2 px-1 text-xs text-ink-2">
+              <span class="size-2 shrink-0 rounded-full" :class="grant.online ? 'bg-ok' : 'bg-ink-3'" aria-hidden="true" />
+              <span class="min-w-0 truncate">On {{ grant.nodeName }}</span>
+              <span v-if="!grant.online" class="shrink-0 rounded-full border border-line-strong px-1.5 text-2xs text-ink-3">offline</span>
+            </p>
+            <AppCard
+              class="flex-1"
+              :template="t"
+              :view="view"
+              :pinned="false"
+              :running="live.some((e) => e.templateId === t.id)"
+              :instance="instanceOf.get(t.id)"
+              :busy="launch.isPending.value && launch.variables.value?.choice?.node === grant.nodeId && launch.variables.value?.template.id === t.id"
+              :disabled="!grant.online"
+              :player="false"
+              @launch="launch.mutate({ template: t, choice: { node: grant.nodeId } })"
+            />
+            <p v-if="!grant.online" class="px-1 text-xs text-ink-3">{{ grant.nodeName }} is offline. You can launch this when it is back.</p>
+          </li>
+        </ul>
+      </div>
     </section>
 
     <MoonlightHostSection

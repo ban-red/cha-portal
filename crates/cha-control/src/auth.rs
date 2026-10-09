@@ -95,13 +95,43 @@ pub async fn start_session(
         client.ip.as_deref(),
     )
     .await?;
-    Ok(Cookie::build((SESSION_COOKIE, token))
+    Ok(session_cookie(state, token, max_age))
+}
+
+fn session_cookie(state: &AppState, token: String, max_age: i64) -> Cookie<'static> {
+    Cookie::build((SESSION_COOKIE, token))
         .path("/")
         .http_only(true)
         .same_site(SameSite::Lax)
         .secure(state.config.secure_cookies)
         .max_age(time::Duration::seconds(max_age))
-        .build())
+        .build()
+}
+
+/// How long a "switch user" session lasts.
+pub const IMPERSONATION_HOURS: i64 = 12;
+
+/// Starts a session as `user` for the admin `impersonator`, and returns the
+/// cookie to set.
+pub async fn start_impersonation(
+    state: &AppState,
+    user: &User,
+    impersonator: &User,
+    client: &ClientInfo,
+) -> ApiResult<Cookie<'static>> {
+    let token = random_token()?;
+    let max_age = IMPERSONATION_HOURS * 3600;
+    db::insert_impersonation_session(
+        &state.db,
+        &token_hash(&token),
+        &user.id,
+        &impersonator.id,
+        db::now() + max_age,
+        client.user_agent.as_deref(),
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok(session_cookie(state, token, max_age))
 }
 
 pub fn removal_cookie() -> Cookie<'static> {
@@ -175,6 +205,41 @@ impl FromRequestParts<AppState> for CurrentUser {
         db::session_user(&state.db, &token_hash(token.value()))
             .await?
             .map(CurrentUser)
+            .ok_or(ApiError::Unauthorized)
+    }
+}
+
+/// A signed-in user and, when an admin is viewing as them, that admin. Cookie
+/// only: a device token never impersonates.
+pub struct Actor {
+    pub user: User,
+    pub impersonator: Option<User>,
+}
+
+impl Actor {
+    /// The admin behind this session: the one viewing as someone, else the
+    /// user themself if they are an admin.
+    pub fn real_admin(&self) -> ApiResult<&User> {
+        let admin = self.impersonator.as_ref().unwrap_or(&self.user);
+        if admin.role != Role::Admin {
+            return Err(ApiError::forbidden("admin_only", "this needs an admin"));
+        }
+        Ok(admin)
+    }
+}
+
+impl FromRequestParts<AppState> for Actor {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> ApiResult<Self> {
+        let jar = CookieJar::from_headers(&parts.headers);
+        let token = jar.get(SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
+        db::session_actor(&state.db, &token_hash(token.value()))
+            .await?
+            .map(|a| Actor {
+                user: a.user,
+                impersonator: a.impersonator,
+            })
             .ok_or(ApiError::Unauthorized)
     }
 }

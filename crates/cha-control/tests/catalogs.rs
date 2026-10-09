@@ -106,7 +106,7 @@ impl Portal {
                 "POST",
                 "/api/users",
                 Some(admin),
-                Some(json!({ "username": "player1", "password": "another long password", "role": "user" })),
+                Some(json!({ "username": "player1", "email": "player1@test.local", "password": "another long password", "role": "user" })),
             )
             .await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.body);

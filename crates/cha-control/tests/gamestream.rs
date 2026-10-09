@@ -133,7 +133,7 @@ impl Portal {
                 "POST",
                 "/api/users",
                 &self.admin,
-                Some(json!({ "username": username, "password": "another long password", "role": role })),
+                Some(json!({ "username": username, "email": format!("{username}@test.local"), "password": "another long password", "role": role })),
             )
             .await;
         assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);

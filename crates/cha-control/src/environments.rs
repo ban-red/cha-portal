@@ -43,7 +43,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(600);
 /// guest to shut down. Other apps stop within seconds.
 const STOP_TIMEOUT: Duration = Duration::from_secs(120);
 /// Environments one user may have live at once.
-const MAX_LIVE_PER_USER: i64 = 4;
+pub const MAX_LIVE_PER_USER: i64 = 4;
 const LIST_LIMIT: i64 = 50;
 /// What every environment starts at until clients ask for their own size.
 /// How long a media token stays good: long enough to carry an offer to the
@@ -810,10 +810,11 @@ pub(crate) async fn launch_environment(
     } else {
         None
     };
-    if db::count_live_environments(&state.db, &user.id).await? >= MAX_LIVE_PER_USER {
+    let max = user.max_instances.unwrap_or(MAX_LIVE_PER_USER);
+    if db::count_live_environments(&state.db, &user.id).await? >= max {
         return Err(ApiError::conflict(
             "too_many_environments",
-            format!("you can have {MAX_LIVE_PER_USER} environments at once; stop one first"),
+            format!("you can have {max} environments at once; stop one first"),
         ));
     }
     let settings = storage::effective_for(state, &user.id, template).await?;
@@ -854,7 +855,7 @@ pub(crate) async fn launch_environment(
     let gamepad = controllers::effective_for(state, &user.id, template).await?;
     let fps = apps::fps_for(state, &user.id, template).await?;
     let (node, device, gateway) = if template.class == moonlight::CLASS {
-        let (node, device, gateway) = moonlight::place(state, template).await?;
+        let (node, device, gateway) = moonlight::place(state, &user.id, template).await?;
         (node, device, Some(Box::new(gateway)))
     } else {
         let (node, device) = place(state, &user.id, template, req).await?;

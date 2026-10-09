@@ -13,6 +13,56 @@ export interface User {
   role: Role;
   disabled: boolean;
   createdAt: number;
+  email: string | null;
+  /** Most environments at once; null: the portal's default. */
+  maxInstances: number | null;
+  /** May launch only on the nodes picked for them (and what is granted). */
+  nodeRestricted: boolean;
+}
+
+/** Who is behind a "view as" session: the admin who switched. */
+export interface Impersonator {
+  id: string;
+  username: string;
+  displayName: string;
+}
+
+/** `GET /api/me`: the user, and the admin viewing as them, if any. */
+export type Me = User & { impersonator: Impersonator | null };
+
+/** One app on one node an admin lets a user launch, even if the node is off limits. */
+export interface Grant {
+  id: string;
+  nodeId: string;
+  templateId: string;
+  createdAt: number;
+}
+
+/** `GET /api/users/{id}/access` (admin). */
+export interface UserAccess {
+  nodeRestricted: boolean;
+  nodeIds: string[];
+  maxInstances: number | null;
+  /** The limit in force: maxInstances, else the portal's default. */
+  effectiveMax: number;
+  /** Environments the user has now. */
+  live: number;
+  grants: Grant[];
+}
+
+export interface UserAccessBody {
+  nodeRestricted: boolean;
+  nodeIds: string[];
+  maxInstances: number | null;
+}
+
+/** `GET /api/me/grants`: what was shared with the signed-in user. */
+export interface MyGrant {
+  id: string;
+  nodeId: string;
+  nodeName: string;
+  online: boolean;
+  templateId: string;
 }
 
 export interface AuditEntry {
@@ -696,10 +746,22 @@ export const api = {
   devAccounts: () =>
     request<{ accounts: { username: string; displayName: string }[] }>("GET", "/auth/dev-accounts"),
   logout: () => request<null>("POST", "/auth/logout", {}),
-  me: () => request<User>("GET", "/me"),
+  me: () => request<Me>("GET", "/me"),
+  switchUser: (userId: string) => request<User>("POST", "/auth/switch", { userId }),
+  switchBack: () => request<User>("POST", "/auth/switch-back", {}),
+  switchable: () => request<User[]>("GET", "/auth/switchable"),
+  myGrants: () => request<MyGrant[]>("GET", "/me/grants"),
+  userAccess: (id: string) => request<UserAccess>("GET", `/users/${encodeURIComponent(id)}/access`),
+  setUserAccess: (id: string, body: UserAccessBody) =>
+    request<unknown>("PUT", `/users/${encodeURIComponent(id)}/access`, body),
+  addGrant: (id: string, body: { nodeId: string; templateId: string }) =>
+    request<Grant>("POST", `/users/${encodeURIComponent(id)}/grants`, body),
+  removeGrant: (id: string, grantId: string) =>
+    request<null>("DELETE", `/users/${encodeURIComponent(id)}/grants/${encodeURIComponent(grantId)}`),
   users: () => request<User[]>("GET", "/users"),
-  createUser: (body: { username: string; displayName?: string; password: string; role: Role }) =>
+  createUser: (body: { email: string; username?: string; displayName?: string; password: string; role: Role }) =>
     request<User>("POST", "/users", body),
+  deleteUser: (id: string) => request<null>("DELETE", `/users/${encodeURIComponent(id)}`),
   audit: () => request<AuditEntry[]>("GET", "/audit"),
   health: () => request<{ status: string; version: string }>("GET", "/health"),
   nodes: () => request<NodeInfo[]>("GET", "/nodes"),
@@ -730,7 +792,7 @@ export const api = {
   catalog: () => request<Template[]>("GET", "/catalog"),
   environments: () => request<Environment[]>("GET", "/environments"),
   /** Without a choice, the server picks the best place (what `placements` calls `auto`). */
-  launch: (templateId: string, choice?: PlacementChoice) =>
+  launch: (templateId: string, choice?: { node: string; device?: string }) =>
     request<Environment>("POST", "/environments", { templateId, ...choice }),
   /** Where every template could run, with live node usage. 404 until the server supports it. */
   placements: () => request<{ templates: Record<string, Placements> }>("GET", "/placements"),

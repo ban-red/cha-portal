@@ -60,6 +60,10 @@ pub struct User {
     pub role: Role,
     pub disabled: bool,
     pub created_at: i64,
+    pub email: Option<String>,
+    /// Environments at once; `None` is the portal's default.
+    pub max_instances: Option<i64>,
+    pub node_restricted: bool,
 }
 
 #[derive(FromRow)]
@@ -69,7 +73,10 @@ pub struct UserWithHash {
     pub password_hash: Option<String>,
 }
 
-const USER_COLUMNS: &str = "id, username, display_name, role, disabled, created_at";
+const USER_COLUMNS: &str =
+    "id, username, display_name, role, disabled, created_at, email, max_instances, node_restricted";
+/// [`USER_COLUMNS`] for a query that joins the users table as `u`.
+const USER_COLUMNS_U: &str = "u.id, u.username, u.display_name, u.role, u.disabled, u.created_at, u.email, u.max_instances, u.node_restricted";
 
 pub async fn user_count(db: &SqlitePool) -> Result<i64> {
     Ok(sqlx::query_scalar("SELECT COUNT(*) FROM users")
@@ -84,13 +91,26 @@ pub async fn insert_user(
     password_hash: &str,
     role: Role,
 ) -> Result<User, sqlx::Error> {
+    insert_user_with_email(db, username, None, display_name, password_hash, role).await
+}
+
+/// [`insert_user`] with an email address (already lower-cased).
+pub async fn insert_user_with_email(
+    db: &SqlitePool,
+    username: &str,
+    email: Option<&str>,
+    display_name: &str,
+    password_hash: &str,
+    role: Role,
+) -> Result<User, sqlx::Error> {
     let id = new_id();
     sqlx::query(
-        "INSERT INTO users (id, username, display_name, password_hash, role, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO users (id, username, email, display_name, password_hash, role, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(username)
+    .bind(email)
     .bind(display_name)
     .bind(password_hash)
     .bind(role)
@@ -119,12 +139,37 @@ pub async fn user_for_login(
     .await
 }
 
+/// [`user_for_login`] by username or email, either case.
+pub async fn user_for_login_or_email(
+    db: &SqlitePool,
+    name: &str,
+) -> Result<Option<UserWithHash>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {USER_COLUMNS}, password_hash FROM users \
+         WHERE username = ?1 COLLATE NOCASE OR email = ?1 COLLATE NOCASE \
+         ORDER BY username = ?1 COLLATE NOCASE DESC LIMIT 1"
+    ))
+    .bind(name)
+    .fetch_optional(db)
+    .await
+}
+
 pub async fn list_users(db: &SqlitePool) -> Result<Vec<User>, sqlx::Error> {
     sqlx::query_as(&format!(
         "SELECT {USER_COLUMNS} FROM users ORDER BY created_at"
     ))
     .fetch_all(db)
     .await
+}
+
+/// Deletes a user; their sessions, devices, grants and the rest cascade.
+pub async fn delete_user(db: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected()
+        > 0)
 }
 
 pub async fn insert_session(
@@ -152,27 +197,83 @@ pub async fn insert_session(
     Ok(())
 }
 
+/// A signed-in session's user and, when an admin is viewing as them, that admin.
+pub struct SessionActor {
+    pub user: User,
+    pub impersonator: Option<User>,
+}
+
 /// The user behind a live session, if the session exists, hasn't expired and the
 /// account isn't disabled. Touches `last_seen_at`.
 pub async fn session_user(db: &SqlitePool, token_hash: &str) -> Result<Option<User>, sqlx::Error> {
+    Ok(session_actor(db, token_hash).await?.map(|a| a.user))
+}
+
+/// [`session_user`] with the admin behind a "switch user" session. The session
+/// ends when either account is disabled.
+pub async fn session_actor(
+    db: &SqlitePool,
+    token_hash: &str,
+) -> Result<Option<SessionActor>, sqlx::Error> {
     let now = now();
-    let user: Option<User> = sqlx::query_as(
-        "SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.created_at \
+    let user: Option<User> = sqlx::query_as(&format!(
+        "SELECT {USER_COLUMNS_U} \
          FROM sessions s JOIN users u ON u.id = s.user_id \
-         WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0",
-    )
+         WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0"
+    ))
     .bind(token_hash)
     .bind(now)
     .fetch_optional(db)
     .await?;
-    if user.is_some() {
-        sqlx::query("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?")
-            .bind(now)
+    let Some(user) = user else {
+        return Ok(None);
+    };
+    let impersonator_id: Option<String> =
+        sqlx::query_scalar("SELECT impersonator_id FROM sessions WHERE token_hash = ?")
             .bind(token_hash)
-            .execute(db)
+            .fetch_one(db)
             .await?;
-    }
-    Ok(user)
+    let impersonator = match impersonator_id {
+        Some(id) => match user_by_id(db, &id).await? {
+            Some(admin) if !admin.disabled => Some(admin),
+            _ => return Ok(None),
+        },
+        None => None,
+    };
+    sqlx::query("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?")
+        .bind(now)
+        .bind(token_hash)
+        .execute(db)
+        .await?;
+    Ok(Some(SessionActor { user, impersonator }))
+}
+
+/// Starts a "switch user" session: `user_id`'s, on behalf of `impersonator_id`.
+pub async fn insert_impersonation_session(
+    db: &SqlitePool,
+    token_hash: &str,
+    user_id: &str,
+    impersonator_id: &str,
+    expires_at: i64,
+    user_agent: Option<&str>,
+    ip: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let now = now();
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at, user_agent, ip, impersonator_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(token_hash)
+    .bind(user_id)
+    .bind(now)
+    .bind(expires_at)
+    .bind(now)
+    .bind(user_agent)
+    .bind(ip)
+    .bind(impersonator_id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 pub async fn delete_session(db: &SqlitePool, token_hash: &str) -> Result<(), sqlx::Error> {
@@ -1500,7 +1601,8 @@ pub async fn device_user(
 ) -> Result<Option<User>, sqlx::Error> {
     let found: Option<(String, i64, User)> = sqlx::query(
         "SELECT d.id AS device_id, d.last_used_at AS last_used_at, \
-         u.id, u.username, u.display_name, u.role, u.disabled, u.created_at \
+         u.id, u.username, u.display_name, u.role, u.disabled, u.created_at, \
+         u.email, u.max_instances, u.node_restricted \
          FROM devices d JOIN users u ON u.id = d.user_id \
          WHERE d.token_hash = ? AND u.disabled = 0",
     )
@@ -1720,4 +1822,168 @@ pub async fn redeem_device_code(
     .bind(now())
     .fetch_optional(db)
     .await
+}
+
+// ---- Per-user access: node restrictions, limits and grants ----
+
+/// A template on a node that a restricted user may use anyway.
+#[derive(Clone, Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct UserGrant {
+    pub id: String,
+    pub node_id: String,
+    pub template_id: String,
+    pub created_at: i64,
+}
+
+/// The ids of the nodes `user_id` is limited to, when restricted.
+pub async fn user_node_ids(db: &SqlitePool, user_id: &str) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT node_id FROM user_nodes WHERE user_id = ? ORDER BY node_id")
+        .bind(user_id)
+        .fetch_all(db)
+        .await
+}
+
+/// Replaces a user's restriction flag, node list and instance limit in one step.
+/// The node ids must exist (a foreign key fails otherwise, changing nothing).
+pub async fn set_user_access(
+    db: &SqlitePool,
+    user_id: &str,
+    node_restricted: bool,
+    node_ids: &[String],
+    max_instances: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+    sqlx::query("UPDATE users SET node_restricted = ?, max_instances = ? WHERE id = ?")
+        .bind(node_restricted)
+        .bind(max_instances)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM user_nodes WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    for node_id in node_ids {
+        sqlx::query("INSERT OR IGNORE INTO user_nodes (user_id, node_id) VALUES (?, ?)")
+            .bind(user_id)
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
+}
+
+pub async fn user_grants(db: &SqlitePool, user_id: &str) -> Result<Vec<UserGrant>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, node_id, template_id, created_at FROM user_grants \
+         WHERE user_id = ? ORDER BY created_at, id",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+/// Adds a grant; an existing one for the same node and template is returned as is.
+pub async fn add_user_grant(
+    db: &SqlitePool,
+    user_id: &str,
+    node_id: &str,
+    template_id: &str,
+    created_by: &str,
+) -> Result<UserGrant, sqlx::Error> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO user_grants (id, user_id, node_id, template_id, created_by, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(new_id())
+    .bind(user_id)
+    .bind(node_id)
+    .bind(template_id)
+    .bind(created_by)
+    .bind(now())
+    .execute(db)
+    .await?;
+    sqlx::query_as(
+        "SELECT id, node_id, template_id, created_at FROM user_grants \
+         WHERE user_id = ? AND node_id = ? AND template_id = ?",
+    )
+    .bind(user_id)
+    .bind(node_id)
+    .bind(template_id)
+    .fetch_one(db)
+    .await
+}
+
+/// Whether a grant of `user_id`'s was removed.
+pub async fn remove_user_grant(
+    db: &SqlitePool,
+    user_id: &str,
+    grant_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query("DELETE FROM user_grants WHERE id = ? AND user_id = ?")
+            .bind(grant_id)
+            .bind(user_id)
+            .execute(db)
+            .await?
+            .rows_affected()
+            > 0,
+    )
+}
+
+/// The nodes `user_id` may use for `template_id`: `None` when unrestricted
+/// (any node), else the nodes on their list plus those a grant names for the
+/// template.
+pub async fn allowed_nodes(
+    db: &SqlitePool,
+    user_id: &str,
+    template_id: &str,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    let restricted: Option<bool> =
+        sqlx::query_scalar("SELECT node_restricted FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
+    if restricted != Some(true) {
+        return Ok(None);
+    }
+    sqlx::query_scalar(
+        "SELECT node_id FROM user_nodes WHERE user_id = ?1 \
+         UNION SELECT node_id FROM user_grants WHERE user_id = ?1 AND template_id = ?2",
+    )
+    .bind(user_id)
+    .bind(template_id)
+    .fetch_all(db)
+    .await
+    .map(Some)
+}
+
+/// A user's grants with their nodes' names, for the dashboard.
+pub async fn user_grants_with_nodes(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<(UserGrant, String)>, sqlx::Error> {
+    let rows: Vec<(String, String, String, i64, String)> = sqlx::query_as(
+        "SELECT g.id, g.node_id, g.template_id, g.created_at, n.name \
+         FROM user_grants g JOIN nodes n ON n.id = g.node_id \
+         WHERE g.user_id = ? ORDER BY g.created_at, g.id",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, node_id, template_id, created_at, name)| {
+            (
+                UserGrant {
+                    id,
+                    node_id,
+                    template_id,
+                    created_at,
+                },
+                name,
+            )
+        })
+        .collect())
 }

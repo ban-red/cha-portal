@@ -5,13 +5,14 @@ use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::info;
 
 use crate::AppState;
 use crate::auth::{
-    self, AdminUser, ClientInfo, PlayerUser, SESSION_COOKIE, check_password_policy, hash_password,
+    self, Actor, AdminUser, ClientInfo, PlayerUser, SESSION_COOKIE, check_password_policy,
+    hash_password,
 };
 use crate::db::{self, Role, User};
 use crate::error::{ApiError, ApiResult};
@@ -24,9 +25,14 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/dev-login", post(dev_login))
         .route("/auth/dev-accounts", get(dev_accounts))
         .route("/auth/logout", post(logout))
+        .route("/auth/switch", post(switch_user))
+        .route("/auth/switch-back", post(switch_back))
+        .route("/auth/switchable", get(switchable))
         .route("/me", get(me))
         .route("/users", get(list_users).post(create_user))
+        .route("/users/{id}", axum::routing::delete(delete_user))
         .route("/audit", get(audit))
+        .merge(crate::access::routes())
         .merge(crate::devices::routes())
         .merge(crate::nodes::routes())
         .merge(crate::environments::routes())
@@ -123,7 +129,7 @@ async fn login(
     jar: CookieJar,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<(CookieJar, Json<User>)> {
-    let found = db::user_for_login(&state.db, req.username.trim()).await?;
+    let found = db::user_for_login_or_email(&state.db, req.username.trim()).await?;
     let user = match found {
         Some(row)
             if row
@@ -318,8 +324,135 @@ async fn logout(
     Ok(jar.remove(auth::removal_cookie()))
 }
 
-async fn me(PlayerUser(user): PlayerUser) -> Json<User> {
-    Json(user)
+/// The admin behind a "switch user" session.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Impersonator {
+    id: String,
+    username: String,
+    display_name: String,
+}
+
+#[derive(Serialize)]
+struct Me {
+    #[serde(flatten)]
+    user: User,
+    impersonator: Option<Impersonator>,
+}
+
+/// The signed-in user, and the admin viewing as them if one is. A device
+/// token gets the user alone.
+async fn me(actor: Result<Actor, ApiError>, PlayerUser(user): PlayerUser) -> Json<Me> {
+    let (user, admin) = match actor {
+        Ok(actor) => (actor.user, actor.impersonator),
+        Err(_) => (user, None),
+    };
+    Json(Me {
+        user,
+        impersonator: admin.map(|a| Impersonator {
+            id: a.id,
+            username: a.username,
+            display_name: a.display_name,
+        }),
+    })
+}
+
+/// `POST /api/auth/switch`: an admin starts viewing as another user, for
+/// [`auth::IMPERSONATION_HOURS`]. Works from inside such a session too, so
+/// the admin moves from one user to the next without going back.
+async fn switch_user(
+    State(state): State<AppState>,
+    actor: Actor,
+    client: ClientInfo,
+    jar: CookieJar,
+    Json(req): Json<SwitchRequest>,
+) -> ApiResult<(CookieJar, Json<User>)> {
+    let admin = actor.real_admin()?.clone();
+    let target = db::user_by_id(&state.db, &req.user_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("no such user".into()))?;
+    if target.disabled {
+        return Err(ApiError::bad_request(
+            "disabled",
+            "this account is disabled",
+        ));
+    }
+    let switched = actor.impersonator.is_some();
+    if target.id == admin.id && !switched {
+        return Err(ApiError::bad_request(
+            "already_you",
+            "you are already signed in as this user",
+        ));
+    }
+    // Back to the admin is a plain session, not one viewing as themself.
+    let cookie = if target.id == admin.id {
+        auth::start_session(&state, &target, &client).await?
+    } else {
+        auth::start_impersonation(&state, &target, &admin, &client).await?
+    };
+    if switched && let Some(old) = jar.get(SESSION_COOKIE) {
+        db::delete_session(&state.db, &auth::token_hash(old.value())).await?;
+    }
+    db::audit(
+        &state.db,
+        Some(&admin.id),
+        "user.switched",
+        Some(&target.id),
+        Some(json!({ "username": target.username })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok((jar.add(cookie), Json(target)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SwitchRequest {
+    user_id: String,
+}
+
+/// `POST /api/auth/switch-back`: ends the view-as session and signs the admin
+/// in again.
+async fn switch_back(
+    State(state): State<AppState>,
+    actor: Actor,
+    client: ClientInfo,
+    jar: CookieJar,
+    Json(_): Json<Value>,
+) -> ApiResult<(CookieJar, Json<User>)> {
+    let Some(admin) = actor.impersonator else {
+        return Err(ApiError::bad_request(
+            "not_switched",
+            "you are not viewing as another user",
+        ));
+    };
+    let cookie = auth::start_session(&state, &admin, &client).await?;
+    if let Some(old) = jar.get(SESSION_COOKIE) {
+        db::delete_session(&state.db, &auth::token_hash(old.value())).await?;
+    }
+    db::audit(
+        &state.db,
+        Some(&admin.id),
+        "user.switched_back",
+        Some(&actor.user.id),
+        Some(json!({ "username": actor.user.username })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    Ok((jar.add(cookie), Json(admin)))
+}
+
+/// `GET /api/auth/switchable`: who an admin can view as (everyone enabled,
+/// the admin included), by display name.
+async fn switchable(State(state): State<AppState>, actor: Actor) -> ApiResult<Json<Vec<User>>> {
+    actor.real_admin()?;
+    let mut users: Vec<User> = db::list_users(&state.db)
+        .await?
+        .into_iter()
+        .filter(|u| !u.disabled)
+        .collect();
+    users.sort_by_key(|u| u.display_name.to_lowercase());
+    Ok(Json(users))
 }
 
 async fn list_users(State(state): State<AppState>, _: AdminUser) -> ApiResult<Json<Vec<User>>> {
@@ -329,7 +462,8 @@ async fn list_users(State(state): State<AppState>, _: AdminUser) -> ApiResult<Js
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateUserRequest {
-    username: String,
+    email: String,
+    username: Option<String>,
     display_name: Option<String>,
     password: String,
     role: Role,
@@ -341,7 +475,8 @@ async fn create_user(
     client: ClientInfo,
     Json(req): Json<CreateUserRequest>,
 ) -> ApiResult<Json<User>> {
-    let username = valid_username(&req.username)?;
+    let email = valid_email(&req.email)?;
+    let username = valid_username(req.username.as_deref().unwrap_or(&email))?;
     check_password_policy(&req.password)?;
     let display_name = req
         .display_name
@@ -349,9 +484,10 @@ async fn create_user(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(username);
-    let user = match db::insert_user(
+    let user = match db::insert_user_with_email(
         &state.db,
         username,
+        Some(&email),
         display_name,
         &hash_password(&req.password)?,
         req.role,
@@ -359,10 +495,13 @@ async fn create_user(
     .await
     {
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-            return Err(ApiError::conflict(
-                "username_taken",
-                "that username is taken",
-            ));
+            // The unique index that tripped says which.
+            let code = if e.message().contains("email") {
+                ("email_taken", "that email address is taken")
+            } else {
+                ("username_taken", "that username is taken")
+            };
+            return Err(ApiError::conflict(code.0, code.1));
         }
         other => other?,
     };
@@ -371,11 +510,62 @@ async fn create_user(
         Some(&admin.id),
         "user.created",
         Some(&user.id),
-        Some(json!({ "username": user.username, "role": user.role })),
+        Some(json!({ "username": user.username, "email": user.email, "role": user.role })),
         client.ip.as_deref(),
     )
     .await?;
     Ok(Json(user))
+}
+
+async fn delete_user(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    client: ClientInfo,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult<axum::http::StatusCode> {
+    let _claim = state.setup_lock.lock().await;
+    let user = db::user_by_id(&state.db, &id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("no such user".into()))?;
+    if user.id == admin.id {
+        return Err(ApiError::conflict(
+            "cannot_delete_self",
+            "you can't delete your own account",
+        ));
+    }
+    if user.role == Role::Admin
+        && !db::list_users(&state.db)
+            .await?
+            .iter()
+            .any(|u| u.role == Role::Admin && !u.disabled && u.id != user.id)
+    {
+        return Err(ApiError::conflict(
+            "last_admin",
+            "this is the only enabled admin",
+        ));
+    }
+    let live = db::count_live_environments(&state.db, &user.id).await?;
+    if live > 0 {
+        return Err(ApiError::conflict(
+            "user_has_environments",
+            format!(
+                "{} has {live} running environments; stop them first",
+                user.username
+            ),
+        ));
+    }
+    db::delete_user(&state.db, &user.id).await?;
+    db::audit(
+        &state.db,
+        Some(&admin.id),
+        "user.deleted",
+        Some(&user.id),
+        Some(json!({ "username": user.username, "email": user.email, "role": user.role })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    info!(username = %user.username, "user deleted");
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 async fn audit(
@@ -395,6 +585,25 @@ fn valid_username(name: &str) -> ApiResult<&str> {
         Err(ApiError::bad_request(
             "bad_username",
             "usernames need at least 3 characters (and at most 64)",
+        ))
+    }
+}
+
+/// An address with one `@` and text on both sides, at most 254 characters, no
+/// whitespace or control characters; lower-cased.
+fn valid_email(email: &str) -> ApiResult<String> {
+    let email = email.trim().to_lowercase();
+    let ok = email.chars().count() <= 254
+        && !email.chars().any(|c| c.is_control() || c.is_whitespace())
+        && email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+        });
+    if ok {
+        Ok(email)
+    } else {
+        Err(ApiError::bad_request(
+            "bad_email",
+            "that doesn't look like an email address",
         ))
     }
 }

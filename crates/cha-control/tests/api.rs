@@ -297,14 +297,14 @@ async fn only_admins_manage_users() {
             "POST",
             "/api/users",
             Some(&admin),
-            Some(json!({ "username": "player1", "displayName": "Player One", "password": "another long password", "role": "user" })),
+            Some(json!({ "username": "player1", "email": "player1@test.local", "displayName": "Player One", "password": "another long password", "role": "user" })),
         )
         .await;
     assert_eq!(created.status, StatusCode::OK, "{}", created.body);
     assert_eq!(created.body["displayName"], "Player One");
 
     let dup = p
-        .call("POST", "/api/users", Some(&admin), Some(json!({ "username": "Player1", "password": "another long password", "role": "user" })))
+        .call("POST", "/api/users", Some(&admin), Some(json!({ "username": "Player1", "email": "dup@test.local", "password": "another long password", "role": "user" })))
         .await;
     assert_eq!(dup.status, StatusCode::CONFLICT);
     let weak = p
@@ -312,7 +312,7 @@ async fn only_admins_manage_users() {
             "POST",
             "/api/users",
             Some(&admin),
-            Some(json!({ "username": "player2", "password": "ab", "role": "user" })),
+            Some(json!({ "username": "player2", "email": "player2@test.local", "password": "ab", "role": "user" })),
         )
         .await;
     assert_eq!(weak.body["error"], "weak_password");
@@ -321,7 +321,7 @@ async fn only_admins_manage_users() {
             "POST",
             "/api/users",
             Some(&admin),
-            Some(json!({ "username": " x ", "password": "another long password", "role": "user" })),
+            Some(json!({ "username": " x ", "email": "x@test.local", "password": "another long password", "role": "user" })),
         )
         .await;
     assert_eq!(bad_name.body["error"], "bad_username");
@@ -339,12 +339,68 @@ async fn only_admins_manage_users() {
     let denied = p.call("GET", "/api/users", Some(&player), None).await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
     let denied = p
-        .call("POST", "/api/users", Some(&player), Some(json!({ "username": "sneaky", "password": "another long password", "role": "admin" })))
+        .call("POST", "/api/users", Some(&player), Some(json!({ "username": "sneaky", "email": "sneaky@test.local", "password": "another long password", "role": "admin" })))
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 
     let users = p.call("GET", "/api/users", Some(&admin), None).await;
     assert_eq!(users.body.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn admins_delete_users_but_not_themselves_or_the_last_admin() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let made = p
+        .call(
+            "POST",
+            "/api/users",
+            Some(&admin),
+            Some(json!({ "email": "gone@test.local", "password": "another long password", "role": "user" })),
+        )
+        .await;
+    let id = made.body["id"].as_str().unwrap().to_string();
+    let player = p
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(json!({ "username": "gone@test.local", "password": "another long password" })),
+        )
+        .await
+        .cookie
+        .unwrap();
+    let denied = p
+        .call("DELETE", &format!("/api/users/{id}"), Some(&player), None)
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    let me = p.call("GET", "/api/me", Some(&admin), None).await;
+    let own = me.body["id"].as_str().unwrap().to_string();
+    let own = p
+        .call("DELETE", &format!("/api/users/{own}"), Some(&admin), None)
+        .await;
+    assert_eq!(own.body["error"], "cannot_delete_self");
+    let gone = p
+        .call("DELETE", &format!("/api/users/{id}"), Some(&admin), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.body);
+    assert_eq!(
+        p.call("GET", "/api/me", Some(&player), None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let again = p
+        .call("DELETE", &format!("/api/users/{id}"), Some(&admin), None)
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    assert!(
+        audit
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["action"] == "user.deleted")
+    );
 }
 
 #[tokio::test]
@@ -362,7 +418,7 @@ async fn audit_log_records_security_events() {
         "POST",
         "/api/users",
         Some(&admin),
-        Some(json!({ "username": "player1", "password": "another long password", "role": "user" })),
+        Some(json!({ "username": "player1", "email": "player1@test.local", "password": "another long password", "role": "user" })),
     )
     .await;
     let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
@@ -572,7 +628,7 @@ impl TestPortal {
                 "POST",
                 "/api/users",
                 Some(admin),
-                Some(json!({ "username": username, "password": "another long password", "role": role })),
+                Some(json!({ "username": username, "email": format!("{username}@test.local"), "password": "another long password", "role": role })),
             )
             .await;
         assert_eq!(created.status, StatusCode::OK, "{}", created.body);
@@ -2447,7 +2503,9 @@ async fn a_device_token_opens_the_players_routes_and_nothing_else() {
         (
             "POST",
             "/api/users",
-            Some(json!({ "username": "eve", "password": "a long password", "role": "user" })),
+            Some(
+                json!({ "username": "eve", "email": "eve@test.local", "password": "a long password", "role": "user" }),
+            ),
         ),
         ("GET", "/api/audit", None),
         ("GET", "/api/devices", None),
@@ -3918,4 +3976,652 @@ async fn a_device_token_reads_prefs_but_cannot_write_them() {
     assert_eq!(revoked.status, StatusCode::NO_CONTENT);
     let after = p.call_bearer("GET", "/api/me/prefs", &token, None).await;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+}
+
+// ---- Users by email, switching, access and grants ----
+
+impl TestPortal {
+    /// Enrolls a node row (never connected) and returns its id.
+    async fn node_row(&self, name: &str) -> String {
+        let id = db::new_id();
+        db::insert_node(&self.db, &id, name, &id, "0.1.0")
+            .await
+            .unwrap();
+        id
+    }
+}
+
+#[tokio::test]
+async fn local_users_are_made_and_sign_in_by_email() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+
+    // The username defaults to the email, which is stored lower-cased.
+    let made = p
+        .call(
+            "POST",
+            "/api/users",
+            Some(&admin),
+            Some(json!({ "email": " Ann@Example.com ", "password": "another long password", "role": "user" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    assert_eq!(made.body["email"], "ann@example.com");
+    assert_eq!(made.body["username"], "ann@example.com");
+    assert_eq!(made.body["displayName"], "ann@example.com");
+    assert_eq!(made.body["maxInstances"], Value::Null);
+    assert_eq!(made.body["nodeRestricted"], false);
+
+    // Email or username, in either case.
+    for name in ["ann@example.com", "ANN@example.COM"] {
+        let login = p
+            .call(
+                "POST",
+                "/api/auth/login",
+                None,
+                Some(json!({ "username": name, "password": "another long password" })),
+            )
+            .await;
+        assert_eq!(login.status, StatusCode::OK, "{name}: {}", login.body);
+        assert_eq!(login.body["id"], made.body["id"]);
+    }
+    let named = p
+        .call(
+            "POST",
+            "/api/users",
+            Some(&admin),
+            Some(json!({ "email": "bob@example.com", "username": "bob", "displayName": "Bob", "password": "another long password", "role": "user" })),
+        )
+        .await;
+    assert_eq!(named.body["username"], "bob");
+    let by_email = p
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(json!({ "username": "Bob@Example.com", "password": "another long password" })),
+        )
+        .await;
+    assert_eq!(by_email.body["username"], "bob");
+    let wrong = p
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(json!({ "username": "bob@example.com", "password": "nope nope" })),
+        )
+        .await;
+    assert_eq!(wrong.body["error"], "invalid_credentials");
+
+    // Taken, whatever the case; the username stays its own conflict.
+    let taken = p
+        .call(
+            "POST",
+            "/api/users",
+            Some(&admin),
+            Some(json!({ "email": "BOB@example.com", "username": "robert", "password": "another long password", "role": "user" })),
+        )
+        .await;
+    assert_eq!(taken.status, StatusCode::CONFLICT);
+    assert_eq!(taken.body["error"], "email_taken");
+    let taken = p
+        .call(
+            "POST",
+            "/api/users",
+            Some(&admin),
+            Some(json!({ "email": "other@example.com", "username": "bob", "password": "another long password", "role": "user" })),
+        )
+        .await;
+    assert_eq!(taken.body["error"], "username_taken");
+
+    for bad in [
+        "",
+        "no-at-sign",
+        "@example.com",
+        "ann@",
+        "a@b@c",
+        "a b@c.d",
+        "a\u{7}@c.d",
+    ] {
+        let r = p
+            .call(
+                "POST",
+                "/api/users",
+                Some(&admin),
+                Some(json!({ "email": bad, "password": "another long password", "role": "user" })),
+            )
+            .await;
+        assert_eq!(r.body["error"], "bad_email", "{bad:?}");
+    }
+    let missing = p
+        .call(
+            "POST",
+            "/api/users",
+            Some(&admin),
+            Some(json!({ "username": "nomail", "password": "another long password", "role": "user" })),
+        )
+        .await;
+    assert!(missing.status.is_client_error());
+
+    // The setup admin has none.
+    let users = p.call("GET", "/api/users", Some(&admin), None).await;
+    assert_eq!(users.body[0]["email"], Value::Null);
+}
+
+#[tokio::test]
+async fn an_admin_switches_to_a_user_and_back() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (_, bob_id) = p.account(&admin, "bob", "user").await;
+    let (_, other_admin_id) = p.account(&admin, "carol", "admin").await;
+    let admin_id = p.call("GET", "/api/me", Some(&admin), None).await.body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let me = p.call("GET", "/api/me", Some(&admin), None).await;
+    assert_eq!(me.body["impersonator"], Value::Null);
+
+    // Only admins switch, or list who they could.
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/auth/switch",
+            Some(json!({ "userId": bob_id })),
+        ),
+        ("GET", "/api/auth/switchable", None),
+    ] {
+        let denied = p.call(method, path, Some(&alice), body).await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(denied.body["error"], "admin_only");
+    }
+    assert_eq!(
+        p.call(
+            "POST",
+            "/api/auth/switch",
+            None,
+            Some(json!({ "userId": bob_id }))
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let no_one = p
+        .call(
+            "POST",
+            "/api/auth/switch-back",
+            Some(&admin),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(no_one.body["error"], "not_switched");
+    let yourself = p
+        .call(
+            "POST",
+            "/api/auth/switch",
+            Some(&admin),
+            Some(json!({ "userId": admin_id })),
+        )
+        .await;
+    assert_eq!(yourself.body["error"], "already_you");
+    let nobody = p
+        .call(
+            "POST",
+            "/api/auth/switch",
+            Some(&admin),
+            Some(json!({ "userId": "nope" })),
+        )
+        .await;
+    assert_eq!(nobody.status, StatusCode::NOT_FOUND);
+
+    // Everyone enabled, the admin too, by display name.
+    sqlx::query("UPDATE users SET disabled = 1 WHERE id = ?")
+        .bind(&bob_id)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    let list = p
+        .call("GET", "/api/auth/switchable", Some(&admin), None)
+        .await;
+    let names: Vec<&str> = list
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["username"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["admin", "alice", "carol"]);
+    let off = p
+        .call(
+            "POST",
+            "/api/auth/switch",
+            Some(&admin),
+            Some(json!({ "userId": bob_id })),
+        )
+        .await;
+    assert_eq!(off.body["error"], "disabled");
+    sqlx::query("UPDATE users SET disabled = 0 WHERE id = ?")
+        .bind(&bob_id)
+        .execute(&p.db)
+        .await
+        .unwrap();
+
+    // Viewing as alice: every route sees alice, so admin routes refuse.
+    let switched = p
+        .call(
+            "POST",
+            "/api/auth/switch",
+            Some(&admin),
+            Some(json!({ "userId": alice_id })),
+        )
+        .await;
+    assert_eq!(switched.status, StatusCode::OK, "{}", switched.body);
+    assert_eq!(switched.body["username"], "alice");
+    let as_alice = switched.cookie.unwrap();
+    assert_ne!(as_alice, admin);
+    let me = p.call("GET", "/api/me", Some(&as_alice), None).await;
+    assert_eq!(me.body["id"], alice_id);
+    assert_eq!(me.body["username"], "alice");
+    assert_eq!(
+        me.body["impersonator"],
+        json!({ "id": admin_id, "username": "admin", "displayName": "admin" })
+    );
+    assert_eq!(
+        p.call("GET", "/api/users", Some(&as_alice), None)
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    // It lasts twelve hours, not the 14 days of a sign-in.
+    let left: i64 =
+        sqlx::query_scalar("SELECT expires_at - ? FROM sessions WHERE impersonator_id IS NOT NULL")
+            .bind(db::now())
+            .fetch_one(&p.db)
+            .await
+            .unwrap();
+    assert!((12 * 3600 - 5..=12 * 3600).contains(&left), "{left}");
+    // The admin can still list and switch from inside it, without piling up sessions.
+    let list = p
+        .call("GET", "/api/auth/switchable", Some(&as_alice), None)
+        .await;
+    assert_eq!(list.status, StatusCode::OK);
+    let next = p
+        .call(
+            "POST",
+            "/api/auth/switch",
+            Some(&as_alice),
+            Some(json!({ "userId": other_admin_id })),
+        )
+        .await;
+    assert_eq!(next.body["username"], "carol");
+    let as_carol = next.cookie.unwrap();
+    assert_eq!(
+        p.call("GET", "/api/me", Some(&as_alice), None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let me = p.call("GET", "/api/me", Some(&as_carol), None).await;
+    assert_eq!(me.body["username"], "carol");
+    assert_eq!(me.body["impersonator"]["username"], "admin");
+    // Carol is an admin, but viewing as her isn't signing in as her: the real admin is still `admin`.
+    assert_eq!(
+        p.call("GET", "/api/users", Some(&as_carol), None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // Back: a plain session for the admin, and the view-as one is gone.
+    let back = p
+        .call(
+            "POST",
+            "/api/auth/switch-back",
+            Some(&as_carol),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.body);
+    assert_eq!(back.body["username"], "admin");
+    let again = back.cookie.unwrap();
+    let me = p.call("GET", "/api/me", Some(&again), None).await;
+    assert_eq!(me.body["username"], "admin");
+    assert_eq!(me.body["impersonator"], Value::Null);
+    assert_eq!(
+        p.call("GET", "/api/me", Some(&as_carol), None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let audit = p.call("GET", "/api/audit", Some(&again), None).await;
+    let entries = audit.body.as_array().unwrap();
+    let switched: Vec<_> = entries
+        .iter()
+        .filter(|e| e["action"] == "user.switched")
+        .collect();
+    assert_eq!(switched.len(), 2);
+    assert!(switched.iter().all(|e| e["actorId"] == admin_id));
+    assert_eq!(switched[1]["target"], alice_id);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["action"] == "user.switched_back" && e["actorId"] == admin_id)
+    );
+}
+
+#[tokio::test]
+async fn a_disabled_admin_ends_the_sessions_viewing_as_others() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (_, alice_id) = p.account(&admin, "alice", "user").await;
+    let as_alice = p
+        .call(
+            "POST",
+            "/api/auth/switch",
+            Some(&admin),
+            Some(json!({ "userId": alice_id })),
+        )
+        .await
+        .cookie
+        .unwrap();
+    sqlx::query("UPDATE users SET disabled = 1 WHERE username = 'admin'")
+        .execute(&p.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        p.call("GET", "/api/me", Some(&as_alice), None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn admins_set_a_users_access_and_grants() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (n1, n2) = (p.node_row("one").await, p.node_row("two").await);
+    let path = format!("/api/users/{alice_id}/access");
+
+    let fresh = p.call("GET", &path, Some(&admin), None).await;
+    assert_eq!(
+        fresh.body,
+        json!({ "nodeRestricted": false, "nodeIds": [], "maxInstances": null, "effectiveMax": 4, "live": 0, "grants": [] })
+    );
+    // Admins only; the user can't widen their own.
+    for method in ["GET", "PUT"] {
+        let denied = p
+            .call(
+                method,
+                &path,
+                Some(&alice),
+                Some(json!({ "nodeRestricted": false, "nodeIds": [], "maxInstances": null })),
+            )
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN, "{method}");
+    }
+    assert_eq!(
+        p.call("GET", "/api/users/nope/access", Some(&admin), None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    p.live_environment(&alice_id, "chrome").await;
+    let set = p
+        .call(
+            "PUT",
+            &path,
+            Some(&admin),
+            Some(json!({ "nodeRestricted": true, "nodeIds": [n2, n1, n1], "maxInstances": 2 })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    let mut ids = vec![n1.clone(), n2.clone()];
+    ids.sort();
+    assert_eq!(set.body["nodeIds"], json!(ids));
+    assert_eq!(set.body["nodeRestricted"], true);
+    assert_eq!(set.body["maxInstances"], 2);
+    assert_eq!(set.body["effectiveMax"], 2);
+    assert_eq!(set.body["live"], 1);
+    let users = p.call("GET", "/api/users", Some(&admin), None).await;
+    let listed = users
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == alice_id)
+        .unwrap();
+    assert_eq!(listed["nodeRestricted"], true);
+    assert_eq!(listed["maxInstances"], 2);
+
+    // Bad input changes nothing.
+    for (body, code) in [
+        (
+            json!({ "nodeRestricted": false, "nodeIds": ["nope"], "maxInstances": null }),
+            "unknown_node",
+        ),
+        (
+            json!({ "nodeRestricted": false, "nodeIds": [], "maxInstances": 0 }),
+            "bad_max_instances",
+        ),
+        (
+            json!({ "nodeRestricted": false, "nodeIds": [], "maxInstances": 65 }),
+            "bad_max_instances",
+        ),
+    ] {
+        let r = p.call("PUT", &path, Some(&admin), Some(body)).await;
+        assert_eq!(r.body["error"], code);
+    }
+    let kept = p.call("GET", &path, Some(&admin), None).await;
+    assert_eq!(kept.body["nodeRestricted"], true);
+    assert_eq!(kept.body["nodeIds"].as_array().unwrap().len(), 2);
+
+    // Replaced, not merged.
+    let set = p
+        .call(
+            "PUT",
+            &path,
+            Some(&admin),
+            Some(json!({ "nodeRestricted": true, "nodeIds": [n1], "maxInstances": null })),
+        )
+        .await;
+    assert_eq!(set.body["nodeIds"], json!([n1]));
+    assert_eq!(set.body["effectiveMax"], 4);
+
+    // Grants: idempotent, listed for the admin and for the user.
+    assert_eq!(
+        p.call("GET", "/api/me/grants", Some(&alice), None)
+            .await
+            .body,
+        json!([])
+    );
+    let grants = format!("/api/users/{alice_id}/grants");
+    let grant = p
+        .call(
+            "POST",
+            &grants,
+            Some(&admin),
+            Some(json!({ "nodeId": n2, "templateId": "chrome" })),
+        )
+        .await;
+    assert_eq!(grant.status, StatusCode::OK, "{}", grant.body);
+    assert_eq!(grant.body["nodeId"], n2);
+    assert_eq!(grant.body["templateId"], "chrome");
+    let again = p
+        .call(
+            "POST",
+            &grants,
+            Some(&admin),
+            Some(json!({ "nodeId": n2, "templateId": "chrome" })),
+        )
+        .await;
+    assert_eq!(again.body["id"], grant.body["id"]);
+    let missing = p
+        .call(
+            "POST",
+            &grants,
+            Some(&admin),
+            Some(json!({ "nodeId": "nope", "templateId": "chrome" })),
+        )
+        .await;
+    assert_eq!(missing.body["error"], "unknown_node");
+    let empty = p
+        .call(
+            "POST",
+            &grants,
+            Some(&admin),
+            Some(json!({ "nodeId": n2, "templateId": " " })),
+        )
+        .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST);
+    let denied = p
+        .call(
+            "POST",
+            &grants,
+            Some(&alice),
+            Some(json!({ "nodeId": n2, "templateId": "firefox" })),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+    let shown = p.call("GET", &path, Some(&admin), None).await;
+    assert_eq!(shown.body["grants"].as_array().unwrap().len(), 1);
+    assert_eq!(shown.body["grants"][0]["id"], grant.body["id"]);
+    assert!(shown.body["grants"][0]["createdAt"].as_i64().unwrap() > 0);
+    // Offline here, and named for the dashboard.
+    assert_eq!(
+        p.call("GET", "/api/me/grants", Some(&alice), None)
+            .await
+            .body,
+        json!([{ "id": grant.body["id"], "nodeId": n2, "nodeName": "two", "online": false, "templateId": "chrome" }])
+    );
+    // A guest has none.
+    let guest = p.account(&admin, "gina", "guest").await.0;
+    assert_eq!(
+        p.call("GET", "/api/me/grants", Some(&guest), None)
+            .await
+            .body,
+        json!([])
+    );
+
+    let gone = p
+        .call(
+            "DELETE",
+            &format!("{grants}/{}", grant.body["id"].as_str().unwrap()),
+            Some(&admin),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT);
+    let gone = p
+        .call(
+            "DELETE",
+            &format!("{grants}/{}", grant.body["id"].as_str().unwrap()),
+            Some(&admin),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        p.call("GET", "/api/me/grants", Some(&alice), None)
+            .await
+            .body,
+        json!([])
+    );
+
+    // Deleting a node drops what pointed at it.
+    p.call(
+        "POST",
+        &grants,
+        Some(&admin),
+        Some(json!({ "nodeId": n2, "templateId": "firefox" })),
+    )
+    .await;
+    sqlx::query("DELETE FROM nodes WHERE id = ?")
+        .bind(&n2)
+        .execute(&p.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        p.call("GET", &path, Some(&admin), None).await.body["grants"],
+        json!([])
+    );
+
+    let audit = p.call("GET", "/api/audit", Some(&admin), None).await;
+    let actions: Vec<&str> = audit
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    for wanted in ["user.access_set", "user.grant_added", "user.grant_removed"] {
+        assert!(actions.contains(&wanted), "{wanted} in {actions:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_instance_limit_follows_the_user() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    p.live_environment(&alice_id, "chrome").await;
+    let launch = json!({ "templateId": "chrome" });
+
+    // One allowed, one running: refused before any node is asked.
+    p.call(
+        "PUT",
+        &format!("/api/users/{alice_id}/access"),
+        Some(&admin),
+        Some(json!({ "nodeRestricted": false, "nodeIds": [], "maxInstances": 1 })),
+    )
+    .await;
+    let refused = p
+        .call(
+            "POST",
+            "/api/environments",
+            Some(&alice),
+            Some(launch.clone()),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(refused.body["error"], "too_many_environments");
+    assert_eq!(
+        refused.body["message"],
+        "you can have 1 environments at once; stop one first"
+    );
+
+    // Two allowed: past the limit, so the launch gets as far as wanting a node.
+    p.call(
+        "PUT",
+        &format!("/api/users/{alice_id}/access"),
+        Some(&admin),
+        Some(json!({ "nodeRestricted": false, "nodeIds": [], "maxInstances": 2 })),
+    )
+    .await;
+    let next = p
+        .call(
+            "POST",
+            "/api/environments",
+            Some(&alice),
+            Some(launch.clone()),
+        )
+        .await;
+    assert_eq!(next.body["error"], "no_node");
+
+    // Admins have limits too, and the default is four.
+    let admin_id = p.call("GET", "/api/me", Some(&admin), None).await.body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for _ in 0..4 {
+        p.live_environment(&admin_id, "chrome").await;
+    }
+    let capped = p
+        .call("POST", "/api/environments", Some(&admin), Some(launch))
+        .await;
+    assert_eq!(capped.body["error"], "too_many_environments");
+    assert!(
+        capped.body["message"]
+            .as_str()
+            .unwrap()
+            .contains("4 environments")
+    );
 }

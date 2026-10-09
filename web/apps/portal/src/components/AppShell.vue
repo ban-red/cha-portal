@@ -6,7 +6,7 @@
 // - Under 768px: an off-canvas drawer opened from the header's menu button. While it is open
 //   focus is kept inside it, Esc and the scrim close it, and the page behind is `inert`.
 // A page can add controls to the header through the #page-actions element (Teleport).
-import { ChevronsLeft, Database, Laptop, FileText, Folder, Package, Copy, Gamepad2, LayoutGrid, LogOut, Menu, Monitor, MonitorPlay, MonitorSmartphone, Moon, Palette, Server, SlidersHorizontal, Sun, User } from "lucide-vue-next";
+import { ChevronsLeft, Database, Eye, Laptop, FileText, Folder, Package, Copy, Gamepad2, LayoutGrid, LogOut, Menu, Monitor, MonitorPlay, MonitorSmartphone, Moon, Palette, Server, SlidersHorizontal, Sun, Undo2, User } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -16,6 +16,7 @@ import { useSession } from "../stores/session";
 import { useTheme } from "../themes/runtime";
 import BrandMark from "./BrandMark.vue";
 import HealthBar from "./HealthBar.vue";
+import UserSwitcher from "./UserSwitcher.vue";
 
 const session = useSession();
 const router = useRouter();
@@ -172,6 +173,26 @@ async function openPlayer() {
   accountOpen.value = false;
 }
 
+// Viewing as someone else: after a switch the dashboard is the safe place to land (the page
+// you were on may be an admin one, or not exist for this user).
+async function afterSwitch() {
+  await router.push({ name: "dashboard" });
+}
+const backBusy = ref(false);
+const backError = ref<string | null>(null);
+async function switchBack() {
+  backBusy.value = true;
+  backError.value = null;
+  try {
+    await session.switchBack();
+    await afterSwitch();
+  } catch (err) {
+    backError.value = err instanceof Error ? err.message : "Couldn't switch back.";
+  } finally {
+    backBusy.value = false;
+  }
+}
+
 async function signOut() {
   await session.logout();
   await router.push({ name: "login" });
@@ -321,8 +342,25 @@ const ICON_BUTTON =
     />
 
     <div class="flex min-w-0 flex-1 flex-col" :inert="drawerOpen || undefined">
+      <div class="sticky top-0 z-10">
+      <div
+        v-if="session.impersonator"
+        role="status"
+        class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-warn/40 bg-warn/15 py-2 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] pt-[max(0.5rem,env(safe-area-inset-top))] text-sm md:px-8"
+      >
+        <Eye class="size-4 shrink-0" aria-hidden="true" />
+        <p class="min-w-0 flex-1 break-words">
+          Viewing as <strong class="font-semibold">{{ session.user?.displayName }}</strong>
+          <span class="text-ink-2"> ({{ session.user?.role }})</span>
+        </p>
+        <span v-if="backError" role="alert" class="text-danger">{{ backError }}</span>
+        <button type="button" class="btn-ghost min-h-9 shrink-0 bg-canvas px-3 pointer-coarse:min-h-11" :disabled="backBusy" @click="switchBack">
+          <Undo2 class="size-4" aria-hidden="true" />
+          Back to {{ session.impersonator.displayName }}
+        </button>
+      </div>
       <header
-        class="@container sticky top-0 z-10 flex min-h-16 items-center gap-3 border-b border-line bg-canvas/80 pt-[env(safe-area-inset-top)] pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] backdrop-blur transparency-reduced:bg-canvas transparency-reduced:backdrop-blur-none md:px-8"
+        class="@container flex min-h-16 items-center gap-3 border-b border-line bg-canvas/80 pt-[env(safe-area-inset-top)] pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] backdrop-blur transparency-reduced:bg-canvas transparency-reduced:backdrop-blur-none md:px-8"
       >
         <button
           ref="menuButton"
@@ -344,6 +382,7 @@ const ICON_BUTTON =
         <!-- Pages put their own controls here (search, say) with <Teleport to="#page-actions" defer>. -->
         <div id="page-actions" class="flex items-center gap-2" />
         <HealthBar v-if="session.isAdmin" />
+        <UserSwitcher v-if="session.canSwitch" @switched="afterSwitch" />
         <button
           type="button"
           :class="ICON_BUTTON"
@@ -356,6 +395,7 @@ const ICON_BUTTON =
           <Moon v-else class="size-5" aria-hidden="true" />
         </button>
       </header>
+      </div>
       <main class="flex-1 py-6 pr-[max(1rem,env(safe-area-inset-right))] pb-[max(1.5rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] md:px-8 md:py-8">
         <RouterView />
       </main>

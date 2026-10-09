@@ -91,6 +91,16 @@ Stock Moonlight and Artemis apps (on a PC, Steam Deck, phone or TV) can play you
 - **Ports:** TCP 47989, 47984 and 48010 for the node's host, and UDP from `CHA_GAMESTREAM_PORT_BASE` (7700), three per environment, for the streams. Keep them to the LAN or tailnet.
 - **Limits for now:** stereo sound only (a client asking for surround is refused); NumpadEnter types Enter; touch, pen and pad motion are ignored; IPv4 only. Environments started before `CHA_GAMESTREAM` was turned on don't appear: start them again.
 
+## Users
+
+Admins add people on the Users page with an email and a password (the username defaults to the email; either signs in). Each row has:
+
+- **View as**: browse the portal as that user, with a banner and a way back; the header's switcher moves between users. Switch sessions last 12 hours.
+- **Manage access**: limit the user to chosen nodes, set how many environments they can run at once (empty is 4), and grant one app on one node outside their list. Grants appear on their dashboard as "Shared with you".
+- **Delete**: refused for yourself, the last admin and users with running environments. Their app data stays on the nodes.
+
+Each of these is in the audit log. A node restriction is a placement rule, not isolation between users sharing a node.
+
 ## Signing in Cha Player
 
 The native Cha Player ([ADR 0013](../docs/adr/0013-native-player-on-cha-stream.md)) signs in to a portal as a *device*: it holds a token (`chadev_…`) that opens only the routes a player needs (your apps, environments, ICE servers and your own app settings), never user management, the audit log or other devices. Two ways to sign in; the contract is in [`docs/plans/c2-device-signin.md`](../docs/plans/c2-device-signin.md).

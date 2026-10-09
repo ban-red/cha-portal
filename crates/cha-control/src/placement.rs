@@ -491,7 +491,8 @@ pub async fn online_nodes(state: &AppState) -> ApiResult<Vec<NodeView>> {
     Ok(nodes)
 }
 
-/// The options for `user`'s launch of `template`.
+/// The options for `user`'s launch of `template`. A restricted user sees only
+/// the nodes on their list and those a grant names for this template.
 pub async fn for_template(
     state: &AppState,
     user_id: &str,
@@ -500,7 +501,16 @@ pub async fn for_template(
 ) -> ApiResult<Placements> {
     let settings = storage::effective_for(state, user_id, template).await?;
     let app_data = storage::spec_storage(user_id, template, settings);
-    Ok(placements(&Needs::of(template, app_data.as_ref()), nodes))
+    let needs = Needs::of(template, app_data.as_ref());
+    let Some(allowed) = db::allowed_nodes(&state.db, user_id, &template.id).await? else {
+        return Ok(placements(&needs, nodes));
+    };
+    let nodes: Vec<NodeView> = nodes
+        .iter()
+        .filter(|n| allowed.contains(&n.id))
+        .cloned()
+        .collect();
+    Ok(placements(&needs, &nodes))
 }
 
 #[derive(Deserialize)]

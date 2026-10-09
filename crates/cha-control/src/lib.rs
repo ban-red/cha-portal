@@ -6,6 +6,7 @@
 //! Phase 1 delivery plan). App data (Phase 3): what apps keep and share.
 //! Controllers: which virtual gamepad an app gets. Apps: the frame rate it runs at.
 
+pub mod access;
 pub mod api;
 pub mod apps;
 pub mod auth;
