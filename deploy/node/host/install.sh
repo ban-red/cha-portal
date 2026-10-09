@@ -3,11 +3,17 @@
 # sudo on the node, from the repository (and again after an update):
 #   sudo deploy/node/host/install.sh
 #   deploy/node/host/install.sh --check     # only reports; needs no root
+#   sudo deploy/node/host/install.sh --no-video-clocks
 #
 # What it installs, each only when it differs from what is there:
 # - the udev rules that keep virtual gamepads off the host's seat
 #   (/etc/udev/rules.d), then reloads udev and re-applies them to input and
 #   hidraw devices;
+# - the udev rule that holds an AMD GPU's video engine clocks (vclk, dclk) at
+#   their top step (73-cha-amd-video-clocks.rules), applied now to the DRM
+#   devices too. It does nothing on a host without an amdgpu device. Skip it
+#   with --no-video-clocks (a copy already installed is left alone; delete it
+#   and reboot to undo it);
 # - the AppArmor profile(s) Steam environments run under (/etc/apparmor.d),
 #   loaded with apparmor_parser; skipped on a host without AppArmor;
 # - /etc/modules-load.d/cha.conf, so uinput and uhid load at boot; both are
@@ -19,21 +25,29 @@ set -eu
 
 usage() {
     cat <<'USAGE'
-Usage: install.sh [--check]
+Usage: install.sh [--check] [--no-video-clocks]
 
 Installs the udev rules, AppArmor profile and module list a Cha Node needs on
 its host. Run it with sudo from the repository checkout.
 
   --check   only report what would change; exit 1 if anything would, 0 if
             everything is current. Needs no root.
+  --no-video-clocks
+            don't install the rule that keeps an AMD GPU's video clocks at
+            their top step (it halves the VA-API encode time and does nothing
+            on other GPUs). A copy already installed is left in place: delete
+            /etc/udev/rules.d/73-cha-amd-video-clocks.rules and reboot to
+            undo it.
   --help    this text
 USAGE
 }
 
 check_only=0
+video_clocks=1
 for arg in "$@"; do
     case $arg in
         --check) check_only=1 ;;
+        --no-video-clocks) video_clocks=0 ;;
         --help | -h) usage; exit 0 ;;
         *) echo "install.sh: unknown argument: $arg" >&2; usage >&2; exit 2 ;;
     esac
@@ -86,15 +100,30 @@ run() {
 }
 
 # udev rules
-rules_changed=0
+pads_changed=0
+clocks_changed=0
 for src in "$here"/*.rules; do
-    sync_file "$src" "$root/etc/udev/rules.d/$(basename "$src")"
-    [ "$result" = unchanged ] || rules_changed=1
+    name=$(basename "$src")
+    if [ "$name" = 73-cha-amd-video-clocks.rules ] && [ "$video_clocks" = 0 ]; then
+        echo "skipped    $root/etc/udev/rules.d/$name (--no-video-clocks; a copy there is left alone)"
+        continue
+    fi
+    sync_file "$src" "$root/etc/udev/rules.d/$name"
+    [ "$result" = unchanged ] && continue
+    case $name in
+        73-cha-amd-video-clocks.rules) clocks_changed=1 ;;
+        *) pads_changed=1 ;;
+    esac
 done
-if [ "$rules_changed" = 1 ] && [ "$check_only" = 0 ]; then
+if { [ "$pads_changed" = 1 ] || [ "$clocks_changed" = 1 ]; } && [ "$check_only" = 0 ]; then
     if command -v udevadm >/dev/null 2>&1; then
         run udevadm control --reload
-        run udevadm trigger --subsystem-match=input --subsystem-match=hidraw
+        if [ "$pads_changed" = 1 ]; then
+            run udevadm trigger --subsystem-match=input --subsystem-match=hidraw
+        fi
+        if [ "$clocks_changed" = 1 ]; then
+            run udevadm trigger --action=add --subsystem-match=drm
+        fi
     else
         echo "skipped    udev reload (no udevadm; reboot to apply the rules)"
     fi

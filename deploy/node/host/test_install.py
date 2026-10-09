@@ -15,6 +15,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "install.sh")
 
 RULES = "etc/udev/rules.d/72-cha-virtual-pads.rules"
+CLOCKS = "etc/udev/rules.d/73-cha-amd-video-clocks.rules"
 PROFILE = "etc/apparmor.d/cha-sandbox"
 MODULES = "etc/modules-load.d/cha.conf"
 
@@ -56,15 +57,16 @@ class InstallTest(unittest.TestCase):
     def test_installs_everything_then_changes_nothing(self):
         first = self.run_script()
         self.assertEqual(first.returncode, 0, first.stderr)
-        for rel in (RULES, PROFILE, MODULES):
+        for rel in (RULES, CLOCKS, PROFILE, MODULES):
             self.assertTrue(os.path.exists(self.dest(rel)), rel)
             self.assertEqual(os.stat(self.dest(rel)).st_mode & 0o777, 0o644)
-        self.assertEqual(first.stdout.count("installed"), 3)
+        self.assertEqual(first.stdout.count("installed"), 4)
         self.assertEqual(
             self.calls(),
             [
                 "udevadm control --reload",
                 "udevadm trigger --subsystem-match=input --subsystem-match=hidraw",
+                "udevadm trigger --action=add --subsystem-match=drm",
                 f"apparmor_parser -r -W {self.dest(PROFILE)}",
                 "modprobe uinput",
                 "modprobe uhid",
@@ -78,7 +80,7 @@ class InstallTest(unittest.TestCase):
         os.remove(self.log)
         again = self.run_script()
         self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertEqual(again.stdout.count("unchanged"), 3)
+        self.assertEqual(again.stdout.count("unchanged"), 4)
         # Nothing to reload; the modules are loaded each time (cheap).
         self.assertEqual(self.calls(), ["modprobe uinput", "modprobe uhid"])
 
@@ -90,12 +92,52 @@ class InstallTest(unittest.TestCase):
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("updated", result.stdout)
-        self.assertEqual(result.stdout.count("unchanged"), 2)
+        self.assertEqual(result.stdout.count("unchanged"), 3)
         calls = self.calls()
         self.assertIn("udevadm control --reload", calls)
         self.assertFalse(any(c.startswith("apparmor_parser") for c in calls))
+        # Only the pads rule changed: the drm devices aren't re-triggered.
+        self.assertFalse(any("drm" in c for c in calls))
         with open(self.dest(RULES)) as f, open(os.path.join(HERE, "72-cha-virtual-pads.rules")) as g:
             self.assertEqual(f.read(), g.read())
+
+    def test_updating_the_clocks_rule_triggers_only_drm(self):
+        self.run_script()
+        os.remove(self.log)
+        with open(self.dest(CLOCKS), "w") as f:
+            f.write("old\n")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertIn("udevadm trigger --action=add --subsystem-match=drm", calls)
+        self.assertFalse(any("hidraw" in c for c in calls))
+        with open(self.dest(CLOCKS)) as f, open(
+            os.path.join(HERE, "73-cha-amd-video-clocks.rules")
+        ) as g:
+            self.assertEqual(f.read(), g.read())
+
+    def test_no_video_clocks_skips_the_rule_and_leaves_a_copy_alone(self):
+        result = self.run_script("--no-video-clocks")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.exists(self.dest(CLOCKS)))
+        self.assertTrue(os.path.exists(self.dest(RULES)))
+        self.assertIn("skipped", result.stdout)
+        self.assertIn("--no-video-clocks", result.stdout)
+        self.assertEqual(result.stdout.count("installed"), 3)
+        self.assertFalse(any("drm" in c for c in self.calls()))
+        check = self.run_script("--check", "--no-video-clocks")
+        self.assertEqual(check.returncode, 0, check.stdout)
+
+        # A copy that is already there stays, even a stale one.
+        with open(self.dest(CLOCKS), "w") as f:
+            f.write("mine\n")
+        os.remove(self.log)
+        again = self.run_script("--no-video-clocks")
+        self.assertEqual(again.returncode, 0, again.stderr)
+        with open(self.dest(CLOCKS)) as f:
+            self.assertEqual(f.read(), "mine\n")
+        self.assertEqual(self.calls(), ["modprobe uinput", "modprobe uhid"])
+        self.assertEqual(self.run_script("--check").returncode, 1)
 
     def test_check_reports_without_changing(self):
         result = self.run_script("--check")
@@ -109,7 +151,7 @@ class InstallTest(unittest.TestCase):
         os.remove(self.log)
         current = self.run_script("--check")
         self.assertEqual(current.returncode, 0, current.stdout)
-        self.assertEqual(current.stdout.count("unchanged"), 3)
+        self.assertEqual(current.stdout.count("unchanged"), 4)
         self.assertEqual(self.calls(), [])
 
         with open(self.dest(PROFILE), "w") as f:
@@ -150,6 +192,7 @@ class InstallTest(unittest.TestCase):
     def test_help_and_unknown_arguments(self):
         self.assertEqual(self.run_script("--help").returncode, 0)
         self.assertIn("--check", self.run_script("--help").stdout)
+        self.assertIn("--no-video-clocks", self.run_script("--help").stdout)
         self.assertEqual(self.run_script("--nope").returncode, 2)
 
 

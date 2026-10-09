@@ -564,8 +564,9 @@ fn module_loaded(proc_modules: &str, name: &str) -> bool {
 }
 
 /// The host files only the owner can install (udev rules that keep virtual
-/// pads off the desktop's seat, the Steam sandbox's AppArmor profile, the
-/// module list), against the copies this agent was built with. Never a
+/// pads off the desktop's seat and an AMD GPU's video clocks up, the Steam
+/// sandbox's AppArmor profile, the module list; the clocks rule is optional),
+/// against the copies this agent was built with. Never a
 /// failure: the runtime checks above say whether things work.
 fn host_files(etc: &Path, apparmor: bool) -> Check {
     const NAME: &str = "Host files";
@@ -1353,6 +1354,24 @@ mod tests {
         assert!(matches!(c.level, Level::Warn));
         assert!(!c.detail.contains("apparmor"));
         assert!(host_files(tmp.path(), true).detail.contains("cha-sandbox"));
+    }
+
+    #[test]
+    fn host_files_report_an_outdated_optional_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("udev/rules.d")).unwrap();
+        std::fs::write(
+            tmp.path()
+                .join("udev/rules.d/73-cha-amd-video-clocks.rules"),
+            "old\n",
+        )
+        .unwrap();
+        let c = host_files(tmp.path(), false);
+        assert!(matches!(c.level, Level::Warn));
+        assert!(
+            c.detail
+                .contains("outdated: /etc/udev/rules.d/73-cha-amd-video-clocks.rules")
+        );
     }
 
     #[test]

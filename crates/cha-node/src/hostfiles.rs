@@ -21,24 +21,36 @@ struct HostFile {
     content: &'static str,
     /// Only meaningful on a host with AppArmor.
     apparmor: bool,
+    /// The owner may leave it out (or the host has no use for it): absent is
+    /// fine, but a copy that differs is outdated.
+    optional: bool,
 }
 
 // Keep in step with install.sh, which installs every file in these places.
-const FILES: [HostFile; 3] = [
+const FILES: [HostFile; 4] = [
     HostFile {
         path: "udev/rules.d/72-cha-virtual-pads.rules",
         content: include_str!("../../../deploy/node/host/72-cha-virtual-pads.rules"),
         apparmor: false,
+        optional: false,
+    },
+    HostFile {
+        path: "udev/rules.d/73-cha-amd-video-clocks.rules",
+        content: include_str!("../../../deploy/node/host/73-cha-amd-video-clocks.rules"),
+        apparmor: false,
+        optional: true,
     },
     HostFile {
         path: "apparmor.d/cha-sandbox",
         content: include_str!("../../../deploy/node/host/apparmor/cha-sandbox"),
         apparmor: true,
+        optional: false,
     },
     HostFile {
         path: "modules-load.d/cha.conf",
         content: include_str!("../../../deploy/node/host/modules-load.d/cha.conf"),
         apparmor: false,
+        optional: false,
     },
 ];
 
@@ -89,7 +101,11 @@ pub fn compare(etc: &Path, apparmor: bool) -> Report {
         let shown = format!("/etc/{}", file.path);
         let dir = Path::new(file.path).parent().unwrap_or(Path::new(""));
         let Ok(mut entries) = std::fs::read_dir(etc.join(dir)) else {
-            report.unknown.push(shown);
+            // An optional file shares its directory with a required one, which
+            // already says the directory isn't bound.
+            if !file.optional {
+                report.unknown.push(shown);
+            }
             continue;
         };
         // The bind of a directory the host doesn't have is an empty one that
@@ -100,6 +116,7 @@ pub fn compare(etc: &Path, apparmor: bool) -> Report {
         match std::fs::read(etc.join(file.path)) {
             Ok(bytes) if bytes == file.content.as_bytes() => {}
             Ok(_) => report.outdated.push(shown),
+            Err(_) if file.optional => {}
             Err(_) => report.missing.push(shown),
         }
     }
@@ -170,6 +187,24 @@ mod tests {
         );
         assert!(report.missing.is_empty());
         assert!(report.describe().starts_with("outdated: "));
+    }
+
+    #[test]
+    fn an_optional_file_may_be_absent_but_not_outdated() {
+        let tmp = etc(true);
+        let clocks = tmp
+            .path()
+            .join("udev/rules.d/73-cha-amd-video-clocks.rules");
+        std::fs::remove_file(&clocks).unwrap();
+        assert_eq!(compare(tmp.path(), true), Report::default());
+        std::fs::write(&clocks, "old\n").unwrap();
+        let report = compare(tmp.path(), true);
+        assert_eq!(
+            report.outdated,
+            ["/etc/udev/rules.d/73-cha-amd-video-clocks.rules"]
+        );
+        assert!(report.missing.is_empty());
+        assert!(report.stale());
     }
 
     #[test]

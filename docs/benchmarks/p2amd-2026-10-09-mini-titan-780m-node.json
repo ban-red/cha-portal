@@ -1,0 +1,174 @@
+{
+ "benchmark": "P2 AMD node, node side: VA-API encode on a Radeon 780M, GPU clocks on auto vs the video clocks forced high",
+ "date": "2026-10-09",
+ "node": {
+  "host": "mini-titan.lan (Proxmox VE 9.2, kernel 7.0.14-23-pve), LXC container made by deploy/proxmox/create-node.sh",
+  "gpu": "AMD Radeon 780M (Ryzen 7 8845HS, Phoenix, VCN 4)",
+  "driver": "amdgpu; radeonsi and RADV from Mesa 26.0.8 (the streamer and Steam images)",
+  "gpu_shared_with": "nothing else; the same GPU draws the app"
+ },
+ "content": "Steam's Big Picture (gamescope on RADV) at the home screen; gamescope committed 190-290 frames/s, the compositor had new damage on 16-36 of the 60 encode ticks a second",
+ "stream": {
+  "width": 2560,
+  "height": 1440,
+  "fps": 60,
+  "bitrate_mbps": 40,
+  "codec": "hevc",
+  "path": "WebTransport to the Claude app's browser pane (Chromium 152), hidden"
+ },
+ "note": "Streamer-side encoder statistics (the 10 s 'encoder µs p50/p99' log). The pane was hidden, so no browser-side timings are included. Each run is 10 s; the levels were set on the host with power_dpm_force_performance_level and pp_dpm_vclk/pp_dpm_dclk and put back to auto after.",
+ "runs": [
+  {
+   "gpu_clocks": "auto (sclk 800 MHz, vclk 800 MHz, dclk 800 MHz)",
+   "frames_per_s": 36.3,
+   "encoder_total_ms": {
+    "p50": 7.06,
+    "p99": 7.37
+   },
+   "encoder_stages_us_p50_p99": {
+    "queue": [
+     26,
+     30
+    ],
+    "map": [
+     626,
+     820
+    ],
+    "submit": [
+     72,
+     128
+    ],
+    "wait": [
+     6350,
+     6511
+    ]
+   }
+  },
+  {
+   "gpu_clocks": "auto",
+   "frames_per_s": 36.2,
+   "encoder_total_ms": {
+    "p50": 7.05,
+    "p99": 7.43
+   },
+   "encoder_stages_us_p50_p99": {
+    "queue": [
+     8,
+     30
+    ],
+    "map": [
+     615,
+     978
+    ],
+    "submit": [
+     50,
+     106
+    ],
+    "wait": [
+     6347,
+     6526
+    ]
+   }
+  },
+  {
+   "gpu_clocks": "high (everything at its top: sclk 2700 MHz)",
+   "frames_per_s": 20.3,
+   "encoder_total_ms": {
+    "p50": 3.04,
+    "p99": 3.66
+   },
+   "encoder_stages_us_p50_p99": {
+    "queue": [
+     28,
+     35
+    ],
+    "map": [
+     385,
+     979
+    ],
+    "submit": [
+     73,
+     129
+    ],
+    "wait": [
+     2563,
+     2617
+    ]
+   }
+  },
+  {
+   "gpu_clocks": "manual: vclk 2400 MHz, dclk 2057 MHz, sclk left at 800 MHz",
+   "frames_per_s": 36.4,
+   "encoder_total_ms": {
+    "p50": 3.25,
+    "p99": 3.36
+   },
+   "encoder_stages_us_p50_p99": {
+    "queue": [
+     26,
+     30
+    ],
+    "map": [
+     607,
+     683
+    ],
+    "submit": [
+     70,
+     111
+    ],
+    "wait": [
+     2554,
+     2595
+    ]
+   }
+  },
+  {
+   "gpu_clocks": "deploy/node/host/73-cha-amd-video-clocks.rules applied by udev (manual; vclk and dclk at their top step)",
+   "frames_per_s": 36.2,
+   "encoder_total_ms": {
+    "p50": 3.26,
+    "p99": 3.39
+   },
+   "encoder_stages_us_p50_p99": {
+    "queue": [
+     8,
+     30
+    ],
+    "map": [
+     611,
+     686
+    ],
+    "submit": [
+     52,
+     111
+    ],
+    "wait": [
+     2571,
+     2623
+    ]
+   }
+  }
+ ],
+ "self_test_1280x720_ms_per_frame": {
+  "h264": 2.18,
+  "hevc": 2.26,
+  "gpu_clocks": "auto"
+ },
+ "conclusion": "On auto the video engine stays at its lowest clock under a 60 fps stream and HEVC at 1440p takes 7 ms to encode; with the video clocks alone forced high it takes 3.25 ms (p99 3.4), the 3D clock untouched. For comparison NVENC on an RTX 4090 took 1.75-1.82 ms (p13).",
+ "power": {
+  "apu_package_w_avg_5s": {
+   "auto": [
+    9.08,
+    8.18
+   ],
+   "vclk_dclk_high": 9.08
+  },
+  "note": "hwmon power1_average with Steam's Big Picture and the stream running: within noise"
+ },
+ "gl_3d_check": {
+  "tool": "glmark2-es2-drm 1280x720 off-screen, build + phong shading",
+  "score_auto": 8637,
+  "score_with_rule": 9174,
+  "note": "manual DPM with only vclk/dclk set leaves the 3D clock free"
+ }
+}

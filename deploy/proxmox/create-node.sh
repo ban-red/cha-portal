@@ -16,7 +16,8 @@
 # 3. in it: clones the release and runs deploy/quickstart/setup.sh, which
 #    installs Docker and pulls the images;
 # 4. on the host: the udev rules that keep virtual pads off the host's seat,
-#    from that checkout;
+#    and hold an AMD GPU's video engine clocks at their top step (without
+#    --no-video-clocks), from that checkout;
 # 5. in it: starts the quick start, or the node alone with --portal-url.
 # NVIDIA GPUs aren't passed to containers by this script: give a VM the GPU
 # instead (README).
@@ -55,6 +56,10 @@ Creates an LXC container on this Proxmox host running Cha Portal's quick start
   --enable-huc         on an Intel GPU of 6th to 10th generation Core, have the host
                        load its HuC firmware at boot (the low-power encoder's
                        bitrate control needs it); takes effect after a reboot
+  --no-video-clocks    don't install the udev rule that holds an AMD GPU's video
+                       engine clocks at their top step (it cuts the VA-API
+                       encode time of a 1440p frame by half; it does nothing
+                       on Intel)
   --plain-http         the quick start over plain HTTP on the LAN, with no
                        Secure cookie (a trusted LAN only: SETUP.md, Without
                        HTTPS)
@@ -71,7 +76,7 @@ USAGE
 
 version= id= hostname=cha-node cores=4 memory=8192 disk=64 storage=local-lvm
 template_storage=local bridge=vmbr0 ip= gateway= data_dir= gpu=auto
-portal_url= join_token= insecure=0 tailscale=0 plain_http=0 pull=1 ssh_key= source= dry_run=0 enable_huc=0
+portal_url= join_token= insecure=0 tailscale=0 plain_http=0 pull=1 ssh_key= source= dry_run=0 enable_huc=0 video_clocks=1
 need() { [ $# -ge 2 ] && [ -n "$2" ] || { echo "create-node.sh: $1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
     case $1 in
@@ -94,6 +99,7 @@ while [ $# -gt 0 ]; do
         --insecure-portal) insecure=1 ;;
         --tailscale) tailscale=1 ;;
         --enable-huc) enable_huc=1 ;;
+        --no-video-clocks) video_clocks=0 ;;
         --plain-http) plain_http=1 ;;
         --no-pull) pull=0 ;;
         --ssh-key) need "$@"; ssh_key=$2; shift ;;
@@ -287,16 +293,20 @@ in_ct "$checkout/deploy/quickstart/setup.sh $opts" ||
 
 # 4. The udev rules, on the host: virtual pads appear on the host's kernel.
 say "udev rules on the host"
-for rules in 72-cha-virtual-pads.rules; do
+rules_list=72-cha-virtual-pads.rules
+[ "$video_clocks" = 0 ] || rules_list="$rules_list 73-cha-amd-video-clocks.rules"
+for rules in $rules_list; do
     pct pull "$id" "$checkout/deploy/node/host/$rules" "/etc/udev/rules.d/$rules"
     chmod 0644 "/etc/udev/rules.d/$rules"
     echo "installed /etc/udev/rules.d/$rules"
 done
-udevadm control --reload && udevadm trigger --subsystem-match=input --subsystem-match=hidraw ||
+[ "$video_clocks" = 1 ] || echo "skipped /etc/udev/rules.d/73-cha-amd-video-clocks.rules (--no-video-clocks; a copy there is left alone)"
+udevadm control --reload && udevadm trigger --subsystem-match=input --subsystem-match=hidraw &&
+    { [ "$video_clocks" = 0 ] || udevadm trigger --action=add --subsystem-match=drm; } ||
     warn "couldn't reload udev; the rules apply after a reboot"
 # The same files in the container, where the agent looks for them (they do
 # nothing there; they say what the host has).
-in_ct "install -d /etc/udev/rules.d /etc/modules-load.d && cp $checkout/deploy/node/host/72-cha-virtual-pads.rules /etc/udev/rules.d/ && cp $checkout/deploy/node/host/modules-load.d/cha.conf /etc/modules-load.d/"
+in_ct "install -d /etc/udev/rules.d /etc/modules-load.d && cd $checkout/deploy/node/host && cp $rules_list /etc/udev/rules.d/ && cp modules-load.d/cha.conf /etc/modules-load.d/"
 
 # 5. Start it. No NVIDIA here, so the agent gets no CDI devices: a
 # compose.override.yaml, which compose reads beside compose.yaml.
