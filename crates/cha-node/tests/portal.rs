@@ -1305,7 +1305,7 @@ impl Portal {
             .admin(
                 "POST",
                 "/api/users",
-                Some(json!({ "username": username, "password": "correct horse battery", "role": role })),
+                Some(json!({ "username": username, "email": format!("{username}@test.local"), "password": "correct horse battery", "role": role })),
             )
             .await;
         assert_eq!(status, 200, "{body}");
