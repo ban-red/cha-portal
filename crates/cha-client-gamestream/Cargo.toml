@@ -1,6 +1,6 @@
 [package]
 name = "cha-client-gamestream"
-version = "0.4.0"
+version = "0.4.1"
 description = "The native client's GameStream transport: finds, pairs with and plays Sunshine, Apollo and Cha nodes (ADR 0010)"
 edition.workspace = true
 license.workspace = true

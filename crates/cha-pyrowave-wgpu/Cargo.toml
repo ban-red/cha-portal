@@ -1,6 +1,6 @@
 [package]
 name = "cha-pyrowave-wgpu"
-version = "0.4.0"
+version = "0.4.1"
 description = "PyroWave decoding on wgpu: packets to packed 8-bit YCbCr planes in a GPU buffer, plus a pass that draws them (port of @cha/pyrowave-webgpu)"
 edition.workspace = true
 license.workspace = true

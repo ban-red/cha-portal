@@ -28,12 +28,12 @@ The fastest way to a stream: the portal and a node together on one Linux machine
 
 On **Proxmox VE**, [`deploy/proxmox/`](deploy/proxmox/README.md) does all of this in an LXC container (Intel or AMD GPU) with one script, or explains the VM to use for NVIDIA.
 
-The commands below use `0.4.0`; use the latest [release](https://github.com/ban-red/cha-portal/releases) instead, in both the clone and the setup step.
+The commands below use `0.4.1`; use the latest [release](https://github.com/ban-red/cha-portal/releases) instead, in both the clone and the setup step.
 
 1. **Get the release:**
 
    ```bash
-   git clone --branch v0.4.0 --depth 1 https://github.com/ban-red/cha-portal.git
+   git clone --branch v0.4.1 --depth 1 https://github.com/ban-red/cha-portal.git
    ```
 
    ```bash
@@ -43,7 +43,7 @@ The commands below use `0.4.0`; use the latest [release](https://github.com/ban-
 2. **Set up the machine.** One script does the rest of the installing; it's safe to run again and says what it did at each step:
 
    ```bash
-   sudo deploy/quickstart/setup.sh --version 0.4.0 --tailscale
+   sudo deploy/quickstart/setup.sh --version 0.4.1 --tailscale
    ```
 
    <details>
@@ -314,7 +314,7 @@ From 0.3 on, nodes that run published images can be brought to the portal's rele
 - **Back up the portal's database.** Migrations only go forward, so the backup is the only way back to the old version. Do it while nobody is playing, since it stops the portal for a moment.
 - **Pick a quiet moment.** Open streams drop while the portal and agent restart. Running environments keep going on the old images until they are stopped and launched again.
 
-The commands below upgrade to `0.4.0`; use the version you're moving to.
+The commands below upgrade to `0.4.1`; use the version you're moving to.
 
 ### The quick start
 
@@ -343,7 +343,7 @@ Run these from the checkout, on the machine that runs it.
 3. **Get the release:**
 
    ```bash
-   git fetch --depth 1 origin tag v0.4.0 && git checkout v0.4.0
+   git fetch --depth 1 origin tag v0.4.1 && git checkout v0.4.1
    ```
 
    If you stashed in step 2, put your edits back. Git says if one clashes with the release's change to the same lines; then make the edit again by hand.
@@ -355,7 +355,7 @@ Run these from the checkout, on the machine that runs it.
 4. **Run the release's setup script** with its version. It updates `CHA_VERSION` in `deploy/quickstart/.env`, installs any changed host files, and pulls the new images (`--no-pull` leaves them to download as apps launch):
 
    ```bash
-   sudo deploy/quickstart/setup.sh --version 0.4.0
+   sudo deploy/quickstart/setup.sh --version 0.4.1
    ```
 
 5. **Restart on the new images:**
@@ -368,16 +368,16 @@ Run these from the checkout, on the machine that runs it.
    docker compose -f deploy/quickstart/compose.yaml up -d
    ```
 
-6. **Check it:** **Admin → Nodes** shows the node's agent at the new version (`v0.4.0`). Run the doctor too:
+6. **Check it:** **Admin → Nodes** shows the node's agent at the new version (`v0.4.1`). Run the doctor too:
 
    ```bash
    docker compose -f deploy/quickstart/compose.yaml run --rm agent --doctor
    ```
 
-7. **Free the space** the old version's images take, once the new one works. This removes every published Cha Portal image tagged with the old version (`0.3.0` here); one still in use by a running environment is kept:
+7. **Free the space** the old version's images take, once the new one works. This removes every published Cha Portal image tagged with the old version (`0.4.0` here); one still in use by a running environment is kept:
 
    ```bash
-   docker images --format '{{.Repository}}:{{.Tag}}' 'ghcr.io/ban-red/*' | grep ':0\.3\.0$' | xargs -r docker rmi
+   docker images --format '{{.Repository}}:{{.Tag}}' 'ghcr.io/ban-red/*' | grep ':0\.4\.0$' | xargs -r docker rmi
    ```
 
 **Going back:** stop everything (`docker compose -f deploy/quickstart/compose.yaml down`), check out the old tag, run its `setup.sh --version` with the old version, and restore the database before starting. The `cp` in step 1 works the other way too (`docker compose ... cp ./portal-backup/. portal:/var/lib/cha`, with the portal stopped).
@@ -387,7 +387,7 @@ Run these from the checkout, on the machine that runs it.
 Get the release on every machine, then upgrade the nodes before the portal: a newer agent keeps working with an older portal.
 
 ```bash
-git fetch --tags && git checkout v0.4.0
+git fetch --tags && git checkout v0.4.1
 ```
 
 On each node, rebuild the images ([steps 5 and 6](#one-machine-from-source)), install any changed host files, and restart the agent:
@@ -411,6 +411,10 @@ Instead of building, a node can stay on the release's published images. Set `CHA
 ### A Proxmox container
 
 The same as the quick start, inside the container (`pct enter <id>`), from `/opt/cha-portal`: [`deploy/proxmox/README.md`](deploy/proxmox/README.md) has the commands.
+
+### From 0.4.0 to 0.4.1
+
+Nothing needs doing by hand: nodes on published images take the **Update** button. Steam's desktop mode gets a working window manager again (xfwm4 runs without its compositor, which NVIDIA's GLX on Xwayland can't serve), so windows take the keyboard and their title-bar buttons work. A `vm` app's device groups come from the agent's probe of the host first.
 
 ### From 0.3.0 to 0.4.0
 
