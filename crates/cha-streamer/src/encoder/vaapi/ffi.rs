@@ -34,7 +34,7 @@ pub const INVALID_SURFACE: Id = sys::VA_INVALID_SURFACE;
 
 // The numbers below that `sys.rs` doesn't have (the enums of profiles,
 // entrypoints and buffer types, which bindgen wasn't asked for) are checked
-// against libva 2.22's `va.h`/`va_enc_*.h`.
+// against libva 2.23's `va.h`/`va_enc_*.h`.
 
 // VAProfile.
 pub const PROFILE_NONE: c_int = -1;
@@ -42,6 +42,7 @@ pub const PROFILE_H264_MAIN: c_int = 6;
 pub const PROFILE_H264_HIGH: c_int = 7;
 pub const PROFILE_H264_CONSTRAINED_BASELINE: c_int = 13;
 pub const PROFILE_HEVC_MAIN: c_int = 17;
+pub const PROFILE_AV1_PROFILE0: c_int = 32;
 
 // VAEntrypoint.
 pub const ENTRYPOINT_ENC_SLICE: c_int = 6;
@@ -56,6 +57,9 @@ pub const ATTRIB_ENC_PACKED_HEADERS: c_uint =
 pub const ATTRIB_ENC_HEVC_FEATURES: c_uint = sys::VAConfigAttribType_VAConfigAttribEncHEVCFeatures;
 pub const ATTRIB_ENC_HEVC_BLOCK_SIZES: c_uint =
     sys::VAConfigAttribType_VAConfigAttribEncHEVCBlockSizes;
+pub const ATTRIB_ENC_AV1: c_uint = sys::VAConfigAttribType_VAConfigAttribEncAV1;
+pub const ATTRIB_ENC_AV1_EXT1: c_uint = sys::VAConfigAttribType_VAConfigAttribEncAV1Ext1;
+pub const ATTRIB_ENC_AV1_EXT2: c_uint = sys::VAConfigAttribType_VAConfigAttribEncAV1Ext2;
 /// What `vaGetConfigAttributes` puts in an attribute the driver lacks.
 pub const ATTRIB_NOT_SUPPORTED: c_uint = sys::VA_ATTRIB_NOT_SUPPORTED;
 
@@ -69,6 +73,7 @@ pub const RC_CQP: c_uint = sys::VA_RC_CQP;
 pub const PACKED_HEADER_SEQUENCE: c_uint = sys::VA_ENC_PACKED_HEADER_SEQUENCE;
 pub const PACKED_HEADER_PICTURE: c_uint = sys::VA_ENC_PACKED_HEADER_PICTURE;
 pub const PACKED_HEADER_SLICE: c_uint = sys::VA_ENC_PACKED_HEADER_SLICE;
+pub const PACKED_HEADER_RAW_DATA: c_uint = sys::VA_ENC_PACKED_HEADER_RAW_DATA;
 
 // VABufferType.
 pub const BUFFER_ENC_CODED: c_int = 21;
@@ -84,6 +89,7 @@ pub const BUFFER_PROC_PIPELINE: c_int = 41;
 pub const PACKED_SEQUENCE: u32 = 1;
 pub const PACKED_PICTURE: u32 = 2;
 pub const PACKED_SLICE: u32 = 3;
+pub const PACKED_RAW_DATA: u32 = 4;
 
 // VAEncMiscParameterType.
 pub const MISC_FRAME_RATE: u32 = sys::VAEncMiscParameterType_VAEncMiscParameterTypeFrameRate;

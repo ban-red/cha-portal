@@ -7,7 +7,7 @@ or, by default, the best one the portal can find.
 | Kind | Composites on | Encodes with | Codecs | Notes |
 |---|---|---|---|---|
 | `nvidia` | the NVIDIA GPU (EGL on its render node) | NVENC (CUDA) | H.264, HEVC, AV1, PyroWave | Today's only path. The app gets the GPU through CDI. |
-| `vaapi` | an Intel or AMD GPU (EGL on its render node, Mesa) | VA-API (libva: Intel's iHD, Mesa's radeonsi) | H.264 (what the device's encode entrypoints offer, of what the streamer has written: HEVC and AV1 follow) | The app gets that render node. Intel iGPUs (QuickSync), Arc, AMD. The encoder is written but not yet run on a GPU. |
+| `vaapi` | an Intel or AMD GPU (EGL on its render node, Mesa) | VA-API (libva: Intel's iHD, Mesa's radeonsi) | H.264, HEVC Main and AV1 Profile 0 (what the device's encode entrypoints offer, of what the streamer has written) | The app gets that render node. Intel iGPUs (QuickSync), Arc, AMD. H.264 and HEVC run on an Intel UHD 630 and an AMD Radeon 780M; AV1 on the 780M. |
 | `cpu` | Mesa's llvmpipe (software EGL) | x264 and SVT-AV1, in software | H.264, AV1 | No GPU for the streamer or the app. Desktops and browsers at modest sizes; never 3D apps or games. |
 
 ## Inventory

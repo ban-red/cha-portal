@@ -210,6 +210,7 @@ pub fn unescaped_nal(nal: &[u8]) -> Vec<u8> {
     out
 }
 
+pub mod av1;
 pub mod h265;
 
 pub mod h264 {
