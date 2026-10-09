@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use axum::extract::{RawQuery, State};
+use axum::extract::{Query, RawQuery, State, WebSocketUpgrade};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cha_nvenc::Codec;
@@ -31,6 +32,7 @@ use crate::session;
 use crate::status::SetupStatus;
 use crate::uinput_broker::UinputBroker;
 use crate::viewers::{Role, Viewer, Viewers};
+use crate::ws;
 use crate::wt;
 use crate::x11_clipboard::X11Clipboard;
 
@@ -490,6 +492,7 @@ pub fn main() -> Result<()> {
         .route("/info", get(info_handler))
         .route("/streams", get(streams_handler))
         .route("/webrtc/media", post(media_offer_handler))
+        .route("/ws/media", get(ws_media_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
     #[cfg(feature = "gamestream")]
@@ -587,6 +590,7 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "active_viewers": state.viewers.active_count(),
         "idle_secs": state.viewers.idle_secs(),
         "wt_port": state.wt_port,
+        "ws": true,
         "cert_hash_hex": state.cert_hash_hex,
         "addresses": state.hosts.iter().chain(&state.public).collect::<Vec<_>>(),
     }))
@@ -672,6 +676,59 @@ async fn media_offer_handler(
         .map_err(bad_request)?;
     state.viewers.attach(id, running);
     Ok(Json(answer))
+}
+
+/// `GET /ws/media?codec=<c>&token=<media token>`: `cha-stream/1` over one
+/// WebSocket (ADR 0022), for the portal's relay. Authorised and admitted as a
+/// WebTransport session is, with the same statuses before the upgrade.
+async fn ws_media_handler(
+    State(state): State<Arc<AppState>>,
+    // Percent-decoded: the node urlencodes the token.
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let presented = query.get("token").map_or("", String::as_str);
+    let viewer = match authorize(&state.auth, presented) {
+        Ok(viewer) => viewer,
+        Err(why) => return (StatusCode::FORBIDDEN, why).into_response(),
+    };
+    let codec = match ws::codec_for(query.get("codec").map(String::as_str), state.media.codecs()) {
+        Ok(codec) => codec,
+        Err((status, why)) => {
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST);
+            return (status, why).into_response();
+        }
+    };
+    // Like WebTransport ones, these coexist with the others.
+    let seat = match state.viewers.join(viewer, false).await {
+        Ok(seat) => seat,
+        Err(why) => return (StatusCode::TOO_MANY_REQUESTS, why).into_response(),
+    };
+    let id = seat.id;
+    info!(codec = codec.name(), id, "websocket session");
+    let sessions = Arc::new(ws::Sessions {
+        media: Arc::clone(&state.media),
+        audio: state.audio.clone(),
+        gamepads: state.gamepads.clone(),
+    });
+    // The session starts once the upgrade has completed; if it never does,
+    // the sender is dropped, the task ends and the seat is freed.
+    let (socket_tx, socket_rx) = tokio::sync::oneshot::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let Ok(socket) = socket_rx.await else { return };
+        if let Err(err) = ws::run(socket, codec, seat, sessions, stopped).await {
+            info!(id, "websocket session ended: {err:#}");
+        }
+    });
+    state
+        .viewers
+        .attach(id, crate::session::Running { stop, handle });
+    upgrade
+        .max_message_size(1 << 20)
+        .on_upgrade(move |socket| async move {
+            let _ = socket_tx.send(socket);
+        })
 }
 
 /// Who `presented` lets in; the error says why not.

@@ -47,8 +47,8 @@ use crate::session::Running;
 use crate::system::Sampler;
 use crate::viewers::{Seat, Viewer, Viewers};
 
-const STATS_INTERVAL: Duration = Duration::from_millis(500);
-const SYSTEM_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const STATS_INTERVAL: Duration = Duration::from_millis(500);
+pub(crate) const SYSTEM_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a page has, once its session is accepted, to open the control
 /// stream. Our own keep-alive holds an idle connection open, so without this
 /// a page that never opens it keeps its seat forever.
@@ -61,13 +61,13 @@ const ACK_EVERY: u32 = 10;
 /// …or after this long, whichever comes first.
 const ACK_DELAY: Duration = Duration::from_millis(5);
 /// How often the send queue is checked (hold or not) and the rate updated.
-const PACE_INTERVAL: Duration = Duration::from_millis(50);
+pub(crate) const PACE_INTERVAL: Duration = Duration::from_millis(50);
 /// Hold the encoder while more than this long's worth of frames waits to go
 /// out: a frame and a half at 60 fps. It is a time, not a count of frames, so
 /// it means the same latency at 90 and 120 fps; counted in frames it would
 /// halve at 120 and hold, skipping frames, over queues rate control doesn't
 /// yet call one (its soft back-off starts at 20 ms).
-const HOLD_MS: f64 = 25.0;
+pub(crate) const HOLD_MS: f64 = 25.0;
 /// How many sent frames are remembered, to name the ones the page lost
 /// (at 120 fps, 2 s). Reference invalidation reaches back only `DPB_FRAMES`,
 /// and a loss further back costs a keyframe, so more would be of no use.
@@ -437,41 +437,41 @@ async fn run(
 
 /// A session's video: the encoder it takes frames from, and the one it's
 /// switching to.
-struct Video {
-    codec: VideoCodec,
-    frames: mpsc::Receiver<EncodedFrame>,
+pub(crate) struct Video {
+    pub(crate) codec: VideoCodec,
+    pub(crate) frames: mpsc::Receiver<EncodedFrame>,
     /// How this session paces its encoder (rate, and hold while backed up).
-    pace: Arc<Pace>,
+    pub(crate) pace: Arc<Pace>,
     /// Switching: the other encoder's frames, taken over at the first.
-    next: Option<(VideoCodec, Subscription)>,
+    pub(crate) next: Option<(VideoCodec, Subscription)>,
     /// Bumped on each switch and carried in every video datagram, so the
     /// page knows which decoder a frame is for and starts that stream afresh.
-    stream: u8,
-    frame_id: u32,
+    pub(crate) stream: u8,
+    pub(crate) frame_id: u32,
     /// Until a keyframe goes out, no frame may (the first, or after a
     /// drop), or a recovery frame referring around the frames dropped.
-    resync: bool,
+    pub(crate) resync: bool,
     /// The encoder index of the first frame the page doesn't have (dropped
     /// here, or reported lost by the page): a recovery frame referring only
     /// to frames before it resyncs the page.
-    lost: Option<u64>,
+    pub(crate) lost: Option<u64>,
     /// Frames sent lately: their ids and encoder indices.
-    sent: VecDeque<(u32, u64)>,
-    fragmenter: Fragmenter,
+    pub(crate) sent: VecDeque<(u32, u64)>,
+    pub(crate) fragmenter: Fragmenter,
     /// Composited → encoded (ms) and encoded → sent (µs) since the last report.
-    encode_ms: Vec<f64>,
-    hop_us: Vec<u64>,
+    pub(crate) encode_ms: Vec<f64>,
+    pub(crate) hop_us: Vec<u64>,
     /// The loss rate parity is sized for (0: no FEC); the pacing sets it.
-    fec_loss: f64,
+    pub(crate) fec_loss: f64,
     /// Recent frame size (bytes, smoothed), to count the send queue in frames.
-    frame_bytes: f64,
-    keyframe_asked: Option<Instant>,
+    pub(crate) frame_bytes: f64,
+    pub(crate) keyframe_asked: Option<Instant>,
     /// The frame rate this session last saw (`Pacing::tick` follows it).
-    fps: u32,
+    pub(crate) fps: u32,
 }
 
 impl Video {
-    fn new(
+    pub(crate) fn new(
         codec: VideoCodec,
         subscription: Subscription,
         fragmenter: Fragmenter,
@@ -500,7 +500,7 @@ impl Video {
     /// Asks the encoder to refer around the frames the page doesn't have
     /// (reference invalidation; it sends a keyframe where it can't), at most
     /// every `KEYFRAME_RETRY`.
-    fn ask_resync(&mut self, media: &Media) {
+    pub(crate) fn ask_resync(&mut self, media: &Media) {
         if self
             .keyframe_asked
             .is_none_or(|at| at.elapsed() >= KEYFRAME_RETRY)
@@ -515,7 +515,7 @@ impl Video {
 
     /// The page lost frame `id`, and drops what follows until a recovery
     /// frame or a keyframe.
-    fn page_lost(&mut self, media: &Media, id: u32) {
+    pub(crate) fn page_lost(&mut self, media: &Media, id: u32) {
         match self.sent.iter().find(|(sent, _)| *sent == id) {
             Some(&(_, index)) => {
                 self.lost = Some(self.lost.map_or(index, |lost| lost.min(index)));
@@ -527,9 +527,7 @@ impl Video {
         }
     }
 
-    /// Sends a frame, or drops it (and, for the hardware codecs, all until a
-    /// keyframe or a frame referring around them, which is asked for). True
-    /// if sent.
+    /// Sends a frame over `conn`, or drops it (see `send_with`). True if sent.
     fn send(
         &mut self,
         conn: &Connection,
@@ -537,6 +535,27 @@ impl Video {
         media: &Media,
         epoch: Instant,
         stats: &mut StreamerStats,
+    ) -> bool {
+        self.send_with(frame, media, stats, |video, intra, recovers, stats| {
+            if intra {
+                send_packets(conn, frame, video.frame_id, video.stream, epoch, stats)
+            } else {
+                video.send_frame(conn, frame, recovers, epoch, stats)
+            }
+        })
+    }
+
+    /// Sends a frame through `emit` (given whether the frame stands alone,
+    /// PyroWave's, and whether it recovers the page; it says whether it went
+    /// out), or drops it (and, for the hardware codecs, all until a
+    /// keyframe or a frame referring around them, which is asked for). True
+    /// if sent.
+    pub(crate) fn send_with(
+        &mut self,
+        frame: &EncodedFrame,
+        media: &Media,
+        stats: &mut StreamerStats,
+        emit: impl FnOnce(&mut Self, bool, bool, &mut StreamerStats) -> bool,
     ) -> bool {
         stats.frames_generated += 1;
         // PyroWave: packets that each decode on their own, and every frame
@@ -550,11 +569,7 @@ impl Video {
         if self.resync && !frame.key && !recovers && !intra {
             return false;
         }
-        let sent = if intra {
-            send_packets(conn, frame, self.frame_id, self.stream, epoch, stats)
-        } else {
-            self.send_frame(conn, frame, recovers, epoch, stats)
-        };
+        let sent = emit(self, intra, recovers, stats);
         if !sent {
             stats.frames_dropped += 1;
             if !intra {
@@ -685,7 +700,12 @@ impl Video {
 
     /// From now on, `codec`'s frames, as the next stream. The old encoder
     /// idles once nobody subscribes.
-    fn take_over(&mut self, codec: VideoCodec, subscription: Subscription, target_bps: u32) {
+    pub(crate) fn take_over(
+        &mut self,
+        codec: VideoCodec,
+        subscription: Subscription,
+        target_bps: u32,
+    ) {
         self.codec = codec;
         self.frames = subscription.frames;
         self.pace = subscription.pace;
@@ -701,7 +721,7 @@ impl Video {
     }
 
     /// The delays since the last report into `stats`.
-    fn report(&mut self, stats: &mut StreamerStats) {
+    pub(crate) fn report(&mut self, stats: &mut StreamerStats) {
         self.encode_ms.sort_by(f64::total_cmp);
         self.hop_us.sort_unstable();
         stats.composite_to_encoded_ms_p50 = percentile(&self.encode_ms, 0.5);
@@ -922,7 +942,9 @@ impl Pacing {
     }
 }
 
-async fn next_frame(next: &mut Option<(VideoCodec, Subscription)>) -> Option<EncodedFrame> {
+pub(crate) async fn next_frame(
+    next: &mut Option<(VideoCodec, Subscription)>,
+) -> Option<EncodedFrame> {
     match next {
         Some((_, subscription)) => subscription.frames.recv().await,
         None => std::future::pending().await,
@@ -1036,7 +1058,7 @@ fn send_audio(conn: &Connection, packet: &AudioPacket, epoch: Instant, stats: &m
 /// The codec a `{"t":"codec","codec":…}` line asks for (WebTransport only:
 /// the session switches its own subscription).
 /// The frame a `{"t":"rfi","id":…}` line says the page lost.
-fn rfi_request(line: &str) -> Option<u32> {
+pub(crate) fn rfi_request(line: &str) -> Option<u32> {
     if !line.contains("\"rfi\"") {
         return None;
     }
@@ -1047,7 +1069,7 @@ fn rfi_request(line: &str) -> Option<u32> {
     u32::try_from(msg.get("id")?.as_u64()?).ok()
 }
 
-fn codec_request(line: &str) -> Option<String> {
+pub(crate) fn codec_request(line: &str) -> Option<String> {
     let msg: serde_json::Value = serde_json::from_str(line).ok()?;
     if msg.get("t")?.as_str()? != "codec" {
         return None;
@@ -1055,7 +1077,9 @@ fn codec_request(line: &str) -> Option<String> {
     Some(msg.get("codec")?.as_str()?.to_string())
 }
 
-async fn next_packet(audio: &mut Option<mpsc::Receiver<AudioPacket>>) -> Option<AudioPacket> {
+pub(crate) async fn next_packet(
+    audio: &mut Option<mpsc::Receiver<AudioPacket>>,
+) -> Option<AudioPacket> {
     match audio {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -1064,7 +1088,7 @@ async fn next_packet(audio: &mut Option<mpsc::Receiver<AudioPacket>>) -> Option<
 
 /// The rate a session's control starts at and tops out at: the codec's full
 /// rate, plus the share audio takes, so the encoder gets all of its own.
-fn ceiling_bps(media: &Media, codec: VideoCodec) -> u32 {
+pub(crate) fn ceiling_bps(media: &Media, codec: VideoCodec) -> u32 {
     match codec {
         VideoCodec::PyroWave(_) => {
             (f64::from(media.bitrate_bps_for(codec)) / VIDEO_SHARE).min(f64::from(u32::MAX)) as u32

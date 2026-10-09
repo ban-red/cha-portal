@@ -79,6 +79,8 @@ mod uinput_proto;
 #[cfg(target_os = "linux")]
 mod viewers;
 #[cfg(target_os = "linux")]
+mod ws;
+#[cfg(target_os = "linux")]
 mod wt;
 #[cfg(target_os = "linux")]
 mod x11_clipboard;

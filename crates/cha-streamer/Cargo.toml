@@ -21,7 +21,7 @@ cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
 # only explains that.
 [target.'cfg(target_os = "linux")'.dependencies]
 anyhow = "1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
 cha-nvenc = { path = "../cha-nvenc" }
@@ -31,6 +31,7 @@ cha-gamestream = { path = "../cha-gamestream", optional = true }
 cha-proto.workspace = true
 cha-wire = { path = "../cha-wire" }
 clap = { version = "4", features = ["derive", "env"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 libc = "0.2"
 # The PulseAudio wire format (commands, tagstructs); the server is ours.
 pulseaudio = "0.3"

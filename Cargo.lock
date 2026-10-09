@@ -1011,6 +1011,7 @@ dependencies = [
  "cha-wire",
  "cha-workspace-hack",
  "clap",
+ "futures-util",
  "libc",
  "pulseaudio",
  "serde",
