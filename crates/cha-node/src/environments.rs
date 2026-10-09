@@ -56,8 +56,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use cha_wire::{
     DeviceKind, EnvironmentSpec, HostMount, HostOptionsMode, HostPolicy, HostPort, MountSource,
-    PER_USER_DIR, PortRange, Protocol, SHARED_MOUNT_ROOT, SecurityProfile, StreamerEndpoint,
-    check_env, home_volume_name, is_home_volume_name, valid_template_id, valid_user_id,
+    PER_USER_DIR, PortRange, Protocol, SHARED_MOUNT_ROOT, SecurityProfile, SharedDirState,
+    SharedDirStatus, StreamerEndpoint, check_env, home_volume_name, is_home_volume_name,
+    valid_template_id, valid_user_id,
 };
 use futures_util::future::BoxFuture;
 use http_body_util::{BodyExt, Full};
@@ -73,6 +74,7 @@ use crate::docker::{
     ContainerEvent, ContainerMount, ContainerSummary, Docker, PullProgress, encode, names_registry,
 };
 use crate::hostopts::HostOptionsConfig;
+use crate::shared;
 use crate::storage::{DataRoot, Seed, plan_seed};
 
 const LABEL_ENV: &str = "sh.cha.env";
@@ -122,6 +124,8 @@ const COPY_TIMEOUT: Duration = Duration::from_secs(3600);
 const EXTERNAL_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often the agent looks for per-user directories that came unmounted.
 const OVERLAY_CHECK: Duration = Duration::from_secs(30);
+/// How often the agent looks at its shared directories, for the inventory.
+const SHARED_CHECK: Duration = Duration::from_secs(60);
 /// Each environment's streamer: HTTP (localhost), WebRTC and WebTransport.
 const PORTS_PER_ENVIRONMENT: u16 = 3;
 /// With GameStream on, each environment's second block: a Moonlight session's
@@ -231,8 +235,8 @@ pub trait Runtime: Send + Sync + 'static {
     fn images(&self) -> BoxFuture<'_, Vec<String>> {
         Box::pin(async { Vec::new() })
     }
-    /// A signal each time an image has been pulled, so the inventory can be
-    /// sent again with it.
+    /// A signal each time the inventory should be sent again: an image has
+    /// been pulled, or a shared directory's state changed.
     fn pulled(&self) -> broadcast::Receiver<()> {
         broadcast::channel(1).1
     }
@@ -257,6 +261,11 @@ pub trait Runtime: Send + Sync + 'static {
     /// Shared directories kept outside the data root: template → path.
     fn shared_dirs(&self) -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+    /// How each shared directory kept outside the data root stands: template →
+    /// its last look (waiting for one only the first time).
+    fn shared_status(&self) -> BoxFuture<'_, BTreeMap<String, SharedDirStatus>> {
+        Box::pin(async { BTreeMap::new() })
     }
     /// Deletes what `user` keeps for `template` here ([`crate::storage`]).
     /// Refused while an environment of theirs for it runs.
@@ -752,11 +761,21 @@ pub struct DockerRuntime {
     exits: broadcast::Sender<Exit>,
     progress: broadcast::Sender<Progress>,
     warnings: broadcast::Sender<Warning>,
-    /// Fires after each image pull ([`Runtime::pulled`]).
+    /// Fires when the inventory should be sent again ([`Runtime::pulled`]).
     pulled: broadcast::Sender<()>,
+    /// How the shared directories kept outside the data root stand.
+    shared: SharedChecks,
     /// Held while an app with published ports picks them and starts, so two
     /// launches don't pick the same free port.
     ports_lock: tokio::sync::Mutex<()>,
+}
+
+/// The last look at each shared directory kept outside the data root
+/// (template → status), and which looks are still waiting on a share.
+#[derive(Default)]
+struct SharedChecks {
+    status: Mutex<BTreeMap<String, SharedDirStatus>>,
+    running: Arc<Mutex<HashSet<String>>>,
 }
 
 /// A per-user directory laid over a shared one in an app.
@@ -804,6 +823,35 @@ impl Overlays {
     fn warning(&self) -> Option<String> {
         (!self.lost.is_empty()).then(|| unmounted_warning(&self.lost))
     }
+}
+
+impl State {
+    /// What the user should be told about the environment now: what its launch
+    /// went without, and which of its own folders came unmounted.
+    fn warning_for(&self, id: &str) -> Option<String> {
+        let unmounted = self.overlays.get(id).and_then(Overlays::warning);
+        let launch = self.launch_warnings.get(id).map(String::as_str);
+        join_warnings(unmounted, launch)
+    }
+}
+
+/// An overlay warning (if any) and the launch's warning (if any), as one.
+fn join_warnings(overlay: Option<String>, launch: Option<&str>) -> Option<String> {
+    match (launch, overlay) {
+        (Some(launch), Some(overlay)) => Some(format!("{launch} {overlay}")),
+        (Some(launch), None) => Some(launch.to_string()),
+        (None, overlay) => overlay,
+    }
+}
+
+/// What the user is told when a launch had to go without the app's shared
+/// directory kept outside the data root.
+fn without_shared_warning(template: &str, problem: &str) -> String {
+    let what = match template {
+        "steam" => "Steam's shared library".to_string(),
+        other => format!("the shared {other} directory"),
+    };
+    format!("Started without {what}: {problem}")
 }
 
 /// What the user is told when `parts` of their own are no longer mounted.
@@ -875,6 +923,9 @@ fn overlays_from_mounts(mounts: &[ContainerMount], users_dir: &Path) -> Vec<Over
 
 #[derive(Default)]
 struct State {
+    /// Environment id → what the user was told at launch that the app starts
+    /// without (a shared directory that wasn't usable).
+    launch_warnings: BTreeMap<String, String>,
     /// Environment id → the per-user directories its app has to keep mounted.
     overlays: BTreeMap<String, Overlays>,
     /// Environment id → its streamer's HTTP port.
@@ -934,6 +985,7 @@ impl DockerRuntime {
             progress,
             warnings,
             pulled,
+            shared: SharedChecks::default(),
             ports_lock: tokio::sync::Mutex::new(()),
         });
         runtime.adopt().await?;
@@ -941,6 +993,10 @@ impl DockerRuntime {
         tokio::spawn(async move { watcher.watch().await });
         let watcher = Arc::clone(&runtime);
         tokio::spawn(async move { watcher.watch_overlays().await });
+        if !runtime.config.shared_dirs.is_empty() {
+            let watcher = Arc::clone(&runtime);
+            tokio::spawn(async move { watcher.watch_shared().await });
+        }
         Ok(runtime)
     }
 
@@ -1081,6 +1137,80 @@ impl DockerRuntime {
         }
     }
 
+    /// Looks at every shared directory each [`SHARED_CHECK`], and has the
+    /// inventory sent again when one's state changed.
+    async fn watch_shared(self: Arc<Self>) {
+        let mut ticks = tokio::time::interval(SHARED_CHECK);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            for (template, dir) in self.config.shared_dirs.clone() {
+                if let Some(status) = self.look_at_shared(&template, &dir).await {
+                    self.record_shared(&template, status);
+                }
+            }
+        }
+    }
+
+    /// Looks at the shared directory kept at `dir` off the async threads, for
+    /// as long as [`EXTERNAL_CHECK_TIMEOUT`]. `None`: an earlier look is still
+    /// waiting on the share (a hard NFS mount), and none is stacked on it.
+    async fn look_at_shared(&self, template: &str, dir: &Path) -> Option<SharedDirStatus> {
+        if !self
+            .shared
+            .running
+            .lock()
+            .expect("shared lock")
+            .insert(template.to_string())
+        {
+            return None;
+        }
+        let per_user = catalog_per_user(template);
+        let (dir_owned, running, name) = (
+            dir.to_path_buf(),
+            Arc::clone(&self.shared.running),
+            template.to_string(),
+        );
+        let work = tokio::task::spawn_blocking(move || {
+            let status = shared::check_blocking(&dir_owned, &per_user, shared::now_secs());
+            running.lock().expect("shared lock").remove(&name);
+            status
+        });
+        Some(
+            match tokio::time::timeout(EXTERNAL_CHECK_TIMEOUT, work).await {
+                Ok(Ok(status)) => status,
+                Ok(Err(err)) => shared::unreachable(
+                    dir,
+                    &format!("looking at it stopped: {err}"),
+                    shared::now_secs(),
+                ),
+                Err(_) => shared::unreachable(dir, &timed_out_text(), shared::now_secs()),
+            },
+        )
+    }
+
+    /// Keeps `status` as the last look at `template`'s shared directory, and
+    /// has the inventory sent again if its state or its reason changed.
+    fn record_shared(&self, template: &str, status: SharedDirStatus) {
+        let changed = {
+            let mut all = self.shared.status.lock().expect("shared lock");
+            let changed = all.get(template).is_none_or(|old| {
+                (old.state, &old.detail, &old.fs_type, &old.source)
+                    != (
+                        status.state,
+                        &status.detail,
+                        &status.fs_type,
+                        &status.source,
+                    )
+            });
+            all.insert(template.to_string(), status);
+            changed
+        };
+        if changed {
+            let _ = self.pulled.send(());
+        }
+    }
+
     /// Looks at every environment's per-user directories each [`OVERLAY_CHECK`].
     async fn watch_overlays(self: Arc<Self>) {
         let mut ticks = tokio::time::interval(OVERLAY_CHECK);
@@ -1116,13 +1246,16 @@ impl DockerRuntime {
                 });
             let change = {
                 let mut state = self.state.lock().expect("state lock");
+                let launch = state.launch_warnings.get(&id).cloned();
                 let Some(overlays) = state.overlays.get_mut(&id) else {
                     continue;
                 };
                 match looked {
                     Ok(mounted) => {
                         overlays.failures = 0;
-                        overlays.observe(&mounted)
+                        overlays
+                            .observe(&mounted)
+                            .map(|w| join_warnings(w, launch.as_deref()))
                     }
                     Err(err) => {
                         // Not worth a line each time: the container may be on
@@ -1147,6 +1280,30 @@ impl DockerRuntime {
                 let _ = self.warnings.send(Warning { id, warning });
             }
         }
+    }
+
+    /// Tells the portal what this launch went without, if anything. The
+    /// portal only takes a warning for an environment it has marked running,
+    /// which it does when it gets the launch's answer, so this says it again
+    /// a little later.
+    fn announce_launch_warning(&self, id: &str) {
+        let Some(warning) = self.state.lock().expect("state lock").warning_for(id) else {
+            return;
+        };
+        let (warnings, id) = (self.warnings.clone(), id.to_string());
+        let _ = warnings.send(Warning {
+            id: id.clone(),
+            warning: Some(warning.clone()),
+        });
+        tokio::spawn(async move {
+            for wait in [2, 8] {
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                let _ = warnings.send(Warning {
+                    id: id.clone(),
+                    warning: Some(warning.clone()),
+                });
+            }
+        });
     }
 
     async fn on_event(&self, event: ContainerEvent) {
@@ -1292,6 +1449,7 @@ impl DockerRuntime {
                         .insert(spec.id.clone(), Overlays::new(overlays));
                 }
                 info!(id = %spec.id, image = %spec.image, http_port = port, "environment started");
+                self.announce_launch_warning(&spec.id);
                 Ok(endpoint(port))
             }
             Err(err) => {
@@ -1306,6 +1464,7 @@ impl DockerRuntime {
                     state.gamestream.remove(&spec.id);
                     state.meta.remove(&spec.id);
                     state.homes.remove(&spec.id);
+                    state.launch_warnings.remove(&spec.id);
                 }
                 // Everything this launch made, app and streamer both, whichever
                 // got as far as existing.
@@ -1547,13 +1706,16 @@ impl DockerRuntime {
             let per_user = shared.per_user.clone();
             if let Some(dir) = self.config.shared_dirs.get(spec.data_template()).cloned() {
                 if let Err(problem) = check_external(dir.clone(), per_user).await {
+                    let template = spec.data_template().to_string();
                     warn!(
-                        id = %spec.id, template = %spec.data_template(), dir = %dir.display(),
-                        "starting without the shared directory: {problem}"
+                        id = %spec.id, %template, dir = %dir.display(),
+                        "starting without the shared directory: {}", problem.text
                     );
                     if let Some(storage) = spec.storage.as_mut() {
                         storage.shared = None;
                     }
+                    self.shared_dir_unusable(&spec.id, &template, &dir, &problem)
+                        .await;
                 }
             } else {
                 let template = spec.data_template().to_string();
@@ -1609,6 +1771,43 @@ impl DockerRuntime {
             blocking(move || data.ensure_per_user(&user, &template, &per_user)).await?;
         }
         Ok(())
+    }
+
+    /// A launch found `template`'s shared directory unusable: the portal's
+    /// inventory learns it now, and this environment's user is told it
+    /// started without it (sent once it has started).
+    async fn shared_dir_unusable(
+        &self,
+        id: &str,
+        template: &str,
+        dir: &Path,
+        problem: &ExternalProblem,
+    ) {
+        let status = if problem.timed_out {
+            shared::unreachable(dir, &problem.text, shared::now_secs())
+        } else {
+            // The full look says why more precisely (an unmounted share, a
+            // place that is a symlink); the launch's own words are the fallback.
+            match self.look_at_shared(template, dir).await {
+                Some(status) if status.state != SharedDirState::Ok => status,
+                _ => SharedDirStatus {
+                    state: SharedDirState::Missing,
+                    fs_type: None,
+                    source: None,
+                    detail: Some(problem.text.clone()),
+                    checked_at: shared::now_secs(),
+                },
+            }
+        };
+        self.record_shared(template, status);
+        self.state
+            .lock()
+            .expect("state lock")
+            .launch_warnings
+            .insert(
+                id.to_string(),
+                without_shared_warning(template, &problem.text),
+            );
     }
 
     /// Copies the user's old home volume into their new directory, once:
@@ -2551,6 +2750,7 @@ impl DockerRuntime {
         state.meta.remove(id);
         state.homes.remove(id);
         state.overlays.remove(id);
+        state.launch_warnings.remove(id);
         result
     }
 
@@ -2727,14 +2927,51 @@ impl Runtime for DockerRuntime {
 
     fn warnings_now(&self) -> Vec<Warning> {
         let state = self.state.lock().expect("state lock");
-        state
+        let ids: std::collections::BTreeSet<&String> = state
             .overlays
-            .iter()
-            .map(|(id, o)| Warning {
+            .keys()
+            .chain(state.launch_warnings.keys())
+            .collect();
+        ids.into_iter()
+            .map(|id| Warning {
                 id: id.clone(),
-                warning: o.warning(),
+                warning: state.warning_for(id),
             })
             .collect()
+    }
+
+    fn shared_status(&self) -> BoxFuture<'_, BTreeMap<String, SharedDirStatus>> {
+        Box::pin(async move {
+            // The watcher keeps these fresh; a look is made here only for a
+            // directory it hasn't reached yet, so this never waits on a share
+            // that was already looked at.
+            for (template, dir) in &self.config.shared_dirs {
+                let known = self
+                    .shared
+                    .status
+                    .lock()
+                    .expect("shared lock")
+                    .contains_key(template);
+                if known {
+                    continue;
+                }
+                let status = self.look_at_shared(template, dir).await.unwrap_or_else(|| {
+                    shared::unreachable(dir, &timed_out_text(), shared::now_secs())
+                });
+                self.shared
+                    .status
+                    .lock()
+                    .expect("shared lock")
+                    .entry(template.clone())
+                    .or_insert(status);
+            }
+            let all = self.shared.status.lock().expect("shared lock");
+            self.config
+                .shared_dirs
+                .keys()
+                .filter_map(|t| Some((t.clone(), all.get(t)?.clone())))
+                .collect()
+        })
     }
 
     fn data_root(&self) -> Option<String> {
@@ -3007,7 +3244,10 @@ fn assign_ports(
 /// Whether the shared directory the owner keeps at `dir` can be mounted: see
 /// [`crate::storage::check_external_dir`]. The reason, if not. Looking at a
 /// share that is away can wait for as long as it is, so this gives up.
-async fn check_external(dir: PathBuf, per_user: Vec<String>) -> std::result::Result<(), String> {
+async fn check_external(
+    dir: PathBuf,
+    per_user: Vec<String>,
+) -> std::result::Result<(), ExternalProblem> {
     let looked = tokio::time::timeout(
         EXTERNAL_CHECK_TIMEOUT,
         blocking(move || crate::storage::check_external_dir(&dir, &per_user)),
@@ -3015,12 +3255,29 @@ async fn check_external(dir: PathBuf, per_user: Vec<String>) -> std::result::Res
     .await;
     match looked {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(format!("{err:#}")),
-        Err(_) => Err(format!(
-            "it didn't answer within {} s (a share that is away blocks the agent's reads)",
-            EXTERNAL_CHECK_TIMEOUT.as_secs()
-        )),
+        Ok(Err(err)) => Err(ExternalProblem {
+            text: format!("{err:#}"),
+            timed_out: false,
+        }),
+        Err(_) => Err(ExternalProblem {
+            text: timed_out_text(),
+            timed_out: true,
+        }),
     }
+}
+
+/// Why a launch can't use a shared directory kept outside the data root.
+struct ExternalProblem {
+    text: String,
+    /// The share didn't answer in time.
+    timed_out: bool,
+}
+
+fn timed_out_text() -> String {
+    format!(
+        "it didn't answer within {} s (a share that is away blocks the agent's reads)",
+        EXTERNAL_CHECK_TIMEOUT.as_secs()
+    )
 }
 
 /// Runs blocking file work off the async threads.
@@ -3444,6 +3701,7 @@ mod tests {
             progress,
             warnings,
             pulled,
+            shared: SharedChecks::default(),
             ports_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -5905,6 +6163,85 @@ mod tests {
         storage.home = None;
         storage.legacy_volume = None;
         storage
+    }
+
+    #[tokio::test]
+    async fn a_launch_without_its_shared_directory_warns_and_updates_the_status() {
+        let gone = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join("nas")
+            .join("steam");
+        let n = node(&[("steam", gone.clone())]);
+        let mut said = n.rt.warnings.subscribe();
+        let mut resend = n.rt.pulled.subscribe();
+        n.rt.start_environment(app_data_spec(
+            "e1",
+            "steam",
+            Some(steam_storage(true, Some(true))),
+        ))
+        .await
+        .unwrap();
+        // It started, with its home and without the shared directory.
+        assert!(
+            n.app_mounts("e1")
+                .iter()
+                .all(|m| m["Target"] != cha_wire::SHARED_MOUNT_ROOT)
+        );
+        // The user is told, over the existing environment warning.
+        let warning = said.try_recv().unwrap();
+        assert_eq!(warning.id, "e1");
+        let text = warning.warning.unwrap();
+        assert!(
+            text.starts_with("Started without Steam's shared library: ")
+                && text.contains(&gone.display().to_string())
+                && text.contains("is the share mounted"),
+            "{text}"
+        );
+        let now = Runtime::warnings_now(&n.rt);
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].warning.as_deref(), Some(text.as_str()));
+        // The inventory is to be sent again, with the share's state.
+        assert!(resend.try_recv().is_ok());
+        let status = Runtime::shared_status(&n.rt).await;
+        assert_eq!(status["steam"].state, SharedDirState::Missing);
+        assert!(
+            status["steam"]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("mounted")
+        );
+        // Stopping it ends the warning.
+        n.rt.stop_environment("e1").await.unwrap();
+        assert!(Runtime::warnings_now(&n.rt).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_status_of_a_usable_shared_directory_is_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let share = tmp.path().join("steam");
+        for place in [COMPAT, SHADER] {
+            std::fs::create_dir_all(share.join(place)).unwrap();
+        }
+        std::fs::set_permissions(&share, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let n = node(&[("steam", share)]);
+        let status = Runtime::shared_status(&n.rt).await;
+        assert_eq!(status["steam"].state, SharedDirState::Ok);
+        let mut resend = n.rt.pulled.subscribe();
+        n.rt.start_environment(app_data_spec(
+            "e1",
+            "steam",
+            Some(steam_storage(true, Some(true))),
+        ))
+        .await
+        .unwrap();
+        assert!(
+            Runtime::warnings_now(&n.rt)
+                .iter()
+                .all(|w| w.warning.is_none())
+        );
+        assert!(resend.try_recv().is_err());
     }
 
     #[tokio::test]

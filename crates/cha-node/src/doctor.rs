@@ -19,6 +19,7 @@ use crate::environments::{
     nvidia_present,
 };
 use crate::hostfiles;
+use crate::shared::{SharedLook, can_write, inspect_shared};
 use crate::storage::DataRoot;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -864,59 +865,6 @@ async fn external_shared(template: &str, dir: &Path) -> Check {
     describe_shared(name, dir, &per_user, &looked)
 }
 
-/// What looking at a shared directory found.
-#[derive(Debug, Default)]
-struct SharedLook {
-    /// `Err` is why it can't be read.
-    stat: Option<Result<SharedStat, String>>,
-    /// The filesystem it is on: type and source, from the mount table.
-    fs: Option<(String, String)>,
-    /// Per-user places it doesn't have as real directories.
-    missing: Vec<String>,
-    /// Empty, and on the same device as its parent: likely a mountpoint that
-    /// nothing is mounted on.
-    looks_unmounted: bool,
-}
-
-#[derive(Debug)]
-struct SharedStat {
-    mode: u32,
-    uid: u32,
-    gid: u32,
-}
-
-fn inspect_shared(dir: &Path, per_user: &[String]) -> SharedLook {
-    use std::os::unix::fs::MetadataExt;
-    let mut look = SharedLook::default();
-    let meta = match std::fs::metadata(dir) {
-        Ok(m) if m.is_dir() => m,
-        Ok(_) => {
-            look.stat = Some(Err("not a directory".into()));
-            return look;
-        }
-        Err(e) => {
-            look.stat = Some(Err(e.to_string()));
-            return look;
-        }
-    };
-    look.stat = Some(Ok(SharedStat {
-        mode: meta.mode() & 0o7777,
-        uid: meta.uid(),
-        gid: meta.gid(),
-    }));
-    look.fs = std::fs::read_to_string("/proc/self/mountinfo")
-        .ok()
-        .and_then(|table| mount_for(&table, dir));
-    look.missing = crate::storage::missing_per_user(dir, per_user);
-    let empty = std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_none());
-    let same_device = dir
-        .parent()
-        .and_then(|p| std::fs::metadata(p).ok())
-        .is_some_and(|parent| parent.dev() == meta.dev());
-    look.looks_unmounted = empty && same_device;
-    look
-}
-
 fn describe_shared(name: String, dir: &Path, per_user: &[String], look: &SharedLook) -> Check {
     let path = dir.display();
     let bind = format!(
@@ -995,43 +943,6 @@ fn describe_shared(name: String, dir: &Path, per_user: &[String], look: &SharedL
     } else {
         result.fix(fixes.join("; "))
     }
-}
-
-/// Whether the user `uid`:`gid` can write a directory by its mode bits (a NAS
-/// may map users, so this is what the permissions say, not a test).
-fn can_write(stat: &SharedStat, uid: u32, gid: u32) -> bool {
-    if stat.uid == uid {
-        stat.mode & 0o200 != 0
-    } else if stat.gid == gid {
-        stat.mode & 0o020 != 0
-    } else {
-        stat.mode & 0o002 != 0
-    }
-}
-
-/// The filesystem `path` is on, from a mount table (`/proc/self/mountinfo`):
-/// its type and source, from the mount that covers it most closely. Each line
-/// is `id parent major:minor root mount-point options [fields] - type source
-/// super-options`, with spaces in the mount point written `\040`.
-fn mount_for(table: &str, path: &Path) -> Option<(String, String)> {
-    let mut best: Option<(usize, String, String)> = None;
-    for line in table.lines() {
-        let Some((head, tail)) = line.split_once(" - ") else {
-            continue;
-        };
-        let Some(point) = head.split_whitespace().nth(4) else {
-            continue;
-        };
-        let point = point.replace("\\040", " ");
-        let mut tail = tail.split_whitespace();
-        let (Some(fs), Some(source)) = (tail.next(), tail.next()) else {
-            continue;
-        };
-        if path.starts_with(&point) && best.as_ref().is_none_or(|(len, ..)| point.len() >= *len) {
-            best = Some((point.len(), fs.to_string(), source.replace("\\040", " ")));
-        }
-    }
-    best.map(|(_, fs, source)| (fs, source))
 }
 
 fn gigabytes(bytes: u64) -> String {
@@ -1340,6 +1251,7 @@ fn gamestream_ports(config: &DockerConfig) -> Option<Check> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::{SharedStat, mount_for};
 
     #[test]
     fn host_files_without_engine_apparmor_say_so() {

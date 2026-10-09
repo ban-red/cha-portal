@@ -23,6 +23,7 @@ pub mod image_check;
 pub mod inventory;
 pub mod moonlight;
 pub mod relay;
+pub mod shared;
 pub mod storage;
 pub mod update;
 pub mod usage;
@@ -303,6 +304,7 @@ impl Agent {
         let mut inventory = tokio::task::spawn_blocking(collect).await?;
         if let Some(runtime) = &self.runtime {
             inventory.images = runtime.images().await;
+            inventory.shared_status = runtime.shared_status().await;
             let docker_root = match runtime.engine() {
                 Some(docker) => docker.root_dir().await.ok().flatten(),
                 None => None,
