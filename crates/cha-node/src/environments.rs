@@ -280,6 +280,9 @@ pub trait Runtime: Send + Sync + 'static {
 #[derive(Clone, Debug)]
 pub struct DockerConfig {
     pub streamer_image: String,
+    /// Extra flags for every streamer this agent starts (`CHA_STREAMER_ARGS`): a development
+    /// hook, for the streamer's frame tap, say. Empty by default.
+    pub streamer_args: Vec<String>,
     /// The render node the streamer composites on, e.g. `/dev/dri/renderD128`.
     pub render_node: String,
     /// The CDI device that gives a container the GPU.
@@ -2261,6 +2264,7 @@ impl DockerRuntime {
         if let Some(kind) = spec.gamepad.filter(|_| self.has_pads()) {
             cmd.extend(["--pad-kind", kind.as_str()].map(String::from));
         }
+        cmd.extend(self.config.streamer_args.iter().cloned());
         // The Moonlight media ports and the API secret; an older streamer
         // image never gets them (this is off by default).
         let gamestream = self.gamestream_access(&spec.id);
@@ -3414,6 +3418,7 @@ mod tests {
             docker,
             config: DockerConfig {
                 streamer_image: "cha/streamer:dev".into(),
+                streamer_args: Vec::new(),
                 render_node: "/dev/dri/renderD128".into(),
                 gpu_device: "nvidia.com/gpu=all".into(),
                 uinput: Some("/dev/uinput".into()),
@@ -6954,6 +6959,24 @@ mod tests {
         let err = refusal(&rt, &steam);
         assert!(err.contains("bubblewrap"), "{err}");
         assert!(rt.plan_host(&with_host(caps), &HashSet::new()).is_ok());
+    }
+
+    #[test]
+    fn a_node_can_add_flags_to_every_streamer() {
+        let mut rt = runtime();
+        rt.config.streamer_args = vec!["--frame-tap".into(), "/run/cha/frame-tap".into()];
+        let s = rt.streamer_config(&pad_spec(None), 7600);
+        let cmd = s["Cmd"].as_array().unwrap();
+        let at = cmd.iter().position(|a| a == "--frame-tap").unwrap();
+        assert_eq!(cmd[at + 1], json!("/run/cha/frame-tap"));
+        // Not there unless the node asks.
+        let plain = runtime().streamer_config(&pad_spec(None), 7600);
+        assert!(
+            !plain["Cmd"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("--frame-tap"))
+        );
     }
 
     #[test]

@@ -42,6 +42,9 @@ services:
       CHA_ALLOW_INSECURE_PORTAL: ${CHA_ALLOW_INSECURE_PORTAL:-false}
       CHA_NODE_NAME: ${CHA_NODE_NAME:-}
       CHA_STREAMER_IMAGE: ${CHA_STREAMER_IMAGE:-cha/streamer:dev}
+      # Development only: extra flags for every streamer this agent starts,
+      # e.g. the frame tap (crates/cha-streamer/README.md): empty by default.
+      CHA_STREAMER_ARGS: ${CHA_STREAMER_ARGS:-}
       # Virtual gamepads; set empty on hosts without the uinput module.
       CHA_UINPUT: ${CHA_UINPUT-/dev/uinput}
       # Virtual DualSense and Steam Controller; set empty on hosts without the

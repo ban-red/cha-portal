@@ -17,6 +17,7 @@ mod cursor;
 mod handlers;
 mod input;
 mod output;
+mod tap;
 
 use std::ffi::OsString;
 use std::os::fd::{AsFd, OwnedFd};
@@ -110,6 +111,8 @@ pub struct Config {
     pub encode_fps: u32,
     /// The Wayland socket's name in `$XDG_RUNTIME_DIR`.
     pub socket_name: String,
+    /// The frame tap (`--frame-tap`), if there is one: small pictures for local readers.
+    pub tap: Option<Arc<crate::tap::Tap>>,
 }
 
 /// What the rest of the streamer asks of the compositor.
@@ -383,6 +386,8 @@ pub struct State {
     ticks: u64,
     next_encode: Instant,
     pub stats: Stats,
+    /// The frame tap's capture side, when `--frame-tap` is on.
+    tap: Option<tap::Capture>,
 }
 
 /// The EGL display to draw on: the render node's device on a GPU, Mesa's
@@ -601,6 +606,7 @@ impl State {
             ticks: 0,
             next_encode: Instant::now(),
             stats: Stats::default(),
+            tap: config.tap.clone().map(tap::Capture::new),
         })
     }
 
@@ -627,6 +633,13 @@ impl State {
     /// One compositor tick: maybe composite and publish a frame, then let every
     /// visible surface draw its next one.
     fn tick(&mut self) {
+        if let Some(tap) = self.tap.as_mut() {
+            match tap.finish(&mut self.renderer) {
+                Ok(Some(us)) => self.stats.tap_us.push(us),
+                Ok(None) => {}
+                Err(err) => warn!("frame tap: {err:#}"),
+            }
+        }
         self.clipboard.poll(&self.seat);
         self.publish_cursor();
         let now = Instant::now();
@@ -638,7 +651,21 @@ impl State {
             }
             self.stats.encode_ticks += 1;
             self.publish_pointer();
-            let wanted = self.hub.has_listeners() && (self.dirty || self.force_frame);
+            // The frame tap wants pictures while a reader keeps asking, with or without a viewer.
+            let listeners = self.hub.has_listeners();
+            let (tap_on, tap_force) = self
+                .tap
+                .as_mut()
+                .map_or((false, false), |t| t.want(listeners));
+            if tap_force {
+                self.force_frame = true;
+            }
+            // With nobody encoding, only a capture that is due composites (not every change).
+            let wanted = if listeners {
+                self.dirty || self.force_frame
+            } else {
+                tap_on && self.force_frame
+            };
             if !self.dirty && !self.force_frame {
                 self.stats.clean += 1;
             }

@@ -64,6 +64,22 @@ struct Args {
     /// `--fps`, so each encoded frame falls on a tick (270 for 90).
     #[arg(long, default_value_t = 240)]
     compositor_fps: u32,
+    /// A local Unix socket (mode 0600) that serves the latest picture, small, to
+    /// processes on the node: health checks, thumbnails, agents (see `tap.rs`).
+    /// Off unless set, and idle until a reader asks.
+    #[arg(long)]
+    frame_tap: Option<PathBuf>,
+    /// The frame tap's picture size, `WIDTHxHEIGHT`.
+    #[arg(long, default_value = "640x360", value_parser = crate::tap::parse_size)]
+    frame_tap_size: (u32, u32),
+    /// Most pictures a second the frame tap takes while a reader is asking.
+    #[arg(long, default_value_t = 15)]
+    frame_tap_fps: u32,
+    /// Lets the frame tap's `PAD` command drive virtual gamepad INDEX (0 to 3), through
+    /// the call a session's pad takes: it can press buttons in the app, so it is its
+    /// own opt-in. Needs `--frame-tap` and gamepads (`--input-dir`).
+    #[arg(long, value_name = "INDEX", requires = "frame_tap", value_parser = clap::value_parser!(u8).range(0..4))]
+    frame_tap_pad: Option<u8>,
     /// The NVENC codecs' bitrate in Mbit/s at 60 fps: their starting and
     /// target rate, scaled by (fps / 60)^0.75 at other rates.
     #[arg(long, default_value_t = 40)]
@@ -292,6 +308,13 @@ pub fn main() -> Result<()> {
         "device ready"
     );
     let hub = Arc::new(FrameHub::default());
+    let tap = args.frame_tap.as_ref().map(|_| {
+        crate::tap::Tap::new(
+            args.frame_tap_size.0,
+            args.frame_tap_size.1,
+            args.frame_tap_fps,
+        )
+    });
     let handle = compositor::spawn(
         compositor::Config {
             device: Arc::clone(&device),
@@ -300,6 +323,7 @@ pub fn main() -> Result<()> {
             compositor_fps: args.compositor_fps,
             encode_fps: args.fps,
             socket_name: args.socket.clone(),
+            tap: tap.clone(),
         },
         Arc::clone(&hub),
     )?;
@@ -382,6 +406,22 @@ pub fn main() -> Result<()> {
                 }
             }
         });
+    // The frame tap's socket, and with `--frame-tap-pad` its PAD command, which drives a
+    // virtual gamepad through the same call a session's pad takes.
+    if let (Some(tap), Some(path)) = (tap, args.frame_tap.as_ref()) {
+        let pad = match (args.frame_tap_pad, &gamepads) {
+            (Some(index), Some(pads)) => Some(crate::tap::PadSink::new(
+                Arc::clone(pads) as Arc<dyn crate::tap::PadTarget>,
+                usize::from(index),
+            )),
+            (Some(_), None) => {
+                warn!("--frame-tap-pad needs gamepads (--input-dir): pad injection is off");
+                None
+            }
+            (None, _) => None,
+        };
+        crate::tap::serve(tap, path, pad)?;
+    }
     if let Some(command) = args.run.clone() {
         keep_running(command, handle.socket_name.to_string_lossy().into_owned());
     }

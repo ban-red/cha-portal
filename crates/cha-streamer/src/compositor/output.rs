@@ -393,6 +393,15 @@ impl State {
             warn!("waiting for the GPU: {err:?}");
         }
         let rendered = Instant::now();
+        // The frame tap, if a reader is asking and one is due: a small scaled copy of this picture.
+        if let Some(tap) = self.tap.as_mut()
+            && tap.take_turn()
+        {
+            // Queued, not waited for: `tick` maps the result once the GPU has it.
+            if let Err(err) = tap.start(&mut self.renderer, &target, self.pool.size) {
+                warn!("frame tap: {err:#}");
+            }
+        }
         drop(target);
 
         self.pool.seq = seq;
@@ -478,6 +487,13 @@ impl State {
             .renderer
             .map_texture(&mapping)
             .context("mapping the picture")?;
+        if let Some(tap) = self.tap.as_mut()
+            && tap.take_turn()
+        {
+            let taken = Instant::now();
+            tap.capture_pixels(pixels, width as usize, height as usize);
+            self.stats.tap_us.push(taken.elapsed().as_micros() as u64);
+        }
         // The buffer is free (nothing else holds it): the one writer.
         let slot = Arc::get_mut(&mut self.pool.entries[index].slot).expect("a free buffer");
         let SlotBuffer::Pixels(picture) = &mut slot.0 else {
@@ -535,6 +551,8 @@ pub struct Stats {
     pub starved: u64,
     pub commits: u64,
     pub render_us: Vec<u64>,
+    /// What each frame tap capture took, on top of the composite.
+    pub tap_us: Vec<u64>,
     last_log: Option<Instant>,
 }
 
@@ -550,14 +568,8 @@ impl Stats {
         self.last_log = Some(now);
         let secs = now.duration_since(last).as_secs_f64();
         self.render_us.sort_unstable();
-        let pct = |q: f64| {
-            self.render_us
-                .get(
-                    ((self.render_us.len() as f64 * q) as usize)
-                        .min(self.render_us.len().saturating_sub(1)),
-                )
-                .copied()
-        };
+        self.tap_us.sort_unstable();
+        let pct = |q: f64| percentile(&self.render_us, q);
         if self.composited > 0 || self.commits > 0 {
             info!(
                 composited_fps = format!("{:.1}", self.composited as f64 / secs),
@@ -565,6 +577,9 @@ impl Stats {
                 starved = self.starved,
                 render_us_p50 = pct(0.5),
                 render_us_p99 = pct(0.99),
+                taps = self.tap_us.len(),
+                tap_us_p50 = percentile(&self.tap_us, 0.5),
+                tap_us_p99 = percentile(&self.tap_us, 0.99),
                 generation = pool.generation,
                 windows,
                 encode_ticks = self.encode_ticks,
@@ -578,7 +593,15 @@ impl Stats {
         self.starved = 0;
         self.commits = 0;
         self.render_us.clear();
+        self.tap_us.clear();
     }
+}
+
+/// The `q` quantile of an ascending list.
+fn percentile(sorted: &[u64], q: f64) -> Option<u64> {
+    sorted
+        .get(((sorted.len() as f64 * q) as usize).min(sorted.len().saturating_sub(1)))
+        .copied()
 }
 
 #[cfg(test)]

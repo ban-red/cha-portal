@@ -94,6 +94,10 @@ struct Args {
     /// The streamer image each environment runs beside its app.
     #[arg(long, env = "CHA_STREAMER_IMAGE", default_value = "cha/streamer:dev")]
     streamer_image: String,
+    /// Extra flags for every streamer this agent starts, separated by spaces.
+    /// A development hook: `--frame-tap /run/cha/frame-tap --frame-tap-pad 0`.
+    #[arg(long, env = "CHA_STREAMER_ARGS", value_delimiter = ' ', hide = true)]
+    streamer_args: Vec<String>,
     /// The image that streams a Moonlight host's app (Sunshine, Apollo); like
     /// app images, `cha/gateway:dev` runs as `<registry>/cha-gateway:<tag>`
     /// when `CHA_IMAGE_REGISTRY` is set.
@@ -474,6 +478,12 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
     });
     Ok(DockerConfig {
         streamer_image: args.streamer_image.clone(),
+        streamer_args: args
+            .streamer_args
+            .iter()
+            .filter(|a| !a.is_empty())
+            .cloned()
+            .collect(),
         render_node,
         gpu_device: args.gpu_device.clone(),
         uinput: Some(args.uinput.trim().to_string()).filter(|u| !u.is_empty()),

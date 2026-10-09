@@ -283,6 +283,21 @@ In desktop mode the page draws the cursor (`{"t":"cursor","client":true}`), so i
 - **The page** sets the element's CSS cursor. Images go through `image-set()` at the stream's scale, so a 30 px cursor in a 2× stream shows at 15 CSS px, crisp.
 - Tested: Chrome's cursor-shape names (`default`, `text` over the omnibox), and XFCE's arrow image through rootful Xwayland.
 
+## Frame tap (`--frame-tap`)
+
+A way for a process on the node to look at the screen without a viewer connected: a health check, a thumbnail, an agent.
+
+- **Off unless asked for.** `--frame-tap <socket>` serves the latest picture on a Unix socket (mode 0600, the streamer's user). `--frame-tap-size` (default `640x360`, at most `1920x1080`) and `--frame-tap-fps` (default 15) set the picture and the most it takes a second.
+- **Idle until a reader asks.** Nothing is captured until the first request, and capturing stops 3 s after the last. With no viewer the compositor draws only when a capture is due (about `--frame-tap-fps` times a second); with a viewer it takes the picture from the composites that happen anyway.
+- **Protocol** (one request per line):
+  - `FRAME [after]` waits up to 300 ms for a frame newer than `after` (the newest at the time of the request if it is left out), then answers `OK <seq> <width> <height> <bytes> <age_ms>` and `bytes` of RGB, top row first. A screen that isn't changing makes no new frames, so the newest comes back with its age. `NONE` means no frame has been captured yet.
+  - `INFO` answers one JSON line: the size, rate and newest sequence number.
+  - `QUIT`, or closing the socket, ends the connection.
+- **How it takes the picture.** On a GPU device the buffer just composited is scaled (linear filter) into a small buffer of its own and only that is read back: the output pool, the CUDA registrations and the encoders are not touched. The scale and readback are queued on one tick and mapped on a later one, so the compositor thread never waits on the GPU. On the CPU device the picture is averaged down from the readback it already has.
+- **Cost** (RTX 4090 with a game running on the same GPU, release build, 640x360 at 15 Hz, a reader asking all the time): the capture takes the compositor thread about 0.4 ms at p50 and 1.4 ms at p99 (queueing about 0.1 ms, mapping about 0.3 ms). The compositor logs `taps`, `tap_us_p50` and `tap_us_p99` with its other numbers every 10 s. Not yet measured with a viewer streaming at the same time.
+- It exposes the screen to whatever can open the socket: keep the path somewhere only that user can reach.
+- **Driving a gamepad** (`--frame-tap-pad <0-3>`, its own opt-in, and it needs `--frame-tap` and gamepads, i.e. `--input-dir`). `PAD <json>` sets the state of that virtual pad, the way a session's pad message does: `PAD {"b":[<buttons 0..1>],"a":[lx,ly,rx,ry],"ty":"xbox","hold_ms":250}` answers `OK`, or `ERR <why>`. The index is the streamer's, whatever the message says. The state stands for `hold_ms` (default 250, at most 2000) and then the pad goes back to rest: when a newer `PAD` arrives the hold starts again, `PADOFF` lets go at once, and so does the connection that sent it closing. One writer at a time: a browser session with the controls sends the same pad indices.
+
 ## Setup status (P2.1)
 
 What an app's long first-run setup is doing, for the pages to show while the picture is still black (Steam's first launch downloads ~500 MB). The contract is in [`images/README.md`](../../images/README.md): the app replaces `/run/cha/status`, one JSON object, atomically.
