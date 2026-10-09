@@ -7,6 +7,19 @@ The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC,
 > [!WARNING]
 > **Early releases (0.x).** Each release publishes every image, so a machine needs nothing built: see the [Quick start](SETUP.md#quick-start) and the [releases](https://github.com/ban-red/cha-portal/releases). Expect breaking changes to the database, the node protocol and the deploy files. It is developed and tested on one setup (a MacBook Pro M4 with Google Chrome on wired 1 GbE, and an NVIDIA RTX 4090 node).
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/dashboard.png" alt="The portal's Environments page: running environments with Connect, Share and Stop, and the app catalog"><br><sub>Environments: what's running, and what can launch.</sub></td>
+    <td width="50%"><img src="docs/screenshots/nodes.png" alt="The Nodes page: two GPU servers with their hardware, host options and live CPU and RAM"><br><sub>Nodes: each GPU server, its hardware and live load.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/kde-stream.jpg" alt="A KDE Plasma desktop streaming in the browser, with the stats panel open beside Dolphin, System Settings and Konsole"><br><sub>A KDE Plasma desktop at 2560×1440, with the stats panel.</sub></td>
+    <td width="50%"><img src="docs/screenshots/cyberpunk-stream.jpg" alt="Cyberpunk 2077 streaming at 2560×1440 with PyroWave at up to 120 fps, with the stats panel open"><br><sub>A game over PyroWave on a wired LAN, with the stats panel.</sub></td>
+  </tr>
+</table>
+
 ## What works
 
 - **Environments:** Google Chrome, Firefox, XFCE, KDE Plasma 6, Steam Big Picture (inside gamescope, with Proton games) and a test pattern for measuring latency. A node downloads an app's image the first time it's launched there, with a progress bar in the portal.
