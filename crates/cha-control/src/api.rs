@@ -462,7 +462,7 @@ async fn list_users(State(state): State<AppState>, _: AdminUser) -> ApiResult<Js
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateUserRequest {
-    email: String,
+    email: Option<String>,
     username: Option<String>,
     display_name: Option<String>,
     password: String,
@@ -475,8 +475,26 @@ async fn create_user(
     client: ClientInfo,
     Json(req): Json<CreateUserRequest>,
 ) -> ApiResult<Json<User>> {
-    let email = valid_email(&req.email)?;
-    let username = valid_username(req.username.as_deref().unwrap_or(&email))?;
+    // Either may stand alone: the username defaults to the email.
+    let email = match req
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(e) => Some(valid_email(e)?),
+        None => None,
+    };
+    let username = req
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or(email.as_deref())
+        .ok_or_else(|| {
+            ApiError::bad_request("bad_username", "give a username or an email address")
+        })?;
+    let username = valid_username(username)?;
     check_password_policy(&req.password)?;
     let display_name = req
         .display_name
@@ -487,7 +505,7 @@ async fn create_user(
     let user = match db::insert_user_with_email(
         &state.db,
         username,
-        Some(&email),
+        email.as_deref(),
         display_name,
         &hash_password(&req.password)?,
         req.role,

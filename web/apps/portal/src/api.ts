@@ -759,7 +759,7 @@ export const api = {
   removeGrant: (id: string, grantId: string) =>
     request<null>("DELETE", `/users/${encodeURIComponent(id)}/grants/${encodeURIComponent(grantId)}`),
   users: () => request<User[]>("GET", "/users"),
-  createUser: (body: { email: string; username?: string; displayName?: string; password: string; role: Role }) =>
+  createUser: (body: { email?: string; username?: string; displayName?: string; password: string; role: Role }) =>
     request<User>("POST", "/users", body),
   deleteUser: (id: string) => request<null>("DELETE", `/users/${encodeURIComponent(id)}`),
   audit: () => request<AuditEntry[]>("GET", "/audit"),

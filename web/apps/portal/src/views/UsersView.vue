@@ -22,16 +22,14 @@ const username = ref("");
 const displayName = ref("");
 const password = ref("");
 const role = ref<Role>("user");
-const advanced = ref(false);
 const formError = ref<string | null>(null);
 
 const create = useMutation({
   mutationFn: () =>
-    api.createUser({ email: email.value.trim(), username: username.value.trim() || undefined, displayName: displayName.value || undefined, password: password.value, role: role.value }),
+    api.createUser({ email: email.value.trim() || undefined, username: username.value.trim() || undefined, displayName: displayName.value || undefined, password: password.value, role: role.value }),
   onSuccess: async () => {
     showForm.value = false;
     email.value = username.value = displayName.value = password.value = "";
-    advanced.value = false;
     role.value = "user";
     await queryClient.invalidateQueries({ queryKey: ["users"] });
   },
@@ -96,9 +94,14 @@ const roleStyle: Record<Role, string> = {
     </div>
 
     <form v-if="showForm" id="add-user" class="card grid max-w-3xl gap-4 p-5 sm:grid-cols-2" @submit.prevent="submit">
-      <div class="sm:col-span-2">
-        <label class="label" for="u-email">Email</label>
-        <input id="u-email" v-model="email" name="email" type="email" class="field" autocomplete="off" autocapitalize="none" spellcheck="false" required />
+      <div>
+        <label class="label" for="u-name">Username</label>
+        <input id="u-name" v-model="username" name="username" class="field" autocomplete="off" autocapitalize="none" spellcheck="false" :required="!email.trim()" />
+      </div>
+      <div>
+        <label class="label" for="u-email">Email <span class="font-normal text-ink-3">(optional)</span></label>
+        <input id="u-email" v-model="email" name="email" type="email" class="field" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="u-email-hint" />
+        <p id="u-email-hint" class="mt-1.5 text-xs text-ink-3">Without a username, the email is used. They can sign in with either.</p>
       </div>
       <div>
         <label class="label" for="u-display">Display name <span class="font-normal text-ink-3">(optional)</span></label>
@@ -116,17 +119,6 @@ const roleStyle: Record<Role, string> = {
           <option value="guest">Guest</option>
           <option value="admin">Admin</option>
         </select>
-      </div>
-      <div class="sm:col-span-2">
-        <button type="button" class="inline-flex min-h-9 items-center gap-1 text-sm text-ink-2 hover:text-ink pointer-coarse:min-h-11" :aria-expanded="advanced" aria-controls="u-advanced" @click="advanced = !advanced">
-          <ChevronDown class="size-4 transition-transform" :class="advanced ? '' : '-rotate-90'" aria-hidden="true" />
-          Advanced
-        </button>
-        <div v-if="advanced" id="u-advanced" class="mt-2 max-w-sm">
-          <label class="label" for="u-name">Username <span class="font-normal text-ink-3">(optional)</span></label>
-          <input id="u-name" v-model="username" name="username" class="field" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="u-name-hint" />
-          <p id="u-name-hint" class="mt-1.5 text-xs text-ink-3">Defaults to the email. They can sign in with either.</p>
-        </div>
       </div>
       <div class="space-y-3 sm:col-span-2">
         <FormError :message="formError" />

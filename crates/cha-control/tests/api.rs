@@ -4075,7 +4075,6 @@ async fn local_users_are_made_and_sign_in_by_email() {
     assert_eq!(taken.body["error"], "username_taken");
 
     for bad in [
-        "",
         "no-at-sign",
         "@example.com",
         "ann@",
@@ -4093,7 +4092,8 @@ async fn local_users_are_made_and_sign_in_by_email() {
             .await;
         assert_eq!(r.body["error"], "bad_email", "{bad:?}");
     }
-    let missing = p
+    // A username alone is enough.
+    let nomail = p
         .call(
             "POST",
             "/api/users",
@@ -4101,7 +4101,16 @@ async fn local_users_are_made_and_sign_in_by_email() {
             Some(json!({ "username": "nomail", "password": "another long password", "role": "user" })),
         )
         .await;
-    assert!(missing.status.is_client_error());
+    assert!(nomail.status.is_success());
+    assert_eq!(nomail.body["email"], Value::Null);
+    // Neither is not.
+    for body in [json!({}), json!({ "email": "  ", "username": " " })] {
+        let mut body = body;
+        body["password"] = json!("another long password");
+        body["role"] = json!("user");
+        let r = p.call("POST", "/api/users", Some(&admin), Some(body)).await;
+        assert_eq!(r.body["error"], "bad_username");
+    }
 
     // The setup admin has none.
     let users = p.call("GET", "/api/users", Some(&admin), None).await;
