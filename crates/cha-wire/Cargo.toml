@@ -1,6 +1,6 @@
 [package]
 name = "cha-wire"
-version = "0.4.1"
+version = "0.5.0"
 description = "Cha Portal node <-> portal messages (ADR 0001: JSON over one WebSocket)"
 edition.workspace = true
 license.workspace = true
