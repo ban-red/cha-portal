@@ -419,6 +419,7 @@ Nodes on published 0.3.0 images can take the **Update** button on **Admin → No
 - **Host options**: a custom environment can ask for mounts, published ports, capabilities and devices. A node allows none of them until its owner sets `CHA_HOST_OPTIONS` ([Host options](deploy/README.md#host-options)).
 - **Virtual machines**: catalogs can offer them through the `vm` profile, on nodes with KVM, behind the admin's approval ([ADR 0020](docs/adr/0020-vm-environments.md)).
 - **Images**: the environment images get a new base: `cha-run` can keep a custom environment's capabilities as it drops to the app's user.
+- **Steam**: Power → "Switch to Desktop" works as on SteamOS: one environment alternates between Big Picture and an XFCE desktop with the normal client, over the same saved data.
 - **Database**: it gains custom environments and their published ports (migration 0017), applied on start.
 
 ### From 0.2.1 to 0.3.0
