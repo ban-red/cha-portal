@@ -1,0 +1,18 @@
+#!/bin/sh
+# The normal Steam client (not Big Picture), started by XFCE's autostart
+# (cha-steam.desktop) in the desktop session. It gets -steamos3 like gaming
+# mode does: the flag opts the client into the steamdeck_stable client branch,
+# and a client started without it would switch back to the default branch, so
+# whenever the two differ every switch would update the client. SteamOS runs
+# Steam with its flags in both modes too.
+#
+# Steam makes its virtual Xbox pad through /dev/uinput, which the app doesn't
+# have. LD_PRELOAD loads libcha-uinput.so into steam, which fakes that file and
+# asks the streamer (the steam pad kind; /run/cha/uinput.sock) to make the
+# device. The dynamic loader expands $LIB to lib/i386-linux-gnu for the 32-bit
+# client and to lib/x86_64-linux-gnu for the 64-bit helpers it starts (both are
+# built). Without the streamer's socket the shim leaves Steam as it was: no
+# such device. Its log of what Steam asks for is /run/cha/uinput-shim.log.
+LD_PRELOAD="/opt/cha/\$LIB/libcha-uinput.so${LD_PRELOAD:+ $LD_PRELOAD}"
+export LD_PRELOAD
+exec steam -steamos3

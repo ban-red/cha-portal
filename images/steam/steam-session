@@ -1,0 +1,252 @@
+#!/usr/bin/python3
+"""Runs Steam's two sessions, one at a time, and switches between them.
+
+`start-steam` hands over to this. The environment always starts in gaming mode
+(`steam-gaming`: Big Picture in gamescope); `steamos-session-select`, which
+Steam's Power menu calls for "Switch to Desktop", names the next mode in the
+request file ($XDG_RUNTIME_DIR/steam-session, `gaming` or `desktop`) and ends
+the current session, and this starts the other (`steam-desktop`: XFCE with the
+normal Steam client). There is no display manager, so this is what SteamOS's
+does between Gaming Mode and Desktop Mode. Each session runs under
+`steam-run --name NAME`, which keeps its output and reports a crash on the page.
+
+When a session ends:
+- not stopped, exit code 0, the request file names a mode: that mode starts;
+- a desktop that ended with code 0 and no request (the user logged out of
+  XFCE): gaming mode starts, as on SteamOS;
+- gaming mode that ended with code 0 and no request (Steam was exited, or
+  Turn Off was chosen): this exits 0 and the container ends;
+- any other code: this exits with it (steam-run has already said why on the
+  page). Nothing is restarted after a crash.
+A stop (SIGTERM, SIGINT) is passed on to the session, and this then exits 0
+without starting another.
+
+Steam allows one client per home, and the next session's Steam would find the
+old one still running, so between sessions what the last left is cleared: its
+process group, then any `steam` process, then Steam's stale pid file and pipe.
+
+Environment: XDG_RUNTIME_DIR (default /run/cha), HOME, MANGOHUD_CONFIGFILE
+(the overlay file; default /run/cha/mangohud.conf). The CHA_STEAM_* waits
+below, and CHA_PROC (default /proc), exist for the tests.
+"""
+
+import os
+import signal
+import subprocess
+import sys
+import time
+
+PROC = os.environ.get("CHA_PROC", "/proc")
+# Seconds a session's process group has after SIGTERM before SIGKILL.
+GROUP_WAIT = float(os.environ.get("CHA_STEAM_GROUP_WAIT", "5"))
+# Seconds a leftover Steam client has to end before SIGKILL.
+CLIENT_WAIT = float(os.environ.get("CHA_STEAM_CLIENT_WAIT", "15"))
+# A desktop session that ends sooner than this, twice in a row, is a loop.
+QUICK = float(os.environ.get("CHA_STEAM_QUICK", "5"))
+MODES = ("gaming", "desktop")
+# `exit`: end, as asked (Shutdown in the Power menu; see dbus-send).
+REQUESTS = MODES + ("exit",)
+
+stopped = []
+child = None
+
+
+def say(text):
+    print(f"steam-session: {text}", file=sys.stderr, flush=True)
+
+
+def runtime_dir():
+    return os.environ.get("XDG_RUNTIME_DIR", "/run/cha")
+
+
+def request_path():
+    return os.path.join(runtime_dir(), "steam-session")
+
+
+def overlay_path():
+    return os.environ.get("MANGOHUD_CONFIGFILE", "/run/cha/mangohud.conf")
+
+
+def remove(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        say(f"can't remove {path}: {e}")
+
+
+def read_request():
+    """The mode the request file names, or None."""
+    try:
+        with open(request_path()) as f:
+            mode = f.read().strip()
+    except OSError:
+        return None
+    return mode if mode in REQUESTS else None
+
+
+def set_overlay(mode):
+    """Gaming mode has the overlay, off; the desktop has none, and the streamer
+    looks on every stats line for the file, so the page stops offering it."""
+    path = overlay_path()
+    if mode == "gaming":
+        try:
+            with open(path, "w") as f:
+                f.write("no_display\n")
+        except OSError as e:
+            say(f"can't write {path}: {e}")
+    else:
+        remove(path)
+
+
+def steam_pids():
+    """Processes named `steam` (the launcher script and the client both are),
+    other than this one."""
+    pids = []
+    try:
+        names = os.listdir(PROC)
+    except OSError:
+        return pids
+    for name in names:
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        try:
+            with open(os.path.join(PROC, name, "comm")) as f:
+                if f.read().strip() == "steam":
+                    pids.append(int(name))
+        except OSError:
+            continue
+    return pids
+
+
+def group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def wait_until(done, seconds):
+    deadline = time.monotonic() + seconds
+    while not done():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
+def clean_up(pgid, label):
+    """Ends what the session left: its process group, then any Steam client."""
+    if group_alive(pgid):
+        say(f"ending what the {label} session left (group {pgid})")
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            pass
+        if not wait_until(lambda: not group_alive(pgid), GROUP_WAIT):
+            say(f"group {pgid} didn't end, killing it")
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                pass
+            wait_until(lambda: not group_alive(pgid), 5)
+    if steam_pids():
+        say("waiting for the Steam client to end")
+        if not wait_until(lambda: not steam_pids(), CLIENT_WAIT):
+            say("the Steam client didn't end, killing it")
+            for pid in steam_pids():
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            wait_until(lambda: not steam_pids(), min(5, CLIENT_WAIT))
+
+
+def forward(signum, _frame):
+    stopped.append(signum)
+    if child is not None:
+        try:
+            child.send_signal(signum)
+        except OSError:
+            pass
+
+
+def run_session(mode):
+    """Starts one session and waits for it. (exit code, process group)."""
+    global child
+    remove(request_path())
+    # The home outlives the container, and Steam is killed when it stops: its
+    # pid file and pipe are left naming a process of the last session, and
+    # pids start over in each container. There is one Steam per home, and
+    # clean_up has ended the last one.
+    steam_dir = os.path.join(os.environ.get("HOME", "/home/cha"), ".steam")
+    remove(os.path.join(steam_dir, "steam.pid"))
+    remove(os.path.join(steam_dir, "steam.pipe"))
+    set_overlay(mode)
+    name = "gamescope" if mode == "gaming" else "desktop"
+    env = dict(os.environ, CHA_STEAM_SESSION=mode)
+    say(f"starting the {mode} session")
+    child = subprocess.Popen(
+        ["steam-run", "--name", name, f"steam-{mode}"],
+        env=env,
+        start_new_session=True,
+    )
+    pgid = child.pid
+    if stopped:
+        # A stop that came between the loop's check and the handler's child.
+        child.send_signal(stopped[0])
+    code = child.wait()
+    child = None
+    return code, pgid
+
+
+def main():
+    signal.signal(signal.SIGTERM, forward)
+    signal.signal(signal.SIGINT, forward)
+    mode = "gaming"
+    quick = 0
+    while True:
+        started = time.monotonic()
+        try:
+            code, pgid = run_session(mode)
+        except OSError as e:
+            say(f"can't start the {mode} session: {e}")
+            return 127
+        lasted = time.monotonic() - started
+        if stopped:
+            # The container is stopping and has a few seconds: its end takes
+            # whatever the session left.
+            say("stopped")
+            return 0
+        clean_up(pgid, mode)
+        if code != 0:
+            say(f"the {mode} session ended with code {code}")
+            return code
+        request = read_request()
+        if request == "exit":
+            say(f"the {mode} session ended as asked: done")
+            return 0
+        if request is None and mode == "gaming":
+            say("the gaming session ended: done")
+            return 0
+        # A desktop that dies at once ends in gaming mode, from which a request
+        # can start it again: twice in a row is a loop. Only a session that
+        # lasted resets the count.
+        if mode == "desktop" and request is None and lasted < QUICK:
+            quick += 1
+            if quick >= 2:
+                say(f"the desktop session ended within {QUICK:g} s twice in a row, giving up")
+                return 1
+        elif lasted >= QUICK:
+            quick = 0
+        nxt = request or "gaming"
+        say(f"the {mode} session ended: switching to {nxt}")
+        mode = nxt
+
+
+if __name__ == "__main__":
+    sys.exit(main())

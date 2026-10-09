@@ -1,16 +1,9 @@
 #!/bin/sh
-# Steam's Big Picture inside gamescope, a Wayland client of our compositor at
-# the stream's size. gamescope gives Steam and its games their own Xwayland,
-# frame pacing and scaling.
+# The Steam environment's one-time setup, then steam-session, which runs Steam
+# in gamescope (Big Picture, steam-gaming) or in an XFCE desktop (steam-desktop)
+# and switches between them, as SteamOS does between Gaming Mode and Desktop
+# Mode. The container lives as long as steam-session does.
 set -eu
-w="${CHA_WIDTH:-2560}"
-h="${CHA_HEIGHT:-1440}"
-r="${CHA_REFRESH:-60}"
-# The home outlives the container, and Steam is killed when it stops: its pid
-# file and pipe are left naming a process of the last container, and pids
-# start over in each. There is one Steam per home (the portal allows one such
-# environment per user), so none is running now.
-rm -f "$HOME/.steam/steam.pid" "$HOME/.steam/steam.pipe"
 # The node lays each user's own folders over parts of the shared library
 # (CHA_PER_USER_DIRS: Proton's prefixes and shader caches); if they aren't
 # mounted, Proton would work in the shared copies. Not even Steam starts.
@@ -32,35 +25,13 @@ export GSK_RENDERER=gl
 # or `mangoapp_steam` and `preset=1..4` (MangoHud draws nothing over Steam's own
 # UI without mangoapp_steam). The presets are ~/.config/MangoHud/presets.conf in
 # the home if it exists, else MangoHud's own. The file existing tells the
-# streamer this app has an overlay; each launch starts with it off.
+# streamer this app has an overlay. steam-session makes it (off) when it starts
+# gaming mode and removes it in desktop mode, where nothing draws the overlay.
 export MANGOHUD_CONFIGFILE=/run/cha/mangohud.conf
-printf 'no_display\n' > "$MANGOHUD_CONFIGFILE"
-# Three helpers run beside Steam, in gamescope's environment (its X display):
-# - Big Picture sets gamescope's touch click mode to "passthrough", which
-#   drops the pointer's motion; steam-touch-mode puts the mode back;
-# - when Steam's in-game menu closes, gamescope gives a Proton game the X focus
-#   back but Wine doesn't make it the foreground window again, and its input,
-#   the controller's too, goes nowhere until a click; steam-focus sends the
-#   game WM_TAKE_FOCUS, which gamescope never does;
-# - gamescope doesn't pass the clipboard between our compositor and its X
-#   server; cha-x11-clipboard bridges it to the streamer, as in XFCE (it
-#   exits when X does; after any other exit it starts again).
-# steam-run starts steam-status (a home's first launch downloads ~500 MB
-# before Steam has a window, and the picture stays black: it tells the page
-# what Steam is doing, the environment's setup status, images/README.md),
-# keeps gamescope's and Steam's output in ~/.local/state/cha/gamescope.log
-# and in the container's log, and when gamescope dies on an error says so on
-# the page and exits with its code: the container ends, the environment fails
-# and the node keeps the log tail. gamescope is not restarted.
-#
-# Steam makes its virtual Xbox pad through /dev/uinput, which the app doesn't
-# have. LD_PRELOAD loads libcha-uinput.so into steam (not into the helpers
-# above), which fakes that file and asks the streamer (the steam pad kind;
-# /run/cha/uinput.sock) to make the device. The dynamic loader expands $LIB to
-# lib/i386-linux-gnu for the 32-bit client and to lib/x86_64-linux-gnu for the
-# 64-bit helpers it starts (both are built). Without the streamer's socket the
-# shim leaves Steam as it was: no such device. Its log of what Steam asks for is
-# /run/cha/uinput-shim.log.
-exec steam-run dbus-run-session -- gamescope --backend wayland \
-  -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" \
-  -e --mangoapp -- sh -c 'steam-touch-mode & steam-focus & (until cha-x11-clipboard; do sleep 1; done) & LD_PRELOAD="/opt/cha/\$LIB/libcha-uinput.so${LD_PRELOAD:+ $LD_PRELOAD}" exec steam -gamepadui'
+# steam-session clears Steam's stale pid file and pipe before every Steam
+# start, runs each session under steam-run (which keeps its output in
+# ~/.local/state/cha/gamescope.log and in the container's log, and when it dies
+# on an error says so on the page and exits with its code) and ends with that
+# code: the container ends, the environment fails and the node keeps the log
+# tail. Nothing is restarted after a crash.
+exec steam-session

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Return to Gaming Mode
+Comment=Close the desktop and go back to Steam's Big Picture
+Exec=steamos-session-select gamescope
+Icon=go-previous
+Terminal=false
+Categories=System;

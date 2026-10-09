@@ -1,15 +1,18 @@
 # Steam in Big Picture (the gamepad UI), inside gamescope nested in our
-# compositor (plan P2.1). 64-bit games render on the GPU through CDI; 32-bit
-# GL falls back to Mesa unless the host's CDI spec carries NVIDIA's 32-bit
-# libraries. gamescope keeps Steam's clipboard in its own X server: the helper
+# compositor (plan P2.1), or on an XFCE desktop (steam-session switches between
+# the two, as SteamOS does between Gaming Mode and Desktop Mode). 64-bit games
+# render on the GPU through CDI; 32-bit GL falls back to Mesa unless the host's
+# CDI spec carries NVIDIA's 32-bit libraries. gamescope keeps Steam's clipboard in its own X server: the helper
 # that XFCE uses bridges it (crates/cha-x11-clipboard). steam-status shows the
 # first launch's download to the page; steam-library lists the library the node
 # shares across users (CHA_SHARED_DIR) among Steam's library folders;
 # steam-per-user-dirs stops a start whose per-user folders over it aren't mounted;
-# steam-run keeps gamescope's output and reports its crash.
+# steam-run keeps a session's output and reports its crash; steam-session runs
+# the sessions (steam-gaming, steam-desktop) and steamos-session-select, which
+# Steam's "Switch to Desktop" calls, asks it to switch.
 #
 # The performance overlay is MangoHud's mangoapp, which gamescope starts
-# (start-steam's --mangoapp) and which draws in gamescope's picture. Two parts
+# (steam-gaming's --mangoapp) and which draws in gamescope's picture. Two parts
 # are built here rather than installed:
 # - gamescope is Ubuntu's own source with one patch
 #   (gamescope-wayland-mangoapp.patch): nested in a Wayland compositor,
@@ -21,8 +24,9 @@
 #
 # Steam makes the virtual Xbox pad it gives games through /dev/uinput, which
 # the app doesn't get (a game could make keyboards and mice on the node with
-# it): libcha-uinput.so, loaded into Steam by start-steam's LD_PRELOAD, fakes
-# that file and asks the streamer's broker for the device (uinput-shim/).
+# it): libcha-uinput.so, loaded into Steam by steam-gaming's and
+# steam-desktop-client's LD_PRELOAD, fakes that file and asks the streamer's
+# broker for the device (uinput-shim/).
 FROM rust:1.93-trixie AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -93,9 +97,9 @@ RUN make OUT=/out/opt/cha
 
 FROM base
 USER root
-# The final stage is three layers, ordered by how often they change, so a new
+# The final stage is four layers, ordered by how often they change, so a new
 # gamescope patch or mangoapp build doesn't make a node pull the multi-hundred
-# megabyte i386 libraries and Steam's runtime libraries again.
+# megabyte i386 libraries, Steam's runtime libraries or XFCE again.
 # 1. The i386 architecture and the 32-bit Mesa that games fall back to.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -115,7 +119,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && apt-get install -y /tmp/steam.deb \
  && apt-get update && apt-get install -y --no-install-recommends steam-libs-amd64 steam-libs-i386 \
  && rm -f /tmp/steam.deb
-# 3. What this repository builds or patches.
+# 3. The XFCE desktop of desktop mode (as images/xfce), without the elementary
+# icon theme (~70 MB). gio and gvfs's metadata daemon mark the "Return to Gaming
+# Mode" launcher trusted (steam-desktop).
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+      xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf thunar xfce4-terminal \
+      adwaita-icon-theme dbus-x11 libglib2.0-bin gvfs
+# 4. What this repository builds or patches.
 COPY --from=gamescope /out/gamescope_*.deb /tmp/
 COPY --from=mangoapp /out/runtime-packages /tmp/
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -135,7 +147,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 COPY --from=build /usr/local/bin/cha-x11-clipboard /usr/local/bin/
 COPY --from=mangoapp /out/usr/bin/mangoapp /usr/local/bin/
 COPY --from=uinput-shim /out/opt/cha /opt/cha
-COPY images/steam/start-steam images/steam/steam-touch-mode images/steam/steam-focus images/steam/steam-status images/steam/steam-library images/steam/steam-per-user-dirs images/steam/steam-run /usr/local/bin/
+COPY images/steam/start-steam images/steam/steam-session images/steam/steam-gaming images/steam/steam-desktop images/steam/steam-desktop-client images/steam/steamos-session-select images/steam/steamos-select-branch images/steam/dbus-send images/steam/steam-touch-mode images/steam/steam-focus images/steam/steam-status images/steam/steam-library images/steam/steam-per-user-dirs images/steam/steam-run /usr/local/bin/
+# SteamOS's updater stand-in, at the absolute path Steam runs.
+COPY images/steam/steamos-update /usr/bin/steamos-polkit-helpers/steamos-update
+COPY images/steam/desktop/cha-return-to-gaming-mode.desktop /usr/share/applications/
+COPY images/steam/desktop/cha-steam.desktop /etc/xdg/autostart/
 # Debian puts gamescope and steam in /usr/games.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games
 USER cha

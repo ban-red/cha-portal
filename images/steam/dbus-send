@@ -1,0 +1,62 @@
+#!/bin/sh
+# Stands in for dbus-send for the calls Steam's Power menu makes to the system
+# bus (systemd-logind), which the container doesn't have. Steam runs them
+# through system() and waits, so this returns at once.
+# - PowerOff (Shutdown): ends the environment. It asks steam-session to end
+#   (the request `exit`, written whole as steamos-session-select writes its
+#   own), then ends the session as that does: `steam -shutdown`, and from the
+#   desktop a logout too. Nested gamescope segfaults as Steam shuts down; the
+#   request is what keeps that from being shown as a crash;
+# - Reboot (Restart): gaming mode starts again (steamos-session-select
+#   gamescope: a request, then the session ends; from the desktop it logs out);
+# - Suspend, Hibernate and the rest of logind's methods: nothing happens;
+# - every other call goes to the real dbus-send unchanged.
+real="${CHA_REAL_DBUS_SEND:-/usr/bin/dbus-send}"
+# Starts a command in the background, in its own session where setsid exists
+# (the image has it), so it outlives this.
+detach() {
+  if command -v setsid >/dev/null 2>&1; then
+    (setsid "$@" </dev/null >&2 2>&1 &)
+  else
+    ("$@" </dev/null >&2 2>&1 &)
+  fi
+}
+system=
+dest=
+method=
+for a in "$@"; do
+  case "$a" in
+    --system) system=1 ;;
+    --dest=org.freedesktop.login1) dest=1 ;;
+    org.freedesktop.login1.Manager.*) method="${a#org.freedesktop.login1.Manager.}" ;;
+  esac
+done
+if [ -n "$system" ] && [ -n "$dest" ] && [ -n "$method" ]; then
+  case "$method" in
+    PowerOff)
+      echo "dbus-send: PowerOff: ending the environment" >&2
+      req="${XDG_RUNTIME_DIR:-/run/cha}/steam-session"
+      if ! { printf 'exit\n' > "$req.$$" && mv -f "$req.$$" "$req"; }; then
+        rm -f "$req.$$"
+        echo "dbus-send: can't write $req" >&2
+        exit 1
+      fi
+      if [ "${CHA_STEAM_SESSION:-}" = desktop ]; then
+        detach steamos-session-select --finish-desktop
+      else
+        detach steam -shutdown
+      fi
+      ;;
+    Reboot)
+      echo "dbus-send: Reboot: restarting gaming mode" >&2
+      steamos-session-select gamescope
+      ;;
+    *) echo "dbus-send: $method: nothing to do in a container" >&2 ;;
+  esac
+  exit 0
+fi
+if [ ! -x "$real" ]; then
+  echo "dbus-send: $real not found" >&2
+  exit 127
+fi
+exec "$real" "$@"

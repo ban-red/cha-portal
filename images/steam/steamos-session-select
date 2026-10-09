@@ -1,0 +1,137 @@
+#!/usr/bin/python3
+"""The command Steam calls to switch sessions: `steamos-session-select NAME`.
+
+On SteamOS it sets the next login's session and ends this one. Here
+steam-session (the supervisor, see it) starts the next session. Steam runs this
+through system() and waits for it, so it must return at once.
+
+NAME:
+- `gamescope`: gaming mode;
+- `plasma`, `plasma-x11`, `plasma-wayland`, `desktop`, and any of those with
+  `-persistent`: the desktop (XFCE here). The environment keeps no default
+  session: it always starts in gaming mode, so `-persistent` changes nothing.
+- anything else: a message and exit code 2.
+
+It writes the mode to the request file ($XDG_RUNTIME_DIR/steam-session; a temp
+file, then a rename), then ends the current session, named by
+$CHA_STEAM_SESSION (set by steam-session):
+- gaming: `steam -shutdown` in the background (Steam is waiting for this
+  command, so it can't be waited for here). When Steam and gamescope exit
+  with code 0 steam-session reads the request;
+- desktop: in the background, `steam -shutdown` if a Steam client is running,
+  a wait for it to end (up to 20 s), then `xfce4-session-logout --logout
+  --fast`.
+If the request can't be written, it says so, exits 1 and ends nothing.
+
+CHA_PROC (default /proc) exists for the tests.
+"""
+
+import os
+import subprocess
+import sys
+import time
+
+PROC = os.environ.get("CHA_PROC", "/proc")
+SHUTDOWN_WAIT = float(os.environ.get("CHA_STEAM_SHUTDOWN_WAIT", "20"))
+
+GAMING = {"gamescope"}
+DESKTOP = {"plasma", "plasma-x11", "plasma-wayland", "desktop"}
+
+
+def mode_of(name):
+    base = name[: -len("-persistent")] if name.endswith("-persistent") else name
+    if base in GAMING:
+        return "gaming"
+    if base in DESKTOP:
+        return "desktop"
+    return None
+
+
+def steam_running():
+    try:
+        names = os.listdir(PROC)
+    except OSError:
+        return False
+    for name in names:
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        try:
+            with open(os.path.join(PROC, name, "comm")) as f:
+                if f.read().strip() == "steam":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def write_request(mode):
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/cha")
+    path = os.path.join(runtime, "steam-session")
+    temp = f"{path}.{os.getpid()}"
+    try:
+        with open(temp, "w") as f:
+            f.write(mode + "\n")
+        os.replace(temp, path)
+    except OSError as e:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        print(f"steamos-session-select: can't write {path}: {e}", file=sys.stderr)
+        return False
+    return True
+
+
+def detached(argv):
+    """Starts argv in a session of its own, its output on our stderr."""
+    subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=2,
+        stderr=2,
+        start_new_session=True,
+    )
+
+
+def finish_desktop():
+    """The background half of leaving the desktop."""
+    if steam_running():
+        subprocess.run(["steam", "-shutdown"], check=False)
+        deadline = time.monotonic() + SHUTDOWN_WAIT
+        while steam_running() and time.monotonic() < deadline:
+            time.sleep(0.1)
+    os.execvp("xfce4-session-logout", ["xfce4-session-logout", "--logout", "--fast"])
+
+
+def main(argv):
+    if len(argv) == 1 and argv[0] == "--finish-desktop":
+        finish_desktop()
+        return 1
+    if len(argv) != 1:
+        print("usage: steamos-session-select NAME", file=sys.stderr)
+        return 2
+    mode = mode_of(argv[0])
+    if mode is None:
+        print(f"steamos-session-select: unknown session {argv[0]!r}", file=sys.stderr)
+        return 2
+    if not write_request(mode):
+        return 1
+    print(f"steamos-session-select: {argv[0]}: switching to {mode}", file=sys.stderr, flush=True)
+    try:
+        if os.environ.get("CHA_STEAM_SESSION") == "desktop":
+            detached([os.path.abspath(sys.argv[0]), "--finish-desktop"])
+        else:
+            detached(["steam", "-shutdown"])
+    except OSError as e:
+        print(f"steamos-session-select: can't end the session: {e}", file=sys.stderr)
+        # No request without an ending: a later exit would be taken for it.
+        try:
+            os.unlink(os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run/cha"), "steam-session"))
+        except OSError:
+            pass
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

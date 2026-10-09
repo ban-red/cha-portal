@@ -1,0 +1,47 @@
+#!/bin/sh
+# Desktop mode: XFCE in one rootful Xwayland window, as images/xfce does
+# (start-xfce): XFCE is an X11 desktop, so the compositor needs no X11 window
+# manager of its own. The compositor maximizes the window and Xwayland follows
+# its size, including later resizes. (With -fullscreen, Xwayland 24.1 keeps a
+# 640x480 screen and stretches it.) steam-session starts this under steam-run.
+# The desktop's Steam starts from XFCE's autostart (cha-steam.desktop).
+set -u
+# gamescope's Xwayland ran in the same /tmp/.X11-unix moments ago, so no fixed
+# display number: Xwayland picks a free one and says which on this pipe.
+fifo="$(mktemp -u "${XDG_RUNTIME_DIR:-/tmp}/steam-desktop-display.XXXXXX")"
+mkfifo "$fifo"
+Xwayland -displayfd 3 -geometry "${CHA_WIDTH:-2560}x${CHA_HEIGHT:-1440}" -noreset -nolisten tcp 3>"$fifo" &
+xpid=$!
+read -r n < "$fifo" || n=
+rm -f "$fifo"
+if [ -z "$n" ]; then
+  echo "steam-desktop: Xwayland didn't start" >&2
+  kill "$xpid" 2>/dev/null
+  exit 1
+fi
+export DISPLAY=":$n" XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
+# Toolkits fall back to wayland-0 when WAYLAND_DISPLAY is unset; the backends
+# above keep the desktop on X11.
+unset WAYLAND_DISPLAY
+# X apps keep their clipboard inside this X server, out of the streamer's
+# reach: the helper bridges it over /run/cha/clipboard, in both directions.
+# It exits when X does; after any other exit it is started again.
+(until cha-x11-clipboard; do sleep 1; done) &
+# The way back to gaming mode, on the desktop. XFCE 4.18 and later ask before
+# running a launcher there that isn't marked trusted. The mark is a checksum
+# that GIO stores in the home through gvfs's metadata daemon, which needs a
+# session bus: a short one of its own does it. This is best effort: if it fails
+# the user gets the prompt once.
+launcher="$HOME/Desktop/cha-return-to-gaming-mode.desktop"
+if [ ! -e "$launcher" ]; then
+  mkdir -p "$HOME/Desktop"
+  cp /usr/share/applications/cha-return-to-gaming-mode.desktop "$launcher"
+  chmod +x "$launcher"
+  sum="$(sha256sum "$launcher" | cut -d' ' -f1)"
+  dbus-run-session -- gio set "$launcher" metadata::xfce-exe-checksum "$sum" 2>/dev/null || true
+fi
+dbus-run-session startxfce4
+code=$?
+kill "$xpid" 2>/dev/null
+wait "$xpid" 2>/dev/null
+exit "$code"

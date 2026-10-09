@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Steam
+Comment=Start the Steam client with the desktop
+Exec=steam-desktop-client
+Terminal=false
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-enabled=true

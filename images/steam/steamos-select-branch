@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stand-in for SteamOS's branch selector, which Steam (started with -steamos3)
+# runs through PATH. There is no OS to switch here: the node's image is the OS,
+# and its one branch is called `rel`.
+case "${1:-}" in
+  -c) echo rel ;;
+  -l) echo rel ;;
+  *) echo "steamos-select-branch: no OS branch to change here, the image is the OS" >&2 ;;
+esac
+exit 0

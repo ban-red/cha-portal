@@ -1,24 +1,33 @@
 #!/usr/bin/python3
-"""Runs gamescope (and so Steam) and keeps what it says, so an abort can be read.
+"""Runs a session (gamescope and so Steam, or the XFCE desktop) and keeps what it
+says, so an abort can be read.
 
-`start-steam` hands over to this: `steam-run COMMAND...`. It starts
-`steam-status` beside the command, copies the command's stdout and stderr (one
+`steam-session` hands over to this: `steam-run [--name NAME] COMMAND...`, NAME
+being `gamescope` (the default) or `desktop`, as it appears in the messages
+below. It starts `steam-status` beside the command, copies the command's stdout and stderr (one
 stream) to its own stdout, where `docker logs` and the node's crash capture
 (crates/cha-node/src/crashlog.rs) read it, and keeps the same text in the
 persistent home: ~/.local/state/cha/gamescope.log for this run, and
 gamescope.log.1 ... for the last few before it, each capped (the newest part
-stays). gamescope aborted twice (exit 134) before anything was kept.
+stays). gamescope aborted twice (exit 134) before anything was kept. The file
+keeps its name for every session; each run of steam-run gets one.
 
 When the command ends with an error, it says so in one line, in the log and on
 the container's stderr, and in the setup status (/run/cha/status, which the
 streamer shows over the picture): "gamescope crashed (SIGABRT)" rather than a
 black picture.
 
-It then exits with the command's own code. It does not start gamescope again:
-the container ends, so the environment fails and the node reads the log tail
-and keeps it (a restart would hide the crash behind a new black picture, and
+It then exits with the command's own code, and does not start anything again.
+It does not end the container itself: steam-session decides, and on an error
+code it ends too, so the environment fails and the node reads the log tail and
+keeps it (a restart would hide the crash behind a new black picture, and
 Steam's state after an abort in the middle of a frame is not one to trust).
 Only a stop (SIGTERM, SIGINT) is clean: it is passed on and the code is 0.
+So is any end once a session switch was asked for (steamos-session-select
+wrote $XDG_RUNTIME_DIR/steam-session): Steam was told to shut down, and nested
+gamescope then segfaults on its way out (exit 139, seen on the node); that is
+logged with its code, but it isn't a crash to show, and steam-session goes on
+to the next session.
 
 Nothing here may keep Steam from starting: a log that can't be written is
 dropped, and the output still flows.
@@ -109,12 +118,15 @@ def describe(returncode):
     return code, name
 
 
-def summary(code, name, when):
+def summary(code, signame, when, who="gamescope"):
     """(the label for the page, the line for the logs)."""
-    if name is not None:
-        label = f"gamescope crashed ({name})"
+    if signame is not None:
+        label = f"{who} crashed ({signame})"
         return label, f"{label}, exit code {code}, {when}"
-    label = f"gamescope or Steam exited with code {code}"
+    if who == "gamescope":
+        label = f"gamescope or Steam exited with code {code}"
+    else:
+        label = f"{who} exited with code {code}"
     return label, f"{label}, {when}"
 
 
@@ -186,13 +198,16 @@ def pump(proc, log):
 
 
 def main(argv):
+    who = "gamescope"
+    if len(argv) >= 2 and argv[0] == "--name":
+        who, argv = argv[1], argv[2:]
     if not argv:
-        print("usage: steam-run COMMAND...", file=sys.stderr)
+        print("usage: steam-run [--name NAME] COMMAND...", file=sys.stderr)
         return 2
     home = os.environ.get("HOME", "/home/cha")
     runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/cha")
     log = RunLog(os.path.join(home, ".local/state/cha"))
-    log.write(f"[steam-run] {stamp()} starting: {' '.join(argv)}\n".encode())
+    log.write(f"[steam-run] {stamp()} starting {who}: {' '.join(argv)}\n".encode())
     status = start_status()
     stopped = []
     try:
@@ -217,11 +232,13 @@ def main(argv):
     pump(proc, log)
     code, name = describe(proc.returncode)
     stop_status(status)
-    if stopped or code == 0:
-        log.write(f"[steam-run] {stamp()} ended, exit code {code}\n".encode())
+    switching = os.path.exists(os.path.join(runtime, "steam-session"))
+    if stopped or code == 0 or switching:
+        why = " for a session switch" if switching and not stopped else ""
+        log.write(f"[steam-run] {stamp()} ended{why}, exit code {code}\n".encode())
         log.close()
         return 0
-    label, line = summary(code, name, stamp())
+    label, line = summary(code, name, stamp(), who)
     log.write(f"[steam-run] {line}\n".encode())
     log.close()
     print(f"steam-run: {line}", file=sys.stderr, flush=True)

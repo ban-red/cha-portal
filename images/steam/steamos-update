@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stand-in for SteamOS's updater, which Steam (started with -steamos3) runs as
+# /usr/bin/steamos-polkit-helpers/steamos-update. There is no OS to update: the
+# node's image is the OS. 7 is SteamOS's "no update available"; Steam took the
+# 127 of a missing helper to mean an update was available and offered one.
+exit 7

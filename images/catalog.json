@@ -59,7 +59,7 @@
     {
       "id": "steam",
       "name": "Steam",
-      "description": "Steam's Big Picture in gamescope, for a controller. Your library and login stay between launches while you keep your app data. Games can also go into a library shared by all users, installed once.",
+      "description": "Steam's Big Picture in gamescope, for a controller, with a desktop to switch to from its Power menu. Your library and login stay between launches while you keep your app data. Games can also go into a library shared by all users, installed once.",
       "image": "ghcr.io/ban-red/cha-env-steam:{version}",
       "localImage": "cha/env-steam:dev",
       "class": "gaming",

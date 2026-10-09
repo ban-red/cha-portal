@@ -1,0 +1,37 @@
+#!/bin/sh
+# Gaming mode: Steam's Big Picture inside gamescope, a Wayland client of our
+# compositor at the stream's size. gamescope gives Steam and its games their own
+# Xwayland, frame pacing and scaling. steam-session starts this under steam-run.
+set -eu
+w="${CHA_WIDTH:-2560}"
+h="${CHA_HEIGHT:-1440}"
+r="${CHA_REFRESH:-60}"
+# Three helpers run beside Steam, in gamescope's environment (its X display):
+# - Big Picture sets gamescope's touch click mode to "passthrough", which
+#   drops the pointer's motion; steam-touch-mode puts the mode back;
+# - when Steam's in-game menu closes, gamescope gives a Proton game the X focus
+#   back but Wine doesn't make it the foreground window again, and its input,
+#   the controller's too, goes nowhere until a click; steam-focus sends the
+#   game WM_TAKE_FOCUS, which gamescope never does;
+# - gamescope doesn't pass the clipboard between our compositor and its X
+#   server; cha-x11-clipboard bridges it to the streamer, as in XFCE (it
+#   exits when X does; after any other exit it starts again).
+# steam-run starts steam-status (a home's first launch downloads ~500 MB
+# before Steam has a window, and the picture stays black: it tells the page
+# what Steam is doing, the environment's setup status, images/README.md).
+#
+# Steam makes its virtual Xbox pad through /dev/uinput, which the app doesn't
+# have. LD_PRELOAD loads libcha-uinput.so into steam (not into the helpers
+# above), which fakes that file and asks the streamer (the steam pad kind;
+# /run/cha/uinput.sock) to make the device. The dynamic loader expands $LIB to
+# lib/i386-linux-gnu for the 32-bit client and to lib/x86_64-linux-gnu for the
+# 64-bit helpers it starts (both are built). Without the streamer's socket the
+# shim leaves Steam as it was: no such device. Its log of what Steam asks for is
+# /run/cha/uinput-shim.log.
+#
+# -steamos3 makes Steam act as it does on SteamOS, which is what makes it carry
+# out Power > "Switch to Desktop": it then runs steamos-session-select (ours,
+# which asks steam-session for the desktop session).
+exec dbus-run-session -- gamescope --backend wayland \
+  -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" \
+  -e --mangoapp -- sh -c 'steam-touch-mode & steam-focus & (until cha-x11-clipboard; do sleep 1; done) & LD_PRELOAD="/opt/cha/\$LIB/libcha-uinput.so${LD_PRELOAD:+ $LD_PRELOAD}" exec steam -steamos3 -gamepadui'

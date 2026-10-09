@@ -184,6 +184,50 @@ class SteamRun(unittest.TestCase):
             self.assertNotIn("crashed", err)
             self.assertIsNone(rig.status())
 
+    def test_an_end_after_a_switch_request_is_not_a_crash(self):
+        # Nested gamescope segfaults as Steam shuts down for a switch.
+        with Rig() as rig:
+            with open(os.path.join(rig.run, "steam-session"), "w") as f:
+                f.write("desktop\n")
+            done = rig.run_script("exit 139")
+            self.assertEqual(done.returncode, 0)
+            self.assertNotIn("crashed", done.stderr)
+            self.assertIsNone(rig.status())
+            self.assertIn("ended for a session switch, exit code 139", rig.read(rig.log))
+
+    def test_a_named_session_is_named_in_its_messages(self):
+        with Rig() as rig:
+            done = subprocess.run(
+                [SCRIPT, "--name", "desktop", "sh", "-c", "kill -ABRT $$"],
+                env=rig.env(), capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(done.returncode, 134)
+            self.assertIn("desktop crashed (SIGABRT), exit code 134", done.stderr)
+            self.assertEqual(rig.status(), {"label": "desktop crashed (SIGABRT)"})
+            text = rig.read(rig.log)
+            self.assertIn("starting desktop: sh -c", text)
+            done = subprocess.run(
+                [SCRIPT, "--name", "desktop", "sh", "-c", "exit 3"],
+                env=rig.env(), capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(done.returncode, 3)
+            self.assertEqual(rig.status(), {"label": "desktop exited with code 3"})
+            # Still one log file per run, under the same name.
+            self.assertTrue(os.path.exists(rig.log + ".1"))
+
+    def test_the_default_name_is_gamescope(self):
+        with Rig() as rig:
+            rig.run_script("exit 0")
+            self.assertIn("starting gamescope: sh -c", rig.read(rig.log))
+
+    def test_a_name_without_a_command_is_a_usage_error(self):
+        with Rig() as rig:
+            done = subprocess.run(
+                [SCRIPT, "--name", "desktop"],
+                env=rig.env(), capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(done.returncode, 2)
+
     def test_a_missing_command_fails_plainly(self):
         with Rig() as rig:
             done = subprocess.run(
