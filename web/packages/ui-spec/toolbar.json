@@ -47,7 +47,7 @@
     "fps-change": { "doc": "The host can change its frame rate while the stream runs, for the session that has the controls." },
     "steam-overlay": { "doc": "The app has a performance overlay (Steam's Gamescope one) whose level the host reports and changes." },
     "codec-switch": { "doc": "The video codec can be changed from the toolbar, with the stream restarting or switching in place." },
-    "transport-switch": { "doc": "The transport (WebTransport or WebRTC) can be picked from the toolbar." },
+    "transport-switch": { "doc": "The transport (WebTransport, WebRTC or WebSocket) can be picked from the toolbar." },
     "probe": { "doc": "The environment is the test pattern, which times a synthetic click to the screen." },
     "sound-restart": { "doc": "Sound can be rebuilt without reconnecting." },
     "controllers-connect": { "doc": "A controller can be connected from the toolbar (WebHID asks for it with a click)." }
@@ -76,8 +76,8 @@
     "fps_switching": { "kind": "bool", "platforms": ["web"], "doc": "A frame rate change is under way." },
     "overlay": { "kind": "string", "platforms": ["web", "native"], "doc": "The app's performance overlay: '0'..'4', 'custom', or null when it has none." },
     "overlay_switching": { "kind": "bool", "platforms": ["web"], "doc": "An overlay change is under way." },
-    "transport_choice": { "kind": "string", "platforms": ["web"], "doc": "The transport picked: auto, webtransport or webrtc." },
-    "transport_via": { "kind": "enum", "values": ["", "webtransport", "webrtc"], "platforms": ["web"], "doc": "The transport the connection ended up on; empty before it connects." },
+    "transport_choice": { "kind": "string", "platforms": ["web"], "doc": "The transport picked: auto, webtransport, webrtc or websocket." },
+    "transport_via": { "kind": "enum", "values": ["", "webtransport", "webrtc", "websocket"], "platforms": ["web"], "doc": "The transport the connection ended up on; empty before it connects." },
     "transport_name": { "kind": "string", "platforms": ["native"], "doc": "The transport's name (Cha Portal, Moonlight)." },
     "transport_tag": { "kind": "string", "platforms": ["native"], "doc": "How the stream travels in a few letters (WT for WebTransport); empty when the transport has none." },
     "probing": { "kind": "bool", "platforms": ["web"], "doc": "The click probe is running." },
@@ -276,11 +276,13 @@
                   "label": "Auto",
                   "states": [
                     { "when": ["transport_via=webtransport"], "label": "Auto (WT)" },
-                    { "when": ["transport_via=webrtc"], "label": "Auto (RTC)" }
+                    { "when": ["transport_via=webrtc"], "label": "Auto (RTC)" },
+                    { "when": ["transport_via=websocket"], "label": "Auto (WS)" }
                   ]
                 },
                 { "value": "webtransport", "label": "WebTransport" },
-                { "value": "webrtc", "label": "WebRTC" }
+                { "value": "webrtc", "label": "WebRTC" },
+                { "value": "websocket", "label": "WebSocket" }
               ]
             },
             "edit_needs": ["transport-switch"],
@@ -290,6 +292,7 @@
               { "when": ["pyrowave"], "disabled": true },
               { "when": ["transport_via=webtransport"], "tooltip": "Connected over WebTransport" },
               { "when": ["transport_via=webrtc"], "tooltip": "Connected over WebRTC" },
+              { "when": ["transport_via=websocket"], "tooltip": "Connected over WebSocket" },
               { "when": ["transport_tag=WT"], "read_only": "WebTransport" },
               { "when": ["transport_name=Moonlight", "!transport_tag"], "read_only": "GameStream (Moonlight)" }
             ]

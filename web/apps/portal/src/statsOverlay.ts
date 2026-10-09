@@ -63,8 +63,8 @@ export function cornerByArrow(from: Corner, key: string): Corner {
 export const num = formatNumber;
 
 /** "HEVC/WT": the codec and a short transport name, whichever are known. */
-export function codecTag(codec: string | null, transport: "webtransport" | "webrtc" | null): string {
-  const t = transport === "webtransport" ? "WT" : transport === "webrtc" ? "RTC" : "";
+export function codecTag(codec: string | null, transport: "webtransport" | "webrtc" | "websocket" | null): string {
+  const t = transport === "webtransport" ? "WT" : transport === "webrtc" ? "RTC" : transport === "websocket" ? "WS" : "";
   // The player's stats name the transport after the codec ("HEVC · WebTransport"): keep the codec.
   const name = codec?.split(" · ")[0]?.trim().toUpperCase() ?? "";
   return [name, t].filter(Boolean).join("/");

@@ -6,6 +6,8 @@ import {
   guestCanRetry,
   guestCodec,
   guestProblem,
+  guestTransports,
+  internetNote,
   invitation,
   joinLabel,
   playerLabel,
@@ -99,5 +101,28 @@ describe("guestCodec", () => {
   test("unknown device codecs: the browser's first; nothing shared: H.264", () => {
     expect(guestCodec(["hevc", "h264"], null)).toBe("hevc");
     expect(guestCodec(["av1"], ["h264"])).toBe("h264");
+  });
+});
+
+describe("internet links", () => {
+  test("an absolute link stays as the tunnel gave it", () => {
+    expect(shareLink("http://portal.lan:8090", "https://x.trycloudflare.com/s/tok")).toBe("https://x.trycloudflare.com/s/tok");
+    expect(shareLink("http://portal.lan:8090", "/s/tok")).toBe("http://portal.lan:8090/s/tok");
+  });
+
+  test("the switch note warns about Cloudflare, and a quick tunnel's address", () => {
+    expect(internetNote("named")).toContain("Cloudflare relays the stream and can see it");
+    expect(internetNote("named")).not.toContain("address changes");
+    expect(internetNote("quick")).toContain("The address changes when the tunnel restarts, which ends these links.");
+  });
+
+  test("an internet guest tries WebRTC, then WebSocket", () => {
+    expect(guestTransports(true)).toEqual(["webrtc", "websocket"]);
+    expect(guestTransports(false)).toEqual(["webtransport", "webrtc", "websocket"]);
+  });
+
+  test("an old node is named, and not retried", () => {
+    expect(guestProblem(api(409, "node_outdated"))).toBe("The host's node needs updating to stream over the internet.");
+    expect(guestCanRetry(api(409, "node_outdated"))).toBe(false);
   });
 });

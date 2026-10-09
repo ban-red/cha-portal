@@ -1,7 +1,10 @@
-// One connection to an environment's streamer, over one of two transports:
+// One connection to an environment's streamer, over one of three transports:
 // - WebTransport (`cha-stream/1`, the Chromium fast path): video and audio
 //   datagrams reassembled in a worker, decoded with WebCodecs and shown through
 //   track generators (S1d: the fastest way to the screen);
+// - WebSocket (ADR 0022): the same datagrams and control lines as messages on one
+//   TCP connection, through the portal, for guests who can't reach the node
+//   (an internet share link); decoded by the same path as WebTransport;
 // - WebRTC everywhere else: recvonly video (playout-delay 0) and stereo Opus.
 // Video and audio are separate MediaStreams, so video never waits for lip
 // sync. The control channel (a DataChannel, or WebTransport's first stream)
@@ -19,7 +22,9 @@ import { overlayAnswer, parseOverlay, type OverlayLevel, type OverlayState } fro
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
 import { PyroPresenter } from "./pyro";
-import type { FromWorker, ToWorker } from "./wt-worker";
+import type { FromWorker, ToWorker } from "./reassembly";
+import { transportOrder } from "./transports";
+import { resolveWsUrl } from "./ws-url";
 import { capturesDevices, inputAllowed, readsPads, sendsControls, type InputMode } from "./inputMode";
 import { parseWatchers, type Watcher } from "./watchers";
 
@@ -31,7 +36,7 @@ export function isPyroWave(codec: Codec): codec is "pyrowave420" | "pyrowave444"
 }
 export type PlayerState = "idle" | "connecting" | "connected" | "disconnected" | "failed";
 
-export type Transport = "webrtc" | "webtransport";
+export type Transport = "webrtc" | "webtransport" | "websocket";
 
 type HwCodec = "hevc" | "h264" | "av1";
 const MIME: Record<HwCodec, string> = { hevc: "video/h265", h264: "video/h264", av1: "video/av1" };
@@ -52,6 +57,21 @@ export function supportsWebTransport(): boolean {
     typeof AudioDecoder !== "undefined" &&
     "MediaStreamTrackGenerator" in globalThis
   );
+}
+
+/** WebSocket media needs the same WebCodecs and track generators as WebTransport. */
+export function supportsWebSocket(): boolean {
+  return (
+    typeof WebSocket !== "undefined" &&
+    typeof VideoDecoder !== "undefined" &&
+    typeof AudioDecoder !== "undefined" &&
+    "MediaStreamTrackGenerator" in globalThis
+  );
+}
+
+/** Where to reach the streamer over WebSocket (from the portal): URLs, absolute or relative to the page. */
+export interface WebSocketOffer {
+  urls: string[];
 }
 
 /** Where to reach the streamer over WebTransport (from the portal). */
@@ -94,8 +114,18 @@ export interface PlayerOptions {
   onAudioBlocked?: (blocked: boolean) => void;
   /** Asks the portal for the streamer's WebTransport URLs; without it, WebRTC only. */
   webTransport?: (codec: Codec) => Promise<WebTransportOffer>;
-  /** "auto" (the default): WebTransport where the browser has it, else WebRTC. */
+  /** Asks the portal for the streamer's WebSocket URLs (ADR 0022); without it, no WebSocket. */
+  webSocket?: (codec: Codec) => Promise<WebSocketOffer>;
+  /** "auto" (the default): WebTransport where the browser has it, else WebRTC. One transport: only that one. */
   transport?: "auto" | Transport;
+  /**
+   * The transports to try, in order; the next is tried when one fails to connect. Each is skipped
+   * when the browser lacks it or its option (`webTransport`, `webSocket`) is missing. Overrides
+   * `transport`. Default `["webtransport", "webrtc"]`. PyroWave always uses WebTransport.
+   */
+  transports?: Transport[];
+  /** How long WebRTC may take to connect when another transport follows it (default 6000 ms). */
+  webrtcTimeoutMs?: number;
   /** The transport in use, once connected. */
   onTransport?: (transport: Transport) => void;
   /**
@@ -254,6 +284,8 @@ interface VideoPipeline {
 
 /** How long the WebTransport worker may take to open the session before the player gives up on it. */
 const WT_READY_TIMEOUT_MS = 10_000;
+/** How long WebRTC may take to connect before the next transport is tried. */
+const WEBRTC_TIMEOUT_MS = 6000;
 /** This many video decoder or track failures within `RECOVERY_WINDOW_MS` mean a fresh connection is needed. */
 const RECOVERY_LIMIT = 3;
 const RECOVERY_WINDOW_MS = 10_000;
@@ -329,6 +361,7 @@ export class Player {
   /** When the node last sent anything, and when it last answered a ping (performance.now). */
   private lastInbound = 0;
   private lastPong = 0;
+  /** The WebTransport or WebSocket session (`transport` says which): a worker that reassembles frames, and the decode path. */
   private wt: {
     worker: Worker;
     frames: WritableStreamDefaultWriter<VideoFrame>;
@@ -388,22 +421,27 @@ export class Player {
     this.streamFps = null;
     this.streamOverlay = null;
     this.setState("connecting");
-    const want = isPyroWave(this.codec) ? "webtransport" : (this.options.transport ?? "auto");
-    if (this.options.webTransport && want !== "webrtc" && supportsWebTransport()) {
+    const order = transportOrder(this.options, isPyroWave(this.codec), {
+      webtransport: !!this.options.webTransport && supportsWebTransport(),
+      websocket: !!this.options.webSocket && supportsWebSocket(),
+      webrtc: true,
+    });
+    for (let i = 0; i < order.length; i++) {
+      const last = i === order.length - 1;
       try {
-        await this.connectWebTransport();
+        if (order[i] === "webrtc") await this.connectWebRtc(last ? undefined : (this.options.webrtcTimeoutMs ?? WEBRTC_TIMEOUT_MS));
+        else await this.connectWorker(order[i] as "webtransport" | "websocket");
         return;
       } catch (err) {
         this.close();
-        if (want === "webtransport") {
-          this.setState("failed", err instanceof Error ? err.message : String(err));
+        if (last) {
+          if (this.state !== "failed") this.setState("failed", err instanceof Error ? err.message : String(err));
           throw err;
         }
-        // Fall back to WebRTC.
+        // Fall back to the next transport.
         this.setState("connecting");
       }
     }
-    await this.connectWebRtc();
   }
 
   /** The frame rate the streamer encodes at, once it has said. */
@@ -485,14 +523,15 @@ export class Player {
   }
 
   /**
-   * Switches the video codec. Over WebTransport the session switches in
+   * Switches the video codec. Over WebTransport or WebSocket the session switches in
    * place: the picture stays up until the first frame in the new codec.
    * Otherwise (WebRTC, or a streamer that doesn't switch) it reconnects.
    */
   async switchCodec(codec: Codec): Promise<void> {
     if (codec === this.codec && this.state === "connected") return;
     const wt = this.wt;
-    if (wt && this.state === "connected" && !wt.switching) {
+    // PyroWave isn't offered over WebSocket: reconnect (which picks WebTransport).
+    if (wt && this.state === "connected" && !wt.switching && !(this.transport === "websocket" && isPyroWave(codec))) {
       try {
         const pipeline = await this.newPipeline(wt, codec);
         if (this.wt !== wt) {
@@ -525,7 +564,11 @@ export class Player {
     await this.connect();
   }
 
-  private async connectWebRtc(): Promise<void> {
+  /**
+   * `timeoutMs`: another transport follows, so a failure or silence this long rejects without
+   * reporting the state as failed; the caller closes and moves on.
+   */
+  private async connectWebRtc(timeoutMs?: number): Promise<void> {
     const { video } = this.options;
     const pc = new RTCPeerConnection({ iceServers: this.options.iceServers ?? [] });
     this.pc = pc;
@@ -550,15 +593,35 @@ export class Player {
       video.playsInline = true;
       void video.play().catch(() => {});
     };
+    // While a fallback follows, a connection that fails before it is up rejects `up` instead of showing as failed.
+    let pending: { resolve: () => void; reject: (err: Error) => void } | null = null;
+    const up =
+      timeoutMs === undefined
+        ? null
+        : new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("WebRTC didn't connect in time")), timeoutMs);
+            pending = {
+              resolve: () => (clearTimeout(timer), resolve()),
+              reject: (err) => (clearTimeout(timer), reject(err)),
+            };
+          });
+    up?.catch(() => undefined);
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
       if (s === "connected") {
         this.transport = "webrtc";
         this.options.onTransport?.("webrtc");
         this.setState("connected");
+        pending?.resolve();
+        pending = null;
+      } else if (s === "failed") {
+        if (pending) {
+          pending.reject(new Error("the connection to the node failed"));
+          pending = null;
+        } else this.setState("failed", "the connection to the node failed");
+      } else if (s === "disconnected" || s === "closed") {
+        if (!pending) this.setState("disconnected");
       }
-      else if (s === "failed") this.setState("failed", "the connection to the node failed");
-      else if (s === "disconnected" || s === "closed") this.setState("disconnected");
     };
     control.onopen = () => this.onControlOpen();
     control.onmessage = (e) => {
@@ -576,14 +639,15 @@ export class Player {
       if (this.pc !== pc) return; // closed meanwhile
       await pc.setRemoteDescription(answer);
     } catch (err) {
-      this.setState("failed", err instanceof Error ? err.message : String(err));
+      if (timeoutMs === undefined) this.setState("failed", err instanceof Error ? err.message : String(err));
       throw err;
     }
+    await up;
   }
 
   close(): void {
     this.cleanup.splice(0).forEach((f) => f());
-    this.closeWebTransport();
+    this.closeWorkerTransport();
     this.transport = null;
     this.probe?.stop();
     this.input?.dispose();
@@ -1316,10 +1380,16 @@ export class Player {
     return us + Math.round((nowUs - us) / span) * span;
   }
 
-  private async connectWebTransport(): Promise<void> {
-    const offer = await this.options.webTransport!(this.codec);
+  /** WebTransport or WebSocket: a worker receives the datagrams or messages, the page decodes. */
+  private async connectWorker(kind: "webtransport" | "websocket"): Promise<void> {
+    const label = kind === "webtransport" ? "WebTransport" : "WebSocket";
+    const offer: { urls: string[]; certHash?: string } =
+      kind === "webtransport" ? await this.options.webTransport!(this.codec) : await this.options.webSocket!(this.codec);
     const { video } = this.options;
-    const worker = new Worker(new URL("./wt-worker.ts", import.meta.url), { type: "module" });
+    const worker =
+      kind === "webtransport"
+        ? new Worker(new URL("./wt-worker.ts", import.meta.url), { type: "module" })
+        : new Worker(new URL("./ws-worker.ts", import.meta.url), { type: "module" });
     const frames = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
     // Web Audio plays the sound; without it the old track and `<audio>` element do.
     const sound = AudioOut.supported() ? null : new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
@@ -1374,7 +1444,7 @@ export class Player {
     const ready = new Promise<void>((resolve, reject) => {
       // The worker failing (a script error, a message it can't read) or never answering ends the
       // attempt: before it opened, connect() falls back to WebRTC; after, the page reconnects.
-      const timer = setTimeout(() => reject(new Error("WebTransport didn't open in time")), WT_READY_TIMEOUT_MS);
+      const timer = setTimeout(() => reject(new Error(`${label} didn't open in time`)), WT_READY_TIMEOUT_MS);
       const fail = (reason: string) => {
         clearTimeout(timer);
         if (this.wt !== wt) return;
@@ -1383,17 +1453,17 @@ export class Player {
       };
       worker.onerror = (e) => {
         e.preventDefault();
-        fail(`the WebTransport worker failed${e.message ? `: ${e.message}` : ""}`);
+        fail(`the ${label} worker failed${e.message ? `: ${e.message}` : ""}`);
       };
-      worker.onmessageerror = () => fail("the WebTransport worker sent a message the page couldn't read");
+      worker.onmessageerror = () => fail(`the ${label} worker sent a message the page couldn't read`);
       worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const msg = e.data;
         switch (msg.type) {
           case "ready": {
             clearTimeout(timer);
             this.lastInbound = performance.now();
-            this.transport = "webtransport";
-            this.options.onTransport?.("webtransport");
+            this.transport = kind;
+            this.options.onTransport?.(kind);
             this.onControlOpen();
             this.setState("connected");
             resolve();
@@ -1441,7 +1511,10 @@ export class Player {
         }
       };
     });
-    worker.postMessage({ type: "start", urls: offer.urls, certHash: offer.certHash } satisfies ToWorker);
+    // A worker's own location is its script's URL, which a bundler may put
+    // elsewhere: resolve the portal's relative paths against the page.
+    const urls = kind === "websocket" ? offer.urls.map((u) => resolveWsUrl(u, location.href)) : offer.urls;
+    worker.postMessage({ type: "start", urls, certHash: offer.certHash ?? "" } satisfies ToWorker);
     if (this.offset) worker.postMessage({ type: "clock", offsetMs: this.offset.ms } satisfies ToWorker);
     await ready;
   }
@@ -1621,7 +1694,7 @@ export class Player {
     return { codec: WEBCODECS[codec], hardwareAcceleration: "prefer-hardware", optimizeForLatency: true };
   }
 
-  private closeWebTransport(): void {
+  private closeWorkerTransport(): void {
     const wt = this.wt;
     if (!wt) return;
     this.wt = null;
@@ -1808,7 +1881,7 @@ export class Player {
     const quality = video.getVideoPlaybackQuality?.();
     const decode = wt.decodeMs.length ? wt.decodeMs.reduce((a, b) => a + b, 0) / wt.decodeMs.length : null;
     return {
-      codec: `${this.codec.toUpperCase()} · WebTransport`,
+      codec: `${this.codec.toUpperCase()} · ${this.transport === "websocket" ? "WebSocket" : "WebTransport"}`,
       width: video.videoWidth || null,
       height: video.videoHeight || null,
       fps: wt.shown.length,

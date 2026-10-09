@@ -15,7 +15,7 @@ const props = defineProps<{
   health: HealthAssessment;
   /** The codec chosen, until the stream says what it decodes. */
   codec: string;
-  transport: "webtransport" | "webrtc" | null;
+  transport: "webtransport" | "webrtc" | "websocket" | null;
   connected: boolean;
   recordingLeft: number | null;
   /** Times the stream came back on its own after dropping, this visit. */

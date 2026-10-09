@@ -103,14 +103,15 @@ const codec = ref<Codec>(
     : (codecs.value[0] ?? "h264"),
 );
 
-// WebTransport where the browser has it (Chromium), else WebRTC.
+// WebTransport where the browser has it (Chromium), else WebRTC; WebSocket (media through the portal,
+// ADR 0022) can be picked for testing.
 type TransportChoice = "auto" | Transport;
 const TRANSPORT_KEY = "cha.player.transport";
 const transportChoice = ref<TransportChoice>(
   (() => {
     try {
       const saved = localStorage.getItem(TRANSPORT_KEY) as TransportChoice | null;
-      return saved && ["auto", "webrtc", "webtransport"].includes(saved) ? saved : "auto";
+      return saved && ["auto", "webrtc", "webtransport", "websocket"].includes(saved) ? saved : "auto";
     } catch {
       return "auto";
     }
@@ -514,6 +515,10 @@ async function connect() {
     webTransport: async (c) => {
       const r = await api.connect(id.value, { codec: c, transport: "webtransport" });
       return { urls: r.urls ?? [], certHash: r.certHash ?? "" };
+    },
+    webSocket: async (c) => {
+      const r = await api.connect(id.value, { codec: c, transport: "websocket" });
+      return { urls: r.urls ?? [] };
     },
     onTransport: (t) => {
       if (player === p) transport.value = t;

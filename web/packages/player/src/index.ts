@@ -6,6 +6,7 @@ export {
   Player,
   isPyroWave,
   supportedCodecs,
+  supportsWebSocket,
   supportsWebTransport,
   type Codec,
   type FrameRate,
@@ -13,8 +14,11 @@ export {
   type PlayerState,
   type SetupStatus,
   type Transport,
+  type WebSocketOffer,
   type WebTransportOffer,
 } from "./player";
+export { transportOrder, DEFAULT_TRANSPORTS } from "./transports";
+export { resolveWsUrl } from "./ws-url";
 export { OVERLAY_LEVELS, type OverlayLevel, type OverlayState } from "./overlay";
 export { CaptureMode, type CaptureState, type CaptureView } from "./captureMode";
 export type { InputMode } from "./inputMode";

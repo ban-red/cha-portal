@@ -560,14 +560,14 @@ export interface DeviceCodeInfo {
 export interface ConnectBody {
   codec: string;
   offer?: RTCSessionDescriptionInit;
-  transport?: "webrtc" | "webtransport";
+  transport?: "webrtc" | "webtransport" | "websocket";
 }
 
 export interface ConnectResult {
   codec: string;
-  transport: "webrtc" | "webtransport";
+  transport: "webrtc" | "webtransport" | "websocket";
   answer?: RTCSessionDescriptionInit;
-  /** WebTransport: the streamer's URLs, best first, and its certificate's hash. */
+  /** WebTransport: the streamer's URLs, best first, and its certificate's hash. WebSocket: paths on the portal (`/api/media/<ticket>`), no hash. */
   urls?: string[];
   certHash?: string;
 }
@@ -580,6 +580,8 @@ export interface Share {
   slot: number | null;
   createdAt: number;
   expiresAt: number;
+  /** An internet link (ADR 0022): on the tunnel's address. */
+  wan: boolean;
 }
 
 interface RawShare {
@@ -588,6 +590,7 @@ interface RawShare {
   slot: number | null;
   created_at?: number;
   expires_at: number;
+  wan?: boolean;
 }
 
 const toShare = (r: RawShare): Share => ({
@@ -596,6 +599,7 @@ const toShare = (r: RawShare): Share => ({
   slot: r.slot ?? null,
   createdAt: r.created_at ?? 0,
   expiresAt: r.expires_at,
+  wan: r.wan ?? false,
 });
 
 /** What a share link is for, for its guest. */
@@ -608,6 +612,18 @@ export interface ShareInfo {
   state: string;
   /** What the environment's device encodes (null: unknown). */
   codecs: string[] | null;
+  /** The link is an internet link (ADR 0022), opened through the tunnel. */
+  wan: boolean;
+  /** The portal has TURN, so WebRTC may work across the internet. */
+  turn: boolean;
+}
+
+/** The Cloudflare Tunnel behind internet links (ADR 0022). */
+export interface TunnelStatus {
+  mode: "off" | "quick" | "named";
+  state: "stopped" | "starting" | "up" | "failed";
+  url: string | null;
+  error: string | null;
 }
 
 export class ApiError extends Error {
@@ -796,7 +812,7 @@ export const api = {
     const rows = await request<RawShare[]>("GET", `/environments/${encodeURIComponent(environmentId)}/shares`);
     return rows.map(toShare);
   },
-  /** Makes a player link (with a slot, 1 to 3), a viewer link or a controller link; the full `url` comes back only now. */
+  /** Makes a player link (with a slot, 1 to 3), a viewer link or a controller link; the full `url` comes back only now (absolute for an internet link, which opens the tunnel first). */
   createShare: async (environmentId: string, spec: ShareSpec): Promise<Share & { url: string }> => {
     const r = await request<RawShare & { url: string }>("POST", `/environments/${encodeURIComponent(environmentId)}/shares`, spec);
     return { ...toShare(r), url: r.url };
@@ -808,6 +824,10 @@ export const api = {
   /** Brokers a guest's connection (no sign-in), like `connect`. */
   shareConnect: (token: string, body: ConnectBody) =>
     request<ConnectResult>("POST", `/shares/${encodeURIComponent(token)}/connect`, body),
+  /** STUN and TURN for a guest's connection (no sign-in). */
+  shareIce: (token: string) => request<{ iceServers: RTCIceServer[] }>("GET", `/shares/${encodeURIComponent(token)}/ice`),
+  /** The tunnel internet links use; `mode` is "off" when the feature is. */
+  tunnel: () => request<TunnelStatus>("GET", "/tunnel"),
 };
 
 /** A catalog template's logo (only for templates with `icon`). */

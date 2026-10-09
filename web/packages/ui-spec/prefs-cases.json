@@ -69,6 +69,7 @@
     {"name": "transport auto", "group": "toolbar", "value": {"transport": "auto"}, "expect": {"transport": "auto"}},
     {"name": "transport webrtc", "group": "toolbar", "value": {"transport": "webrtc"}, "expect": {"transport": "webrtc"}},
     {"name": "transport webtransport", "group": "toolbar", "value": {"transport": "webtransport"}, "expect": {"transport": "webtransport"}},
+    {"name": "transport websocket", "group": "toolbar", "value": {"transport": "websocket"}, "expect": {"transport": "websocket"}},
     {"name": "transport is case sensitive", "group": "toolbar", "value": {"transport": "WebRTC"}, "expect": {}},
     {"name": "transport unknown", "group": "toolbar", "value": {"transport": "udp"}, "expect": {}},
     {"name": "volume in range", "group": "toolbar", "value": {"volume": 0}, "expect": {"volume": 0}},

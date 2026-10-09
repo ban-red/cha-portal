@@ -5,7 +5,7 @@ import { parsePrefsText } from "@cha/ui-spec";
 
 export interface ToolbarPrefs {
   codec?: string;
-  transport?: "auto" | "webrtc" | "webtransport";
+  transport?: "auto" | "webrtc" | "webtransport" | "websocket";
   muted?: boolean;
   /** 0..100. */
   volume?: number;

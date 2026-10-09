@@ -35,7 +35,7 @@
     "doc": "What the toolbar last picked for an app. Never picked is not the same as picked, so every field is optional.",
     "fields": {
       "codec": { "type": "string", "nonempty": true, "optional": true, "platforms": ["web"], "doc": "The codec asked for at launch (the native player takes it from its settings)." },
-      "transport": { "type": "enum", "values": ["auto", "webrtc", "webtransport"], "optional": true, "platforms": ["web"], "doc": "The browser's transport choice (natively the transport is part of the key)." },
+      "transport": { "type": "enum", "values": ["auto", "webrtc", "webtransport", "websocket"], "optional": true, "platforms": ["web"], "doc": "The browser's transport choice (natively the transport is part of the key)." },
       "muted": { "type": "bool", "optional": true, "doc": "Sound is muted." },
       "volume": { "type": "int", "min": 0, "max": 100, "round": true, "clamp": true, "optional": true, "doc": "Volume, in percent." },
       "mouse": { "type": "bool", "optional": true, "doc": "False: the mouse was switched off." },

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Player, supportedCodecs, supportsWebTransport, type PlayerState } from "@cha/player";
+import { Player, supportedCodecs, type PlayerState } from "@cha/player";
 import { Eye, Gamepad2, Keyboard } from "lucide-vue-next";
 import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef } from "vue";
 import { useRoute } from "vue-router";
@@ -13,6 +13,7 @@ import {
   guestCanRetry,
   guestCodec,
   guestProblem,
+  guestTransports,
   invitation,
   joinLabel,
   joinNote,
@@ -23,7 +24,9 @@ import {
 // the guest and in what role, and "Join" plays through @cha/player. A player sends only gamepads
 // (no keyboard, mouse, pointer lock, clipboard or resize); a viewer sends nothing; a controller
 // sends everything while it holds the controls, which it takes (when allowed) or is handed by the
-// owner. A dropped stream reconnects on its own.
+// owner. A dropped stream reconnects on its own. An internet link (ADR 0022) tries WebRTC (it works
+// when the guest can reach the node, or through the owner's TURN), then media over a WebSocket
+// through the portal; the others try WebTransport first.
 const route = useRoute();
 const token = computed(() => String(route.params.token));
 const video = useTemplateRef<HTMLVideoElement>("video");
@@ -82,16 +85,24 @@ async function connect() {
   if (!el || leaving) return;
   problem.value = null;
   const mine = ++attempt;
+  // ICE servers (the owner's TURN, if any); without them only direct paths. Never blocks joining.
+  const iceServers = await api.shareIce(token.value).then((r) => r.iceServers, () => undefined);
+  if (mine !== attempt || leaving) return;
   const p = new Player({
     video: el,
     codec: guestCodec(supportedCodecs(), info.value?.codecs ?? null),
     input: role.value === "viewer" ? "none" : role.value === "controller" ? "all" : "pads",
     // A guest never resizes the owner's screen.
     fixedSize: true,
-    transport: supportsWebTransport() ? "auto" : "webrtc",
+    iceServers,
+    transports: guestTransports(info.value?.wan ?? false),
     webTransport: async (codec) => {
       const r = await api.shareConnect(token.value, { codec, transport: "webtransport" });
       return { urls: r.urls ?? [], certHash: r.certHash ?? "" };
+    },
+    webSocket: async (codec) => {
+      const r = await api.shareConnect(token.value, { codec, transport: "websocket" });
+      return { urls: r.urls ?? [] };
     },
     signal: async (offer, codec) => (await api.shareConnect(token.value, { codec, offer })).answer!,
     onFloor: (control, _viewers, who, take) => {

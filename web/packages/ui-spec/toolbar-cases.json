@@ -471,7 +471,8 @@
               "options": [
                 { "value": "auto", "label": "Auto (WT)", "disabled": false },
                 { "value": "webtransport", "label": "WebTransport", "disabled": false },
-                { "value": "webrtc", "label": "WebRTC", "disabled": false }
+                { "value": "webrtc", "label": "WebRTC", "disabled": false },
+                { "value": "websocket", "label": "WebSocket", "disabled": false }
               ],
               "editable": true,
               "disabled": false,
@@ -536,7 +537,8 @@
               "options": [
                 { "value": "auto", "label": "Auto", "disabled": false },
                 { "value": "webtransport", "label": "WebTransport", "disabled": false },
-                { "value": "webrtc", "label": "WebRTC", "disabled": false }
+                { "value": "webrtc", "label": "WebRTC", "disabled": false },
+                { "value": "websocket", "label": "WebSocket", "disabled": false }
               ],
               "tooltip": "Transport"
             },

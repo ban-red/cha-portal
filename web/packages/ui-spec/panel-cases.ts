@@ -68,7 +68,7 @@ export interface CodecTagCase {
   name: string;
   platforms?: Platform[];
   codec: string | null;
-  transport: "webtransport" | "webrtc" | null;
+  transport: "webtransport" | "webrtc" | "websocket" | null;
   expect: string;
 }
 

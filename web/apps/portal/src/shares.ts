@@ -8,15 +8,19 @@ export type ShareSlot = (typeof SHARE_SLOTS)[number];
 export type ShareRole = "player" | "viewer" | "controller";
 
 /** What the owner's page sends to make a link; only a player's names a slot. */
-export type ShareSpec = { role: "player"; slot: number } | { role: "viewer" } | { role: "controller" };
+export type ShareSpec = ({ role: "player"; slot: number } | { role: "viewer" } | { role: "controller" }) & {
+  /** An internet link (ADR 0022). */
+  wan?: boolean;
+};
 
 /** "player 2" for slot 1. */
 export function playerLabel(slot: number): string {
   return `player ${slot + 1}`;
 }
 
-/** The link as people paste it: the portal's origin and the `/s/<token>` path the portal returned. */
+/** The link as people paste it: the portal's origin and the `/s/<token>` path the portal returned (an internet link's is already absolute). */
 export function shareLink(origin: string, path: string): string {
+  if (/^https?:\/\//.test(path)) return path;
   return `${origin.replace(/\/+$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
@@ -34,6 +38,18 @@ export function timeLeft(expiresAt: number, now = Date.now()): string | null {
 /** The slots with no live player link, lowest first. */
 export function freeSlots(live: { role?: string; slot: number | null }[]): ShareSlot[] {
   return SHARE_SLOTS.filter((s) => !live.some((l) => l.slot === s && (l.role ?? "player") === "player"));
+}
+
+/** What the *Over the internet* switch says (ADR 0022); a quick tunnel's address changes, which ends its links. */
+export function internetNote(mode: "quick" | "named"): string {
+  const base =
+    "Through a Cloudflare Tunnel: anyone with the link can join from anywhere. Cloudflare relays the stream and can see it, and it plays with more delay than on your network.";
+  return mode === "quick" ? `${base} The address changes when the tunnel restarts, which ends these links.` : base;
+}
+
+/** The transports a guest's page tries, in order (each is skipped where unsupported). */
+export function guestTransports(wan: boolean): ("webtransport" | "webrtc" | "websocket")[] {
+  return wan ? ["webrtc", "websocket"] : ["webtransport", "webrtc", "websocket"];
 }
 
 /** The plain warning under a link's button, for the app it controls. */
@@ -121,6 +137,7 @@ export function guestProblem(err: unknown): string {
   const code = typeof e?.code === "string" ? e.code : "";
   if (status === 404 || code === "unknown_share") return "This link has expired or was revoked.";
   if (status === 409 && code === "not_running") return "The game isn't running right now.";
+  if (code === "node_outdated") return "The host's node needs updating to stream over the internet.";
   if (status === 429) return "Too many tries. Wait a minute and try again.";
   return "Couldn't reach the game. Try again.";
 }

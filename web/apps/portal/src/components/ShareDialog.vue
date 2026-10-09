@@ -4,14 +4,17 @@ import { X } from "lucide-vue-next";
 import { computed, reactive, ref, useId, useTemplateRef, watch } from "vue";
 
 import { ApiError, api } from "../api";
-import { SHARE_SLOTS, playerLabel, shareLink, shareWarning, timeLeft, type ShareSpec } from "../shares";
+import { SHARE_SLOTS, internetNote, playerLabel, shareLink, shareWarning, timeLeft, type ShareSpec } from "../shares";
 import FormError from "./FormError.vue";
 import ShareLinkField from "./ShareLinkField.vue";
+import ToggleSwitch from "./ToggleSwitch.vue";
 
 // The Share dialog on the native <dialog> (ADRs 0014 and 0015). Links come in three kinds: "Invite
 // player 2/3/4" (one per gamepad slot), "Invite to watch" (any number) and "Invite to control" (one
 // at a time). A link's full URL is shown once, here, and can be copied. The live links list their
 // kind and expiry and can be revoked. Making a link where one is limited replaces the old one.
+// With a Cloudflare Tunnel available (ADR 0022) the "Over the internet" switch makes the next links
+// internet links, on the tunnel's address; the live ones are marked.
 const props = defineProps<{ open: boolean; environmentId: string; name: string }>();
 const emit = defineEmits<{ close: [] }>();
 
@@ -28,6 +31,17 @@ const shares = useQuery({
   enabled: computed(() => props.open),
   refetchInterval: 30_000,
 });
+// The tunnel: the switch shows unless the portal has the feature off.
+const tunnel = useQuery({
+  queryKey: ["tunnel"],
+  queryFn: () => api.tunnel(),
+  enabled: computed(() => props.open),
+  staleTime: 30_000,
+});
+const tunnelMode = computed(() => (tunnel.data.value?.mode && tunnel.data.value.mode !== "off" ? tunnel.data.value.mode : null));
+const wan = ref(false);
+const wanLabelId = useId();
+const wanNoteId = useId();
 const live = computed(() => shares.data.value ?? []);
 const bySlot = computed(() => new Map(live.value.filter((s) => s.role === "player").map((s) => [s.slot, s])));
 const controller = computed(() => live.value.find((s) => s.role === "controller"));
@@ -40,12 +54,14 @@ const error = ref<string | null>(null);
 const text = (err: unknown, fallback: string) =>
   err instanceof ApiError && err.code === "not_running"
     ? "The environment isn't running, so it can't be shared."
-    : err instanceof Error && err.message
+    : err instanceof ApiError && err.code === "tunnel_off"
+      ? "Internet links are turned off on this portal."
+      : err instanceof Error && err.message
       ? err.message
       : fallback;
 
 const create = useMutation({
-  mutationFn: (spec: ShareSpec) => api.createShare(props.environmentId, spec),
+  mutationFn: (spec: ShareSpec) => api.createShare(props.environmentId, wan.value && tunnelMode.value ? { ...spec, wan: true } : spec),
   onMutate: () => (error.value = null),
   onSuccess: (made) => {
     // A player or controller link replaces the old one: its URL is no use now.
@@ -117,6 +133,17 @@ const left = (expiresAt: number) => timeLeft(expiresAt) ?? "expired";
         </button>
       </div>
 
+      <section v-if="tunnelMode" class="space-y-2" aria-label="Over the internet">
+        <div class="flex items-center gap-3 rounded-lg border border-line p-3">
+          <div class="min-w-0 flex-1">
+            <p :id="wanLabelId" class="text-sm font-medium">Over the internet</p>
+            <p :id="wanNoteId" class="text-xs text-ink-3">{{ internetNote(tunnelMode) }}</p>
+          </div>
+          <ToggleSwitch v-model="wan" :aria-labelledby="wanLabelId" :aria-describedby="wanNoteId" />
+        </div>
+        <p v-if="create.isPending.value && wan" class="text-xs text-ink-2" role="status">Opening the tunnel…</p>
+      </section>
+
       <section class="space-y-2" aria-label="Players">
         <h3 class="text-xs font-medium tracking-wide text-ink-3 uppercase">Play on a gamepad</h3>
         <ul class="divide-y divide-line rounded-lg border border-line">
@@ -124,7 +151,10 @@ const left = (expiresAt: number) => timeLeft(expiresAt) ?? "expired";
             <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium">Invite {{ playerLabel(slot) }}</p>
-                <p v-if="bySlot.get(slot)" class="text-xs text-ink-3">Link active, ends in {{ left(bySlot.get(slot)!.expiresAt) }}</p>
+                <p v-if="bySlot.get(slot)" class="text-xs text-ink-3">
+                  Link active<template v-if="bySlot.get(slot)!.wan"> · <span class="font-medium text-accent">Internet</span></template>, ends in
+                  {{ left(bySlot.get(slot)!.expiresAt) }}
+                </p>
                 <p v-else class="text-xs text-ink-3">No link yet</p>
               </div>
               <button
@@ -177,7 +207,10 @@ const left = (expiresAt: number) => timeLeft(expiresAt) ?? "expired";
           <ul v-if="viewers.length" class="divide-y divide-line">
             <li v-for="(v, n) in viewers" :key="v.id" class="space-y-2 py-2">
               <div class="flex items-center gap-3">
-                <p class="min-w-0 flex-1 text-xs text-ink-2">Watch link {{ n + 1 }}, ends in {{ left(v.expiresAt) }}</p>
+                <p class="min-w-0 flex-1 text-xs text-ink-2">
+                  Watch link {{ n + 1 }}<template v-if="v.wan"> · <span class="font-medium text-accent">Internet</span></template>, ends in
+                  {{ left(v.expiresAt) }}
+                </p>
                 <button
                   type="button"
                   class="btn-ghost min-h-8 px-3 hover:border-danger/60 hover:text-danger"
@@ -200,7 +233,10 @@ const left = (expiresAt: number) => timeLeft(expiresAt) ?? "expired";
           <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
             <div class="min-w-0 flex-1">
               <p class="text-sm font-medium">Invite to control</p>
-              <p v-if="controller" class="text-xs text-ink-3">Link active, ends in {{ left(controller.expiresAt) }}</p>
+              <p v-if="controller" class="text-xs text-ink-3">
+                Link active<template v-if="controller.wan"> · <span class="font-medium text-accent">Internet</span></template>, ends in
+                {{ left(controller.expiresAt) }}
+              </p>
               <p v-else class="text-xs text-ink-3">No link yet</p>
             </div>
             <button

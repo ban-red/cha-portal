@@ -10,7 +10,7 @@ export interface StatsValuesInput {
   stats: StatsSnapshot | null;
   /** The codec chosen, until the stream says what it decodes. */
   codec: string;
-  transport: "webtransport" | "webrtc" | null;
+  transport: "webtransport" | "webrtc" | "websocket" | null;
   /** Times the stream came back on its own after dropping, this visit. */
   reconnects?: number;
 }

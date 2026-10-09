@@ -26,6 +26,7 @@
   "codec_tag": [
     { "name": "the codec and WebTransport", "codec": "hevc", "transport": "webtransport", "expect": "HEVC/WT" },
     { "name": "the codec and WebRTC", "codec": "h264", "transport": "webrtc", "expect": "H264/RTC" },
+    { "name": "the codec and WebSocket", "platforms": ["web"], "codec": "h264", "transport": "websocket", "expect": "H264/WS" },
     { "name": "PyroWave keeps its digits", "codec": "pyrowave444", "transport": "webtransport", "expect": "PYROWAVE444/WT" },
     { "name": "a codec without a transport", "codec": "av1", "transport": null, "expect": "AV1" },
     { "name": "a transport without a codec", "codec": null, "transport": "webtransport", "expect": "WT" },
