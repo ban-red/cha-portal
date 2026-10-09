@@ -329,6 +329,7 @@ else
 CHA_NODE_NAME=$hostname
 CHA_NODE_IMAGE=$registry/cha-node:$version
 CHA_STREAMER_IMAGE=$registry/cha-streamer:$version
+CHA_GATEWAY_IMAGE=$registry/cha-gateway:$version
 CHA_IMAGE_REGISTRY=$registry
 CHA_IMAGE_TAG=$version
 CHA_NVIDIA_WINE_DIR="

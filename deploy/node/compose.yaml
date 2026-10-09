@@ -42,6 +42,12 @@ services:
       CHA_ALLOW_INSECURE_PORTAL: ${CHA_ALLOW_INSECURE_PORTAL:-false}
       CHA_NODE_NAME: ${CHA_NODE_NAME:-}
       CHA_STREAMER_IMAGE: ${CHA_STREAMER_IMAGE:-cha/streamer:dev}
+      # The published environment images (deploy/README.md, Published images):
+      # CHA_IMAGE_REGISTRY=ghcr.io/ban-red and CHA_IMAGE_TAG=0.5.0 run
+      # cha/env-chrome:dev as ghcr.io/ban-red/cha-env-chrome:0.5.0. Empty runs
+      # the images built here.
+      CHA_IMAGE_REGISTRY: ${CHA_IMAGE_REGISTRY:-}
+      CHA_IMAGE_TAG: ${CHA_IMAGE_TAG:-}
       # Development only: extra flags for every streamer this agent starts,
       # e.g. the frame tap (crates/cha-streamer/README.md): empty by default.
       CHA_STREAMER_ARGS: ${CHA_STREAMER_ARGS:-}
