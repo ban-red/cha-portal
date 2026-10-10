@@ -1,0 +1,25 @@
+#!/bin/bash
+# OS updates (apt dist-upgrade) inside the running LXCs.
+#   update-lxcs [--host] [-n] [CTID...]     default: every running LXC
+# --host also upgrades this Proxmox host (never reboots anything).
+# -n lists what would be upgraded and changes nothing.
+set -u
+host=0 dry=0 ids=()
+for a in "$@"; do
+    case $a in --host) host=1 ;; -n|--dry-run) dry=1 ;; *) ids+=("$a") ;; esac
+done
+[ ${#ids[@]} -gt 0 ] || ids=($(pct list | awk 'NR>1 && $2=="running" {print $1}'))
+if [ $host = 1 ]; then
+    echo "==> host"
+    apt-get update -q >/dev/null
+    if [ $dry = 1 ]; then apt-get -s dist-upgrade | grep '^Inst'; else DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade; fi
+fi
+for id in "${ids[@]}"; do
+    echo "==> CT $id ($(pct config "$id" | awk '/^hostname:/ {print $2}'))"
+    pct exec "$id" -- env DRY=$dry DEBIAN_FRONTEND=noninteractive sh -c '
+        apt-get update -q >/dev/null || exit 1
+        if [ "$DRY" = 1 ]; then apt-get -s dist-upgrade | grep "^Inst"; else
+            apt-get -y -q dist-upgrade && apt-get -y -q autoremove >/dev/null
+            [ -e /var/run/reboot-required ] && echo "  reboot recommended"
+        fi; true'
+done

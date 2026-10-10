@@ -1,0 +1,28 @@
+#!/bin/bash
+# Overview of the LXCs: state, address, and for the Cha ones the compose
+# services with their images (LOCAL = built here, not a registry pull).
+# Also the newest version published on ghcr.
+set -u
+latest() {
+    local tok
+    tok=$(curl -fsS "https://ghcr.io/token?scope=repository:ban-red/cha-portal:pull" | sed -E 's/.*"token":"([^"]+)".*/\1/') || return 1
+    curl -fsS -H "Authorization: Bearer $tok" https://ghcr.io/v2/ban-red/cha-portal/tags/list |
+        grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"' | sort -V | tail -1
+}
+echo "newest published: $(latest || echo unknown)"
+echo
+pct list
+for id in $(pct list | awk 'NR>1 && $2=="running" {print $1}'); do
+    ip=$(pct exec "$id" -- hostname -I 2>/dev/null | awk '{print $1}')
+    echo; echo "== CT $id $(pct config "$id" | awk '/^hostname:/ {print $2}') ${ip:-?}"
+    pct exec "$id" -- sh -c '
+        command -v docker >/dev/null || { echo "  (no docker)"; exit 0; }
+        docker ps --format "{{.Names}}|{{.Image}}|{{.Status}}" | while IFS="|" read n i s; do
+            d=$(docker image inspect --format "{{len .RepoDigests}}" "$i" 2>/dev/null)
+            [ "$d" = 0 ] && t=LOCAL || t=registry
+            printf "  %-40s %-50s %-9s %s\n" "$n" "$i" "$t" "$s"
+        done
+        [ -d /opt/cha-portal/.git ] && echo "  checkout: $(git -C /opt/cha-portal describe --tags --always 2>/dev/null)"
+        apt-get -s upgrade 2>/dev/null | grep -c "^Inst" | sed "s/^/  pending apt upgrades: /"
+    '
+done

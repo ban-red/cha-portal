@@ -1,0 +1,76 @@
+#!/bin/bash
+# Updates Cha Portal inside the LXCs to a published release: moves the
+# checkout to its tag, points the .env files at its images, pulls them,
+# restarts the services that are running (stopped stacks stay stopped), and refreshes the environment images already there.
+#   update-images [--version X.Y.Z|latest] [-n] [--force] [CTID...]
+# "latest" (default) is the highest X.Y.Z tag on ghcr: there is no :latest tag.
+# -n shows the plan only. LXCs running locally built images (no registry
+# digest, e.g. CT 103's AV1 streamer) are skipped unless --force, since a
+# pull would overwrite them.
+set -u
+reg=ghcr.io/ban-red version=latest dry=0 force=0 ids=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        --version) version=${2#v}; shift ;;
+        -n|--dry-run) dry=1 ;;
+        --force) force=1 ;;
+        *) ids+=("$1") ;;
+    esac; shift
+done
+if [ "$version" = latest ]; then
+    tok=$(curl -fsS "https://ghcr.io/token?scope=repository:ban-red/cha-portal:pull" | sed -E 's/.*"token":"([^"]+)".*/\1/')
+    version=$(curl -fsS -H "Authorization: Bearer $tok" https://ghcr.io/v2/ban-red/cha-portal/tags/list |
+        grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"' | sort -V | tail -1)
+    [ -n "$version" ] || { echo "can't resolve the latest version"; exit 1; }
+fi
+echo "target release: $version"
+[ ${#ids[@]} -gt 0 ] || ids=($(pct list | awk 'NR>1 && $2=="running" {print $1}'))
+
+for id in "${ids[@]}"; do
+    name=$(pct config "$id" | awk '/^hostname:/ {print $2}')
+    pct exec "$id" -- test -d /opt/cha-portal/deploy || continue
+    echo "==> CT $id ($name)"
+    pct exec "$id" -- env V="$version" REG="$reg" DRY=$dry FORCE=$force sh -eu -c '
+        cd /opt/cha-portal
+        setenv() { f=$1; k=$2; v=$3; touch "$f"; sed -i "/^$k=/d" "$f"; echo "$k=$v" >>"$f"; }
+        local_img() { [ "$(docker image inspect --format "{{len .RepoDigests}}" "$1" 2>/dev/null || echo 1)" = 0 ]; }
+        todo=
+        for d in portal node quickstart; do
+            f=deploy/$d/.env; [ -f "$f" ] || continue
+            [ -n "$(cd deploy/$d && docker compose ps -q 2>/dev/null)" ] || { echo "  $d: not running; left alone"; continue; }
+            case $d in
+                portal) probe=$(sed -n "s/^CHA_PORTAL_IMAGE=//p" $f) ;;
+                node) probe=$(sed -n "s/^CHA_NODE_IMAGE=//p" $f) ;;
+                quickstart) probe=$REG/cha-node:$(sed -n "s/^CHA_VERSION=//p" $f) ;;
+            esac
+            if local_img "$probe" && [ "$FORCE" = 0 ]; then
+                echo "  $d: $probe is a local build; skipped (--force to overwrite)"; continue
+            fi
+            echo "  $d: ${probe:-?} -> $V"
+            todo="$todo $d"
+        done
+        [ -n "$todo" ] || exit 0
+        [ "$DRY" = 1 ] && exit 0
+        if [ -d .git ]; then
+            git fetch -q --depth 1 origin tag "v$V" && git checkout -q "v$V"
+        else echo "  (checkout is not a git clone: compose files left as they are)"; fi
+        for d in $todo; do
+            f=deploy/$d/.env
+            case $d in
+                portal) setenv $f CHA_PORTAL_IMAGE $REG/cha-portal:$V; svc=portal ;;
+                node)
+                    setenv $f CHA_NODE_IMAGE $REG/cha-node:$V
+                    setenv $f CHA_STREAMER_IMAGE $REG/cha-streamer:$V
+                    setenv $f CHA_GATEWAY_IMAGE $REG/cha-gateway:$V
+                    setenv $f CHA_IMAGE_TAG $V; svc=agent ;;
+                quickstart) setenv $f CHA_VERSION $V; svc= ;;
+            esac
+            (cd deploy/$d && docker compose pull -q $svc && docker compose up -d --no-build $svc)
+        done
+        # environment images already on this machine, at the new version
+        docker images --format "{{.Repository}}" | grep "^$REG/cha-env-" | sort -u | while read r; do
+            docker pull -q "$r:$V" >/dev/null && echo "  pulled $r:$V" || echo "  no $r:$V published"
+        done
+        docker image prune -f >/dev/null
+    '
+done

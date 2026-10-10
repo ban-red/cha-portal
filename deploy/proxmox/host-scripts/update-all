@@ -1,0 +1,9 @@
+#!/bin/bash
+# OS updates in every LXC, then Cha Portal images. Arguments go to update-images
+# (e.g. update-all --version 0.5.1, update-all -n). Add --host to also upgrade
+# the Proxmox host.
+host=; args=()
+for a in "$@"; do [ "$a" = --host ] && host=--host || args+=("$a"); done
+d=$(dirname "$0")
+"$d/update-lxcs" $host
+"$d/update-images" "${args[@]}"
