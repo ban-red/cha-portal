@@ -1,0 +1,564 @@
+{
+ "benchmark": "Pad input to decoded frame, after pad state moved to datagrams (same procedure as the baseline file)",
+ "capturedAt": "2026-10-10",
+ "baselineFile": "pad-2026-10-10-electron152-gpu-node-testpattern.json",
+ "streamer": "cha/streamer:dev d0dadb9e (padDatagrams: true in the hello); previous image tagged cha/streamer:pre-datagrams",
+ "client": "same pane: Claude/2.31226.1 Chrome/152.0.7977.130, decoded 1920x1440, wired 1 GbE, no loss",
+ "datagramsUsed": "Page-side counts (Worker.postMessage with type 'datagram' on WebTransport, RTCDataChannel.send of binary on WebRTC): 607 datagrams for the first 3-run WebTransport config (one probe run is ~200 pad messages), and +607 binary sends on the WebRTC 'input' channel for the next 3-run config; 2426 binary sends by the end. The pad went reliably only for the A/B control below.",
+ "method": "same as the baseline: 100 presses per run, 3 runs per config",
+ "configs": [
+  {
+   "transport": "webtransport",
+   "codec": "av1",
+   "fps": 60,
+   "runs": [
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 19,
+     "p95": 28.2,
+     "p99": 68.2,
+     "min": 10,
+     "max": 68.2,
+     "mean": 20.57,
+     "fps": 60,
+     "frameIntervalP95Ms": 17.7,
+     "frameIntervalMaxMs": 22.5,
+     "readP50Ms": 9.2,
+     "readP95Ms": 13.3
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 20,
+     "p95": 27.7,
+     "p99": 75.4,
+     "min": 10.4,
+     "max": 75.4,
+     "mean": 20.82,
+     "fps": 60,
+     "frameIntervalP95Ms": 17.6,
+     "frameIntervalMaxMs": 24.9,
+     "readP50Ms": 9.2,
+     "readP95Ms": 13.3
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 20.3,
+     "p95": 51.9,
+     "p99": 81.4,
+     "min": 10.1,
+     "max": 81.4,
+     "mean": 21.86,
+     "fps": 60,
+     "frameIntervalP95Ms": 17.6,
+     "frameIntervalMaxMs": 23.2,
+     "readP50Ms": 9.1,
+     "readP95Ms": 13.1
+    }
+   ],
+   "summary": {
+    "p50MedianOfRuns": 20,
+    "p50Range": [
+     19,
+     20.3
+    ],
+    "p95MedianOfRuns": 28.2,
+    "p99MedianOfRuns": 75.4,
+    "minMedianOfRuns": 10.1,
+    "readP50MedianMs": 9.2
+   },
+   "beforeP50": 18.6,
+   "beforeP95": 25.6
+  },
+  {
+   "transport": "webtransport",
+   "codec": "av1",
+   "fps": 120,
+   "runs": [
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 17.1,
+     "p95": 25.6,
+     "p99": 39.9,
+     "min": 10.5,
+     "max": 39.9,
+     "mean": 17.44,
+     "fps": 120,
+     "frameIntervalP95Ms": 9.9,
+     "frameIntervalMaxMs": 19.9,
+     "readP50Ms": 7.9,
+     "readP95Ms": 13.9
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 16.3,
+     "p95": 25.9,
+     "p99": 61.6,
+     "min": 9.9,
+     "max": 61.6,
+     "mean": 17.37,
+     "fps": 120,
+     "frameIntervalP95Ms": 9.8,
+     "frameIntervalMaxMs": 20.1,
+     "readP50Ms": 7.7,
+     "readP95Ms": 13.2
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 16.8,
+     "p95": 27.8,
+     "p99": 56.4,
+     "min": 10,
+     "max": 56.4,
+     "mean": 18.41,
+     "fps": 120,
+     "frameIntervalP95Ms": 9.7,
+     "frameIntervalMaxMs": 20.7,
+     "readP50Ms": 7.7,
+     "readP95Ms": 13.8
+    }
+   ],
+   "summary": {
+    "p50MedianOfRuns": 16.8,
+    "p50Range": [
+     16.3,
+     17.1
+    ],
+    "p95MedianOfRuns": 25.9,
+    "p99MedianOfRuns": 56.4,
+    "minMedianOfRuns": 10,
+    "readP50MedianMs": 7.7
+   },
+   "beforeP50": 13.6,
+   "beforeP95": 20.4
+  },
+  {
+   "transport": "webtransport",
+   "codec": "h264",
+   "fps": 120,
+   "runs": [
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 16.1,
+     "p95": 28.4,
+     "p99": 70,
+     "min": 8.5,
+     "max": 70,
+     "mean": 17.27,
+     "fps": 119.9,
+     "frameIntervalP95Ms": 9.9,
+     "frameIntervalMaxMs": 25.6,
+     "readP50Ms": 8.4,
+     "readP95Ms": 14.1
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 15.1,
+     "p95": 27.8,
+     "p99": 61.1,
+     "min": 8.8,
+     "max": 61.1,
+     "mean": 16.74,
+     "fps": 120,
+     "frameIntervalP95Ms": 9.9,
+     "frameIntervalMaxMs": 21.3,
+     "readP50Ms": 8.4,
+     "readP95Ms": 12.9
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 15.5,
+     "p95": 26.3,
+     "p99": 67.2,
+     "min": 8.9,
+     "max": 67.2,
+     "mean": 16.95,
+     "fps": 120,
+     "frameIntervalP95Ms": 9.8,
+     "frameIntervalMaxMs": 21.4,
+     "readP50Ms": 8.3,
+     "readP95Ms": 12.7
+    }
+   ],
+   "summary": {
+    "p50MedianOfRuns": 15.5,
+    "p50Range": [
+     15.1,
+     16.1
+    ],
+    "p95MedianOfRuns": 27.8,
+    "p99MedianOfRuns": 67.2,
+    "minMedianOfRuns": 8.8,
+    "readP50MedianMs": 8.4
+   },
+   "beforeP50": 13,
+   "beforeP95": 20.8
+  },
+  {
+   "transport": "webtransport",
+   "codec": "h264",
+   "fps": 60,
+   "runs": [
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 19,
+     "p95": 27.6,
+     "p99": 61.6,
+     "min": 9.3,
+     "max": 61.6,
+     "mean": 19.09,
+     "fps": 60,
+     "frameIntervalP95Ms": 17.7,
+     "frameIntervalMaxMs": 25.6,
+     "readP50Ms": 9,
+     "readP95Ms": 15.5
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 18.7,
+     "p95": 26.4,
+     "p99": 69.9,
+     "min": 9.1,
+     "max": 69.9,
+     "mean": 19.57,
+     "fps": 60,
+     "frameIntervalP95Ms": 17.7,
+     "frameIntervalMaxMs": 23.3,
+     "readP50Ms": 8.9,
+     "readP95Ms": 14.6
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 18.7,
+     "p95": 26.1,
+     "p99": 44.1,
+     "min": 9.9,
+     "max": 44.1,
+     "mean": 18.83,
+     "fps": 60,
+     "frameIntervalP95Ms": 17.6,
+     "frameIntervalMaxMs": 24.7,
+     "readP50Ms": 8.9,
+     "readP95Ms": 15.1
+    }
+   ],
+   "summary": {
+    "p50MedianOfRuns": 18.7,
+    "p50Range": [
+     18.7,
+     19
+    ],
+    "p95MedianOfRuns": 26.4,
+    "p99MedianOfRuns": 61.6,
+    "minMedianOfRuns": 9.3,
+    "readP50MedianMs": 8.9
+   },
+   "beforeP50": 18.9,
+   "beforeP95": 26.7
+  },
+  {
+   "transport": "webrtc",
+   "codec": "h264",
+   "fps": 60,
+   "runs": [
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 18.8,
+     "p95": 26.2,
+     "p99": 73.3,
+     "min": 10,
+     "max": 73.3,
+     "mean": 19.23,
+     "fps": 60,
+     "frameIntervalP95Ms": 19.3,
+     "frameIntervalMaxMs": 24,
+     "readP50Ms": 8,
+     "readP95Ms": 13
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 20.1,
+     "p95": 26.7,
+     "p99": 28.5,
+     "min": 10.2,
+     "max": 28.5,
+     "mean": 19.25,
+     "fps": 60,
+     "frameIntervalP95Ms": 19.7,
+     "frameIntervalMaxMs": 27.5,
+     "readP50Ms": 7.7,
+     "readP95Ms": 11.7
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 19.2,
+     "p95": 26.4,
+     "p99": 46.1,
+     "min": 9.5,
+     "max": 46.1,
+     "mean": 19.21,
+     "fps": 60,
+     "frameIntervalP95Ms": 19.9,
+     "frameIntervalMaxMs": 23.9,
+     "readP50Ms": 7.9,
+     "readP95Ms": 12.4
+    }
+   ],
+   "summary": {
+    "p50MedianOfRuns": 19.2,
+    "p50Range": [
+     18.8,
+     20.1
+    ],
+    "p95MedianOfRuns": 26.4,
+    "p99MedianOfRuns": 46.1,
+    "minMedianOfRuns": 10,
+    "readP50MedianMs": 7.9
+   },
+   "beforeP50": 19,
+   "beforeP95": 26.7
+  },
+  {
+   "transport": "webrtc",
+   "codec": "h264",
+   "fps": 120,
+   "runs": [
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 13.2,
+     "p95": 19.8,
+     "p99": 55.5,
+     "min": 8.8,
+     "max": 55.5,
+     "mean": 14.03,
+     "fps": 120,
+     "frameIntervalP95Ms": 12.1,
+     "frameIntervalMaxMs": 15.4,
+     "readP50Ms": 6.1,
+     "readP95Ms": 9.7
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 13.9,
+     "p95": 19.1,
+     "p99": 20.4,
+     "min": 8.5,
+     "max": 20.4,
+     "mean": 13.79,
+     "fps": 119.9,
+     "frameIntervalP95Ms": 12.1,
+     "frameIntervalMaxMs": 15.9,
+     "readP50Ms": 6.6,
+     "readP95Ms": 9.8
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 13.4,
+     "p95": 21.2,
+     "p99": 36.5,
+     "min": 8.5,
+     "max": 36.5,
+     "mean": 14.44,
+     "fps": 119.9,
+     "frameIntervalP95Ms": 11.8,
+     "frameIntervalMaxMs": 15,
+     "readP50Ms": 6.4,
+     "readP95Ms": 10
+    }
+   ],
+   "summary": {
+    "p50MedianOfRuns": 13.4,
+    "p50Range": [
+     13.2,
+     13.9
+    ],
+    "p95MedianOfRuns": 19.8,
+    "p99MedianOfRuns": 36.5,
+    "minMedianOfRuns": 8.5,
+    "readP50MedianMs": 6.4
+   },
+   "beforeP50": 14.1,
+   "beforeP95": 20.8
+  },
+  {
+   "transport": "webrtc",
+   "codec": "av1",
+   "fps": 120,
+   "runs": [
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 15.4,
+     "p95": 21.2,
+     "p99": 60.2,
+     "min": 9.8,
+     "max": 60.2,
+     "mean": 15.34,
+     "fps": 120,
+     "frameIntervalP95Ms": 12,
+     "frameIntervalMaxMs": 15.8,
+     "readP50Ms": 5.6,
+     "readP95Ms": 8.9
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 15.2,
+     "p95": 20.7,
+     "p99": 49.5,
+     "min": 10,
+     "max": 49.5,
+     "mean": 15.7,
+     "fps": 120,
+     "frameIntervalP95Ms": 12,
+     "frameIntervalMaxMs": 15.7,
+     "readP50Ms": 5.7,
+     "readP95Ms": 8.5
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 14.5,
+     "p95": 19.2,
+     "p99": 64.7,
+     "min": 9.7,
+     "max": 64.7,
+     "mean": 15.13,
+     "fps": 120,
+     "frameIntervalP95Ms": 12.3,
+     "frameIntervalMaxMs": 16.3,
+     "readP50Ms": 5.7,
+     "readP95Ms": 9
+    }
+   ],
+   "summary": {
+    "p50MedianOfRuns": 15.2,
+    "p50Range": [
+     14.5,
+     15.4
+    ],
+    "p95MedianOfRuns": 20.7,
+    "p99MedianOfRuns": 60.2,
+    "minMedianOfRuns": 9.8,
+    "readP50MedianMs": 5.7
+   },
+   "beforeP50": 15.1,
+   "beforeP95": 20.6
+  },
+  {
+   "transport": "webrtc",
+   "codec": "av1",
+   "fps": 60,
+   "runs": [
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 20.8,
+     "p95": 28,
+     "p99": 63.7,
+     "min": 10.4,
+     "max": 63.7,
+     "mean": 21.1,
+     "fps": 60,
+     "frameIntervalP95Ms": 20,
+     "frameIntervalMaxMs": 22.8,
+     "readP50Ms": 7.3,
+     "readP95Ms": 11
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 20.4,
+     "p95": 27.1,
+     "p99": 58,
+     "min": 10.6,
+     "max": 58,
+     "mean": 20.41,
+     "fps": 60,
+     "frameIntervalP95Ms": 20.4,
+     "frameIntervalMaxMs": 30.3,
+     "readP50Ms": 7.3,
+     "readP95Ms": 10.8
+    },
+    {
+     "samples": 100,
+     "missed": 0,
+     "p50": 18.7,
+     "p95": 27.9,
+     "p99": 59.2,
+     "min": 10.3,
+     "max": 59.2,
+     "mean": 19.52,
+     "fps": 60,
+     "frameIntervalP95Ms": 19.7,
+     "frameIntervalMaxMs": 23.5,
+     "readP50Ms": 7.5,
+     "readP95Ms": 12.5
+    }
+   ],
+   "summary": {
+    "p50MedianOfRuns": 20.4,
+    "p50Range": [
+     18.7,
+     20.8
+    ],
+    "p95MedianOfRuns": 27.9,
+    "p99MedianOfRuns": 59.2,
+    "minMedianOfRuns": 10.4,
+    "readP50MedianMs": 7.3
+   },
+   "beforeP50": 20.7,
+   "beforeP95": 27.7
+  }
+ ],
+ "abControl": {
+  "note": "Same session, same pane, WebTransport H.264 120 fps: the page converted each pad datagram back into a reliable control-channel line (606 converted) to compare in-session, since the pane drifts between sessions (patch read-back p50 was 8.4 ms in this session vs 6.6 ms in the baseline).",
+  "datagram": {
+   "p50": [
+    16.1,
+    15.1,
+    15.5
+   ]
+  },
+  "reliable": {
+   "p50": [
+    15.7,
+    15.4,
+    15.4
+   ],
+   "p95": [
+    22.8,
+    26.4,
+    26.7
+   ],
+   "p99": [
+    69.1,
+    74.4,
+    67.2
+   ],
+   "min": [
+    8.7,
+    8.4,
+    8.6
+   ]
+  }
+ },
+ "lossRun": "not done"
+}

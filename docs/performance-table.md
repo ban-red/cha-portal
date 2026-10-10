@@ -35,20 +35,24 @@ a comparison between nodes, not as the number a Chrome user gets.
 
 ### Pad press → decoded frame (not glass to glass)
 
-Measured 2026-10-10 in the same browser pane, over the control channel (before
-pad input moves to datagrams): a pad's button A is sent as the player sends it,
-and the page times the decoded frame in which the test pattern shows it
-(1920×1440 decoded, 100 presses per run, 3 runs). **Decoded, not presented:**
-it leaves out the controller's USB hop and the display's scan-out, so it is not
-a controller-to-screen number. Procedure and raw runs:
+Measured 2026-10-10 in the same browser pane: a pad's button A is sent as the
+player sends it, and the page times the decoded frame in which the test pattern
+shows it (1920×1440 decoded, 100 presses per run, 3 runs). **Decoded, not
+presented:** it leaves out the controller's USB hop and the display's scan-out,
+so it is not a controller-to-screen number. "Before" is pad state on the
+reliable control channel, "after" as datagrams (confirmed in use). On a wired
+LAN with no loss datagrams aren't expected to change the median, and don't;
+their gain is under loss, which wasn't measured. The after runs came in a
+busier pane, so differences of 1-3 ms in the WebTransport 120 fps and AV1 60
+cells are noise (a same-session control showed none). Procedure and raw runs:
 [benchmarks/pad-latency.md](benchmarks/pad-latency.md).
 
-| Transport, codec | 60 fps p50 / p95 | 120 fps p50 / p95 |
+| Transport, codec | 60 fps p50 before → after | 120 fps p50 before → after |
 |---|---|---|
-| WebTransport, AV1 | **18.6** / 25.6 ms | **13.6** / 20.4 ms |
-| WebTransport, H.264 | **18.9** / 26.7 ms | **13.0** / 20.8 ms |
-| WebRTC, AV1 | **20.7** / 27.7 ms | **15.1** / 20.6 ms |
-| WebRTC, H.264 | **19.0** / 26.7 ms | **14.1** / 20.8 ms |
+| WebTransport, AV1 | **18.6** → **20.0** ms | **13.6** → **16.8** ms |
+| WebTransport, H.264 | **18.9** → **18.7** ms | **13.0** → **15.5** ms |
+| WebRTC, AV1 | **20.7** → **20.4** ms | **15.1** → **15.2** ms |
+| WebRTC, H.264 | **19.0** → **19.2** ms | **14.1** → **13.4** ms |
 
 ## The latency budget on the baseline
 

@@ -22,7 +22,7 @@ Frames are read with a `MediaStreamTrackProcessor` on the `<video>` element's tr
 
 Where the time goes, from the numbers below: the lowest samples (about 10 ms at 60 fps, 8-9 ms at 120) are the pipeline with no waiting; the median sits about half a frame interval above that, because the environment draws on frame callbacks and the encoder takes frames on its cadence. So at 60 fps the median is roughly floor + 8 ms, at 120 fps floor + 4 ms. What causes the tail wasn't investigated.
 
-## Baseline, before pad input moves to datagrams
+## Baseline, before pad input moved to datagrams
 
 2026-10-10. Client: the Claude app's built-in browser, user agent
 `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/2.31226.1 Chrome/152.0.7977.130 Safari/537.36`, on a MacBook Pro over wired 1 GbE. **Decoded size 1920×1440** (the pane's size, not 1440p). Node: the RTX 4090 test node on the same LAN, test-pattern environment, NVENC, through the Mac's dev portal. Pad messages go over the control channel as they do today (not datagrams). Each cell is the median of the runs' values; a run is 100 presses; 3 runs per configuration (6 for WebTransport AV1 60). Nothing missed in any run. With 100 presses p99 is the single worst press, so read p95 as the tail and p99 as "the worst one".
@@ -45,6 +45,27 @@ Other caveats:
 - The pane is not Chrome. Presentation, power and focus behave differently (the stats overlay is paused in it), and decode scheduling may too. Use it to compare before and after, not as the number a Chrome user gets.
 - 120 fps is the environment's compositor and encoder rate. The test pattern repaints only what changed, so the encoder works on near-static frames, much easier than a game's. These numbers are the floor of the pipeline, not what a real game costs.
 - One browser, one node, one LAN, one afternoon; `readMs` and the frame intervals are in the JSON.
+
+## After: pad state as datagrams
+
+2026-10-10, later the same day, same pane, same procedure (a fresh test-pattern environment, 100 presses, 3 runs per configuration). The streamer is `cha/streamer:dev` d0dadb9e (its hello says `padDatagrams: true`; the previous image is tagged `:pre-datagrams`) and the page now tries a datagram first for pad state. Raw runs: [`pad-2026-10-10-electron152-gpu-node-testpattern-datagrams.json`](pad-2026-10-10-electron152-gpu-node-testpattern-datagrams.json).
+
+**Datagrams were in use.** Counting in the page (`Worker.postMessage` with type `datagram` on WebTransport, binary `RTCDataChannel.send` on WebRTC): 607 pad datagrams for the first three-run WebTransport configuration, and 607 more binary sends on the WebRTC "input" channel for the first WebRTC one, 2426 by the end. (The streamer counts them in `pad_datagrams` but doesn't log that.)
+
+| Transport | Codec | fps | p50 before → after ms | p95 before → after | fastest before → after |
+|---|---|---|---|---|---|
+| WebTransport | AV1 | 60 | 18.6 → 20.0 | 25.6 → 28.2 | 9.8 → 10.1 |
+| WebTransport | H.264 | 60 | 18.9 → 18.7 | 26.7 → 26.4 | 9.6 → 9.3 |
+| WebTransport | H.264 | 120 | 13.0 → 15.5 | 20.8 → 27.8 | 8.4 → 8.8 |
+| WebTransport | AV1 | 120 | 13.6 → 16.8 | 20.4 → 25.9 | 9.8 → 10.0 |
+| WebRTC | AV1 | 60 | 20.7 → 20.4 | 27.7 → 27.9 | 10.3 → 10.4 |
+| WebRTC | H.264 | 60 | 19.0 → 19.2 | 26.7 → 26.4 | 9.8 → 10.0 |
+| WebRTC | AV1 | 120 | 15.1 → 15.2 | 20.6 → 20.7 | 9.8 → 9.8 |
+| WebRTC | H.264 | 120 | 14.1 → 13.4 | 20.8 → 19.8 | 8.4 → 8.5 |
+
+**Reading it.** On a wired LAN with no loss, datagrams aren't expected to move the median: the reliable channel doesn't wait for anything there either. Their gain is under loss, where a lost reliable message holds every later one behind its retransmit and a datagram is just replaced by the next state. Six of the eight configurations are within about a millisecond. The three WebTransport 120 fps / AV1 60 cells that came out 1.4-3.2 ms slower are not a datagram cost: the pane was busier in this session (the patch read-back took a median 7.7-9.2 ms in those runs against 5-7 ms in the baseline, and the stream's frame-interval tail moved too), and a control in the same session shows no difference. With WebTransport H.264 at 120 fps, converting each datagram back into a reliable control-channel line in the page gave p50 15.7 / 15.4 / 15.4 ms and p95 22.8 / 26.4 / 26.7, against 16.1 / 15.1 / 15.5 and 28.4 / 27.8 / 26.3 for datagrams. I didn't run that control for the other two slower cells, so for those the "pane drift" reading is likely, not shown. The worst-of-100 value (p99) is one late press per run in both columns and moves either way.
+
+**Loss wasn't tested.** The place datagrams should show is a lossy link. The S7 bench shapes a streamer container's own interface, but it runs its own bench page and streamer, not a portal-brokered test-pattern session, and shaping the node's environment containers needs host namespace access (sudo on the node), which needs the owner's OK. So no lossy run: it needs either a probe added to the S7 bench page or the owner's go-ahead to shape the session's container.
 
 ## Re-run it (the after-datagrams run must be the same)
 
