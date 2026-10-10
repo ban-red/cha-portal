@@ -324,6 +324,8 @@ async fn run(
                     });
                     continue;
                 };
+                // The new codec's ceiling: PyroWave's full rate, or NVENC's.
+                pacing.rate.rescale(ceiling_bps(&sessions.media, next));
                 video.take_over(next, frames, pacing.encoder_target());
                 handler.codec = next;
                 info!(codec = next.name(), stream = video.stream, "switched codec");
