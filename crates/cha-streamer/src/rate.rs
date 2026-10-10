@@ -34,6 +34,14 @@
 //!   queue it built, and the cut goes to what arrives then. A congested
 //!   path still delivers at its rate; one that doesn't for longer counts.
 //!
+//! - **Away**: the page said it's hidden (`set_away`). A hidden tab isn't a
+//!   congested path: nothing is measured and the target stays. When it
+//!   comes back its numbers start afresh.
+//! - **After a long stall**: the first reports of a page that was away
+//!   longer than the grace are a burst of old frames, not the path's rate:
+//!   the cut is a share of the target, not of what that burst or the idle
+//!   encoder shows, and it isn't remembered as where the path pushed back.
+//!
 //! Everything here is in time (milliseconds, seconds) and bits per second,
 //! none in frames, so it holds as it is from 60 to 120 fps: the queue the
 //! thresholds speak of is the same milliseconds of latency at either rate.
@@ -58,6 +66,8 @@ const STALL_SHARE: f64 = 0.25;
 /// How long the page's loss count remembers a loss: a second, and frames
 /// settle 200 ms after their first datagram.
 const LOSS_MEMORY: Duration = Duration::from_millis(1200);
+/// How long after a long stall the first reports still count as its burst.
+const WAKE_WINDOW: Duration = Duration::from_secs(5);
 /// The climb's limit, as a multiple of what goes out.
 const HEADROOM: f64 = 2.0;
 
@@ -89,6 +99,8 @@ pub enum Verdict {
     Rebase,
     /// Next to nothing arrives, or the page stopped reporting: waited out.
     Stall,
+    /// The page is hidden: the target is held.
+    Away,
     Backoff,
     Hold,
     Climb,
@@ -134,6 +146,10 @@ pub struct RateControl {
     /// when it has stalled.
     reported: bool,
     stall_since: Option<Instant>,
+    /// When a stall last outlasted the grace (the page was away, or the path).
+    long_stall: Option<Instant>,
+    /// The page said it's hidden: nothing is measured.
+    away: bool,
     /// The queue signal at the last update (ms).
     queue_ms: f64,
     /// Since when the queue has stood, at what, and the target then.
@@ -155,6 +171,8 @@ impl RateControl {
             sent_bps: None,
             reported: false,
             stall_since: None,
+            long_stall: None,
+            away: false,
             queue_ms: 0.0,
             standing: None,
             last_update: None,
@@ -181,12 +199,35 @@ impl RateControl {
         self.target = self.target.clamp(self.min_bps, self.max_bps);
     }
 
+    /// The page is hidden (or back): while it is, nothing is measured and
+    /// the target stays, for a page that reports nothing says nothing of the
+    /// path. On its return the page's numbers start afresh.
+    pub fn set_away(&mut self, away: bool) {
+        if away == self.away {
+            return;
+        }
+        self.away = away;
+        if !away {
+            self.sent_bps = None;
+            self.reported = false;
+            self.stall_since = None;
+            self.long_stall = None;
+            self.standing = None;
+            self.last_overuse = None;
+            self.last_update = None;
+            self.queue_ms = 0.0;
+        }
+    }
+
     /// The queue the last update saw (delay growth over its floor, ms).
     pub fn queue_ms(&self) -> f64 {
         self.queue_ms
     }
 
     pub fn update(&mut self, now: Instant, s: &Sample) -> Verdict {
+        if self.away {
+            return Verdict::Away;
+        }
         let dt = self
             .last_update
             .replace(now)
@@ -232,7 +273,14 @@ impl RateControl {
             self.stall_since = None;
         } else if now.duration_since(*self.stall_since.get_or_insert(now)) < STALL_GRACE {
             return Verdict::Stall;
+        } else {
+            self.long_stall = Some(now);
         }
+        // Reports are back after a stall that outlasted the grace.
+        let woke = !stalled
+            && self
+                .long_stall
+                .is_some_and(|at| now.duration_since(at) < WAKE_WINDOW);
         let loss = s.loss;
         let since_decrease = self.last_decrease.map(|at| now.duration_since(at));
         let queued = s.backlog_ms > 40.0 || queue_ms > 40.0;
@@ -246,13 +294,18 @@ impl RateControl {
                 Verdict::Draining
             } else {
                 // What arrived is what the path takes; aim just under it.
+                // Not after a long stall: the burst that comes after it
+                // and the encoder's idle trickle say nothing of the path.
                 let (took, factor) = match s.rx_bps {
+                    _ if woke => (self.target, 0.85),
                     Some(rx) => (rx.min(s.tx_bps), 0.85),
                     None => (s.tx_bps, 0.7),
                 };
                 let took = took.max(self.min_bps);
                 self.target = self.target.min(took) * factor;
-                self.ceiling = Some((s.rx_bps.unwrap_or(took), now));
+                if !woke {
+                    self.ceiling = Some((s.rx_bps.unwrap_or(took), now));
+                }
                 self.last_decrease = Some(now);
                 self.last_overuse = Some((now, queue_ms));
                 Verdict::Overuse
@@ -528,6 +581,93 @@ mod tests {
         t += Duration::from_millis(100);
         assert_eq!(rc.update(t, &with(200.0, 40.0)), Verdict::Overuse);
         assert_eq!(rc.target(), 21_250_000);
+    }
+
+    /// A PyroWave session on a static desktop whose tab is hidden: the
+    /// encoder sends a frame every 3 s, the page reports next to nothing.
+    /// `tick` is one 50 ms update; returns the verdicts.
+    fn hidden_minute(rc: &mut RateControl, t: &mut Instant, target_mbps: f64) {
+        for i in 0..1200 {
+            *t += Duration::from_millis(50);
+            let burst = i % 60 == 0;
+            let s = Sample {
+                delivery_ms: (i % 40 == 7).then_some(20.0),
+                rx_bps: Some(if i % 40 == 7 { 0.4e6 } else { 0.0 }),
+                tx_bps: if burst { target_mbps * 0.15e6 } else { 0.0 },
+                ..sample(1, 0.0, 0.0)
+            };
+            rc.update(*t, &s);
+        }
+    }
+
+    /// The page on return: first a burst of old frames, a partial rate and
+    /// a late delay; then normal reports with the encoder sending its target.
+    fn returns(rc: &mut RateControl, t: &mut Instant) {
+        *t += Duration::from_millis(50);
+        let burst = Sample {
+            delivery_ms: Some(64.0),
+            rx_bps: Some(16.6e6),
+            ..sample(1, 0.0, 0.1)
+        };
+        rc.update(*t, &burst);
+    }
+
+    fn steady_after(rc: &mut RateControl, t: &mut Instant, seconds: u32) {
+        for _ in 0..seconds * 20 {
+            *t += Duration::from_millis(50);
+            let tx = f64::from(rc.target()) * 0.92;
+            let s = Sample {
+                delivery_ms: Some(20.0),
+                rx_bps: Some(tx),
+                tx_bps: tx,
+                ..sample(1, 0.0, 0.0)
+            };
+            rc.update(*t, &s);
+        }
+    }
+
+    fn warmed_up() -> (RateControl, Instant) {
+        let mut rc = RateControl::new(MIN_BPS, 500_000_000);
+        let mut t = Instant::now();
+        for _ in 0..40 {
+            t += Duration::from_millis(50);
+            let s = Sample {
+                delivery_ms: Some(20.0),
+                rx_bps: Some(450e6),
+                tx_bps: 460e6,
+                ..sample(1, 0.0, 0.0)
+            };
+            rc.update(t, &s);
+        }
+        assert_eq!(rc.target(), 500_000_000);
+        (rc, t)
+    }
+
+    #[test]
+    fn a_tab_that_was_away_does_not_collapse_the_target() {
+        let (mut rc, mut t) = warmed_up();
+        hidden_minute(&mut rc, &mut t, 500.0);
+        returns(&mut rc, &mut t);
+        assert!(
+            rc.target() >= 400_000_000,
+            "collapsed to {} bit/s",
+            rc.target()
+        );
+        steady_after(&mut rc, &mut t, 3);
+        assert_eq!(rc.target(), 500_000_000);
+    }
+
+    #[test]
+    fn a_page_that_says_it_is_hidden_holds_the_target() {
+        let (mut rc, mut t) = warmed_up();
+        rc.set_away(true);
+        hidden_minute(&mut rc, &mut t, 500.0);
+        assert_eq!(rc.target(), 500_000_000);
+        assert_eq!(rc.update(t, &sample(1, 0.0, 0.0)), Verdict::Away);
+        rc.set_away(false);
+        returns(&mut rc, &mut t);
+        steady_after(&mut rc, &mut t, 3);
+        assert_eq!(rc.target(), 500_000_000);
     }
 
     #[test]

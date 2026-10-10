@@ -379,6 +379,10 @@ async fn run(
                     pacing.reports.record(report, Instant::now());
                     continue;
                 }
+                // Also the viewers' (idle clock); the rate holds while the page is hidden.
+                if let Some(active) = presence_request(&line) {
+                    pacing.rate.set_away(!active);
+                }
                 if let Some(id) = rfi_request(&line) {
                     video.page_lost(&sessions.media, id);
                     continue;
@@ -1071,6 +1075,18 @@ pub(crate) fn rfi_request(line: &str) -> Option<u32> {
     u32::try_from(msg.get("id")?.as_u64()?).ok()
 }
 
+/// Whether a `{"t":"presence","active":…}` line says anyone is using the page.
+pub(crate) fn presence_request(line: &str) -> Option<bool> {
+    if !line.contains("\"presence\"") {
+        return None;
+    }
+    let msg: serde_json::Value = serde_json::from_str(line).ok()?;
+    if msg.get("t")?.as_str()? != "presence" {
+        return None;
+    }
+    msg.get("active")?.as_bool()
+}
+
 pub(crate) fn codec_request(line: &str) -> Option<String> {
     let msg: serde_json::Value = serde_json::from_str(line).ok()?;
     if msg.get("t")?.as_str()? != "codec" {
@@ -1118,6 +1134,20 @@ mod tests {
         // Before any frame was sent, the target stands in for a frame's size.
         let early = queued_ms(125_000, 0.0, 40_000_000, 60);
         assert!((early - 25.0).abs() < 0.1, "{early}");
+    }
+
+    #[test]
+    fn presence_lines_are_read() {
+        assert_eq!(
+            presence_request(r#"{"t":"presence","active":false}"#),
+            Some(false)
+        );
+        assert_eq!(
+            presence_request(r#"{"t":"presence","active":true}"#),
+            Some(true)
+        );
+        assert_eq!(presence_request(r#"{"t":"report","r":1}"#), None);
+        assert_eq!(presence_request(r#"{"t":"presence"}"#), None);
     }
 
     #[test]
