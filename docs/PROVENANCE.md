@@ -13,6 +13,7 @@ Code translated or adapted from another project. Each ported file starts with a 
 | `crates/cha-gamestream` (the host: pairing, nvhttp, RTSP, control, input, video and audio packetizers, HDR) | [Moonshine](https://github.com/hgaiser/moonshine) | BSD-2-Clause | [`LICENSE-MOONSHINE`](../crates/cha-gamestream/LICENSE-MOONSHINE), a header on each file, and a file-by-file table in the [crate README](../crates/cha-gamestream/README.md#what-was-ported-and-from-where) |
 | `web/packages/pyrowave-webgpu/src/shaders/*.wgsl` (vendored unchanged) and the TypeScript decoder host (ported) | [PyroWave](https://github.com/Themaister/pyrowave), WebGPU branch by [imbcmdth](https://github.com/imbcmdth/pyrowave) | MIT | [`LICENSE-PYROWAVE`](../web/packages/pyrowave-webgpu/LICENSE-PYROWAVE), [package README](../web/packages/pyrowave-webgpu/README.md) |
 | `web/packages/player/src/controllers/` (DualSense and Steam Controller drivers over WebHID) | [SDL3](https://github.com/libsdl-org/SDL) HIDAPI drivers | zlib | a header on each file |
+| `deploy/node/host/apparmor/cha-streamer-vhci` (Docker's default AppArmor profile, with the `/sys` rule rewritten) | [moby/profiles](https://github.com/moby/profiles) `apparmor/template.go` | Apache-2.0 | the header in the file |
 | `crates/cha-nvenc/src/sys.rs` (NVENC API types) | NVIDIA Video Codec SDK headers | MIT | the header in the file |
 
 ## Main dependencies

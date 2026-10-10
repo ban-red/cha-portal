@@ -1,0 +1,155 @@
+# cha-streamer-vhci: Docker's default AppArmor profile, except that the
+# streamer may write the virtual USB host controller's `attach` and `detach`
+# files (and read its `status*` and `nports`).
+#
+# With CHA_STEAM_PAD_TRANSPORT=usbip a streamer presents its virtual Steam
+# Controller as a real USB device: it opens a socket pair, hands one end to the
+# kernel by writing "<port> <fd> <devid> <speed>" to
+#   /sys/devices/platform/vhci_hcd.0/attach
+# and writes the port to `detach` when the pad goes away. The node agent binds
+# that one directory read-write into the streamer. Docker's default profile
+# still denies the write: `deny /sys/[^f]*/** wklx` covers all of /sys/devices.
+#
+# AppArmor deny rules win over allow rules, so that one rule can't just be
+# overridden. It is rewritten instead: the same denial, minus the two files.
+# AppArmor globs can't say "everything but X", so the rewrite spells it out one
+# directory at a time (/sys, /sys/devices, /sys/devices/platform, and
+# vhci_hcd.0): for each, deny every name that differs from the one allowed
+# name at its first differing character (`/sys/devices/[^p]**`,
+# `/sys/devices/p[^l]**`, ...), every name that is longer
+# (`/sys/devices/platform?**`) and every name that is a proper prefix of it
+# (`/sys/devices/{p,pl,...}`). The result denies exactly what docker-default
+# denied, except /sys/devices/platform/vhci_hcd.0/{attach,detach}. Every other
+# file in /sys, vhci_hcd.0's `status*` and `nports` included, keeps its write
+# denial; reads were never denied (the `file,` rule allows them).
+#
+# Everything else is docker-default: no mounts, the /proc and /sys/fs/cgroup
+# rules, the firmware, powercap and securityfs denials, network families,
+# and the ptrace and signal rules. (The container also has no capabilities
+# besides Docker's defaults and its seccomp profile.)
+#
+# Adapted from moby's profiles/apparmor/template.go (Copyright The Moby
+# Authors, Apache-2.0, https://github.com/moby/profiles), as of Docker 29.
+# Changes: the profile name and peer, signal peers fixed to the usual
+# runtimes, and the /sys rules below. This file is AGPL-3.0-or-later with that
+# attribution; docs/PROVENANCE.md lists it.
+#
+# Install on the node (root), then check with `cha-node --doctor`:
+#   sudo deploy/node/host/install.sh
+# The node agent runs the streamer of a USB Steam pad under it when
+# CHA_STEAM_PAD_TRANSPORT=usbip and the profile is loaded (CHA_STEAM_PAD_APPARMOR
+# names another one).
+
+#include <tunables/global>
+
+profile cha-streamer-vhci flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  # Disallow obsolete socket families removed from the Linux kernel.
+  deny network ax25,
+  deny network ipx,
+  deny network appletalk,
+  deny network netrom,
+  deny network rose,
+  deny network econet,
+  deny network atmsvc,
+  deny network irda,
+  deny network wanpipe,
+  deny network isdn,
+  deny network caif,
+  # Disallow AF_ALG (the kernel crypto API) and AF_VSOCK.
+  deny network alg,
+  deny network vsock,
+  capability,
+  file,
+  umount,
+  # Host (privileged) processes may send signals to container processes.
+  signal (receive) peer=unconfined,
+  # runc and crun may send signals to container processes ("docker stop").
+  signal (receive) peer=runc,
+  signal (receive) peer=crun,
+  # Container processes may send signals amongst themselves.
+  signal (send,receive) peer="cha-streamer-vhci",
+
+  deny @{PROC}/* w,   # deny write for all files directly in /proc (not in a subdir)
+  # deny write to files not in /proc/<number>/** or /proc/sys/**
+  deny @{PROC}/{[^1-9/],[^1-9/][^0-9/],[^1-9s/][^0-9y/][^0-9s/],[^1-9/][^0-9/][^0-9/][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,  # deny /proc/sys except /proc/sys/k* (effectively /proc/sys/kernel)
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,  # deny everything except shm* in /proc/sys/kernel/
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  # The only change from docker-default is how /sys is denied. Docker has:
+  #   deny /sys/[^f]*/** wklx,
+  # and the rules below replace that one line.
+
+  # 1. Directly under /sys: everything but f* (handled further down, as in
+  #    docker-default) and devices.
+  deny /sys/[^df]*/** wklx,
+  deny /sys/d[^e]** wklx,
+  deny /sys/de[^v]** wklx,
+  deny /sys/dev[^i]** wklx,
+  deny /sys/devi[^c]** wklx,
+  deny /sys/devic[^e]** wklx,
+  deny /sys/device[^s]** wklx,
+  deny /sys/devices?** wklx,
+  deny /sys/{d,de,dev,devi,devic,device}{,/**} wklx,
+
+  # 2. Under /sys/devices, everything but platform.
+  deny /sys/devices/[^p]** wklx,
+  deny /sys/devices/p[^l]** wklx,
+  deny /sys/devices/pl[^a]** wklx,
+  deny /sys/devices/pla[^t]** wklx,
+  deny /sys/devices/plat[^f]** wklx,
+  deny /sys/devices/platf[^o]** wklx,
+  deny /sys/devices/platfo[^r]** wklx,
+  deny /sys/devices/platfor[^m]** wklx,
+  deny /sys/devices/platform?** wklx,
+  deny /sys/devices/{p,pl,pla,plat,platf,platfo,platfor}{,/**} wklx,
+
+  # 3. Under /sys/devices/platform, everything but vhci_hcd.0.
+  deny /sys/devices/platform/[^v]** wklx,
+  deny /sys/devices/platform/v[^h]** wklx,
+  deny /sys/devices/platform/vh[^c]** wklx,
+  deny /sys/devices/platform/vhc[^i]** wklx,
+  deny /sys/devices/platform/vhci[^_]** wklx,
+  deny /sys/devices/platform/vhci_[^h]** wklx,
+  deny /sys/devices/platform/vhci_h[^c]** wklx,
+  deny /sys/devices/platform/vhci_hc[^d]** wklx,
+  deny /sys/devices/platform/vhci_hcd[^.]** wklx,
+  deny /sys/devices/platform/vhci_hcd.[^0]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0?** wklx,
+  deny /sys/devices/platform/{v,vh,vhc,vhci,vhci_,vhci_h,vhci_hc,vhci_hcd,vhci_hcd.}{,/**} wklx,
+
+  # 4. Under vhci_hcd.0, everything but the files attach and detach.
+  deny /sys/devices/platform/vhci_hcd.0/[^ad]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/a[^t]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/at[^t]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/att[^a]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/atta[^c]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/attac[^h]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/attach?** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/d[^e]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/de[^t]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/det[^a]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/deta[^c]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/detac[^h]** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/detach?** wklx,
+  deny /sys/devices/platform/vhci_hcd.0/{a,d,at,de,att,det,atta,deta,attac,detac}{,/**} wklx,
+
+  # The rest of /sys, as in docker-default.
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  # allow processes within the container to trace each other,
+  # provided all other LSM and yama setting allow it.
+  ptrace (trace,tracedby,read,readby) peer="cha-streamer-vhci",
+}

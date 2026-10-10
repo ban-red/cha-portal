@@ -7,6 +7,7 @@ What a node's owner installs on the machine itself, with root:
 | `72-cha-virtual-pads.rules` | `/etc/udev/rules.d/` | keeps the virtual gamepads off the desktop's seat |
 | `73-cha-amd-video-clocks.rules` | `/etc/udev/rules.d/` | optional; on an AMD GPU, holds the video engine's clocks at their top step (below) |
 | `apparmor/cha-sandbox` | `/etc/apparmor.d/` | the profile Steam environments run under |
+| `apparmor/cha-streamer-vhci` | `/etc/apparmor.d/` | the profile the streamer of a USB Steam pad (`CHA_STEAM_PAD_TRANSPORT=usbip`) runs under: Docker's default, plus writes to `vhci_hcd.0`'s `attach` and `detach` only |
 | `modules-load.d/cha.conf` | `/etc/modules-load.d/` | `uinput` and `uhid` at boot |
 
 ```bash

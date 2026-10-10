@@ -15,8 +15,8 @@ use serde_json::json;
 use crate::Identity;
 use crate::docker::{Docker, names_registry};
 use crate::environments::{
-    APP_UID, DockerConfig, SANDBOX_APPARMOR, browser_seccomp, catalog_images, catalog_per_user,
-    nvidia_present,
+    APP_UID, DockerConfig, SANDBOX_APPARMOR, VHCI_APPARMOR, browser_seccomp, catalog_images,
+    catalog_per_user, nvidia_present,
 };
 use crate::hostfiles;
 use crate::shared::{SharedLook, can_write, inspect_shared};
@@ -105,6 +105,11 @@ pub async fn run(
         checks.push(uhid_pads(docker, config).await);
         if config.steam_pad_usbip {
             checks.push(vhci_pads(Path::new(crate::environments::VHCI_DIR)));
+            checks.push(pad_profile(
+                config.steam_pad_apparmor.as_deref(),
+                hostfiles::profile_installed(Path::new(hostfiles::HOST_ETC), VHCI_APPARMOR),
+                docker.apparmor().await.unwrap_or(true),
+            ));
         }
         checks.push(kvm(std::path::Path::new("/sys")));
         checks.push(sandboxes(docker, config).await);
@@ -529,6 +534,55 @@ fn vhci_pads(dir: &Path) -> Check {
         "load it: {} (or sudo modprobe vhci-hcd)",
         hostfiles::FIX
     ))
+}
+
+/// `CHA_STEAM_PAD_TRANSPORT=usbip`: the AppArmor profile the streamer runs
+/// under. Docker's default denies the write to `attach`, so without the
+/// `cha-streamer-vhci` profile (or one the owner names) Steam pads use uhid.
+fn pad_profile(named: Option<&str>, installed: bool, engine_apparmor: bool) -> Check {
+    let name = "Steam pad profile";
+    if !engine_apparmor {
+        return check(
+            Level::Ok,
+            name,
+            "Docker here has no AppArmor, so nothing denies the write to attach",
+        );
+    }
+    match named {
+        Some("unconfined") => check(
+            Level::Warn,
+            name,
+            "CHA_STEAM_PAD_APPARMOR=unconfined: the streamer of a USB Steam pad runs with no \
+             AppArmor confinement at all (a test setting)",
+        )
+        .fix(format!(
+            "unset CHA_STEAM_PAD_APPARMOR to use {VHCI_APPARMOR} (install it: {})",
+            hostfiles::FIX
+        )),
+        Some(profile) => check(
+            Level::Info,
+            name,
+            format!(
+                "the streamer of a USB Steam pad runs under {profile} (CHA_STEAM_PAD_APPARMOR); \
+                 it must allow writes to {}/attach",
+                crate::environments::VHCI_DIR
+            ),
+        ),
+        None if installed => check(
+            Level::Ok,
+            name,
+            format!("the streamer of a USB Steam pad runs under {VHCI_APPARMOR}"),
+        ),
+        None => check(
+            Level::Warn,
+            name,
+            format!(
+                "{VHCI_APPARMOR} isn't installed: Docker's default AppArmor profile denies the \
+                 write to attach, so Steam pads use uhid"
+            ),
+        )
+        .fix(hostfiles::FIX),
+    }
 }
 
 /// The host kernel modules that turn a virtual DualSense and Steam Controller
@@ -1343,6 +1397,22 @@ mod tests {
         std::fs::write(dir.join("attach"), "").unwrap();
         assert!(vhci_pads(&dir).level == Level::Ok);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_pad_profile_check_follows_what_the_streamer_will_get() {
+        let level = |named, installed, engine| pad_profile(named, installed, engine).level;
+        assert!(level(None, true, true) == Level::Ok);
+        assert!(level(None, false, true) == Level::Warn);
+        assert!(level(None, false, false) == Level::Ok);
+        assert!(level(Some("mine"), false, true) == Level::Info);
+        assert!(level(Some("unconfined"), true, true) == Level::Warn);
+        assert!(pad_profile(None, false, true).detail.contains("uhid"));
+        assert!(
+            pad_profile(Some("unconfined"), true, true)
+                .detail
+                .contains("test")
+        );
     }
 
     #[test]

@@ -50,7 +50,7 @@
    sudo deploy/node/host/install.sh
    ```
 
-   It installs, only where they differ, the udev rules (`/etc/udev/rules.d`), the `cha-sandbox` AppArmor profile (`/etc/apparmor.d`, loaded; skipped on a host without AppArmor) and `/etc/modules-load.d/cha.conf` (`uinput`, `uhid` and `vhci-hcd` at boot, and loaded now; a kernel without `vhci-hcd` is skipped), prints one line for each, and can be run again safely. `deploy/node/host/install.sh --check` only reports, without root. The agent never writes these: it only reads them, through read-only binds in the compose file.
+   It installs, only where they differ, the udev rules (`/etc/udev/rules.d`), the `cha-sandbox` and `cha-streamer-vhci` AppArmor profiles (`/etc/apparmor.d`, loaded; skipped on a host without AppArmor) and `/etc/modules-load.d/cha.conf` (`uinput`, `uhid` and `vhci-hcd` at boot, and loaded now; a kernel without `vhci-hcd` is skipped), prints one line for each, and can be run again safely. `deploy/node/host/install.sh --check` only reports, without root. The agent never writes these: it only reads them, through read-only binds in the compose file.
 
 4. **Check the node**:
 
@@ -233,7 +233,7 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
 | `CHA_UHID` | `/dev/uhid` | For virtual DualSense and Steam Controllers; empty goes without (no `uhid` module), and those fall back to an Xbox 360 pad |
 | `CHA_STEAM_PAD_TRANSPORT` | `uhid` | `usbip` makes the Steam Controller a real USB device instead of a Bluetooth uhid one ([below](#steam-controller-as-a-usb-device)); `uhid` or empty is the default. Anything else stops the agent at start-up |
-| `CHA_STEAM_PAD_APPARMOR` | | The AppArmor profile for the streamers of USB Steam pads; empty keeps Docker's default, which blocks the write usbip needs ([below](#steam-controller-as-a-usb-device)) |
+| `CHA_STEAM_PAD_APPARMOR` | | The AppArmor profile for the streamers of USB Steam pads; empty uses `cha-streamer-vhci` when `install.sh` installed it, else Docker's default, which blocks the write usbip needs. `unconfined` is a test-only escape hatch ([below](#steam-controller-as-a-usb-device)) |
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |
 | `CHA_PORT_BASE` | `7600` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
 | `CHA_MAX_ENVIRONMENTS` | `16` | |
@@ -295,7 +295,7 @@ Off by default and experimental. With `CHA_STEAM_PAD_TRANSPORT=usbip` in the age
 
 - The host needs the `vhci-hcd` module (`sudo modprobe vhci-hcd`; `install.sh` puts it in `modules-load.d`). `--doctor` checks for it when the setting is on.
 - The streamer container gets `/sys/devices/platform/vhci_hcd.0` bound in read-write, which holds the `attach` and `detach` files (mode 0200, root; the streamer runs as root in its container). It gets no extra capability or device.
-- **Docker's default AppArmor profile still denies the write** (`deny /sys/[^f]*/** wklx`, even to a read-write bind). The streamer then logs `opening .../attach: Permission denied` and uses uhid, so the setting alone changes nothing on a host with AppArmor. The owner chooses how to allow it: `CHA_STEAM_PAD_APPARMOR=<profile>` runs these streamers (and only these) under a profile loaded on the host, or `unconfined` for a test. No profile for this ships yet.
+- **Docker's default AppArmor profile denies the write** (`deny /sys/[^f]*/** wklx`, even to a read-write bind). The streamer then logs `opening .../attach: Permission denied` and uses uhid. `install.sh` therefore installs and loads `cha-streamer-vhci` (`node/host/apparmor/`): Docker's default profile with the one `/sys` rule rewritten so that exactly `/sys/devices/platform/vhci_hcd.0/attach` and `detach` can be written; everything else in `/sys`, `/proc`, mounts and ptrace stays denied. With `usbip` on, the agent runs the streamers of `steam` pads (and only those) under it when the file is in the host's `/etc/apparmor.d`, checked at each launch, so installing it needs no agent restart. Without it the streamers keep Docker's default and use uhid; `--doctor` ("Steam pad profile") says which. `CHA_STEAM_PAD_APPARMOR=<profile>` names another profile you loaded. `CHA_STEAM_PAD_APPARMOR=unconfined` removes all confinement from those streamers: a test-only escape hatch, and `--doctor` warns about it.
 - `install.sh` also installs a udev rule line that keeps these devices off the host's seat, like the uhid ones. Without it the person at the desk gets access to the virtual controller's `hidraw` node.
 - A stopped environment detaches the port. A streamer that is killed doesn't: the port is released when the process's end of the socket closes, which is when the process dies, and the kernel then disconnects the device by itself.
 - To go back: remove the setting (or set `uhid`) and recreate the agent; the next launch of each environment uses uhid.

@@ -14,7 +14,8 @@
 #   devices too. It does nothing on a host without an amdgpu device. Skip it
 #   with --no-video-clocks (a copy already installed is left alone; delete it
 #   and reboot to undo it);
-# - the AppArmor profile(s) Steam environments run under (/etc/apparmor.d),
+# - the AppArmor profiles Steam environments and USB Steam pads' streamers run
+#   under (/etc/apparmor.d),
 #   loaded with apparmor_parser; skipped on a host without AppArmor;
 # - /etc/modules-load.d/cha.conf, so uinput, uhid and vhci-hcd load at boot;
 #   they are loaded now too (vhci-hcd only matters for the opt-in USB Steam

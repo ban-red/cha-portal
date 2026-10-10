@@ -169,9 +169,10 @@ struct Args {
     #[arg(long, env = "CHA_STEAM_PAD_TRANSPORT", default_value = "")]
     steam_pad_transport: String,
     /// The AppArmor profile the streamer of a USB Steam pad runs under. Docker's
-    /// default profile denies the write to `vhci_hcd`'s `attach`, so with
-    /// `usbip` and no profile the streamer falls back to uhid. Name a profile
-    /// the owner loaded on the host; empty keeps Docker's default.
+    /// default profile denies the write to `vhci_hcd`'s `attach`. Empty uses
+    /// `cha-streamer-vhci` when `install.sh` installed it, else Docker's default
+    /// (and the streamer falls back to uhid). Name another profile to override;
+    /// `unconfined` removes all confinement and is for tests only.
     #[arg(long, env = "CHA_STEAM_PAD_APPARMOR", default_value = "")]
     steam_pad_apparmor: String,
     /// The router's public IP, if it forwards the streamers' UDP ports here

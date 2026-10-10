@@ -17,6 +17,7 @@ SCRIPT = os.path.join(HERE, "install.sh")
 RULES = "etc/udev/rules.d/72-cha-virtual-pads.rules"
 CLOCKS = "etc/udev/rules.d/73-cha-amd-video-clocks.rules"
 PROFILE = "etc/apparmor.d/cha-sandbox"
+VHCI_PROFILE = "etc/apparmor.d/cha-streamer-vhci"
 MODULES = "etc/modules-load.d/cha.conf"
 
 
@@ -57,10 +58,10 @@ class InstallTest(unittest.TestCase):
     def test_installs_everything_then_changes_nothing(self):
         first = self.run_script()
         self.assertEqual(first.returncode, 0, first.stderr)
-        for rel in (RULES, CLOCKS, PROFILE, MODULES):
+        for rel in (RULES, CLOCKS, PROFILE, VHCI_PROFILE, MODULES):
             self.assertTrue(os.path.exists(self.dest(rel)), rel)
             self.assertEqual(os.stat(self.dest(rel)).st_mode & 0o777, 0o644)
-        self.assertEqual(first.stdout.count("installed"), 4)
+        self.assertEqual(first.stdout.count("installed"), 5)
         self.assertEqual(
             self.calls(),
             [
@@ -68,6 +69,7 @@ class InstallTest(unittest.TestCase):
                 "udevadm trigger --subsystem-match=input --subsystem-match=hidraw",
                 "udevadm trigger --action=add --subsystem-match=drm",
                 f"apparmor_parser -r -W {self.dest(PROFILE)}",
+                f"apparmor_parser -r -W {self.dest(VHCI_PROFILE)}",
                 "modprobe uinput",
                 "modprobe uhid",
                 "modprobe vhci-hcd",
@@ -82,7 +84,7 @@ class InstallTest(unittest.TestCase):
         os.remove(self.log)
         again = self.run_script()
         self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertEqual(again.stdout.count("unchanged"), 4)
+        self.assertEqual(again.stdout.count("unchanged"), 5)
         # Nothing to reload; the modules are loaded each time (cheap).
         self.assertEqual(
             self.calls(), ["modprobe uinput", "modprobe uhid", "modprobe vhci-hcd"]
@@ -96,7 +98,7 @@ class InstallTest(unittest.TestCase):
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("updated", result.stdout)
-        self.assertEqual(result.stdout.count("unchanged"), 3)
+        self.assertEqual(result.stdout.count("unchanged"), 4)
         calls = self.calls()
         self.assertIn("udevadm control --reload", calls)
         self.assertFalse(any(c.startswith("apparmor_parser") for c in calls))
@@ -104,6 +106,16 @@ class InstallTest(unittest.TestCase):
         self.assertFalse(any("drm" in c for c in calls))
         with open(self.dest(RULES)) as f, open(os.path.join(HERE, "72-cha-virtual-pads.rules")) as g:
             self.assertEqual(f.read(), g.read())
+
+    def test_updating_one_profile_reloads_only_that_profile(self):
+        self.run_script()
+        os.remove(self.log)
+        with open(self.dest(VHCI_PROFILE), "w") as f:
+            f.write("old\n")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parser = [c for c in self.calls() if c.startswith("apparmor_parser")]
+        self.assertEqual(parser, [f"apparmor_parser -r -W {self.dest(VHCI_PROFILE)}"])
 
     def test_updating_the_clocks_rule_triggers_only_drm(self):
         self.run_script()
@@ -127,7 +139,7 @@ class InstallTest(unittest.TestCase):
         self.assertTrue(os.path.exists(self.dest(RULES)))
         self.assertIn("skipped", result.stdout)
         self.assertIn("--no-video-clocks", result.stdout)
-        self.assertEqual(result.stdout.count("installed"), 3)
+        self.assertEqual(result.stdout.count("installed"), 4)
         self.assertFalse(any("drm" in c for c in self.calls()))
         check = self.run_script("--check", "--no-video-clocks")
         self.assertEqual(check.returncode, 0, check.stdout)
@@ -157,10 +169,10 @@ class InstallTest(unittest.TestCase):
         os.remove(self.log)
         current = self.run_script("--check")
         self.assertEqual(current.returncode, 0, current.stdout)
-        self.assertEqual(current.stdout.count("unchanged"), 4)
+        self.assertEqual(current.stdout.count("unchanged"), 5)
         self.assertEqual(self.calls(), [])
 
-        with open(self.dest(PROFILE), "w") as f:
+        with open(self.dest(VHCI_PROFILE), "w") as f:
             f.write("old\n")
         stale = self.run_script("--check")
         self.assertEqual(stale.returncode, 1)

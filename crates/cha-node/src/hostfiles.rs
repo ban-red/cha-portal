@@ -27,7 +27,7 @@ struct HostFile {
 }
 
 // Keep in step with install.sh, which installs every file in these places.
-const FILES: [HostFile; 4] = [
+const FILES: [HostFile; 5] = [
     HostFile {
         path: "udev/rules.d/72-cha-virtual-pads.rules",
         content: include_str!("../../../deploy/node/host/72-cha-virtual-pads.rules"),
@@ -43,6 +43,12 @@ const FILES: [HostFile; 4] = [
     HostFile {
         path: "apparmor.d/cha-sandbox",
         content: include_str!("../../../deploy/node/host/apparmor/cha-sandbox"),
+        apparmor: true,
+        optional: false,
+    },
+    HostFile {
+        path: "apparmor.d/cha-streamer-vhci",
+        content: include_str!("../../../deploy/node/host/apparmor/cha-streamer-vhci"),
         apparmor: true,
         optional: false,
     },
@@ -123,6 +129,15 @@ pub fn compare(etc: &Path, apparmor: bool) -> Report {
     report
 }
 
+/// Whether the AppArmor profile `name` is installed on the host: its file is in
+/// the host's `/etc/apparmor.d` (bound in under `etc`), which `install.sh`
+/// writes and loads, and the host loads again at boot. The agent's container
+/// can't read the kernel's list of loaded profiles, so this is the check; a
+/// node that doesn't bind the directory in reads as "not installed".
+pub fn profile_installed(etc: &Path, name: &str) -> bool {
+    etc.join("apparmor.d").join(name).is_file()
+}
+
 /// At startup: one warning if the host's files are missing or outdated.
 /// Doesn't stop the agent, and says nothing when the binds aren't there.
 pub fn warn_if_stale(apparmor: bool) {
@@ -163,7 +178,7 @@ mod tests {
     fn files_that_were_never_installed_are_missing() {
         let tmp = etc(false);
         let report = compare(tmp.path(), true);
-        assert_eq!(report.missing.len(), 3);
+        assert_eq!(report.missing.len(), 4);
         assert!(report.stale());
         assert!(
             report
@@ -211,7 +226,7 @@ mod tests {
     fn without_the_binds_nothing_is_known() {
         let tmp = tempfile::tempdir().unwrap();
         let report = compare(tmp.path(), true);
-        assert_eq!(report.unknown.len(), 3);
+        assert_eq!(report.unknown.len(), 4);
         assert!(!report.stale());
     }
 
@@ -219,8 +234,20 @@ mod tests {
     fn a_host_without_apparmor_isnt_asked_for_the_profile() {
         let tmp = etc(true);
         std::fs::remove_file(tmp.path().join("apparmor.d/cha-sandbox")).unwrap();
+        std::fs::remove_file(tmp.path().join("apparmor.d/cha-streamer-vhci")).unwrap();
         std::fs::remove_file(tmp.path().join("apparmor.d/docker-default")).unwrap();
         assert_eq!(compare(tmp.path(), true), Report::default());
+    }
+
+    #[test]
+    fn finds_an_installed_profile_by_its_file() {
+        let tmp = etc(true);
+        assert!(profile_installed(tmp.path(), "cha-streamer-vhci"));
+        assert!(!profile_installed(tmp.path(), "cha-nope"));
+        std::fs::remove_file(tmp.path().join("apparmor.d/cha-streamer-vhci")).unwrap();
+        assert!(!profile_installed(tmp.path(), "cha-streamer-vhci"));
+        // The directory itself isn't a profile.
+        assert!(!profile_installed(tmp.path(), ""));
     }
 
     #[test]

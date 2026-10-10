@@ -73,6 +73,7 @@ use crate::devices::DeviceProbes;
 use crate::docker::{
     ContainerEvent, ContainerMount, ContainerSummary, Docker, PullProgress, encode, names_registry,
 };
+use crate::hostfiles;
 use crate::hostopts::HostOptionsConfig;
 use crate::shared;
 use crate::storage::{DataRoot, Seed, plan_seed};
@@ -119,6 +120,21 @@ const BROWSER_SECCOMP: &str = include_str!("../profiles/seccomp-browser.json");
 /// The AppArmor profile for the `steam` security profile, which the owner
 /// loads on the node (`deploy/node/host/apparmor/cha-sandbox`).
 pub const SANDBOX_APPARMOR: &str = "cha-sandbox";
+/// The AppArmor profile for the streamer of a USB Steam pad
+/// (`deploy/node/host/apparmor/cha-streamer-vhci`): Docker's default, except
+/// that it may write `attach` and `detach` in [`VHCI_DIR`].
+pub const VHCI_APPARMOR: &str = "cha-streamer-vhci";
+
+/// The AppArmor profile a USB Steam pad's streamer runs under: the one the owner
+/// named (`CHA_STEAM_PAD_APPARMOR`), else [`VHCI_APPARMOR`] when `installed`,
+/// else `None`, which keeps Docker's default (and the streamer then falls back
+/// to uhid, since that profile denies the write).
+pub fn pad_apparmor_profile(named: Option<&str>, installed: bool) -> Option<String> {
+    match named {
+        Some(name) => Some(name.to_string()),
+        None => installed.then(|| VHCI_APPARMOR.to_string()),
+    }
+}
 pub(crate) const APP_HOME: &str = "/home/cha";
 /// Copying a home from its old volume is as long as the home is big.
 const COPY_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -310,9 +326,10 @@ pub struct DockerConfig {
     /// write access to [`VHCI_DIR`].
     pub steam_pad_usbip: bool,
     /// The AppArmor profile that streamer runs under (`CHA_STEAM_PAD_APPARMOR`;
-    /// `None` keeps Docker's default). Docker's default denies writes under
-    /// `/sys`, so with it the streamer cannot open `attach` and falls back to
-    /// uhid: the owner decides what to loosen, by naming a profile they loaded.
+    /// `None` is [`VHCI_APPARMOR`] when the owner installed it, else Docker's
+    /// default). Docker's default denies writes under `/sys`, so with it the
+    /// streamer cannot open `attach` and falls back to uhid. `unconfined` is
+    /// for tests only.
     pub steam_pad_apparmor: Option<String>,
     /// The router's public address, when it forwards the streamers' UDP ports
     /// (`port_base + 1`, `+ 3`, …) to this node.
@@ -2480,9 +2497,18 @@ impl DockerRuntime {
         let usbip = self.config.steam_pad_usbip
             && self.has_pads()
             && spec.gamepad == Some(cha_wire::GamepadKind::Steam);
-        let security_opt: Vec<String> = match (&self.config.steam_pad_apparmor, usbip) {
-            (Some(profile), true) => vec![format!("apparmor={profile}")],
-            _ => Vec::new(),
+        // Looked up at each launch, so installing the profile needs no restart.
+        let profile = usbip
+            .then(|| {
+                pad_apparmor_profile(
+                    self.config.steam_pad_apparmor.as_deref(),
+                    hostfiles::profile_installed(Path::new(hostfiles::HOST_ETC), VHCI_APPARMOR),
+                )
+            })
+            .flatten();
+        let security_opt: Vec<String> = match profile {
+            Some(profile) => vec![format!("apparmor={profile}")],
+            None => Vec::new(),
         };
         if usbip {
             // The one sysfs directory the streamer writes `attach` and
@@ -4498,6 +4524,23 @@ mod tests {
         none.config.uhid = None;
         let s = none.streamer_config(&pad_spec(Some(GamepadKind::Dualsense)), 7600);
         assert!(!s["Cmd"].as_array().unwrap().contains(&json!("--uhid")));
+    }
+
+    #[test]
+    fn the_pad_streamers_profile_is_named_then_ours_then_dockers() {
+        assert_eq!(
+            pad_apparmor_profile(Some("mine"), true).as_deref(),
+            Some("mine")
+        );
+        assert_eq!(
+            pad_apparmor_profile(Some("unconfined"), false).as_deref(),
+            Some("unconfined")
+        );
+        assert_eq!(
+            pad_apparmor_profile(None, true).as_deref(),
+            Some("cha-streamer-vhci")
+        );
+        assert_eq!(pad_apparmor_profile(None, false), None);
     }
 
     #[test]
