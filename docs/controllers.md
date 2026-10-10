@@ -44,13 +44,15 @@ show them; 1 ms), the configuration's attributes, the BOS descriptor that
 bcdUSB `0x0201` asks for (a USB 2.0 Extension capability), what `0x44`, `0x7b`,
 output `0x82` to `0x89` and feature report 2 mean (the streamer takes them,
 logs the first of each, and does nothing; feature 2 reads as zeros), the
-replies to commands `0x83` (attributes) and `0xae` (string attributes, the
-serial included), the serial itself (`FXA` and ten hex digits, made from the
-owner, app and slot; the real unit serial has that shape), and the
-controller's behaviour: which state report it sends on a cable (we send `0x42`
-and `0x43`), the battery values, the pad pressure and touch thresholds.
-Steam logs `Deck Controller PCB Serial# invalid` for our serial; the cause isn't
-known yet (see the rumble item in [PLAN.md](PLAN.md), section 9).
+serials' digits (the unit's `FXA` and the board's `MXA`, each with ten hex
+digits, made from the owner, app and slot; a real controller's have those
+shapes), and the controller's behaviour: which state report it sends on a
+cable (we send `0x42` and `0x43`), the battery values, the pad pressure and
+touch thresholds. The replies to `0x83` (attributes: the product, a revision
+of 0, the bootloader's and firmware's build times, hardware id `0x48`) and the
+serials' formats were read from a real wired controller (2026-10-10). Steam
+called the board serial invalid while it was answered with the unit's `FXA`
+one.
 
 The keyboard and mouse the descriptor brings are made input devices by the
 host's `hid-generic`. They never send anything, so they are not shared into

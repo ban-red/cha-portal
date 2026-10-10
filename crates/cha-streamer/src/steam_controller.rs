@@ -161,6 +161,11 @@ impl Variant {
         }
     }
 
+    /// The 2026 controller, on Bluetooth or a cable.
+    pub fn is_triton(self) -> bool {
+        matches!(self, Variant::Triton | Variant::TritonUsb)
+    }
+
     pub fn product(self) -> u16 {
         match self {
             Variant::Wired => PRODUCT_WIRED,
@@ -617,11 +622,13 @@ const GET_STRING_ATTRIBUTE: u8 = 0xae;
 // Attribute tags.
 const ATTRIB_UNIQUE_ID: u8 = 0;
 const ATTRIB_PRODUCT_ID: u8 = 1;
+const ATTRIB_PRODUCT_REVISION: u8 = 2;
 const ATTRIB_FIRMWARE_BUILD_TIME: u8 = 4;
 const ATTRIB_HW_ID: u8 = 9;
 const ATTRIB_BOOTLOADER_BUILD_TIME: u8 = 10;
 const ATTRIB_CONNECTION_INTERVAL_US: u8 = 11;
 /// String attributes (SDL's `ControllerStringAttributes`).
+const ATTRIB_STR_BOARD_SERIAL: u8 = 0;
 const ATTRIB_STR_UNIT_SERIAL: u8 = 1;
 
 /// The serial a controller of this variant has for a number of the run's: a
@@ -633,6 +640,16 @@ pub fn serial_for(variant: Variant, hash: u64) -> String {
         Variant::Wired | Variant::Ble => format!("F{:09X}", hash & 0xf_ffff_ffff),
         Variant::Triton | Variant::TritonUsb => format!("FXA{:010X}", hash & 0xff_ffff_ffff),
     }
+}
+
+/// A 2026 controller's board (PCB) serial for its unit serial: 13
+/// characters as the unit's, `MXA` first (a real one's), the rest made up
+/// from the unit serial.
+fn board_serial(unit: &str) -> String {
+    let hash = unit.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("MXA{:010X}", hash & 0xff_ffff_ffff)
 }
 
 /// The string attributes' length in a reply (SDL's `MsgGetStringAttribute`:
@@ -739,6 +756,25 @@ impl SteamController {
             );
         }
         match cmd {
+            GET_ATTRIBUTES if self.variant.is_triton() => {
+                // A wired 2026 controller's answer (read from one, 2026-10-10):
+                // no unique id, a product revision of 0, and its firmware's and
+                // bootloader's build times and hardware id as they are.
+                for (tag, value) in [
+                    (ATTRIB_PRODUCT_ID, u32::from(self.variant.product())),
+                    (ATTRIB_PRODUCT_REVISION, 0),
+                    (ATTRIB_BOOTLOADER_BUILD_TIME, 0x68d2_f92e),
+                    (ATTRIB_FIRMWARE_BUILD_TIME, 0x6aa4_3b55),
+                    (ATTRIB_HW_ID, 0x48),
+                    (
+                        ATTRIB_CONNECTION_INTERVAL_US,
+                        self.variant.period().as_micros() as u32,
+                    ),
+                ] {
+                    reply.push(tag);
+                    reply.extend_from_slice(&value.to_le_bytes());
+                }
+            }
             GET_ATTRIBUTES => {
                 for (tag, value) in [
                     (ATTRIB_UNIQUE_ID, self.id()),
@@ -756,10 +792,17 @@ impl SteamController {
                 }
             }
             GET_STRING_ATTRIBUTE => {
-                // The attribute asked for (0 the board's serial, 1 the unit's;
-                // both are ours) and 20 characters, padded with zeros.
-                reply.push(body.first().copied().unwrap_or(ATTRIB_STR_UNIT_SERIAL));
-                reply.extend_from_slice(self.serial.as_bytes());
+                // The attribute asked for (0 the board's serial, 1 the unit's)
+                // and 20 characters, padded with zeros. A 2026 controller's
+                // board serial is its own, `MXA` first; Steam calls one that
+                // isn't invalid ("Deck Controller PCB Serial# invalid").
+                let attribute = body.first().copied().unwrap_or(ATTRIB_STR_UNIT_SERIAL);
+                reply.push(attribute);
+                if attribute == ATTRIB_STR_BOARD_SERIAL && self.variant.is_triton() {
+                    reply.extend_from_slice(board_serial(&self.serial).as_bytes());
+                } else {
+                    reply.extend_from_slice(self.serial.as_bytes());
+                }
                 reply.resize(STRING_ATTRIBUTE_LEN, 0);
             }
             SET_SETTINGS => {
@@ -1537,6 +1580,30 @@ mod tests {
     }
 
     #[test]
+    fn a_2026_controller_answers_as_a_real_one() {
+        let mut sc = SteamController::new(Variant::TritonUsb, 0, "FXA0123456789");
+        let (_, reply) = triton_exchange(&mut sc, &[GET_ATTRIBUTES, 0]);
+        // Six attributes, no unique id: the product, its revision, the
+        // bootloader's and firmware's build times, the hardware id, the interval.
+        assert_eq!(&reply[1..3], &[GET_ATTRIBUTES, 30]);
+        let tags: Vec<u8> = reply[3..33].chunks(5).map(|a| a[0]).collect();
+        assert_eq!(tags, [1, 2, 10, 4, 9, 11]);
+        assert_eq!(&reply[3..8], &[1, 0x02, 0x13, 0, 0]);
+        assert_eq!(&reply[23..28], &[9, 0x48, 0, 0, 0]);
+        // The board serial is its own, `MXA` first; the unit's is the one given.
+        let (_, board) = triton_exchange(&mut sc, &[GET_STRING_ATTRIBUTE, 21, 0]);
+        assert_eq!(&board[1..4], &[GET_STRING_ATTRIBUTE, 21, 0]);
+        assert_eq!(&board[4..7], b"MXA");
+        assert!(
+            board[7..17].iter().all(u8::is_ascii_hexdigit),
+            "{board:02x?}"
+        );
+        assert_eq!(&board[17..25], &[0; 8]);
+        let (_, unit) = triton_exchange(&mut sc, &[GET_STRING_ATTRIBUTE, 21, 1]);
+        assert_eq!(&unit[4..17], b"FXA0123456789");
+    }
+
+    #[test]
     fn settings_are_kept_and_cleared_and_unknown_commands_acked() {
         let mut sc = controller();
         let (events, reply) = exchange(&mut sc, &[SET_SETTINGS, 6, 7, 0, 0, 0x30, 0x18, 0]);
@@ -1989,8 +2056,8 @@ mod tests {
         assert_eq!(&reply[1..4], &[GET_STRING_ATTRIBUTE, 21, 0]);
         let (_, reply) = triton_exchange(&mut sc, &[GET_ATTRIBUTES, 0]);
         assert_eq!(&reply[1..3], &[GET_ATTRIBUTES, 30]);
-        // The product, and the interval (4032 us).
-        assert_eq!(&reply[8..13], &[1, 0x03, 0x13, 0, 0]);
+        // The product (first, as on a real one), and the interval (4032 us).
+        assert_eq!(&reply[3..8], &[1, 0x03, 0x13, 0, 0]);
         assert_eq!(&reply[28..33], &[11, 0xc0, 0x0f, 0, 0]);
         // Lizard mode off and the IMU on (SDL's two settings) are kept.
         let (events, _) = triton_exchange(&mut sc, &[SET_SETTINGS, 3, 9, 0, 0]);
