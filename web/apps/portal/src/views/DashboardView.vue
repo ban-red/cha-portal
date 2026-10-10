@@ -179,7 +179,7 @@ function onSearchBlur() {
   if (!query.value) searchOpen.value = false;
 }
 
-const shown = computed(() => {
+const matching = computed(() => {
   const q = fold(query.value.trim());
   const list = (catalog.data.value ?? []).filter((t) => {
     if (filter.value === "apps" && t.class === "desktop") return false;
@@ -189,8 +189,6 @@ const shown = computed(() => {
   });
   const byName = (a: Template, b: Template) => a.name.localeCompare(b.name);
   return list.sort((a, b) => {
-    const pin = Number(pinned.value.has(b.id)) - Number(pinned.value.has(a.id));
-    if (pin) return pin;
     if (sort.value === "recent") {
       const recent = (lastUsed.value.get(b.id) ?? 0) - (lastUsed.value.get(a.id) ?? 0);
       if (recent) return recent;
@@ -198,6 +196,45 @@ const shown = computed(() => {
     return byName(a, b);
   });
 });
+// Pinned apps get a section of their own at the top; the "Pinned" filter shows just them, in the main list.
+const pinnedShown = computed(() => (filter.value === "pinned" ? [] : matching.value.filter((t) => pinned.value.has(t.id))));
+const shown = computed(() => (filter.value === "pinned" ? matching.value : matching.value.filter((t) => !pinned.value.has(t.id))));
+
+/** What an app card is given, for the pinned section and the main list alike. */
+function cardProps(t: Template) {
+  const member = session.user?.role !== "guest";
+  return {
+    template: t,
+    view: view.value,
+    pinned: pinned.value.has(t.id),
+    storage: storageByTemplate.value.get(t.id),
+    storageError: storageErrors[t.id],
+    controller: member && !controllerApps.missing.value ? controllerApps.byTemplate.value.get(t.id) : undefined,
+    fps: member && !appFps.missing.value ? appFps.byTemplate.value.get(t.id) : undefined,
+    controllerError: controllerApps.errors[t.id],
+    fpsError: appFps.errors[t.id],
+    running: live.value.some((e) => e.templateId === t.id),
+    instance: instanceOf.value.get(t.id),
+    placements: placements.missing.value ? undefined : placements.byTemplate.value[t.id],
+    busy: launch.isPending.value && launch.variables.value?.template.id === t.id,
+    disabled: !member,
+    player: mac,
+    duplicable: session.isAdmin,
+    baseName: baseNameOf(t),
+  };
+}
+function cardOn(t: Template) {
+  return {
+    launch: (choice: Parameters<typeof launch.mutate>[0]["choice"]) => launch.mutate({ template: t, choice }),
+    duplicate: () => (duplicating.value = t),
+    pin: () => togglePin(t.id),
+    "open-in-player": () => openInPlayerApp(t.id),
+    "set-persistent": (persistent: boolean) => setPersistent.mutate({ template: t.id, persistent }),
+    "choose-controller": (kind: Parameters<typeof controllerApps.choose>[1]) =>
+      controllerApps.choose(controllerApps.byTemplate.value.get(t.id)!, kind),
+    "choose-fps": (fps: Parameters<typeof appFps.choose>[1]) => appFps.choose(appFps.byTemplate.value.get(t.id)!, fps),
+  };
+}
 
 // ---- Moonlight hosts: each adopted host is a section of its own ----------------------------
 
@@ -377,6 +414,24 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
       </ul>
     </section>
 
+    <section v-if="pinnedShown.length" class="space-y-4" aria-labelledby="pinned-heading">
+      <h2 id="pinned-heading" class="flex items-center gap-2 text-xl font-semibold tracking-tight">
+        <Pin class="size-5 text-ink-3" aria-hidden="true" />
+        Pinned
+      </h2>
+      <div class="@container">
+        <ul
+          :class="
+            view === 'grid' ? 'grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-4' : 'flex flex-col gap-3'
+          "
+        >
+          <li v-for="t in pinnedShown" :key="t.id" class="min-w-0">
+            <AppCard class="h-full" v-bind="cardProps(t)" v-on="cardOn(t)" />
+          </li>
+        </ul>
+      </div>
+    </section>
+
     <DuplicateDialog :template="duplicating" @close="duplicating = null" />
 
     <ShareDialog
@@ -409,8 +464,8 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
       <p v-if="catalog.isPending.value" class="text-sm text-ink-3">Loading…</p>
       <FormError v-else-if="catalog.isError.value" :message="catalog.error.value?.message ?? 'Failed to load'" />
       <template v-else>
-        <p class="sr-only" role="status">{{ shown.length }} {{ shown.length === 1 ? "environment" : "environments" }}</p>
-        <div v-if="!shown.length" class="card px-6 py-10 text-center">
+        <p class="sr-only" role="status">{{ shown.length + pinnedShown.length }} {{ shown.length + pinnedShown.length === 1 ? "environment" : "environments" }}</p>
+        <div v-if="!shown.length && !pinnedShown.length" class="card px-6 py-10 text-center">
           <template v-if="query.trim()">
             <p class="font-medium">No environments match “{{ query.trim() }}”</p>
             <button type="button" class="btn-ghost mt-4 min-h-9 pointer-coarse:min-h-11" @click="clearSearch">
@@ -420,14 +475,14 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
           </template>
           <template v-else-if="filter === 'pinned'">
             <p class="font-medium">Nothing pinned yet</p>
-            <p class="mt-1 text-sm text-ink-2">Use the pin on an app to keep it here, and first in every list.</p>
+            <p class="mt-1 text-sm text-ink-2">Use the pin on an app to keep it in a section at the top.</p>
           </template>
           <template v-else>
             <p class="font-medium">No environments in this view</p>
             <p class="mt-1 text-sm text-ink-2">Try another filter.</p>
           </template>
         </div>
-        <div v-else class="@container">
+        <div v-else-if="shown.length" class="@container">
           <ul
             :class="
               view === 'grid'
@@ -436,39 +491,7 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             "
           >
             <li v-for="t in shown" :key="t.id" class="min-w-0">
-              <AppCard
-                class="h-full"
-                :template="t"
-                :view="view"
-                :pinned="pinned.has(t.id)"
-                :storage="storageByTemplate.get(t.id)"
-                :storage-error="storageErrors[t.id]"
-                :controller="
-                  session.user?.role !== 'guest' && !controllerApps.missing.value
-                    ? controllerApps.byTemplate.value.get(t.id)
-                    : undefined
-                "
-                :fps="
-                  session.user?.role !== 'guest' && !appFps.missing.value ? appFps.byTemplate.value.get(t.id) : undefined
-                "
-                :controller-error="controllerApps.errors[t.id]"
-                :fps-error="appFps.errors[t.id]"
-                :running="live.some((e) => e.templateId === t.id)"
-                :instance="instanceOf.get(t.id)"
-                :placements="placements.missing.value ? undefined : placements.byTemplate.value[t.id]"
-                :busy="launch.isPending.value && launch.variables.value?.template.id === t.id"
-                :disabled="session.user?.role === 'guest'"
-                :player="mac"
-                :duplicable="session.isAdmin"
-                :base-name="baseNameOf(t)"
-                @launch="(choice) => launch.mutate({ template: t, choice })"
-                @duplicate="duplicating = t"
-                @pin="togglePin(t.id)"
-                @open-in-player="openInPlayerApp(t.id)"
-                @set-persistent="(persistent) => setPersistent.mutate({ template: t.id, persistent })"
-                @choose-controller="controllerApps.choose(controllerApps.byTemplate.value.get(t.id)!, $event)"
-                @choose-fps="appFps.choose(appFps.byTemplate.value.get(t.id)!, $event)"
-              />
+              <AppCard class="h-full" v-bind="cardProps(t)" v-on="cardOn(t)" />
             </li>
           </ul>
         </div>
