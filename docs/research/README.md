@@ -16,6 +16,7 @@ Eight parallel research slices, each with sources inline and claims we could not
 | 07 | Control plane, node agent, networking, persistence, native client | [07-control-plane-and-native-client.md](07-control-plane-and-native-client.md) |
 | 08 | Adjacent platforms and 2025–26 entrants (Nestri, Punktfunk, Polaris, …) | [08-adjacent-platforms-2026.md](08-adjacent-platforms-2026.md) |
 | 09 | Technology for the native client, October 2026 (Game Mode, AWDL, MetalFX, iroh 1.0, L4S, MoQ) | [09-native-client-tech-2026-10.md](09-native-client-tech-2026-10.md) |
+| 10 | USB/IP and USB passthrough: controllers in Steam, latency, any device in any image | [10-usbip-and-usb-passthrough.md](10-usbip-and-usb-passthrough.md) |
 
 ---
 
