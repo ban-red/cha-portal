@@ -211,22 +211,53 @@ impl Docker {
     /// output (stdout and stderr together, as a terminal would show them),
     /// cut off at [`EXEC_OUTPUT_LIMIT`]. Gives up after [`EXEC_TIMEOUT`].
     pub async fn exec(&self, container: &str, cmd: &[&str]) -> Result<(i64, String)> {
-        tokio::time::timeout(EXEC_TIMEOUT, self.exec_inner(container, cmd))
-            .await
-            .context("timed out")?
+        self.exec_as(container, None, false, cmd).await
     }
 
-    async fn exec_inner(&self, container: &str, cmd: &[&str]) -> Result<(i64, String)> {
+    /// [`Self::exec`] as `user` (the container's own by default). With
+    /// `privileged` the process has every capability and neither the
+    /// container's `no-new-privileges` nor its AppArmor profile, which is what
+    /// making a device node in an app that dropped them all takes
+    /// (`CAP_MKNOD`): for one short command the caller chose.
+    pub async fn exec_as(
+        &self,
+        container: &str,
+        user: Option<&str>,
+        privileged: bool,
+        cmd: &[&str],
+    ) -> Result<(i64, String)> {
+        tokio::time::timeout(
+            EXEC_TIMEOUT,
+            self.exec_inner(container, user, privileged, cmd),
+        )
+        .await
+        .context("timed out")?
+    }
+
+    async fn exec_inner(
+        &self,
+        container: &str,
+        user: Option<&str>,
+        privileged: bool,
+        cmd: &[&str],
+    ) -> Result<(i64, String)> {
+        let mut request = serde_json::json!({
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "Tty": true,
+            "Cmd": cmd,
+        });
+        if let Some(user) = user {
+            request["User"] = serde_json::json!(user);
+        }
+        if privileged {
+            request["Privileged"] = serde_json::json!(true);
+        }
         let created = self
             .call(
                 Method::POST,
                 &format!("/containers/{}/exec", encode(container)),
-                Some(&serde_json::json!({
-                    "AttachStdout": true,
-                    "AttachStderr": true,
-                    "Tty": true,
-                    "Cmd": cmd,
-                })),
+                Some(&request),
             )
             .await?;
         let id = serde_json::from_slice::<Value>(&created)?["Id"]

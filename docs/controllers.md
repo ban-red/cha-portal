@@ -66,9 +66,10 @@ rewritten to leave exactly `.../vhci_hcd.0/attach` and `detach` writable.
 `CHA_STEAM_PAD_APPARMOR=unconfined` also works but is a test-only escape hatch.
 
 The kind is the user's per-app choice (the portal's Controllers page), with a
-default per app from the catalog. It is fixed for an environment's life: hotplug
-events don't reach the app's network namespace, so devices are made before the
-app starts. Any physical controller can drive any kind (a Steam Controller's
+default per app from the catalog. It is fixed for an environment's life (the
+first pad is made before the app starts, and its nodes are mounted into it);
+more pads of that kind can join while it runs ([More players](#more-players-pads-that-join-mid-session)).
+Any physical controller can drive any kind (a Steam Controller's
 trackpads become the DualSense's touchpad, and so on); what the physical one
 lacks stays at rest.
 
@@ -134,15 +135,114 @@ ignores them otherwise.
   (the one the app has at `/dev/input`) under `hidraw/`, writes their udev
   entries beside the input ones, and once they exist lists them in its
   `GET /info`: `"hidraw": [{ "name": "hidraw3", "major": 240,
-  "minor": 3 }]`. The node then mounts each into the app at `/dev/<name>` (a
-  volume mount with that subpath) and allows exactly that device
-  (`DeviceCgroupRules` `c <major>:<minor> rwm`). libudev, hidapi and Wine find
-  them by the kernel's name under `/dev`. The evdev nodes the host's
+  "minor": 3, "devpath": "/devices/virtual/misc/uhid/…/hidraw/hidraw3" }]`.
+  The node then mounts each into the app at `/dev/<name>` (a volume mount
+  with that subpath) and allows the whole `hidraw` major in the app's device
+  cgroup (`c <major>:* rwm`, for pads that join later). libudev, hidapi and
+  Wine find them by the kernel's name under `/dev`. The evdev nodes the host's
   `hid-playstation`/`hid-steam` make go into the app's `/dev/input` as the
   Xbox pad's do.
+- Pads that join later: [More players](#more-players-pads-that-join-mid-session).
 - Host: `deploy/node/host/72-cha-virtual-pads.rules` keeps the virtual devices
   (input and hidraw) off the host's own seat; the doctor checks `uhid`,
   `hid-playstation` and `hid-steam` (and `vhci-hcd` with the USB opt-in).
+
+## More players: pads that join mid-session
+
+A pad made after the app started (the page sends a second controller, or one
+in a later slot) gets its evdev nodes in the shared `/dev/input` volume at
+once, as before. Its `hidraw` node needs more, because Docker can't add a
+mount or a device cgroup rule to a running container. What happens
+(`check_pads` in `crates/cha-node/src/environments.rs`):
+
+1. At creation the app's device cgroup gets a **wildcard rule for the
+   `hidraw` major** (`c <major>:* rwm`, the major read from the streamer's
+   `/info`) instead of one exact rule per start-up pad. It lets the app open
+   any `hidraw` device the host has, but only nodes that exist in the app's
+   own `/dev` can be opened, those are the ones the agent puts there, and the
+   app (`CapDrop ALL`) can't make a node itself. `m` is for the agent's
+   `mknod`. The pads made at start are still mounted at `/dev/hidraw<n>`
+   from the input volume.
+2. Once a second the agent reads each streamer's `/info` (`hidraw`: name,
+   major, minor, and the node's sysfs `devpath`). A node it hasn't put in
+   and the app doesn't have mounted is made in the app's `/dev` by a
+   **privileged `docker exec`** as root: `mknod -m 660 /dev/hidraw<n> c M m`
+   and `chown 1000:1000`, each a fixed command with numbers it checked. This
+   is the only privilege added: the agent already holds the Docker socket
+   (root-equivalent), and the exec lasts for two short commands, in the app's
+   mount namespace. Docker can't give an exec one capability (`CAP_MKNOD`);
+   `Privileged` is the only way to get it.
+3. The agent tells the app, the way udev would. A node nobody announces is
+   there, but nobody looks (see the spike below), so a throwaway container of
+   the streamer image runs `cha-streamer --udev-event add <devpath> <name>
+   <maj:min>` in the app's **network namespace** (`NetworkMode:
+   container:<app>`), as root with `CAP_NET_ADMIN` and nothing else, a
+   read-only root and no label. It sends one libudev-format message to
+   netlink group 2 (`crates/cha-streamer/src/udev_event.rs`, our own code
+   written from the format). Sending to a uevent group takes `CAP_NET_ADMIN`,
+   and libudev ignores messages from non-root senders.
+4. The streamer writes an empty `udev/control` in the udev volume (the app's
+   `/run/udev/control`). libudev joins udev's multicast group only when udev
+   "runs", which it decides by that file; without it a "udev" monitor is
+   subscribed to nothing and hears nothing.
+5. An agent restart adopts running apps: it reads each app's cgroup rules and
+   mounts, finds the nodes listed but not mounted, and makes and announces
+   them again (it removes a stale node first). An app an older agent made has
+   exact rules only, so it keeps the old behaviour: pads made after its start
+   have no `hidraw` in it.
+
+The streamer keeps its pads for its life (a controller that comes back gets
+its slot and so its Steam configuration), so the agent's removal path (node
+removed, `remove` event sent) runs only if a pad's node leaves `/info`; it is
+unit-tested but nothing makes that happen yet.
+
+### The spike (2026-10-10, iolinux, kernel 6.17)
+
+Question: does Steam notice a `hidraw` node that appears mid-session? Not by
+itself; it does within a second of a libudev-format message.
+
+- **Steam finds controllers through sysfs and tries `/dev/hidraw<n>`.** Its
+  log (`~/.local/share/Steam/logs/controller.txt`) prints `Local Device Found`
+  for every `/sys/class/hidraw` entry, the host's own pads too
+  (`Unable to open local device: /dev/hidraw0`, a node the app doesn't have).
+  It scans when it starts and again about 3 s after a controller opens. A
+  pad whose sysfs entry appeared later, with its node made in the app's
+  `/dev` by a privileged `docker exec ... mknod`, was never opened (25 to
+  60 s watched, twice).
+- **The kernel's uevent does reach the app's network namespace** (found while
+  looking for why not). A libudev monitor on the `kernel` source in the app
+  got `add` and `remove` for `hid` and `hidraw` as a pad was made and
+  destroyed. So the premise that hotplug events don't cross was wrong for
+  Docker's bridge network on this node. It doesn't help: Steam opens `udev`
+  monitors, and with libudev 259 (the Steam runtime's) such a monitor joins
+  group 2 only when `/run/udev/control` exists. Without the file
+  `/proc/net/netlink` showed group 0 for all of Steam's four uevent sockets;
+  with it, group 2. udevd's messages never come (none runs in the app).
+- **libudev takes a group-2 message from a root sender** with its
+  `libudev\0` header (magic `htonl(0xfeedcafe)`, header and property sizes in
+  host order, subsystem hash and tag blooms in network order) and
+  `KEY=value` properties (`ACTION`, `DEVPATH`, `SUBSYSTEM`, `DEVNAME`,
+  `MAJOR`, `MINOR`, `SEQNUM`). A Python sender and a libudev monitor
+  (ctypes) in the app showed it. A unicast message to a monitor's port is
+  dropped (only a trusted udevd worker may), and a group-1 message from
+  anywhere but the kernel is too.
+- **One `SUBSYSTEM=hidraw` message is enough.** Steam logged `Steam controller
+  device opened for index 1` for `/dev/hidraw2` within a second of the pad
+  being made, with the pad created through the real streamer (frame tap
+  `PAD` command with `--frame-tap-pad 1`: the first pad at start, the second
+  later) and the agent doing steps 1 to 4 (`Controller uses V1 HID protocol
+  via USB`, the `usbip` transport, `28de:1302`). The parent `hid` event isn't
+  needed. A restart of the agent in the middle re-made the node and the
+  event without trouble.
+- **`N:` in the udev database doesn't move a node.** Putting the node in the
+  shared `/dev/input/hidraw/` and naming it in the udev entry (`N:` or
+  `E:DEVNAME=`) was tried: libudev 259's `udev_device_get_devnode` still
+  answers `/dev/hidraw<n>`. The node has to be in `/dev` itself.
+- **SDL**: the app sets `SDL_JOYSTICK_DISABLE_UDEV=1`, and the Steam client's
+  SDL3 holds one inotify watch on the `/dev/input` volume, which is how the
+  evdev nodes of late pads are seen. Proton's winebus and SDL's HIDAPI in a
+  game were not tried with a late pad (a game in a Steam environment gets
+  Steam's virtual Xbox pad anyway, below).
 
 ## Known gaps (2026-10-05)
 
@@ -204,9 +304,6 @@ report 1 (settings, attributes, the serial), and output reports `0x80`
     Proton's SDL read the controller itself, bypassing Steam Input.
   - An earlier note here said Cyberpunk played through Steam Input on
     2026-10-05: Steam's logs show that was the Xbox 360 pad.
-- **More players.** Pads past those made at start (`--gamepads`) get evdev
-  nodes but no `hidraw` in the app (the node mounts what `/info` listed at
-  start).
 - **Late viewers** get the lightbar, player LEDs and trigger effects as the
   apps last set them when they gain the controls (the streamer keeps the last
   of each per pad). Rumble and haptics aren't replayed. Unit-tested only so far.

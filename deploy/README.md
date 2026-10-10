@@ -300,6 +300,15 @@ Off by default and experimental. With `CHA_STEAM_PAD_TRANSPORT=usbip` in the age
 - A stopped environment detaches the port. A streamer that is killed doesn't: the port is released when the process's end of the socket closes, which is when the process dies, and the kernel then disconnects the device by itself.
 - To go back: remove the setting (or set `uhid`) and recreate the agent; the next launch of each environment uses uhid.
 
+### A second controller joining a running environment
+
+A DualSense or Steam Controller environment can get more pads while it runs (the page sends a second controller): the agent puts each new pad's `hidraw` node into the app and announces it, so Steam opens it. Nothing to set up on the host, but operators should know what it does (`docs/controllers.md`, "More players"):
+
+- The app's device cgroup allows the whole `hidraw` major (`c <major>:* rwm`), not one device per pad. The app has no capability to make a node itself, so it can open only nodes the agent put in its `/dev`.
+- The agent runs `mknod` and `chown` in the app as a **privileged `docker exec`** (root, all capabilities, two short fixed commands). It already holds the Docker socket, so this adds no reach, but it shows in the engine's exec log.
+- For each node it also starts a throwaway container (`cha-udev-<environment>-hidraw<n>`, the streamer image, no label) for about a second. It joins the app's network namespace with `CAP_NET_ADMIN` and nothing else, read-only, and sends one hotplug message.
+- Environments started by an older agent keep the old behaviour (their cgroup has exact rules): a pad that joins them has no `hidraw` until they are restarted. Roll back by recreating the agent with the previous image (`cha-node:pre-hotplug` on a node that kept the tag); running environments keep working either way.
+
 ## Devices
 
 An environment runs on one **device** of a node (`docs/devices.md`), and the user picks it from the Launch menu on the app's card; Launch itself takes the best one the nodes offer, naming it under the button ("on gpu-node · RTX 4090"). The agent reports what it finds, at start and every five minutes:

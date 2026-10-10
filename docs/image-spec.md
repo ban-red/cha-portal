@@ -28,7 +28,7 @@ The app is a **Wayland client** of the streamer's compositor. It draws into a wi
 - **The image sets, or tolerates, the environment in section 3.** The node sets the first group; the image sets the second group itself, because the node doesn't:
   - `HOME=/home/cha`: the node's bind mount and its seeding are at that path.
   - `PULSE_SERVER=unix:/run/cha/pulse/native`: the streamer's sound server. Without it, libpulse looks for a daemon that doesn't exist, and the app has no sound (or, for some apps, no start).
-  - `SDL_JOYSTICK_DISABLE_UDEV=1`: gamepads appear in `/dev/input` after the app starts, and hotplug events don't reach the container. With SDL's udev backend the later pads are never seen.
+  - `SDL_JOYSTICK_DISABLE_UDEV=1`: gamepads appear in `/dev/input` after the app starts. With SDL's udev backend the later evdev pads are never seen: no udevd runs in the container, and the events the node sends for late `hidraw` nodes (`controllers.md`) are not for evdev ones.
 - **The command is the image's `ENTRYPOINT` and `CMD`.** The node gives the app container no command of its own. A shell wrapper is fine; the app MUST be the process that ends the container, since the container's exit ends the environment.
 - **The app handles SIGTERM.** Stopping an environment sends the app container SIGTERM (through Docker's init, which forwards it) and removes it after 5 seconds. An app that ignores SIGTERM loses whatever it hadn't saved.
 - **The image contains `/home/cha`, owned by uid 1000, and a `cp` that takes `-a`.** When a user keeps their data for the first time, the node starts a short-lived container from your image as root, with the entrypoint replaced by `cp -a /home/cha/. /to/`, no network and a read-only root filesystem, to copy the image's home into the user's directory. If that fails, the environment starts with an empty home and a warning in the node's log. Any Debian or Ubuntu image has `cp`; a `scratch` image or a distroless one has not.
@@ -84,7 +84,7 @@ Anything else you set with `ENV` in the image stays. The image's own `ENV` is re
 | `/run/cha` | Docker volume shared with the streamer | Holds `wayland-0`, `pulse/native`, and the files in section 4. Owned by uid 1000. New for every environment; gone when it ends. |
 | `/dev/input` | The streamer's virtual gamepads | Read-only volume; only these devices exist there. Present when the node can make gamepads. |
 | `/run/udev` | udev's entries for those gamepads | Read-only volume. Chrome, Firefox and Wine look here. |
-| `/dev/hidraw<n>` | Hidraw nodes of DualSense and Steam Controller pads | Read-only subpath mounts, one per node; the device cgroup allows exactly those. |
+| `/dev/hidraw<n>` | Hidraw nodes of DualSense and Steam Controller pads | The pads made at start: read-only subpath mounts, one per node. Pads that join later: nodes the node agent makes in the app's own `/dev` while it runs (`controllers.md`). The device cgroup allows the whole `hidraw` major. |
 | `/home/cha` | The user's directory for this app | Only when the user keeps their data (section 5). Otherwise `/home/cha` is the image's. |
 | `/srv/cha-portal/shared/<template id>` | The app's shared directory | Only when its access isn't `none`; read-only for `read` (section 5.4). A node whose owner keeps it elsewhere mounts it at that path instead. |
 | per-user paths inside the shared directory | The user's own directories, from their home | Writable even when the rest is read-only (section 5.4). |
@@ -99,7 +99,7 @@ Anything else you set with `ENV` in the image stays. The image's own `ENV` is re
 | GPU, Intel or AMD | One render node (`/dev/dri/renderD*`) with `rw` |
 | GPU, none | Nothing |
 | KVM, `vm` only | `/dev/kvm` with `rw`, and `/dev/udmabuf` with `rw` when the host has it |
-| Device cgroup | `c 13:* rw` (input devices) when the node can make gamepads, plus exactly each hidraw node as `rwm` |
+| Device cgroup | `c 13:* rw` (input devices) when the node can make gamepads, plus `c <hidraw major>:* rwm` for the DualSense and Steam Controller kinds (the app has no capability to make a node itself) |
 | `/dev/shm` | `shmMb` MiB |
 | Open files | `nofile` 524288 for `steam`; Docker's default otherwise |
 | Memory, `vm` only | The container's RAM and swap are both limited to 12 GiB by default (`CHA_VM_MEMORY_MB` on the node); a guest that outgrows it is killed, not the node |
@@ -141,7 +141,7 @@ Only `label` is required. With no `total` the page shows an indeterminate bar; `
 
 **Clipboard.** Wayland clients share the compositor's clipboard (`data-device`) and need nothing. An X11 app keeps its clipboard inside its X server, which only the app's container can reach, so an image with its own Xwayland or X server must bridge it: run `cha-x11-clipboard` (source: [`crates/cha-x11-clipboard`](../crates/cha-x11-clipboard), x11rb, AGPL-3.0-or-later) as the user of the X session once the X server is up. It connects to `/run/cha/clipboard`, the streamer's Unix socket, and passes text both ways (CLIPBOARD only, up to 1 MiB). Without it, copy and paste between the page and the X app does nothing.
 
-**Gamepads.** The streamer makes virtual controllers before the app starts: one Xbox 360 pad over `uinput`, or a DualSense or Steam Controller over `uhid`, according to the user's choice for the app. Their device nodes are in `/dev/input` (`event*` nodes), udev entries in `/run/udev`, and for the uhid kinds also `/dev/hidraw<n>` (used by SDL's HIDAPI driver, Proton and Steam). Anything that reads `/dev/input` or the Gamepad-like APIs on top of it works: SDL (set `SDL_JOYSTICK_DISABLE_UDEV=1`), evdev, libinput, Wine, browsers. See [`controllers.md`](controllers.md). An app can ask for a default kind with the catalog's `gamepad`.
+**Gamepads.** The streamer makes virtual controllers before the app starts: one Xbox 360 pad over `uinput`, or a DualSense or Steam Controller over `uhid`, according to the user's choice for the app. Their device nodes are in `/dev/input` (`event*` nodes), udev entries in `/run/udev`, and for the uhid kinds also `/dev/hidraw<n>` (used by SDL's HIDAPI driver, Proton and Steam; the ones of a pad that joins after the app started are made by the node agent, and announced to libudev's users). Anything that reads `/dev/input` or the Gamepad-like APIs on top of it works: SDL (set `SDL_JOYSTICK_DISABLE_UDEV=1`), evdev, libinput, Wine, browsers. See [`controllers.md`](controllers.md). An app can ask for a default kind with the catalog's `gamepad`.
 
 **Steam's `uinput`: `/run/cha/uinput.sock`.** Steam Input makes its own virtual pad by opening `/dev/uinput`, which no app container has. With the `steam` kind of pad, the streamer listens on this `SOCK_SEQPACKET` socket and makes the device on the app's behalf after validating the request. Our Steam image preloads a shim (`images/steam/uinput-shim/`) that turns Steam's `open("/dev/uinput")` into a connection to it. No other app needs this; the protocol is in `crates/cha-streamer/src/uinput_proto.rs`.
 

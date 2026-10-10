@@ -16,9 +16,13 @@
 //! - `<input-dir>/udev`, the app's `/run/udev`: udev's database entries
 //!   marking them joysticks (Chrome, Firefox and Wine find pads through udev).
 //!
-//! Hotplug events don't cross into the app's network namespace, so pads are
-//! made ahead (`--gamepads`) and kept for the streamer's life; SDL, told to
-//! skip udev, also watches `/dev/input` and sees later ones.
+//! Pads are made ahead (`--gamepads`) and on demand, and kept for the
+//! streamer's life. The evdev nodes of one that joins later are in the shared
+//! volume at once and SDL, told to skip udev, watches `/dev/input` and sees
+//! them. Its `hidraw` node isn't: Docker can't mount anything into the running
+//! app, so the node agent finds it in `/info`, makes it in the app's `/dev`
+//! and sends the hotplug event libudev's users wait for
+//! ([`crate::udev_event`]); `udev/control` is what makes them listen.
 //!
 //! What apps do to the pads goes the other way, as [`PadEvent`]s on a
 //! broadcast channel for the sessions to forward to the page. The Xbox pads
@@ -490,6 +494,10 @@ pub struct HidrawNode {
     pub name: String,
     pub major: u32,
     pub minor: u32,
+    /// The node's sysfs path without `/sys`, for the hotplug event the node
+    /// agent sends when it puts the node into a running app
+    /// (`udev_event.rs`); `None` if sysfs didn't say.
+    pub devpath: Option<String>,
 }
 
 pub struct Gamepads {
@@ -703,6 +711,10 @@ impl Gamepads {
             }
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
         }
+        // libudev in the app joins udev's multicast group only if udev "runs"
+        // (this file exists), and then hears the hotplug events the node agent
+        // sends for pads that join later ([`crate::udev_event`]).
+        std::fs::write(input_dir.join("udev/control"), "").context("creating udev/control")?;
         for i in 0..ahead.min(MAX_PADS) {
             pads.ensure(i)?;
         }
@@ -972,6 +984,7 @@ impl Gamepads {
                 name: node.name.clone(),
                 major: node.major,
                 minor: node.minor,
+                devpath: hidraw_devpath(&node.name),
             });
         }
         info!(
@@ -1186,6 +1199,13 @@ impl Gamepads {
         )?;
         Ok(())
     }
+}
+
+/// Where sysfs has `hidraw<n>`, without the `/sys`.
+fn hidraw_devpath(name: &str) -> Option<String> {
+    let real = std::fs::canonicalize(Path::new("/sys/class/hidraw").join(name)).ok()?;
+    let path = real.strip_prefix("/sys").ok()?;
+    Some(format!("/{}", path.display()))
 }
 
 /// A node's entry in udev's database, as the app's libudev (Chrome, Wine,

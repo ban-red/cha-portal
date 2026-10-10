@@ -143,6 +143,11 @@ const COPY_TIMEOUT: Duration = Duration::from_secs(3600);
 const EXTERNAL_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often the agent looks for per-user directories that came unmounted.
 const OVERLAY_CHECK: Duration = Duration::from_secs(30);
+/// How often the agent asks each streamer for pads that joined after the app
+/// started ([`DockerRuntime::check_pads`]).
+const PAD_CHECK: Duration = Duration::from_secs(1);
+/// How long the throwaway container that sends a pad's hotplug event may take.
+const UDEV_EVENT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often the agent looks at its shared directories, for the inventory.
 const SHARED_CHECK: Duration = Duration::from_secs(60);
 /// Each environment's streamer: HTTP (localhost), WebRTC and WebTransport.
@@ -979,6 +984,77 @@ struct State {
     homes: BTreeMap<String, (String, String)>,
     /// Homes being deleted: nothing starts on them meanwhile.
     resetting: HashSet<(String, String)>,
+    /// Environment id → the `hidraw` nodes of its pads that the agent has put
+    /// into the running app ([`DockerRuntime::check_pads`]).
+    pads: BTreeMap<String, PadWatch>,
+}
+
+/// What [`DockerRuntime::check_pads`] knows of one app's `hidraw` nodes.
+#[derive(Default)]
+struct PadWatch {
+    /// The `hidraw` major its device cgroup allows whole (`c <major>:* rwm`);
+    /// `None` for an app an older agent made, which allows only the nodes it
+    /// had then, so no more can be added.
+    major: Option<u32>,
+    /// The nodes mounted at its creation: nothing to make for those.
+    mounted: HashSet<String>,
+    /// The nodes the agent made in its `/dev` since, by name.
+    added: BTreeMap<String, Hidraw>,
+}
+
+impl PadWatch {
+    /// From the app container's `docker inspect`: its wildcard `hidraw` rule
+    /// ([`DockerRuntime::device_cgroup_rules`]) and the nodes it mounts.
+    fn from_inspect(inspect: &Value) -> Self {
+        let major = inspect["HostConfig"]["DeviceCgroupRules"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            // "c 238:* rwm"; the input rule is "c 13:* rw".
+            .find_map(|rule| {
+                rule.strip_prefix("c ")?
+                    .strip_suffix(":* rwm")?
+                    .parse()
+                    .ok()
+            });
+        let mounted = inspect["Mounts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["Destination"].as_str()?.strip_prefix("/dev/"))
+            .filter(|name| valid_hidraw_name(name))
+            .map(str::to_string)
+            .collect();
+        Self {
+            major,
+            mounted,
+            added: BTreeMap::new(),
+        }
+    }
+
+    /// What to do about the nodes the streamer lists now: the ones to make,
+    /// and the ones it no longer has.
+    fn changes(&self, listed: &[Hidraw]) -> (Vec<Hidraw>, Vec<Hidraw>) {
+        let Some(major) = self.major else {
+            return (Vec::new(), Vec::new());
+        };
+        let add = listed
+            .iter()
+            .filter(|n| n.major == major)
+            .filter(|n| !self.mounted.contains(&n.name))
+            .filter(|n| self.added.get(&n.name) != Some(n))
+            .cloned()
+            .collect();
+        // Gone, or a different device under the same name: made again.
+        let remove = self
+            .added
+            .values()
+            .filter(|n| !listed.contains(n))
+            .cloned()
+            .collect();
+        (add, remove)
+    }
 }
 
 impl DockerRuntime {
@@ -1023,6 +1099,8 @@ impl DockerRuntime {
         tokio::spawn(async move { watcher.watch().await });
         let watcher = Arc::clone(&runtime);
         tokio::spawn(async move { watcher.watch_overlays().await });
+        let watcher = Arc::clone(&runtime);
+        tokio::spawn(async move { watcher.watch_pads().await });
         if !runtime.config.shared_dirs.is_empty() {
             let watcher = Arc::clone(&runtime);
             tokio::spawn(async move { watcher.watch_shared().await });
@@ -1242,6 +1320,211 @@ impl DockerRuntime {
     }
 
     /// Looks at every environment's per-user directories each [`OVERLAY_CHECK`].
+    async fn watch_pads(self: Arc<Self>) {
+        let mut ticks = tokio::time::interval(PAD_CHECK);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            self.check_pads().await;
+        }
+    }
+
+    /// Brings pads that joined after an app started into it. Docker can't
+    /// mount anything into a running container, so a `hidraw` node past those
+    /// the app was made with is made in its own `/dev` ([`Self::put_hidraw`])
+    /// and announced to it the way udev would ([`Self::send_udev_event`]);
+    /// one the streamer no longer lists is taken away again. The streamer
+    /// lists its nodes in `/info`; the app's device cgroup allows the whole
+    /// `hidraw` major ([`Self::device_cgroup_rules`]).
+    async fn check_pads(&self) {
+        let running: Vec<(String, u16)> = {
+            let mut state = self.state.lock().expect("state lock");
+            let State {
+                ports,
+                starting,
+                stopping,
+                pads,
+                ..
+            } = &mut *state;
+            // Gone with the environment.
+            pads.retain(|id, _| ports.contains_key(id));
+            ports
+                .iter()
+                .filter(|(id, _)| !starting.contains_key(*id) && !stopping.contains(*id))
+                .map(|(id, port)| (id.clone(), *port))
+                .collect()
+        };
+        for (id, port) in running {
+            let known = self
+                .state
+                .lock()
+                .expect("state lock")
+                .pads
+                .contains_key(&id);
+            if !known {
+                // Once per environment: the agent that made the app may not
+                // be this one.
+                let inspected = self
+                    .docker
+                    .inspect_container(&container_name(&id, "app"))
+                    .await;
+                let Ok(inspected) = inspected else {
+                    continue;
+                };
+                self.state
+                    .lock()
+                    .expect("state lock")
+                    .pads
+                    .insert(id.clone(), PadWatch::from_inspect(&inspected));
+            }
+            let allowed = self
+                .state
+                .lock()
+                .expect("state lock")
+                .pads
+                .get(&id)
+                .is_some_and(|w| w.major.is_some());
+            if !allowed {
+                continue;
+            }
+            let Ok(info) = local(Method::GET, port, "/info", None).await else {
+                continue;
+            };
+            let Ok(listed) = parse_hidraw(&info) else {
+                continue;
+            };
+            let (add, remove) = {
+                let state = self.state.lock().expect("state lock");
+                match state.pads.get(&id) {
+                    Some(watch) => watch.changes(&listed),
+                    None => continue,
+                }
+            };
+            // Taken first: a name that now means another device.
+            for node in remove {
+                match self.take_hidraw(&id, &node).await {
+                    Ok(()) => {
+                        info!(%id, node = %node.name, "a pad went: its hidraw node is out of the app");
+                        if let Some(watch) =
+                            self.state.lock().expect("state lock").pads.get_mut(&id)
+                        {
+                            watch.added.remove(&node.name);
+                        }
+                    }
+                    Err(err) => {
+                        warn!(%id, node = %node.name, "taking a pad's hidraw node out of the app: {err:#}")
+                    }
+                }
+            }
+            for node in add {
+                match self.put_hidraw(&id, &node).await {
+                    Ok(()) => {
+                        info!(%id, node = %node.name, "a pad joined: its hidraw node is in the app");
+                        if let Some(watch) =
+                            self.state.lock().expect("state lock").pads.get_mut(&id)
+                        {
+                            watch.added.insert(node.name.clone(), node);
+                        }
+                    }
+                    // Tried again next time.
+                    Err(err) => {
+                        warn!(%id, node = %node.name, "putting a pad's hidraw node into the app: {err:#}")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Makes `node` in the app's `/dev`, owned by the app's user, and tells
+    /// the app it is there.
+    ///
+    /// `mknod` needs `CAP_MKNOD`, which the app has dropped with all the rest,
+    /// and Docker can't give an exec a capability: so the agent runs `mknod`
+    /// and `chown` as a *privileged* exec, one short command each with
+    /// arguments it checked (a name `hidraw<n>`, two numbers). The app's
+    /// device cgroup allows it, for that major only.
+    async fn put_hidraw(&self, id: &str, node: &Hidraw) -> Result<()> {
+        let app = container_name(id, "app");
+        let path = format!("/dev/{}", node.name);
+        let (major, minor) = (node.major.to_string(), node.minor.to_string());
+        // A node an earlier agent made for this name, or that the app's
+        // restart left: made again, so the numbers are right.
+        self.take_node(&app, &path).await?;
+        let (code, out) = self
+            .docker
+            .exec_as(
+                &app,
+                Some("0"),
+                true,
+                &["mknod", "-m", "660", &path, "c", &major, &minor],
+            )
+            .await?;
+        if code != 0 {
+            bail!("mknod exited {code}: {}", out.trim());
+        }
+        let owner = format!("{APP_UID}:{APP_UID}");
+        let (code, out) = self
+            .docker
+            .exec_as(&app, Some("0"), true, &["chown", &owner, &path])
+            .await?;
+        if code != 0 {
+            let _ = self.take_node(&app, &path).await;
+            bail!("chown exited {code}: {}", out.trim());
+        }
+        // The node is usable already; apps that don't wait for udev find it
+        // by scanning. The event is for those that do.
+        if let Err(err) = self.send_udev_event(id, "add", node).await {
+            warn!(%id, node = %node.name, "telling the app about the pad: {err:#}");
+        }
+        Ok(())
+    }
+
+    /// Takes a node [`Self::put_hidraw`] made away, and tells the app.
+    async fn take_hidraw(&self, id: &str, node: &Hidraw) -> Result<()> {
+        if let Err(err) = self.send_udev_event(id, "remove", node).await {
+            warn!(%id, node = %node.name, "telling the app a pad went: {err:#}");
+        }
+        self.take_node(&container_name(id, "app"), &format!("/dev/{}", node.name))
+            .await
+    }
+
+    async fn take_node(&self, app: &str, path: &str) -> Result<()> {
+        // Root, without the extra capabilities: the directory is root's.
+        let (code, out) = self
+            .docker
+            .exec_as(app, Some("0"), false, &["rm", "-f", path])
+            .await?;
+        if code != 0 {
+            bail!("rm exited {code}: {}", out.trim());
+        }
+        Ok(())
+    }
+
+    /// Sends libudev's hotplug message for `node` into the app's network
+    /// namespace (what Steam, SDL's HIDAPI and Wine wait for to notice a
+    /// device that appeared; `udev_event.rs` in the streamer says why it
+    /// takes this). The kernel's own message doesn't do: libudev there only
+    /// listens to udev's. Nothing in the app can send it, so a throwaway
+    /// container of the streamer image runs in the app's namespace with
+    /// `CAP_NET_ADMIN` and nothing else, as root (libudev ignores other
+    /// senders). No devpath, no event.
+    async fn send_udev_event(&self, id: &str, action: &str, node: &Hidraw) -> Result<()> {
+        let Some(config) = udev_event_config(
+            &self.config.streamer_image,
+            &container_name(id, "app"),
+            action,
+            node,
+        ) else {
+            return Ok(());
+        };
+        let name = format!("cha-udev-{id}-{}", node.name);
+        let (code, out) = self.docker.run(&name, &config, UDEV_EVENT_TIMEOUT).await?;
+        if code != 0 {
+            bail!("the event sender exited {code}: {}", out.trim());
+        }
+        Ok(())
+    }
+
     async fn watch_overlays(self: Arc<Self>) {
         let mut ticks = tokio::time::interval(OVERLAY_CHECK);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2792,18 +3075,25 @@ impl DockerRuntime {
         config
     }
 
-    /// What the app's devices may be opened: input devices, and exactly the
-    /// streamer's hidraw nodes.
+    /// What the app's devices may be opened: input devices, and the
+    /// `hidraw` major.
+    ///
+    /// The `hidraw` rule is a wildcard (`c <major>:* rwm`) because Docker
+    /// can't add a rule to a running container, and a pad that joins later
+    /// gets a minor nobody knows yet ([`Self::sync_hidraw`]). What it grants:
+    /// any `hidraw` device of the host may be opened (and, with a capability
+    /// the app doesn't have, made) from inside the app. In practice only the
+    /// nodes in its own `/dev` can be opened, and those are the ones this
+    /// agent puts there for the streamer's pads: the app has no `CAP_MKNOD`
+    /// and can't make a node itself. `m` is for the agent's own `mknod`.
     fn device_cgroup_rules(&self, hidraw: &[Hidraw]) -> Value {
         let mut rules = Vec::new();
         if self.has_pads() {
             rules.push("c 13:* rw".to_string());
         }
-        rules.extend(
-            hidraw
-                .iter()
-                .map(|n| format!("c {}:{} rwm", n.major, n.minor)),
-        );
+        if let Some(first) = hidraw.first() {
+            rules.push(format!("c {}:* rwm", first.major));
+        }
         json!(rules)
     }
 
@@ -2822,6 +3112,7 @@ impl DockerRuntime {
         state.homes.remove(id);
         state.overlays.remove(id);
         state.launch_warnings.remove(id);
+        state.pads.remove(id);
         result
     }
 
@@ -3619,6 +3910,20 @@ struct Hidraw {
     name: String,
     major: u32,
     minor: u32,
+    /// Its sysfs path without `/sys`, for the hotplug event; the streamer
+    /// says it when sysfs did.
+    devpath: Option<String>,
+}
+
+/// Whether `path` can be a sysfs device path in a hotplug event, which the
+/// agent passes on as a command-line value.
+fn valid_devpath(path: &str) -> bool {
+    path.starts_with("/devices/")
+        && path.len() <= 512
+        && !path.contains("..")
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_.:-".contains(&b))
 }
 
 /// Whether `name` is a kernel `hidraw` name, `hidraw<n>`: what the node
@@ -3657,6 +3962,12 @@ fn parse_hidraw(info: &Value) -> Result<Vec<Hidraw>> {
                 name: name.to_string(),
                 major: number("major")?,
                 minor: number("minor")?,
+                // Only a path that can be trusted as an argument.
+                devpath: entry
+                    .get("devpath")
+                    .and_then(Value::as_str)
+                    .filter(|p| valid_devpath(p))
+                    .map(str::to_string),
             })
         })
         .collect()
@@ -3673,6 +3984,33 @@ fn hidraw_mount(id: &str, node: &Hidraw) -> Value {
         "ReadOnly": true,
         "VolumeOptions": { "Subpath": format!("hidraw/{}", node.name) },
     })
+}
+
+/// The throwaway container that sends a pad's hotplug event ([`DockerRuntime::send_udev_event`]):
+/// the app's network namespace, root with `CAP_NET_ADMIN` alone, a read-only
+/// root and the streamer's `--udev-event`. It has no label, so nothing takes
+/// it for an environment's container. `None` without the node's sysfs path.
+fn udev_event_config(image: &str, app: &str, action: &str, node: &Hidraw) -> Option<Value> {
+    let devpath = node.devpath.as_deref()?;
+    Some(json!({
+        "Image": image,
+        "User": "0",
+        "Entrypoint": [
+            "cha-streamer",
+            "--udev-event",
+            action,
+            devpath,
+            &node.name,
+            format!("{}:{}", node.major, node.minor),
+        ],
+        "HostConfig": {
+            "NetworkMode": format!("container:{app}"),
+            "ReadonlyRootfs": true,
+            "CapDrop": ["ALL"],
+            "CapAdd": ["NET_ADMIN"],
+            "SecurityOpt": ["no-new-privileges"],
+        },
+    }))
 }
 
 async fn local(method: Method, port: u16, path: &str, body: Option<&Value>) -> Result<Value> {
@@ -4587,18 +4925,20 @@ mod tests {
     }
 
     #[test]
-    fn hidraw_nodes_are_mounted_from_the_input_volume_and_allowed() {
+    fn hidraw_nodes_are_mounted_from_the_input_volume_and_the_major_is_allowed() {
         let rt = runtime();
         let nodes = [
             Hidraw {
                 name: "hidraw3".into(),
                 major: 240,
                 minor: 3,
+                devpath: None,
             },
             Hidraw {
                 name: "hidraw4".into(),
                 major: 240,
                 minor: 4,
+                devpath: None,
             },
         ];
         let app = rt.app_config(&pad_spec(Some(GamepadKind::Dualsense)), 7600, &nodes);
@@ -4623,7 +4963,8 @@ mod tests {
             && m.get("VolumeOptions").is_none()));
         assert_eq!(
             app["HostConfig"]["DeviceCgroupRules"],
-            json!(["c 13:* rw", "c 240:3 rwm", "c 240:4 rwm"])
+            // The whole major, for pads that join later.
+            json!(["c 13:* rw", "c 240:* rwm"])
         );
         // No nodes: what an Xbox pad gets.
         let plain = rt.app_config(&pad_spec(None), 7600, &[]);
@@ -4638,6 +4979,133 @@ mod tests {
                 .iter()
                 .any(|m| m["Target"].as_str().unwrap().starts_with("/dev/hidraw"))
         );
+    }
+
+    fn pad(name: &str, minor: u32) -> Hidraw {
+        Hidraw {
+            name: name.into(),
+            major: 240,
+            minor,
+            devpath: Some(format!("/devices/virtual/misc/uhid/x/hidraw/{name}")),
+        }
+    }
+
+    #[test]
+    fn an_app_is_watched_for_pads_by_its_cgroup_rule_and_mounts() {
+        let app = rt_app_inspect(
+            &["c 13:* rw", "c 240:* rwm"],
+            &["/dev/hidraw1", "/dev/input"],
+        );
+        let watch = PadWatch::from_inspect(&app);
+        assert_eq!(watch.major, Some(240));
+        assert_eq!(watch.mounted, HashSet::from(["hidraw1".to_string()]));
+        // An app an older agent made: exact rules, so nothing can be added.
+        let old = PadWatch::from_inspect(&rt_app_inspect(
+            &["c 13:* rw", "c 240:1 rwm"],
+            &["/dev/hidraw1"],
+        ));
+        assert_eq!(old.major, None);
+        assert_eq!(
+            old.changes(&[pad("hidraw1", 1), pad("hidraw2", 2)]),
+            (vec![], vec![])
+        );
+        // An Xbox pad's app: no hidraw rule at all.
+        assert_eq!(
+            PadWatch::from_inspect(&rt_app_inspect(&["c 13:* rw"], &[])).major,
+            None
+        );
+    }
+
+    fn rt_app_inspect(rules: &[&str], mounts: &[&str]) -> Value {
+        json!({
+            "HostConfig": { "DeviceCgroupRules": rules },
+            "Mounts": mounts.iter().map(|d| json!({ "Destination": d })).collect::<Vec<_>>(),
+        })
+    }
+
+    #[test]
+    fn pads_that_joined_late_are_added_once_and_removed_when_they_go() {
+        let mut watch = PadWatch::from_inspect(&rt_app_inspect(
+            &["c 13:* rw", "c 240:* rwm"],
+            &["/dev/hidraw1"],
+        ));
+        // The mounted one is the app's already; another major isn't ours.
+        let mut other = pad("hidraw5", 5);
+        other.major = 241;
+        let (add, remove) = watch.changes(&[pad("hidraw1", 1), pad("hidraw2", 2), other]);
+        assert_eq!(
+            (add.as_slice(), remove.len()),
+            ([pad("hidraw2", 2)].as_slice(), 0)
+        );
+        watch.added.insert("hidraw2".into(), pad("hidraw2", 2));
+        // Done: nothing to do again.
+        assert_eq!(
+            watch.changes(&[pad("hidraw1", 1), pad("hidraw2", 2)]),
+            (vec![], vec![])
+        );
+        // A third pad.
+        let (add, _) = watch.changes(&[pad("hidraw1", 1), pad("hidraw2", 2), pad("hidraw3", 3)]);
+        assert_eq!(add, vec![pad("hidraw3", 3)]);
+        // The second goes (the mounted one never does: it is not ours to take).
+        let (add, remove) = watch.changes(&[pad("hidraw1", 1)]);
+        assert_eq!((add, remove), (vec![], vec![pad("hidraw2", 2)]));
+        // The same name for another device: taken, then made again.
+        let (add, remove) = watch.changes(&[pad("hidraw1", 1), pad("hidraw2", 9)]);
+        assert_eq!(add, vec![pad("hidraw2", 9)]);
+        assert_eq!(remove, vec![pad("hidraw2", 2)]);
+    }
+
+    #[test]
+    fn the_hotplug_event_runs_beside_the_app_with_one_capability() {
+        let config = udev_event_config(
+            "cha/streamer:dev",
+            "cha-env-e1-app",
+            "add",
+            &pad("hidraw2", 2),
+        )
+        .unwrap();
+        assert_eq!(config["User"], "0");
+        assert_eq!(
+            config["Entrypoint"],
+            json!([
+                "cha-streamer",
+                "--udev-event",
+                "add",
+                "/devices/virtual/misc/uhid/x/hidraw/hidraw2",
+                "hidraw2",
+                "240:2"
+            ])
+        );
+        let host = &config["HostConfig"];
+        assert_eq!(host["NetworkMode"], "container:cha-env-e1-app");
+        assert_eq!(host["CapDrop"], json!(["ALL"]));
+        assert_eq!(host["CapAdd"], json!(["NET_ADMIN"]));
+        assert_eq!(host["ReadonlyRootfs"], true);
+        // Not an environment's container.
+        assert!(config.get("Labels").is_none());
+        // Without the sysfs path there is nothing to say.
+        let mut bare = pad("hidraw2", 2);
+        bare.devpath = None;
+        assert!(udev_event_config("i", "a", "add", &bare).is_none());
+    }
+
+    #[test]
+    fn only_sysfs_device_paths_are_passed_on() {
+        assert!(valid_devpath(
+            "/devices/virtual/misc/uhid/0005:28DE:1303.0028/hidraw/hidraw2"
+        ));
+        for bad in [
+            "",
+            "devices/x",
+            "/sys/devices/x",
+            "/devices/../x",
+            "/devices/x y",
+            "/devices/x;rm",
+            "/devices/x=y",
+            "--udev-event",
+        ] {
+            assert!(!valid_devpath(bad), "{bad:?}");
+        }
     }
 
     #[tokio::test]
@@ -4662,20 +5130,33 @@ mod tests {
         assert_eq!(parse_hidraw(&json!({ "hidraw": [] })).unwrap(), vec![]);
         assert_eq!(
             parse_hidraw(&json!({ "hidraw": [
-                { "name": "hidraw3", "major": 240, "minor": 3 },
+                { "name": "hidraw3", "major": 240, "minor": 3,
+                  "devpath": "/devices/virtual/misc/uhid/0005:28DE:1303.0028/hidraw/hidraw3" },
                 { "name": "hidraw12", "major": 240, "minor": 12 },
+                // A path that isn't one is left out, not trusted.
+                { "name": "hidraw13", "major": 240, "minor": 13, "devpath": "/sys/../etc" },
             ] }))
             .unwrap(),
             vec![
                 Hidraw {
                     name: "hidraw3".into(),
                     major: 240,
-                    minor: 3
+                    minor: 3,
+                    devpath: Some(
+                        "/devices/virtual/misc/uhid/0005:28DE:1303.0028/hidraw/hidraw3".into()
+                    ),
                 },
                 Hidraw {
                     name: "hidraw12".into(),
                     major: 240,
-                    minor: 12
+                    minor: 12,
+                    devpath: None,
+                },
+                Hidraw {
+                    name: "hidraw13".into(),
+                    major: 240,
+                    minor: 13,
+                    devpath: None,
                 },
             ]
         );

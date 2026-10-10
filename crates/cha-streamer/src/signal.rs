@@ -189,6 +189,12 @@ struct Args {
     /// `cpu` (the node runs this to find a machine's devices).
     #[arg(long, value_name = "KIND[:RENDER NODE]")]
     probe_device: Option<String>,
+    /// Send a udev hotplug event for a `hidraw` node into this network
+    /// namespace and exit: `add|remove DEVPATH hidrawN MAJOR:MINOR`. The node
+    /// agent runs it beside an app, for a pad that joined after the app
+    /// started (`udev_event.rs`).
+    #[arg(long, num_args = 4, value_names = ["ACTION", "DEVPATH", "NAME", "MAJOR:MINOR"])]
+    udev_event: Option<Vec<String>>,
 }
 
 /// Who may start a stream.
@@ -221,6 +227,9 @@ pub fn main() -> Result<()> {
     // Before logging starts: stdout is the JSON and nothing else.
     if let Some(spec) = &args.probe_device {
         return device::probe(spec, cha_pyrowave::available().is_ok());
+    }
+    if let Some(event) = &args.udev_event {
+        return crate::udev_event::HidrawEvent::from_args(event)?.send();
     }
     tracing_subscriber::fmt()
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))

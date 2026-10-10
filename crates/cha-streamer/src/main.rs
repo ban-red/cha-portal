@@ -71,6 +71,8 @@ mod system;
 #[cfg(target_os = "linux")]
 mod tap;
 #[cfg(target_os = "linux")]
+mod udev_event;
+#[cfg(target_os = "linux")]
 mod uhid;
 #[cfg(target_os = "linux")]
 mod uinput_broker;
