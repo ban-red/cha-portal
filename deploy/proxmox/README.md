@@ -17,19 +17,19 @@ Either can run the whole quick start (the portal and a node) or just a node for 
 Run it as root on the Proxmox host. It needs only the script itself:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/ban-red/cha-portal/v0.5.1/deploy/proxmox/create-node.sh
+curl -fsSLO https://raw.githubusercontent.com/ban-red/cha-portal/v0.5.2/deploy/proxmox/create-node.sh
 ```
 
 Read it before running it, since it runs as root on your host. Then make the quick start: the portal and a node in one container, with HTTPS through Tailscale:
 
 ```bash
-sh create-node.sh --version 0.5.1 --tailscale
+sh create-node.sh --version 0.5.2 --tailscale
 ```
 
 Or make a node for a portal that is already running elsewhere:
 
 ```bash
-sh create-node.sh --version 0.5.1 --portal-url https://portal-host.your-tailnet.ts.net
+sh create-node.sh --version 0.5.2 --portal-url https://portal-host.your-tailnet.ts.net
 ```
 
 `--dry-run` prints the container's settings and changes nothing. `--help` lists every option: ID, cores, memory and disk (64 GB by default; the images live there), a static `--ip`, the `--gpu` to pass in, `--data-dir` to keep app data in a host directory such as a ZFS dataset, `--join-token`, `--no-pull`, `--ssh-key`, and `--source DIR`, which copies a checkout already on the host instead of cloning the release (offline, or to try a change).
@@ -68,7 +68,7 @@ For a node alone, the directory is `/opt/cha-portal/deploy/node`. Run compose fr
 - **No NVIDIA.** The script never passes an NVIDIA GPU to a container: the container's driver would have to match the host's exactly, and CDI expects to own it. If the host has one, the script says so; give it to a VM.
 - **GPU sharing.** An Intel or AMD GPU passed into a container is still the host's. Other containers, Plex for example, can use it at the same time, and they compete for its encoder.
 - **Gamepads haven't been tried in a container yet.** The devices they need are passed in and allowed, but no pad has been played there yet.
-- **Updating:** back up the portal's database first ([Upgrading](../../SETUP.md#upgrading-to-a-new-release)). Then in the container, `git fetch --depth 1 origin tag v0.5.1 && git checkout v0.5.1`, then `setup.sh --version 0.5.1`, then `docker compose pull && docker compose up -d` from the compose directory. For a node alone, also change the version in `deploy/node/.env` (`CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE`, `CHA_IMAGE_TAG`).
+- **Updating:** back up the portal's database first ([Upgrading](../../SETUP.md#upgrading-to-a-new-release)). Then in the container, `git fetch --depth 1 origin tag v0.5.2 && git checkout v0.5.2`, then `setup.sh --version 0.5.2`, then `docker compose pull && docker compose up -d` from the compose directory. For a node alone, also change the version in `deploy/node/.env` (`CHA_NODE_IMAGE`, `CHA_STREAMER_IMAGE`, `CHA_IMAGE_TAG`).
 - **AMD video clocks.** The rule from step 4 puts an AMD GPU's video engine at full clock from boot, which halved the encode time on a Radeon 780M with no measurable power cost. To undo it, create the container with `--no-video-clocks`, or delete `/etc/udev/rules.d/73-cha-amd-video-clocks.rules` on the host and reboot (`--no-video-clocks` leaves an existing copy in place).
 - **A NAS share that went stale.** If the library lives on an NFS share the host mounts and binds into the container (`mp1: /mnt/games,mp=/mnt/games`), the share can go stale ("Stale file handle", or `NFS: server ... error: fileid changed` in `dmesg`), most often when Unraid exports it through `/mnt/user`. The node then starts environments without it and the dashboard warns before launch. On the host, `sh repair-mounts.sh --check` says what is stale; without `--check` it remounts the share and restarts the containers that bind it (their environments stop, so launch them again). `--mount DIR` and `--id N` pick another share or container; `--no-restart` leaves the containers.
 - **Removing:** `pct stop <id> && pct destroy <id>`. On the host, `/etc/modules-load.d/cha.conf` and the udev rule stay until you delete them.

@@ -1,6 +1,6 @@
 [package]
 name = "cha-ui-spec"
-version = "0.5.1"
+version = "0.5.2"
 description = "The in-stream UI's spec (ADR 0016), compiled in from web/packages/ui-spec: icons, themes, and the SVG path parser the native player draws them with"
 edition.workspace = true
 license.workspace = true

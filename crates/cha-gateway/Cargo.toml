@@ -1,6 +1,6 @@
 [package]
 name = "cha-gateway"
-version = "0.5.1"
+version = "0.5.2"
 description = "Streams a Moonlight host (Sunshine, Apollo) to the browser player, standing in for cha-streamer"
 edition.workspace = true
 license.workspace = true

@@ -28,12 +28,12 @@ The fastest way to a stream: the portal and a node together on one Linux machine
 
 On **Proxmox VE**, [`deploy/proxmox/`](deploy/proxmox/README.md) does all of this in an LXC container (Intel or AMD GPU) with one script, or explains the VM to use for NVIDIA.
 
-The commands below use `0.5.1`; use the latest [release](https://github.com/ban-red/cha-portal/releases) instead, in both the clone and the setup step.
+The commands below use `0.5.2`; use the latest [release](https://github.com/ban-red/cha-portal/releases) instead, in both the clone and the setup step.
 
 1. **Get the release:**
 
    ```bash
-   git clone --branch v0.5.1 --depth 1 https://github.com/ban-red/cha-portal.git
+   git clone --branch v0.5.2 --depth 1 https://github.com/ban-red/cha-portal.git
    ```
 
    ```bash
@@ -43,7 +43,7 @@ The commands below use `0.5.1`; use the latest [release](https://github.com/ban-
 2. **Set up the machine.** One script does the rest of the installing; it's safe to run again and says what it did at each step:
 
    ```bash
-   sudo deploy/quickstart/setup.sh --version 0.5.1 --tailscale
+   sudo deploy/quickstart/setup.sh --version 0.5.2 --tailscale
    ```
 
    <details>
@@ -314,7 +314,7 @@ From 0.3 on, nodes that run published images can be brought to the portal's rele
 - **Back up the portal's database.** Migrations only go forward, so the backup is the only way back to the old version. Do it while nobody is playing, since it stops the portal for a moment.
 - **Pick a quiet moment.** Open streams drop while the portal and agent restart. Running environments keep going on the old images until they are stopped and launched again.
 
-The commands below upgrade to `0.5.1`; use the version you're moving to.
+The commands below upgrade to `0.5.2`; use the version you're moving to.
 
 ### The quick start
 
@@ -343,7 +343,7 @@ Run these from the checkout, on the machine that runs it.
 3. **Get the release:**
 
    ```bash
-   git fetch --depth 1 origin tag v0.5.1 && git checkout v0.5.1
+   git fetch --depth 1 origin tag v0.5.2 && git checkout v0.5.2
    ```
 
    If you stashed in step 2, put your edits back. Git says if one clashes with the release's change to the same lines; then make the edit again by hand.
@@ -355,7 +355,7 @@ Run these from the checkout, on the machine that runs it.
 4. **Run the release's setup script** with its version. It updates `CHA_VERSION` in `deploy/quickstart/.env`, installs any changed host files, and pulls the new images (`--no-pull` leaves them to download as apps launch):
 
    ```bash
-   sudo deploy/quickstart/setup.sh --version 0.5.1
+   sudo deploy/quickstart/setup.sh --version 0.5.2
    ```
 
 5. **Restart on the new images:**
@@ -368,7 +368,7 @@ Run these from the checkout, on the machine that runs it.
    docker compose -f deploy/quickstart/compose.yaml up -d
    ```
 
-6. **Check it:** **Admin → Nodes** shows the node's agent at the new version (`v0.5.1`). Run the doctor too:
+6. **Check it:** **Admin → Nodes** shows the node's agent at the new version (`v0.5.2`). Run the doctor too:
 
    ```bash
    docker compose -f deploy/quickstart/compose.yaml run --rm agent --doctor
@@ -387,7 +387,7 @@ Run these from the checkout, on the machine that runs it.
 Get the release on every machine, then upgrade the nodes before the portal: a newer agent keeps working with an older portal.
 
 ```bash
-git fetch --tags && git checkout v0.5.1
+git fetch --tags && git checkout v0.5.2
 ```
 
 On each node, rebuild the images ([steps 5 and 6](#one-machine-from-source)), install any changed host files, and restart the agent:
@@ -411,6 +411,14 @@ Instead of building, a node can stay on the release's published images. Set `CHA
 ### A Proxmox container
 
 The same as the quick start, inside the container (`pct enter <id>`), from `/opt/cha-portal`: [`deploy/proxmox/README.md`](deploy/proxmox/README.md) has the commands.
+
+### From 0.5.1 to 0.5.2
+
+Nodes on published images take the **Update** button; there are no database changes and no new node messages. Update a node's agent and its streamer image together (the button does both): the fix below needs the new agent to tell the new streamer. Environments already running keep the old images until they are stopped and launched again.
+
+- **Steam**: a game gets Steam's own virtual controller whatever pad kind the app uses. On the Xbox 360 and DualSense kinds Steam Input hides the pad from the game and makes its own, which failed, so Big Picture worked and a game saw no controller (Balatro).
+- **Portal**: the app cards' frame rate, controller and storage dropdowns and open-in-player work again; 0.5.1 wired them wrong, so they did nothing.
+- **Deploy**: [`deploy/proxmox/host-scripts/`](deploy/proxmox/host-scripts/README.md) has scripts to check and update the containers on a Proxmox host.
 
 ### From 0.5.0 to 0.5.1
 
