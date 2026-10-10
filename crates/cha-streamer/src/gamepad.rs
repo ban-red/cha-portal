@@ -45,7 +45,7 @@ use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use serde::{Deserialize, Deserializer, Serialize};
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::dualsense::{self, DualSense};
 use crate::steam_controller::{self, SteamController};
@@ -855,7 +855,7 @@ impl Gamepads {
                     variant.bus(),
                     steam_controller::VENDOR,
                     variant.product(),
-                    steam_controller::VERSION,
+                    variant.version(),
                     variant.descriptor(),
                     // The Bluetooth controller's `uniq` is its address.
                     mac.iter()
@@ -941,7 +941,18 @@ impl Gamepads {
             hidraw: Vec::new(),
         };
         // The pad owns the device from here, so a failure destroys it.
-        for input in &found.inputs {
+        // A real controller's descriptor has a mouse and a keyboard (its lizard
+        // mode), which the host's hid-generic makes input devices of. They
+        // never send anything and aren't gamepads: they stay out of the app's
+        // volumes (the host's udev rule keeps them off its seat).
+        let shared_inputs: &[_] = if usb { &[] } else { &found.inputs };
+        if usb && !found.inputs.is_empty() {
+            debug!(
+                inputs = ?found.inputs.iter().map(|i| &i.name).collect::<Vec<_>>(),
+                "gamepad: input devices of the virtual USB controller are not shared"
+            );
+        }
+        for input in shared_inputs {
             let class = if input.accelerometer {
                 Class::Accelerometer
             } else if input.touch {

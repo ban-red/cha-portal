@@ -24,10 +24,44 @@ reports are the same: the page's pad state, rumble and trackpad pulses (by
 interrupt OUT or SET_REPORT), and feature report 1 by GET/SET_REPORT on
 endpoint 0. What differs for `1302`: the state report id is `0x42` (SDL's
 wired state; `0x45` is the Bluetooth one, both parsed alike) and there is no
-`0x79` wireless status. Those ids, the descriptors and the serial are our
-assumption: no real wired controller was at hand. Default is uhid. If `attach`
+`0x79` wireless status.
+
+What is a real 2026 controller's and what is ours, for `1302`. Taken from a
+real controller on a USB-C cable (macOS's I/O Registry; its feature-report
+replies could not be read, see below):
+- the whole HID report descriptor (372 bytes): a mouse (report `0x40`) and a
+  keyboard (`0x41`), the controller's lizard mode, then the vendor collection
+  with inputs `0x42` (53 bytes: the state and an orientation quaternion), `0x44`,
+  `0x79`, `0x43`, `0x7b`, `0x45`, outputs `0x80` to `0x89`, features 1 and 2
+  (63 bytes each);
+- the USB device: bcdUSB `0x0201`, bcdDevice `0x0307`, 64-byte endpoint 0,
+  strings "Valve Software", "Steam Controller" and a serial (index 3), one
+  configuration drawing 500 mA, one HID interface (class 3, no boot subclass)
+  with two endpoints, and the largest report sizes (54 in, 64 out, 64 feature).
+
+Still ours: the endpoint addresses and `bInterval` (the I/O Registry doesn't
+show them; 1 ms), the configuration's attributes, the BOS descriptor that
+bcdUSB `0x0201` asks for (a USB 2.0 Extension capability), what `0x44`, `0x7b`,
+output `0x82` to `0x89` and feature report 2 mean (the streamer takes them,
+logs the first of each, and does nothing; feature 2 reads as zeros), the
+replies to commands `0x83` (attributes) and `0xae` (string attributes, the
+serial included), the serial itself (`FXA` and ten hex digits, made from the
+owner, app and slot; the real unit serial has that shape), and the
+controller's behaviour: which state report it sends on a cable (we send `0x42`
+and `0x43`), the battery values, the pad pressure and touch thresholds.
+Steam logs `Deck Controller PCB Serial# invalid` for our serial; the cause isn't
+known yet (see the rumble item in [PLAN.md](PLAN.md), section 9).
+
+The keyboard and mouse the descriptor brings are made input devices by the
+host's `hid-generic`. They never send anything, so they are not shared into
+the app (only the `hidraw` node is); the vhci rule in `72-cha-virtual-pads.rules`
+matches the HID parent, so it covers them too: no seat, root only, ignored by
+libinput. Default is uhid. If `attach`
 can't be written (module not loaded, or AppArmor, see the deploy README) the
-streamer uses uhid.
+streamer uses uhid. Under AppArmor the streamer runs under `cha-streamer-vhci`
+(installed by `install.sh`): Docker's default profile with the `/sys` denial
+rewritten to leave exactly `.../vhci_hcd.0/attach` and `detach` writable.
+`CHA_STEAM_PAD_APPARMOR=unconfined` also works but is a test-only escape hatch.
 
 The kind is the user's per-app choice (the portal's Controllers page), with a
 default per app from the catalog. It is fixed for an environment's life: hotplug

@@ -81,6 +81,9 @@
 //!   and the shape is an assumption. The wired one is modelled on the Steam
 //!   Deck controller's interface 2 as `lsusb -v` shows it
 //!   (KWottrich/ally-steam-controller, MIT, `reference/`).
+//!   The 2026 controller's cable descriptor ([`DESCRIPTOR_TRITON_USB`]) is a
+//!   real one's, read from a controller on a USB-C cable; the Bluetooth one is
+//!   still ours. The commands' replies (0x83, 0xAE) are reconstructions.
 //! - **Wired input report** (type 1, 64 bytes, no report id): the header,
 //!   packet number, buttons and trigger bytes, the left pad or stick, the
 //!   right pad, triggers, accelerometer, gyroscope. Layout and button bits
@@ -116,6 +119,9 @@ const PRODUCT_TRITON: u16 = 0x1303;
 /// The 2026 controller on a USB cable (`USB_DEVICE_ID_STEAM_CONTROLLER_IBEX`).
 const PRODUCT_TRITON_USB: u16 = 0x1302;
 pub const VERSION: u16 = 0x0100;
+/// `bcdDevice` of a real 2026 controller on a cable (USB descriptor, read from
+/// the I/O Registry).
+const VERSION_TRITON_USB: u16 = 0x0307;
 /// The controller's own rate, and what it says its connection interval is.
 const PERIOD: Duration = Duration::from_micros(9000);
 /// The 2026 controller's (SDL's `TRITON_SENSOR_UPDATE_INTERVAL_US`).
@@ -176,6 +182,15 @@ impl Variant {
         match self {
             Variant::Wired | Variant::Ble => "Valve Software Steam Controller",
             Variant::Triton | Variant::TritonUsb => "Steam Controller",
+        }
+    }
+
+    /// The device's `bcdDevice` (the kernel's `version`): the real cable
+    /// controller's firmware says 0x0307; the others keep [`VERSION`].
+    pub fn version(self) -> u16 {
+        match self {
+            Variant::TritonUsb => VERSION_TRITON_USB,
+            _ => VERSION,
         }
     }
 
@@ -287,38 +302,204 @@ pub const DESCRIPTOR_TRITON: &[u8] = &[
     0xC0,              // End Collection
 ];
 
-/// The cable's descriptor: [`DESCRIPTOR_TRITON`] with the wired state report
-/// (0x42) in place of the Bluetooth one (0x45) and without the wireless status
-/// (0x79). A guess like the other: no real one was at hand.
+/// The cable's descriptor, byte for byte the real 2026 controller's (372 bytes,
+/// read from macOS's I/O Registry, `HIDReportDescriptor`, on a controller on a
+/// USB-C cable, `28de:1302`). Three application collections:
+/// - a mouse, report 0x40 (two buttons, X, Y, wheel, AC Pan; 5 bytes), and a
+///   keyboard, report 0x41 (modifiers, a reserved byte, six keys; 8 bytes): the lizard mode,
+///   which the host's `hid-generic` makes two input devices of;
+/// - the vendor collection (page `0xFF00`) with the inputs 0x42 (the state,
+///   53 bytes: the 45 of 0x45 and an 8-byte quaternion, `TritonMTUFull_t`),
+///   0x44 (5), 0x79 (1), 0x43 (the battery, 14), 0x7B (12) and 0x45 (45);
+///   the outputs 0x80 (rumble, 9), 0x81 (pulse, 7), 0x82 (3), 0x83 (9),
+///   0x84 (8), 0x85 (3), 0x86 (3), 0x87 (63), 0x89 (63) and 0x88 (63); and the
+///   features 1 and 2 (63 each), of which 1 carries the commands.
+///
+/// What the reports 0x44, 0x7B, 0x82 to 0x89 and the feature 2 mean is not
+/// known. The largest input (54 with its id), output and feature (64) sizes
+/// are what the I/O Registry gives as `MaxInputReportSize`, `MaxOutputReportSize`
+/// and `MaxFeatureReportSize` as well.
 #[rustfmt::skip]
 pub const DESCRIPTOR_TRITON_USB: &[u8] = &[
-    0x06, 0x00, 0xFF,  // Usage Page (Vendor Defined 0xFF00)
-    0x09, 0x01,        // Usage (1)
-    0xA1, 0x01,        // Collection (Application)
-    0x15, 0x00,        //   Logical Minimum (0)
-    0x26, 0xFF, 0x00,  //   Logical Maximum (255)
-    0x75, 0x08,        //   Report Size (8)
-    0x85, 0x01,        //   Report ID (1)
-    0x95, 0x3F,        //   Report Count (63)
-    0x09, 0x01,        //   Usage (1)
-    0xB1, 0x02,        //   Feature (Data,Var,Abs)
-    0x85, 0x42,        //   Report ID (0x42)
-    0x95, 0x2D,        //   Report Count (45)
-    0x09, 0x01,        //   Usage (1)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
-    0x85, 0x43,        //   Report ID (0x43)
-    0x95, 0x0E,        //   Report Count (14)
-    0x09, 0x01,        //   Usage (1)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
-    0x85, 0x80,        //   Report ID (0x80)
-    0x95, 0x09,        //   Report Count (9)
-    0x09, 0x01,        //   Usage (1)
-    0x91, 0x02,        //   Output (Data,Var,Abs)
-    0x85, 0x81,        //   Report ID (0x81)
-    0x95, 0x07,        //   Report Count (7)
-    0x09, 0x01,        //   Usage (1)
-    0x91, 0x02,        //   Output (Data,Var,Abs)
-    0xC0,              // End Collection
+    0x05, 0x01,           // Usage Page (Generic Desktop)
+    0x09, 0x02,           // Usage (2)
+    0xA1, 0x01,           // Collection (Application)
+    0x85, 0x40,           //   Report ID (0x40)
+    0x09, 0x01,           //   Usage (1)
+    0xA1, 0x00,           //   Collection (Physical)
+    0x05, 0x09,           //     Usage Page (Button)
+    0x19, 0x01,           //     Usage Minimum (1)
+    0x29, 0x02,           //     Usage Maximum (2)
+    0x15, 0x00,           //     Logical Minimum (0)
+    0x25, 0x01,           //     Logical Maximum (1)
+    0x75, 0x01,           //     Report Size (1)
+    0x95, 0x02,           //     Report Count (2)
+    0x81, 0x02,           //     Input (Data,Var,Abs)
+    0x75, 0x06,           //     Report Size (6)
+    0x95, 0x01,           //     Report Count (1)
+    0x81, 0x01,           //     Input (Const,Array,Abs)
+    0x05, 0x01,           //     Usage Page (Generic Desktop)
+    0x09, 0x30,           //     Usage (0x30)
+    0x09, 0x31,           //     Usage (0x31)
+    0x15, 0x81,           //     Logical Minimum (-127)
+    0x25, 0x7F,           //     Logical Maximum (127)
+    0x75, 0x08,           //     Report Size (8)
+    0x95, 0x02,           //     Report Count (2)
+    0x81, 0x06,           //     Input (Data,Var,Rel)
+    0x95, 0x01,           //     Report Count (1)
+    0x09, 0x38,           //     Usage (0x38)
+    0x81, 0x06,           //     Input (Data,Var,Rel)
+    0x05, 0x0C,           //     Usage Page (Consumer)
+    0x0A, 0x38, 0x02,     //     Usage (0x238)
+    0x95, 0x01,           //     Report Count (1)
+    0x81, 0x06,           //     Input (Data,Var,Rel)
+    0xC0,                 //   End Collection (0)
+    0xC0,                 // End Collection (0)
+    0x05, 0x01,           // Usage Page (Generic Desktop)
+    0x09, 0x06,           // Usage (6)
+    0xA1, 0x01,           // Collection (Application)
+    0x85, 0x41,           //   Report ID (0x41)
+    0x05, 0x07,           //   Usage Page (Keyboard)
+    0x19, 0xE0,           //   Usage Minimum (0xE0)
+    0x29, 0xE7,           //   Usage Maximum (0xE7)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x25, 0x01,           //   Logical Maximum (1)
+    0x75, 0x01,           //   Report Size (1)
+    0x95, 0x08,           //   Report Count (8)
+    0x81, 0x02,           //   Input (Data,Var,Abs)
+    0x81, 0x01,           //   Input (Const,Array,Abs)
+    0x19, 0x00,           //   Usage Minimum (0)
+    0x29, 0x65,           //   Usage Maximum (0x65)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x25, 0x65,           //   Logical Maximum (101)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x06,           //   Report Count (6)
+    0x81, 0x00,           //   Input (Data,Array,Abs)
+    0xC0,                 // End Collection (0)
+    0x06, 0x00, 0xFF,     // Usage Page (Vendor 0xFF00)
+    0x09, 0x01,           // Usage (1)
+    0xA1, 0x01,           // Collection (Application)
+    0x85, 0x42,           //   Report ID (0x42)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x35,           //   Report Count (0x35)
+    0x09, 0x42,           //   Usage (0x42)
+    0x81, 0x02,           //   Input (Data,Var,Abs)
+    0x85, 0x44,           //   Report ID (0x44)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x05,           //   Report Count (5)
+    0x09, 0x44,           //   Usage (0x44)
+    0x81, 0x02,           //   Input (Data,Var,Abs)
+    0x85, 0x79,           //   Report ID (0x79)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x01,           //   Report Count (1)
+    0x09, 0x79,           //   Usage (0x79)
+    0x81, 0x02,           //   Input (Data,Var,Abs)
+    0x85, 0x43,           //   Report ID (0x43)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x0E,           //   Report Count (0xE)
+    0x09, 0x43,           //   Usage (0x43)
+    0x81, 0x02,           //   Input (Data,Var,Abs)
+    0x85, 0x7B,           //   Report ID (0x7B)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x0C,           //   Report Count (0xC)
+    0x09, 0x7B,           //   Usage (0x7B)
+    0x81, 0x02,           //   Input (Data,Var,Abs)
+    0x85, 0x45,           //   Report ID (0x45)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x2D,           //   Report Count (0x2D)
+    0x09, 0x45,           //   Usage (0x45)
+    0x81, 0x02,           //   Input (Data,Var,Abs)
+    0x85, 0x80,           //   Report ID (0x80)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x09,           //   Report Count (9)
+    0x09, 0x80,           //   Usage (0x80)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x81,           //   Report ID (0x81)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x07,           //   Report Count (7)
+    0x09, 0x81,           //   Usage (0x81)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x82,           //   Report ID (0x82)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x03,           //   Report Count (3)
+    0x09, 0x82,           //   Usage (0x82)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x83,           //   Report ID (0x83)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x09,           //   Report Count (9)
+    0x09, 0x83,           //   Usage (0x83)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x84,           //   Report ID (0x84)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x08,           //   Report Count (8)
+    0x09, 0x84,           //   Usage (0x84)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x85,           //   Report ID (0x85)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x03,           //   Report Count (3)
+    0x09, 0x85,           //   Usage (0x85)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x86,           //   Report ID (0x86)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x03,           //   Report Count (3)
+    0x09, 0x86,           //   Usage (0x86)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x87,           //   Report ID (0x87)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x3F,           //   Report Count (0x3F)
+    0x09, 0x87,           //   Usage (0x87)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x89,           //   Report ID (0x89)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x3F,           //   Report Count (0x3F)
+    0x09, 0x89,           //   Usage (0x89)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x88,           //   Report ID (0x88)
+    0x15, 0x00,           //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,     //   Logical Maximum (255)
+    0x75, 0x08,           //   Report Size (8)
+    0x95, 0x3F,           //   Report Count (0x3F)
+    0x09, 0x88,           //   Usage (0x88)
+    0x91, 0x02,           //   Output (Data,Var,Abs)
+    0x85, 0x01,           //   Report ID (0x01)
+    0x95, 0x3F,           //   Report Count (0x3F)
+    0x09, 0x01,           //   Usage (1)
+    0xB1, 0x02,           //   Feature (Data,Var,Abs)
+    0x85, 0x02,           //   Report ID (0x02)
+    0x95, 0x3F,           //   Report Count (0x3F)
+    0x09, 0x01,           //   Usage (1)
+    0xB1, 0x02,           //   Feature (Data,Var,Abs)
+    0xC0,                 // End Collection (0)
 ];
 
 pub const REPORT_SIZE: usize = 64;
@@ -336,8 +517,15 @@ const RUMBLE_LOG_CHANGES: u32 = 60;
 const TRITON_PULSE: u8 = 0x81;
 /// The command messages' feature report, and what follows its id.
 const TRITON_FEATURE: u8 = 1;
+/// The second feature report the cable's descriptor has (63 bytes). What it
+/// is for is not known: a write is taken and logged, a read answers zeros.
+const TRITON_FEATURE_2: u8 = 2;
 const TRITON_FEATURE_BYTES: usize = 63;
 const TRITON_STATE_BYTES: usize = 45;
+/// The cable's state report is `TritonMTUFull_t` (53 bytes, its descriptor's
+/// size for 0x42): the state, then the IMU's orientation quaternion (w, x, y,
+/// z; SDL reads the first 45 and ignores the rest). Ours is "no rotation".
+const TRITON_QUATERNION: [i16; 4] = [i16::MAX, 0, 0, 0];
 /// `k_ETritonWirelessStateConnect`, `k_EChargeStateDischarging`.
 const WIRELESS_CONNECT: u8 = 2;
 const CHARGE_DISCHARGING: u8 = 1;
@@ -470,6 +658,8 @@ pub struct SteamController {
     rumble_logged: u32,
     /// The command ids seen so far, for the log.
     seen: Vec<u8>,
+    /// The output report ids seen that nothing here acts on, for the log.
+    seen_outputs: Vec<u8>,
     /// Settings written (`SET_SETTINGS`), in the order first written.
     settings: Vec<(u8, u16)>,
     /// The reply to the last command: what the next read returns.
@@ -494,6 +684,7 @@ impl SteamController {
             rumble: (0, 0),
             rumble_logged: 0,
             seen: Vec::new(),
+            seen_outputs: Vec::new(),
             settings: Vec::new(),
             reply: [0; REPORT_SIZE],
             read: 0,
@@ -700,7 +891,13 @@ impl Protocol for SteamController {
                 } else {
                     TRITON_STATE
                 };
-                let mut out = vec![triton_state(id, state, self.packet as u8, micros)];
+                let mut state_report = triton_state(id, state, self.packet as u8, micros);
+                if usb {
+                    for v in TRITON_QUATERNION {
+                        state_report.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+                let mut out = vec![state_report];
                 // A battery and a wireless status now and then (a real one
                 // reports its battery as it changes; how often is a guess).
                 if self.sent.is_multiple_of(TRITON_STATUS_EVERY) {
@@ -725,6 +922,11 @@ impl Protocol for SteamController {
             return Err(libc::EINVAL);
         }
         match self.variant {
+            Variant::TritonUsb if number == TRITON_FEATURE_2 => {
+                let mut out = vec![TRITON_FEATURE_2];
+                out.resize(1 + TRITON_FEATURE_BYTES, 0);
+                Ok(out)
+            }
             Variant::Triton | Variant::TritonUsb => {
                 if number != TRITON_FEATURE {
                     return Err(libc::EINVAL);
@@ -770,6 +972,14 @@ impl Protocol for SteamController {
             return Err(libc::EINVAL);
         }
         match self.variant {
+            Variant::TritonUsb if number == TRITON_FEATURE_2 => {
+                info!(
+                    slot = self.slot,
+                    data = format_args!("{:02x?}", &data[..data.len().min(16)]),
+                    "steam controller: feature report 2 written"
+                );
+                Ok(Vec::new())
+            }
             Variant::Triton | Variant::TritonUsb => {
                 if number != TRITON_FEATURE {
                     return Err(libc::EINVAL);
@@ -828,7 +1038,21 @@ impl Protocol for SteamController {
         match data.split_first() {
             Some((&TRITON_RUMBLE, body)) => self.rumble_report(body),
             Some((&TRITON_PULSE, body)) => self.pulse_report(body),
-            _ => Vec::new(),
+            // The cable's descriptor has more outputs (0x82 to 0x89) whose
+            // meaning is unknown: the first of each id is logged.
+            Some((&id, body)) => {
+                if !self.seen_outputs.contains(&id) {
+                    self.seen_outputs.push(id);
+                    info!(
+                        slot = self.slot,
+                        id = format_args!("{id:#04x}"),
+                        body = format_args!("{:02x?}", &body[..body.len().min(16)]),
+                        "steam controller: first output report of its kind"
+                    );
+                }
+                Vec::new()
+            }
+            None => Vec::new(),
         }
     }
 }
@@ -1853,6 +2077,102 @@ mod tests {
         assert!(sc.output(OUTPUT_REPORT, &report[..5]).is_empty());
     }
 
+    /// The report ids, kinds and sizes (in bytes after the id) a descriptor
+    /// declares, in order: `(kind, id, bytes)` with kind 1 input, 2 output, 3
+    /// feature.
+    fn reports(d: &[u8]) -> Vec<(u8, u8, usize)> {
+        let (mut at, mut id, mut size, mut count) = (0, 0u8, 0usize, 0usize);
+        let mut out: Vec<(u8, u8, usize)> = Vec::new();
+        while at < d.len() {
+            let item = d[at];
+            let len = match item & 3 {
+                3 => 4,
+                n => usize::from(n),
+            };
+            let data = d[at + 1..at + 1 + len]
+                .iter()
+                .rev()
+                .fold(0usize, |v, b| v << 8 | usize::from(*b));
+            match item & 0xfc {
+                0x84 => id = data as u8,
+                0x74 => size = data,
+                0x94 => count = data,
+                main @ (0x80 | 0x90 | 0xb0) => {
+                    let kind = match main {
+                        0x80 => 1,
+                        0x90 => 2,
+                        _ => 3,
+                    };
+                    let bits = size * count;
+                    match out.iter_mut().find(|r| r.0 == kind && r.1 == id) {
+                        Some(r) => r.2 += bits,
+                        None => out.push((kind, id, bits)),
+                    }
+                }
+                _ => {}
+            }
+            at += 1 + len;
+        }
+        // Bits to bytes.
+        out.iter().map(|r| (r.0, r.1, r.2 / 8)).collect()
+    }
+
+    #[test]
+    fn the_cable_has_the_real_controllers_descriptor() {
+        let d = DESCRIPTOR_TRITON_USB;
+        // Read from a real controller's USB interface: 372 bytes.
+        assert_eq!(d.len(), 372);
+        // Mouse and keyboard collections (the lizard mode), then the vendor one.
+        assert_eq!(&d[..4], &[0x05, 0x01, 0x09, 0x02]);
+        assert!(d.windows(4).any(|w| w == [0x05, 0x01, 0x09, 0x06]));
+        assert!(d.windows(3).any(|w| w == [0x06, 0x00, 0xff]));
+        let r = reports(d);
+        let size = |kind, id| r.iter().find(|r| r.0 == kind && r.1 == id).map(|r| r.2);
+        // Inputs: the mouse's 5 bytes, the keyboard's 8, the vendor ones.
+        assert_eq!(size(1, 0x40), Some(5));
+        assert_eq!(size(1, 0x41), Some(8));
+        assert_eq!(size(1, 0x42), Some(53));
+        assert_eq!(size(1, 0x43), Some(14));
+        assert_eq!(size(1, 0x45), Some(45));
+        assert_eq!(size(1, 0x79), Some(1));
+        // The largest input is 54 with its id (`MaxInputReportSize`).
+        assert_eq!(r.iter().filter(|r| r.0 == 1).map(|r| r.2).max(), Some(53));
+        assert_eq!(size(2, TRITON_RUMBLE), Some(9));
+        assert_eq!(size(2, TRITON_PULSE), Some(7));
+        assert_eq!(size(2, 0x87), Some(63));
+        assert_eq!(size(3, TRITON_FEATURE), Some(63));
+        assert_eq!(size(3, TRITON_FEATURE_2), Some(63));
+        // What this file sends fits the report it is sent as.
+        let mut sc = SteamController::new(Variant::TritonUsb, 0, "FXA0123456789");
+        let state = sc.report(&PadState::default(), Instant::now());
+        assert_eq!(state[0].len(), 1 + size(1, state[0][0]).unwrap());
+        assert_eq!(state[1].len(), 1 + size(1, state[1][0]).unwrap());
+        // The Bluetooth descriptor is not the cable's.
+        assert_ne!(DESCRIPTOR_TRITON, DESCRIPTOR_TRITON_USB);
+    }
+
+    #[test]
+    fn the_cable_answers_feature_report_2_and_logs_unknown_outputs() {
+        let mut sc = SteamController::new(Variant::TritonUsb, 0, "FXA0123456789");
+        let got = sc.get_report(TRITON_FEATURE_2, FEATURE_REPORT).unwrap();
+        assert_eq!(got.len(), 64);
+        assert_eq!(got[0], TRITON_FEATURE_2);
+        assert!(got[1..].iter().all(|b| *b == 0));
+        assert!(
+            sc.set_report(TRITON_FEATURE_2, FEATURE_REPORT, &[2, 1, 2, 3])
+                .unwrap()
+                .is_empty()
+        );
+        // Output 0x82 to 0x89 are taken and do nothing; each id is noted once.
+        assert!(sc.output(OUTPUT_REPORT, &[0x82, 1, 2, 3]).is_empty());
+        assert!(sc.output(OUTPUT_REPORT, &[0x82, 1, 2, 3]).is_empty());
+        assert!(sc.output(OUTPUT_REPORT, &[0x87, 0]).is_empty());
+        assert_eq!(sc.seen_outputs, [0x82, 0x87]);
+        // The Bluetooth controller has no feature report 2.
+        let mut ble = SteamController::new(Variant::Triton, 0, "FXA0123456789");
+        assert!(ble.get_report(TRITON_FEATURE_2, FEATURE_REPORT).is_err());
+    }
+
     #[test]
     fn the_cable_is_the_same_controller_with_its_own_ids() {
         assert_eq!(Variant::Triton.usb(), Variant::TritonUsb);
@@ -1868,12 +2188,15 @@ mod tests {
         // The state and the battery; a cable has no wireless link.
         assert_eq!(first.len(), 2);
         assert_eq!(first[0][0], 0x42);
-        assert_eq!(first[0].len(), 46);
+        // The cable's state is the full one: 53 bytes after the id, as its
+        // descriptor says, the quaternion last.
+        assert_eq!(first[0].len(), 54);
+        assert_eq!(&first[0][46..48], &i16::MAX.to_le_bytes());
+        assert_eq!(&first[0][48..], &[0; 6]);
+        assert_eq!(v.version(), 0x0307);
+        assert_eq!(Variant::Triton.version(), VERSION);
         assert_eq!(first[1][0], 0x43);
-        let d = v.descriptor();
-        assert!(d.windows(2).any(|w| w == [0x85, 0x42]));
-        assert!(!d.windows(2).any(|w| w == [0x85, 0x45] || w == [0x85, 0x79]));
-        assert_eq!(d.len(), DESCRIPTOR_TRITON.len() - 8);
+        assert!(v.descriptor().windows(2).any(|w| w == [0x85, 0x42]));
         // Commands and output reports are the Bluetooth one's.
         let mut data = vec![0u8; 64];
         data[0] = TRITON_FEATURE;

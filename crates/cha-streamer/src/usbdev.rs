@@ -22,7 +22,8 @@ use crate::usbip::{
     Command, DIR_IN, ECONNRESET, EPIPE, Submit, encode_ret_submit, encode_ret_unlink,
 };
 
-/// Interrupt IN and OUT endpoint addresses; 64-byte packets, bInterval 1.
+/// Interrupt IN and OUT endpoint addresses; 64-byte packets, bInterval 1 (the
+/// real 2026 controller's is not known: the I/O Registry does not show it).
 pub const EP_IN: u8 = 0x81;
 pub const EP_OUT: u8 = 0x01;
 pub const EP_SIZE: u16 = 64;
@@ -76,6 +77,8 @@ const DT_CONFIGURATION: u8 = 2;
 const DT_STRING: u8 = 3;
 const DT_INTERFACE: u8 = 4;
 const DT_ENDPOINT: u8 = 5;
+const DT_BOS: u8 = 15;
+const DT_DEVICE_CAPABILITY: u8 = 16;
 const DT_HID: u8 = 0x21;
 const DT_REPORT: u8 = 0x22;
 
@@ -100,12 +103,31 @@ pub trait Hid {
 
 impl Identity {
     pub fn device_descriptor(&self) -> Vec<u8> {
-        let mut d = vec![18, DT_DEVICE, 0x00, 0x02, 0, 0, 0, 64];
+        let mut d = vec![18, DT_DEVICE, 0x01, 0x02, 0, 0, 0, 64];
         d.extend_from_slice(&self.vendor.to_le_bytes());
         d.extend_from_slice(&self.product.to_le_bytes());
         d.extend_from_slice(&self.bcd_device.to_le_bytes());
         d.extend_from_slice(&[1, 2, 3, 1]); // strings: manufacturer, product, serial; one configuration
         d
+    }
+
+    /// The binary device object store: one USB 2.0 Extension capability (LPM
+    /// supported), which a device with bcdUSB 0x0201 has to answer with.
+    pub fn bos_descriptor(&self) -> Vec<u8> {
+        vec![
+            5,
+            DT_BOS,
+            12,
+            0,
+            1, // BOS: total length 12, one capability
+            7,
+            DT_DEVICE_CAPABILITY,
+            2,
+            0x02,
+            0,
+            0,
+            0, // USB 2.0 Extension: LPM
+        ]
     }
 
     pub fn hid_descriptor(&self) -> Vec<u8> {
@@ -218,7 +240,8 @@ impl Device {
                     .identity
                     .string_descriptor(value_lo)
                     .map_or(Control::Stall, |d| truncate(d, w_length)),
-                // Device qualifier, other-speed configuration, BOS: a full-speed-only
+                DT_BOS => truncate(self.identity.bos_descriptor(), w_length),
+                // Device qualifier, other-speed configuration: a full-speed-only
                 // device stalls these.
                 _ => Control::Stall,
             },
@@ -490,6 +513,11 @@ mod tests {
         assert_eq!(dev.len(), 18);
         assert_eq!(u16::from_le_bytes([dev[8], dev[9]]), 0x28de);
         assert_eq!(u16::from_le_bytes([dev[10], dev[11]]), 0x1302);
+        // As the real 2026 controller's: USB 2.0.1, endpoint 0 64 bytes, strings
+        // 1 to 3 (the serial is the third), one configuration.
+        assert_eq!(u16::from_le_bytes([dev[2], dev[3]]), 0x0201);
+        assert_eq!(dev[7], 64);
+        assert_eq!(&dev[14..18], &[1, 2, 3, 1]);
 
         let cfg = id.configuration_descriptor();
         assert_eq!(cfg.len(), 41);
@@ -517,6 +545,29 @@ mod tests {
         // The endpoints: 0x81 and 0x01, interrupt, 64 bytes, every frame.
         assert_eq!(&cfg[27..34], &[7, DT_ENDPOINT, 0x81, 3, 64, 0, 1]);
         assert_eq!(&cfg[34..41], &[7, DT_ENDPOINT, 0x01, 3, 64, 0, 1]);
+    }
+
+    #[test]
+    fn the_bos_comes_with_bcd_usb_0201() {
+        let id = identity();
+        let bos = id.bos_descriptor();
+        assert_eq!(usize::from(u16::from_le_bytes([bos[2], bos[3]])), bos.len());
+        assert_eq!((bos[1], bos[4]), (DT_BOS, 1));
+        // One capability, USB 2.0 Extension (2), of 7 bytes.
+        assert_eq!(&bos[5..8], &[7, DT_DEVICE_CAPABILITY, 2]);
+        let mut d = Device::new(identity());
+        assert_eq!(
+            data(ctl(&mut d, setup(0x80, GET_DESCRIPTOR, 0x0f00, 0, 5), &[])),
+            bos[..5]
+        );
+        assert_eq!(
+            data(ctl(
+                &mut d,
+                setup(0x80, GET_DESCRIPTOR, 0x0f00, 0, 255),
+                &[]
+            )),
+            bos
+        );
     }
 
     #[test]

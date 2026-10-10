@@ -521,7 +521,7 @@ mod tests {
         let identity = Identity {
             vendor: 0x28de,
             product: variant.product(),
-            bcd_device: 0x0100,
+            bcd_device: variant.version(),
             manufacturer: "Valve Software".into(),
             product_name: variant.name().into(),
             serial: "FXA0123456789".into(),
