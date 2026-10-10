@@ -145,6 +145,7 @@ To point a real node at a dev portal on your LAN, start the portal with `bun run
 - [`docs/adr/`](docs/adr/README.md): architecture decisions
 - [`docs/PROVENANCE.md`](docs/PROVENANCE.md): ported code, its licences, and the main dependencies
 - [`docs/research/`](docs/research/README.md): background survey from planning, October 2026
+- [`docs/performance-table.md`](docs/performance-table.md): what each kind of GPU node encodes, how fast, and which codec to pick
 - [`docs/benchmarks/`](docs/benchmarks/README.md): measured latency, quality and WAN results
 
 ## Contributing and security
