@@ -17,6 +17,11 @@
 # hashes what each image is built from, and every build is also tagged
 # :inputs-<hash>. When that tag already exists, the image is not rebuilt: the
 # existing image (same digest, same build provenance) gets this run's tags.
+# Build caches live in the registry (:buildcache on each image's package, which
+# nodes never run), not in GitHub's Actions cache, whose 10 GB repository
+# limit these images exceeded: it evicted them and every release rebuilt
+# gamescope, mangoapp and Steam's apt layers from scratch. The Actions cache
+# is still read, so the first run after the change can use what is left of it.
 # Every release still tags every image, so a node runs one version
 # throughout. Upstream images and packages aren't in the hash: tick "rebuild"
 # when running by hand, or bump REBUILD_EPOCH in the script, to rebuild all.
@@ -149,8 +154,10 @@ jobs:
             ${{ steps.meta.outputs.tags }}
             ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}:inputs-${{ fromJSON(needs.plan.outputs.inputs)[matrix.name] }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}:buildcache
+            type=gha,scope=${{ matrix.name }}
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}:buildcache,mode=max,oci-mediatypes=true,image-manifest=true,ignore-error=true
 
       # Unchanged: give the existing image this run's tags. The digest, and so
       # the build provenance attested for it, stay the same.
@@ -245,8 +252,10 @@ jobs:
             ${{ steps.meta.outputs.tags }}
             ghcr.io/${{ github.repository_owner }}/cha-env-base:inputs-${{ fromJSON(needs.plan.outputs.inputs)['cha-env-base'] }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=cha-env-base
-          cache-to: type=gha,scope=cha-env-base,mode=max
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository_owner }}/cha-env-base:buildcache
+            type=gha,scope=cha-env-base
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/cha-env-base:buildcache,mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd,compression-level=12,force-compression=true,ignore-error=true
 
       # Unchanged: give the existing image this run's tags. The digest, and so
       # the build provenance attested for it, stay the same.
@@ -314,13 +323,15 @@ jobs:
           fi
 
       # Steam and KDE are large; the runner's preinstalled SDKs we don't use
-      # take most of its disk.
+      # take most of its disk. Removed in the background (deleting them takes
+      # a minute or more): the build starts at once and doesn't need the room
+      # until its layers are big.
       - name: Free disk space
         if: steps.reuse.outputs.digest == ''
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h /
+          nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost >/dev/null 2>&1 &
 
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -355,8 +366,10 @@ jobs:
             ${{ steps.meta.outputs.tags }}
             ghcr.io/${{ github.repository_owner }}/cha-env-${{ matrix.name }}:inputs-${{ fromJSON(needs.plan.outputs.inputs)[format('cha-env-{0}', matrix.name)] }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=cha-env-${{ matrix.name }}
-          cache-to: type=gha,scope=cha-env-${{ matrix.name }},mode=max
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository_owner }}/cha-env-${{ matrix.name }}:buildcache
+            type=gha,scope=cha-env-${{ matrix.name }}
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/cha-env-${{ matrix.name }}:buildcache,mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd,compression-level=12,force-compression=true,ignore-error=true
 
       # Unchanged: give the existing image this run's tags. The digest, and so
       # the build provenance attested for it, stay the same.
