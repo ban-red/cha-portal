@@ -99,7 +99,7 @@ RUN make OUT=/out/opt/cha
 
 FROM base
 USER root
-# The final stage is four layers, ordered by how often they change, so a new
+# The final stage is five layers, ordered by how often they change, so a new
 # gamescope patch or mangoapp build doesn't make a node pull the multi-hundred
 # megabyte i386 libraries, Steam's runtime libraries or XFCE again.
 # 1. The i386 architecture and the 32-bit Mesa that games fall back to.
@@ -129,7 +129,30 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
       xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf thunar xfce4-terminal \
       adwaita-icon-theme dbus-x11 libglib2.0-bin gvfs
-# 4. What this repository builds or patches.
+# 4. Desktop mode's everyday tools, so the desktop isn't bare: Firefox (Mozilla's
+# own .deb, as images/firefox: Ubuntu's is a snap), the system's default
+# browser (xdg-open, Steam's links and XFCE's "Web Browser" launcher all ask
+# for `www-browser`, which had no program behind it), a text editor, an image
+# viewer, an archive manager, a task manager and screenshots, and command-line
+# tools for looking around (htop, nvtop, glxinfo, vulkaninfo, git, jq).
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    install -d -m 0755 /etc/apt/keyrings \
+ && curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc \
+ && echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
+      > /etc/apt/sources.list.d/mozilla.list \
+ && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla \
+ && apt-get update && apt-get install -y --no-install-recommends \
+      firefox mousepad ristretto file-roller xfce4-taskmanager xfce4-screenshooter \
+      nano htop nvtop less wget unzip zip jq git iproute2 iputils-ping bash-completion \
+      mesa-utils vulkan-tools \
+ && for alt in www-browser x-www-browser gnome-www-browser; do \
+      update-alternatives --install /usr/bin/$alt $alt /usr/bin/firefox 200 \
+   && update-alternatives --set $alt /usr/bin/firefox; done
+COPY images/firefox/policies.json /etc/firefox/policies/policies.json
+COPY images/steam/desktop/helpers.rc /etc/xdg/xfce4/helpers.rc
+COPY images/steam/desktop/mimeapps.list /etc/xdg/mimeapps.list
+# 5. What this repository builds or patches.
 COPY --from=gamescope /out/gamescope_*.deb /tmp/
 COPY --from=mangoapp /out/runtime-packages /tmp/
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
