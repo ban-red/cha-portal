@@ -7,10 +7,11 @@
 #   CHA_IMAGE_TAG=<version>.
 #
 # These change rarely, so this runs only when asked: on a release tag
-# (v0.1.0 publishes :0.1.0 and :sha-<commit>), or by hand from the Actions
-# tab (any branch, :sha-<commit> only). There are no moving tags such as
-# :latest: a node pulls an image only when it's missing, so a tag that moved
-# would leave nodes on the old image. Pin a version instead.
+# (v0.1.0 publishes :0.1.0, :latest and :sha-<commit>), or by hand from the
+# Actions tab (any branch, :sha-<commit> only). :latest moves to each stable
+# release (not to a pre-release such as v0.2.0-rc1) and is for a first pull
+# or a look around: a node pulls an image only when it's missing, so one that
+# holds an older :latest would never update from it. Pin a version on nodes.
 #
 # Only images whose inputs changed are rebuilt. scripts/image-inputs.py
 # hashes what each image is built from, and every build is also tagged
@@ -128,7 +129,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
-          flavor: latest=false
+          flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}
             type=sha
@@ -220,7 +221,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/cha-env-base
-          flavor: latest=false
+          flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}
             type=sha
@@ -325,7 +326,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/cha-env-${{ matrix.name }}
-          flavor: latest=false
+          flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}
             type=sha
