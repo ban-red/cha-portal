@@ -219,10 +219,12 @@ const ICON_BUTTON =
 
 <template>
   <div class="flex min-h-dvh">
+    <!-- The sidebar is a drawer (z-30, over everything) below md. From md up it sits beside the page, at z-10, so
+         popovers in the page (z-20 and up) open over it instead of sliding underneath. -->
     <aside
       id="sidebar"
       ref="sidebar"
-      class="fixed inset-y-0 left-0 z-30 flex w-72 max-w-[85vw] flex-col border-r border-line bg-panel/90 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] backdrop-blur-xl duration-200 ease-out transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none max-md:shadow-xl md:visible md:sticky md:top-0 md:h-dvh md:w-[4.5rem] md:max-w-none md:translate-x-0 md:pt-0 md:pb-0 md:pl-0 md:shadow-none lg:w-64"
+      class="fixed inset-y-0 left-0 z-30 flex w-72 max-w-[85vw] flex-col border-r border-line bg-panel/90 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] backdrop-blur-xl duration-200 ease-out transparency-reduced:bg-panel transparency-reduced:backdrop-blur-none max-md:shadow-xl md:visible md:sticky md:top-0 md:z-10 md:h-dvh md:w-[4.5rem] md:max-w-none md:translate-x-0 md:pt-0 md:pb-0 md:pl-0 md:shadow-none lg:w-64"
       :class="drawerOpen ? 'visible translate-x-0 transition-transform' : 'invisible -translate-x-full transition-[transform,visibility]'"
       :aria-label="isDrawer ? 'Navigation' : undefined"
       :role="isDrawer ? 'dialog' : undefined"
