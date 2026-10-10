@@ -71,8 +71,10 @@ export const useSession = defineStore("session", () => {
 
   /** Everything cached belongs to the previous user. */
   async function reload(): Promise<void> {
-    applyMe(await currentUser());
+    const me = await currentUser();
+    // Empty the cache first: the pages are rebuilt for the new user (App.vue) and must not see the old one's data.
     queryClient.clear();
+    applyMe(me);
   }
 
   /** View the portal as another user (admins; 12 hours). */

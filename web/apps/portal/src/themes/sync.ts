@@ -99,7 +99,9 @@ export function initPrefsSync(): void {
   });
   watch(
     () => session.user?.id,
-    (id) => {
+    (id, was) => {
+      // Another user's choices must not seed this one: with no saved prefs, pullFromServer would push them up.
+      if (id && was && id !== was) replacePrefs(DEFAULT_PREFS);
       clearTimeout(timer);
       timer = undefined;
       status.value = "idle";
