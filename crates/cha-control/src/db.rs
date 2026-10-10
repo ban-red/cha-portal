@@ -510,11 +510,13 @@ pub struct EnvironmentRow {
     /// The host ports published for its host options, as a JSON array of
     /// `cha_wire::HostPort`; `None` without any.
     pub ports: Option<String>,
+    /// Who besides its owner and admins may join: `private`, `public` or `free`.
+    pub access: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, log, http_port, webrtc_port, device, ports, created_at, updated_at";
+const ENVIRONMENT_COLUMNS: &str = "id, owner_id, template_id, node_id, state, detail, warning, log, http_port, webrtc_port, device, ports, access, created_at, updated_at";
 
 pub async fn insert_environment(
     db: &SqlitePool,
@@ -541,6 +543,35 @@ pub async fn insert_environment(
     .execute(db)
     .await?;
     Ok(())
+}
+
+pub async fn set_environment_access(
+    db: &SqlitePool,
+    id: &str,
+    access: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE environments SET access = ?, updated_at = ? WHERE id = ?")
+        .bind(access)
+        .bind(now())
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Running environments of other users that anyone signed in may join.
+pub async fn joinable_environments(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<EnvironmentRow>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {ENVIRONMENT_COLUMNS} FROM environments \
+         WHERE owner_id <> ? AND access <> 'private' AND state = 'running' \
+         ORDER BY created_at DESC"
+    ))
+    .bind(user_id)
+    .fetch_all(db)
+    .await
 }
 
 pub async fn environment_by_id(

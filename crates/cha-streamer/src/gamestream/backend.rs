@@ -115,6 +115,7 @@ impl Engine {
             .join(
                 Viewer {
                     user: user(&params.client),
+                    name: None,
                     role: Role::Owner,
                 },
                 false,

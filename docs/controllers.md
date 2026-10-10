@@ -2,7 +2,8 @@
 
 How a controller in the user's hands becomes a controller in the environment.
 The browser reads it (Gamepad API, or WebHID with our own drivers), turns it
-into one canonical state, and sends that on the control channel. The streamer
+into one canonical state, and sends that up (as unreliable datagrams where the
+transport has them, else on the control channel). The streamer
 feeds it into a **virtual controller** of the kind the user chose for the app:
 
 | Kind | Device | What the app sees |
@@ -75,11 +76,13 @@ lacks stays at rest.
 
 ## Page → streamer: `pad`
 
-On the control channel, in the input envelope (`{"t":"input", …}`), sent when
-something changed:
+In the input envelope (`{"t":"input", …}`), sent when something changed.
+Pad state goes by the unreliable path when there is one, else on the control
+channel ([below](#reliability-and-datagrams)):
 
 ```
 { k:"pad", i: 0..3,
+  q?: u32,                 // the pad's sequence number, see below
   b: [buttons 0..1],       // 0–16: the Gamepad API's standard layout; extras below
   a: [LX, LY, RX, RY],     // -1..1
   ty?: "xbox"|"playstation"|"switch"|"steam"|"generic",   // the physical controller
@@ -98,6 +101,63 @@ something changed:
   1; a DualSense's two finger slots are ids 0 and 1. A pad's touch point is
   present only while touched.
 - The type is `ty`, not `t`: `t` is the envelope's.
+
+### Reliability and datagrams
+
+A lost packet on Wi-Fi holds up everything behind it on an ordered, reliable
+channel, so pad state, which is latest-wins, doesn't need one. What goes where:
+
+| Message | Channel |
+|---|---|
+| `pad` state | An unreliable datagram when the session offers them (below), else the control channel |
+| `pad` with `gone:true`, rumble, haptic, LED, trigger, feature traffic, floor and pad grants | Control channel (reliable, ordered) |
+| Keyboard, mouse, clipboard, everything else | Control channel |
+
+- **Negotiation.** The streamer's `hello` has `"padDatagrams": true` on
+  WebTransport and WebRTC (not on the WebSocket transport, which is TCP
+  anyway). The page uses datagrams only after it has seen that and the
+  transport can send one: WebTransport's worker has a datagram writer, or the
+  WebRTC `input` channel is open. Otherwise, and for any message too big for a
+  datagram (over 1000 bytes), the pad goes on the control channel as before. An
+  old page never sees the flag, an old streamer never sends it, and a streamer
+  ignores a channel label it doesn't know, so every pairing works.
+- **WebTransport:** a QUIC datagram. Media datagrams run streamer → page and
+  start with the 16-byte `DatagramHeader`; an input datagram runs the other
+  way and starts with byte `0x12` (wire version 1 in the high nibble,
+  `Kind::Input` in the low one), then a format byte, then the payload
+  (`crates/cha-proto/src/input.rs`, `web/packages/player/src/input-datagram.ts`).
+  Format `0` is one pad message, `{"t":"input","k":"pad",…}` as JSON, without
+  the newline. The streamer ignores formats it doesn't know, and any
+  non-`pad` message in a datagram.
+- **WebRTC:** a second DataChannel, `input`, created by the page with
+  `ordered:false, maxRetransmits:0`. Its messages are binary and framed the
+  same way. The streamer (str0m) takes the reliability from the channel's open
+  message; it only needs the label.
+- **Sequence numbers.** The page numbers each pad's messages (`q`, a `u32`
+  counting from 1 per slot for the page's life, `gone` included) and the
+  streamer applies a message only if its `q` is newer than the newest it
+  applied for that pad index (modulo 2^32). A datagram that arrives late, or
+  after the `gone` that overtook it on the reliable channel, is dropped; a copy
+  with the same `q` is ignored. A message without `q` (an older page) is always
+  applied. The streamer counts the stale ones (`pad_stale` in its stats) and the
+  datagrams it took (`pad_datagrams`).
+- **Resending.** Datagrams can be lost, so a lost release must not leave a
+  button down: the page sends a held pad's state again every 50 ms with the
+  same `q`, and a pad at rest 3 more times, 50 ms apart, after its last
+  change. 50 ms is three frames at 60 fps, so a lost press or release shows
+  for at most that, at about 20 small datagrams a second per held pad. With 5%
+  loss a release sent four times is lost with probability 0.05⁴ ≈ 6·10⁻⁶. Held
+  means a button down, a stick more than 0.15 from centre or a finger on a
+  pad. If the datagram path goes away, the next resend goes on the control
+  channel and the pad stays on it.
+- **Stale pads.** The streamer has no timer that rests a pad: it keeps the last
+  applied state until a newer one or `gone` (sent when a pad leaves, the page
+  loses focus or stops). The resend is what repairs a lost datagram. A
+  session that ends puts its player slot to rest as before.
+- **When it's sent.** WebHID pads (DualSense, Steam Controller, generic HID) are
+  sent on each input report that changes the state; the Gamepad API's pads, which
+  have no events, on the page's 4 ms poll. The native client
+  (`cha-client-stream`) still sends pad state on the control stream, without `q`.
 
 ## Streamer → page
 

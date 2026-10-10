@@ -7,7 +7,7 @@
 //! DataChannel, WebTransport on the session's first bidirectional stream.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use crate::media::Media;
 use crate::overlay::Level;
 use crate::status::{Status, StatusWatch};
 use crate::system::SystemSample;
-use crate::viewers::{Role, Seat, Watcher};
+use crate::viewers::{Request, Role, Seat, Watcher};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -136,6 +136,10 @@ pub enum ServerMsg {
         /// "Take control" on it, else waits to be handed the controls.
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         can_take: bool,
+        /// What this session has asked the holder for (`control` or `pad`),
+        /// until it is answered or withdrawn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request: Option<&'static str>,
     },
     /// The other sessions (`id`, `role`, a player's `slot`), sent to the
     /// session with the controls whenever someone joins or leaves or the
@@ -207,6 +211,14 @@ pub struct StreamerStats {
     pub queue_ms: Option<f64>,
     pub inputs: u64,
     pub inputs_unmapped: u64,
+    /// Pad states that came as unreliable datagrams (WebTransport, or the
+    /// WebRTC "input" channel), and those of them (or of the control
+    /// channel's) dropped as older than one already applied. A resend of the
+    /// state just applied is neither stale nor counted again.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub pad_datagrams: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub pad_stale: u64,
     pub resizes: u64,
     pub audio_packets: u64,
     pub audio_bytes: u64,
@@ -224,16 +236,25 @@ pub struct Control {
     pub gamepads: Option<Arc<Gamepads>>,
     /// This session's place among the viewers; leaving when dropped.
     pub seat: Seat,
-    /// A player session has sent a pad (so its slot has something to release).
-    player_pad_used: AtomicBool,
+    /// The pad slot this session has sent a pad on as a player, 0 for none
+    /// (so its slot has something to release).
+    player_pad_slot: AtomicU8,
+    /// The newest sequence number applied for each pad index the page names.
+    pad_seq: Mutex<PadSeqs>,
 }
 
 impl Drop for Control {
     /// A player who leaves puts its slot's pad back to rest.
     fn drop(&mut self) {
-        if let (Role::Player(slot), Some(pads)) = (self.seat.role, &self.gamepads)
-            && self.player_pad_used.load(Ordering::Relaxed)
-        {
+        self.release_pad();
+    }
+}
+
+impl Control {
+    /// Puts the slot this session held as a player back to rest.
+    fn release_pad(&self) {
+        let slot = self.player_pad_slot.swap(0, Ordering::Relaxed);
+        if let (slot @ 1..=3, Some(pads)) = (slot, &self.gamepads) {
             pads.update(&PadState {
                 i: usize::from(slot),
                 gone: true,
@@ -241,9 +262,7 @@ impl Drop for Control {
             });
         }
     }
-}
 
-impl Control {
     pub fn new(
         epoch: Instant,
         codec: VideoCodec,
@@ -257,8 +276,54 @@ impl Control {
             media,
             gamepads,
             seat,
-            player_pad_used: AtomicBool::new(false),
+            player_pad_slot: AtomicU8::new(0),
+            pad_seq: Mutex::new(PadSeqs::default()),
         }
+    }
+
+    /// Whether `state` is news: pad states travel in datagrams that can be
+    /// lost, duplicated and reordered (and `gone` on the reliable channel,
+    /// which can overtake them), so one is applied only if its `q` is newer
+    /// than the newest applied for that pad. One without `q` (an older page,
+    /// on the ordered channel) always is. A resend carries the same `q`: the
+    /// first copy to arrive is applied, the rest are dropped without noise.
+    fn fresh(&self, state: &PadState, stats: &mut StreamerStats) -> bool {
+        let Some(q) = state.q else {
+            return true;
+        };
+        let verdict = self
+            .pad_seq
+            .lock()
+            .expect("pad seq lock")
+            .accept(state.i, q);
+        if verdict == Seq::Stale {
+            stats.pad_stale += 1;
+        }
+        verdict == Seq::Apply
+    }
+
+    /// Handles one input datagram from the page. Only pad state is taken this
+    /// way; anything else (another format, another message) is ignored.
+    /// Roles and the controls apply as for the same message on the control
+    /// channel.
+    pub fn handle_datagram(
+        &self,
+        datagram: &[u8],
+        stats: &mut StreamerStats,
+        reply: &mut dyn FnMut(ServerMsg),
+    ) {
+        let Some((cha_proto::input::PAD_JSON, payload)) = cha_proto::input::decode_input(datagram)
+        else {
+            return;
+        };
+        let Ok(line) = std::str::from_utf8(payload) else {
+            return;
+        };
+        if !is_pad_input(line) {
+            return;
+        }
+        stats.pad_datagrams += 1;
+        self.handle_line(line, stats, reply);
     }
 
     /// Handles one line from the page; replies go through `reply`.
@@ -274,14 +339,21 @@ impl Control {
         let kind = msg.get("t").and_then(|t| t.as_str());
         // A player (share link) sends its pad and the session's own upkeep;
         // everything else is ignored, even `take_control`.
-        if let Role::Player(slot) = self.seat.role {
+        let role = self.seat.role();
+        // A pad slot taken back: the pad it held goes to rest.
+        if !matches!(role, Role::Player(_)) {
+            self.release_pad();
+        }
+        if let Role::Player(slot) = role {
             match kind {
                 Some("input") => {
                     stats.inputs += 1;
                     match (&self.gamepads, player_pad(slot, &msg)) {
                         (Some(pads), Some(state)) => {
-                            self.player_pad_used.store(true, Ordering::Relaxed);
-                            pads.update(&state);
+                            self.player_pad_slot.store(slot, Ordering::Relaxed);
+                            if self.fresh(&state, stats) {
+                                pads.update(&state);
+                            }
                         }
                         _ => stats.inputs_unmapped += 1,
                     }
@@ -309,6 +381,34 @@ impl Control {
             Some("give_control") => {
                 if let Some(to) = give_target(&msg) {
                     self.seat.give_control(to);
+                }
+            }
+            // A guest asks the holder for the controls or a gamepad, or
+            // withdraws; the holder's `viewers` list shows it.
+            Some("request_control") => {
+                self.seat.ask(Some(Request::Control));
+            }
+            Some("request_pad") => {
+                self.seat.ask(Some(Request::Pad));
+            }
+            Some("request_cancel") => {
+                self.seat.ask(None);
+            }
+            // The owner or admin with the controls puts a session on a
+            // gamepad slot (1 to 3, player 2 to 4), or takes the slot back.
+            Some("give_pad") => {
+                if let (Some(to), Some(slot)) = (
+                    give_target(&msg),
+                    msg.get("slot")
+                        .and_then(|s| s.as_u64())
+                        .and_then(|s| u8::try_from(s).ok()),
+                ) {
+                    self.seat.give_pad(to, slot);
+                }
+            }
+            Some("revoke_pad") => {
+                if let Some(to) = give_target(&msg) {
+                    self.seat.revoke_pad(to);
                 }
             }
             Some("presence") => {
@@ -368,7 +468,9 @@ impl Control {
                         (Some(pads), Ok(state))
                             if pad_is_free(self.seat.player_pads(), state.i) =>
                         {
-                            pads.update(&state)
+                            if self.fresh(&state, stats) {
+                                pads.update(&state)
+                            }
                         }
                         _ => stats.inputs_unmapped += 1,
                     }
@@ -398,6 +500,48 @@ impl Control {
     pub fn now_us(&self) -> u64 {
         self.epoch.elapsed().as_micros() as u64
     }
+}
+
+/// What to do with a pad message of sequence number `q`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seq {
+    /// Newer than any applied: apply it.
+    Apply,
+    /// The same as the newest applied (a resend, or a copy): nothing to do.
+    Duplicate,
+    /// Older than one already applied: dropped.
+    Stale,
+}
+
+/// The newest sequence number applied for each pad index the page names.
+#[derive(Debug, Default)]
+struct PadSeqs([Option<u32>; MAX_PADS]);
+
+impl PadSeqs {
+    fn accept(&mut self, i: usize, q: u32) -> Seq {
+        let Some(last) = self.0.get_mut(i) else {
+            return Seq::Apply;
+        };
+        match *last {
+            Some(prev) if q == prev => Seq::Duplicate,
+            Some(prev) if !cha_proto::input::seq_newer(q, prev) => Seq::Stale,
+            _ => {
+                *last = Some(q);
+                Seq::Apply
+            }
+        }
+    }
+}
+
+/// Whether `line` is a `{"t":"input","k":"pad",...}` message (the only kind
+/// that may arrive as a datagram), judged without parsing the rest.
+fn is_pad_input(line: &str) -> bool {
+    #[derive(Deserialize)]
+    struct Head<'a> {
+        t: &'a str,
+        k: &'a str,
+    }
+    serde_json::from_str::<Head>(line).is_ok_and(|h| h.t == "input" && h.k == "pad")
 }
 
 /// The session id a `{"t":"give_control","to":<id>}` names.
@@ -766,7 +910,7 @@ fn pad_msg(event: PadEvent, i: usize) -> ServerMsg {
 /// What the session's seat means for the apps' pad feedback.
 pub fn pad_audience(seat: &Seat) -> PadAudience {
     PadAudience {
-        player: match seat.role {
+        player: match seat.role() {
             Role::Player(slot) => Some(slot),
             _ => None,
         },
@@ -780,11 +924,12 @@ pub fn floor_msg(seat: &Seat) -> ServerMsg {
     ServerMsg::Floor {
         control: seat.has_control(),
         viewers: seat.viewers(),
-        player: match seat.role {
+        player: match seat.role() {
             Role::Player(slot) => Some(slot),
             _ => None,
         },
         can_take: seat.can_take(),
+        request: seat.request(),
     }
 }
 
@@ -1196,6 +1341,48 @@ mod tests {
     }
 
     #[test]
+    fn pad_sequence_numbers_drop_what_is_older_and_ignore_copies() {
+        let mut seqs = PadSeqs::default();
+        assert_eq!(seqs.accept(0, 7), Seq::Apply, "the first of a pad");
+        assert_eq!(seqs.accept(0, 7), Seq::Duplicate, "a resend");
+        assert_eq!(seqs.accept(0, 6), Seq::Stale, "overtaken");
+        assert_eq!(seqs.accept(0, 9), Seq::Apply);
+        assert_eq!(seqs.accept(0, 8), Seq::Stale, "arrives late, after 9");
+        assert_eq!(seqs.accept(1, 1), Seq::Apply, "another pad has its own");
+        assert_eq!(
+            seqs.accept(9, 1),
+            Seq::Apply,
+            "a pad index past the end isn't tracked"
+        );
+        let mut seqs = PadSeqs::default();
+        assert_eq!(seqs.accept(2, u32::MAX), Seq::Apply);
+        assert_eq!(seqs.accept(2, 0), Seq::Apply, "wraps");
+        assert_eq!(seqs.accept(2, u32::MAX), Seq::Stale);
+    }
+
+    #[test]
+    fn only_pad_input_may_come_as_a_datagram() {
+        assert!(is_pad_input(r#"{"t":"input","k":"pad","i":0,"q":3}"#));
+        assert!(is_pad_input(r#"{"k":"pad","t":"input","i":1,"gone":true}"#));
+        assert!(!is_pad_input(
+            r#"{"t":"input","k":"key","code":"KeyA","down":true}"#
+        ));
+        assert!(!is_pad_input(r#"{"t":"take_control"}"#));
+        assert!(!is_pad_input("not json"));
+    }
+
+    #[test]
+    fn a_pad_state_without_q_parses_as_before_and_with_it_carries_it() {
+        let old: PadState =
+            serde_json::from_str(r#"{"k":"pad","i":0,"b":[1],"a":[0,0,0,0]}"#).unwrap();
+        assert_eq!(old.q, None);
+        let new: PadState = serde_json::from_str(r#"{"k":"pad","i":0,"q":4000000000}"#).unwrap();
+        assert_eq!(new.q, Some(4_000_000_000));
+        let junk: PadState = serde_json::from_str(r#"{"k":"pad","i":0,"q":"x"}"#).unwrap();
+        assert_eq!(junk.q, None);
+    }
+
+    #[test]
     fn a_players_pad_zero_goes_on_its_slot_and_nothing_else_does() {
         let pad = |s: &str| player_pad(2, &serde_json::from_str(s).unwrap());
         let state = pad(r#"{"t":"input","k":"pad","i":0,"b":[1,0],"a":[0.5,0,0,0]}"#).unwrap();
@@ -1349,6 +1536,7 @@ mod tests {
                 viewers: 2,
                 player,
                 can_take: false,
+                request: None,
             })
         };
         assert_eq!(
@@ -1365,6 +1553,7 @@ mod tests {
             viewers: 2,
             player: None,
             can_take: true,
+            request: None,
         });
         assert_eq!(
             msg,
@@ -1380,11 +1569,17 @@ mod tests {
                     id: 3,
                     role: "controller",
                     slot: None,
+                    request: None,
+                    granted: false,
+                    name: None,
                 },
                 Watcher {
                     id: 5,
                     role: "player",
                     slot: Some(2),
+                    request: None,
+                    granted: false,
+                    name: None,
                 },
             ],
         });
@@ -1416,6 +1611,7 @@ mod tests {
             let viewers = Arc::clone(&viewers);
             let viewer = Viewer {
                 user: user.into(),
+                name: None,
                 role,
             };
             async move { viewers.join(viewer, false).await.unwrap() }

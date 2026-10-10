@@ -15,6 +15,7 @@ import { AudioJitter } from "./audio-jitter";
 import { AudioOut } from "./audio-out";
 import { presenceActive } from "./presence";
 import { ControllerManager, type ManagedController } from "./controllers";
+import { PadDatagrams, type DatagramSink } from "./input-datagram";
 import type { CaptureView } from "./captureMode";
 import { installHarness } from "./harness";
 import { startDevBridge } from "./dev-bridge";
@@ -141,7 +142,7 @@ export interface PlayerOptions {
    * environment does), and how many sessions watch. Without the controls the
    * picture is view-only; `takeControl()` asks for them.
    */
-  onFloor?: (control: boolean, viewers: number, player?: number, canTake?: boolean) => void;
+  onFloor?: (control: boolean, viewers: number, player?: number, canTake?: boolean, request?: "control" | "pad") => void;
   /**
    * The other sessions on the environment, heard only while this page has the controls (an owner
    * or admin): to list who's watching and hand the controls to a guest controller (`giveControl`).
@@ -212,6 +213,7 @@ interface ServerMessage {
   viewers?: number;
   /** Floor: this session could take the controls now (a guest controller's "Take control"). */
   can_take?: boolean;
+  request?: string;
   /** Viewers: the other sessions, `{id, role, slot?}`. */
   list?: unknown;
   /** A share link's player: the pad index it plays on (1 is "player 2"). */
@@ -312,6 +314,12 @@ export class Player {
   codec: Codec;
   private pc: RTCPeerConnection | null = null;
   private control: RTCDataChannel | null = null;
+  /** WebRTC: the unordered, no-retransmit channel for pad state (input-datagram.ts). */
+  private inputChannel: RTCDataChannel | null = null;
+  /** Pad state as datagrams, when the streamer and the transport take them; else it goes on the control channel. */
+  private readonly padDatagrams = new PadDatagrams(() => this.datagramSink());
+  /** WebTransport: the worker has a way to send datagrams (its `ready` says so). */
+  private wtDatagrams = false;
   private input: InputCapture | null = null;
   private pads: ControllerManager | null = null;
   private probe: ClickProbe | null = null;
@@ -585,6 +593,9 @@ export class Player {
     }
     const control = pc.createDataChannel("control", { ordered: true });
     this.control = control;
+    // Pad state: latest wins, so no retransmits and no order (used only if the streamer's hello offers it).
+    this.inputChannel = pc.createDataChannel("input", { ordered: false, maxRetransmits: 0 });
+    this.inputChannel.binaryType = "arraybuffer";
 
     pc.ontrack = (e) => {
       if (e.track.kind === "audio") {
@@ -669,8 +680,11 @@ export class Player {
     this.fpsChange?.fail(new Error("the session closed"));
     this.overlayChange?.fail(new Error("the session closed"));
     this.control?.close();
+    this.inputChannel?.close();
     this.pc?.close();
-    this.pc = this.control = null;
+    this.pc = this.control = this.inputChannel = null;
+    this.padDatagrams.accepted = false;
+    this.wtDatagrams = false;
     this.audio.srcObject = null;
     this.audioTrack = null;
     this.sentAt.clear();
@@ -909,6 +923,30 @@ export class Player {
     if (inputAllowed(this.inputMode, this.hasControl, msg)) this.send({ t: "input", ...msg });
   }
 
+  /** Pad state by datagram: true if it went (or was refused like any input the page may not send), false to send it reliably. */
+  private sendPadDatagram(msg: Record<string, unknown>): boolean {
+    if (!inputAllowed(this.inputMode, this.hasControl, msg)) return true;
+    return this.padDatagrams.send({ t: "input", ...msg });
+  }
+
+  /** The way to send an input datagram on this transport, if there is one now. */
+  private datagramSink(): DatagramSink | null {
+    if (this.wt) {
+      if (!this.wtDatagrams) return null;
+      const worker = this.wt.worker;
+      return {
+        send: (data) => {
+          worker.postMessage({ type: "datagram", data } satisfies ToWorker);
+          return true;
+        },
+      };
+    }
+    const channel = this.inputChannel;
+    if (!channel || channel.readyState !== "open") return null;
+    // Backed up: drop this one; the next state or the resend follows.
+    return { send: (data) => (channel.bufferedAmount > 16 * 1024 ? true : (channel.send(data), true)) };
+  }
+
   /** The controllers this page sends, once connected. */
   get controllers(): ControllerManager | null {
     return this.pads;
@@ -929,9 +967,34 @@ export class Player {
     this.send({ t: "take_control" });
   }
 
-  /** Hands the controls to a guest controller's session (a `Watcher.id`); only the holder, an owner or admin, can. */
+  /** Hands the controls to a guest's session (a `Watcher.id`); only the holder, an owner or admin, can. */
   giveControl(to: number): void {
     this.send({ t: "give_control", to });
+  }
+
+  /** A guest of a public environment asks the holder for the controls. */
+  requestControl(): void {
+    this.send({ t: "request_control" });
+  }
+
+  /** A guest or member asks the holder to add its gamepad as a player. */
+  requestPad(): void {
+    this.send({ t: "request_pad" });
+  }
+
+  /** Withdraws what `requestControl` or `requestPad` asked. */
+  cancelRequest(): void {
+    this.send({ t: "request_cancel" });
+  }
+
+  /** Puts a guest's session (a `Watcher.id`) on pad slot 1 to 3 (players 2 to 4); only the holder can. */
+  givePad(to: number, slot: number): void {
+    this.send({ t: "give_pad", to, slot });
+  }
+
+  /** Takes a granted pad slot back from a session. */
+  revokePad(to: number): void {
+    this.send({ t: "revoke_pad", to });
   }
 
   private onControlOpen(): void {
@@ -944,13 +1007,19 @@ export class Player {
       });
       this.input.setMouseEnabled(this.mouseEnabled);
       if (import.meta.env.DEV) {
-        installHarness(video, (m) => this.sendInput(m));
+        installHarness(video, (m) => {
+          // As a pad sends: by datagram when the streamer takes them, else reliably.
+          if (!this.sendPadDatagram(m)) this.sendInput(m);
+        });
         startDevBridge();
       }
     }
     this.pads?.stop();
     if (readsPads(this.inputMode)) {
-      const pads = new ControllerManager({ send: (m) => this.sendInput(m) });
+      const pads = new ControllerManager({
+        send: (m) => this.sendInput(m),
+        sendUnreliable: (m) => this.sendPadDatagram(m),
+      });
       pads.onChange((list) => this.options.onControllers?.(list));
       pads.start();
       this.pads = pads;
@@ -1160,6 +1229,7 @@ export class Player {
           msg.viewers ?? 1,
           typeof msg.player === "number" ? msg.player : undefined,
           msg.can_take === true,
+          msg.request === "control" || msg.request === "pad" ? msg.request : undefined,
         );
         if (!this.hasControl) this.options.onViewers?.([]);
         break;
@@ -1205,6 +1275,8 @@ export class Player {
         this.noteStreamSize(typeof s?.width === "number" && typeof s?.height === "number" ? { w: s.width, h: s.height } : null);
         this.noteFps((msg.stream as unknown as { fps?: number } | undefined)?.fps);
         this.noteOverlay(parseOverlay((msg.stream as unknown as { overlay?: unknown } | undefined)?.overlay));
+        // A streamer that takes pad state as datagrams says so (WebTransport, WebRTC "input" channel); others don't.
+        this.padDatagrams.accepted = (msg.stream as unknown as { padDatagrams?: unknown } | undefined)?.padDatagrams === true;
         break;
       }
       case "resized":
@@ -1503,6 +1575,7 @@ export class Player {
         switch (msg.type) {
           case "ready": {
             clearTimeout(timer);
+            this.wtDatagrams = msg.datagrams === true;
             this.lastInbound = performance.now();
             this.transport = kind;
             this.options.onTransport?.(kind);

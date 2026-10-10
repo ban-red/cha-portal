@@ -24,6 +24,18 @@ const POLL_MS = 4;
 /** Gyro (rad/s) and accelerometer (m/s²) readings differ by noise even at rest; smaller changes aren't worth a message. */
 const GYRO_EPSILON = 0.005;
 const ACCEL_EPSILON = 0.05;
+/**
+ * How often a pad's state is sent again when it goes by datagram (they can be lost). 50 ms is
+ * three frames at 60 fps: a lost release or press is corrected within that, while the cost is
+ * about 20 small datagrams a second per held pad. With 5% loss, a release sent once and four
+ * times more is lost with probability 0.05^4 ≈ 6e-6. Shorter would mostly send what the
+ * first copy already carried; longer would leave a ghost press visible in games.
+ */
+export const RESEND_MS = 50;
+/** A pad at rest (nothing held) is sent this many times more after its last change, then left alone. */
+export const REST_RESENDS = 3;
+/** A stick this far from centre counts as held, for resending; below it is drift. */
+const HELD_AXIS = 0.15;
 
 export interface ManagedController {
   /** Stable while the pad stays connected. */
@@ -38,6 +50,15 @@ type Send = (msg: Record<string, unknown>) => void;
 export interface ManagerOptions {
   /** Where pad messages go. Without it the manager only watches (the Controllers page). */
   send?: Send;
+  /**
+   * An unreliable, latest-wins path for pad state (datagrams), when the player has one now:
+   * returns true if it sent the message that way, false to use `send`. The manager then sends
+   * a held pad's state again every `RESEND_MS` (the datagram may have been lost). `gone`, and
+   * anything the path refused, go by `send`.
+   */
+  sendUnreliable?: (msg: Record<string, unknown>) => boolean;
+  /** The clock, in ms. Default `performance.now()`. */
+  now?: () => number;
   /** Defaults: the Gamepad API and WebHID. */
   backends?: ControllerBackend[];
   /** Whether the page has focus; unfocused pads are released. Default: `document.hasFocus()`. */
@@ -45,8 +66,10 @@ export interface ManagerOptions {
 }
 
 /** The message for one pad's state (`gone` pads send just that). */
-export function padMessage(slot: number, info: ControllerInfo, s: ControllerState): Record<string, unknown> {
+export function padMessage(slot: number, info: ControllerInfo, s: ControllerState, q?: number): Record<string, unknown> {
   const msg: Record<string, unknown> = { k: "pad", i: slot, b: s.buttons.map(round3), a: s.axes.map(round3) };
+  // The pad's sequence number: the streamer applies a message only if it is newer than the newest it has.
+  if (q !== undefined) msg.q = q;
   // Not `t`: that is the control channel's own message type ("input").
   msg.ty = info.type;
   if (s.gyro) msg.gyro = s.gyro.map((v) => Math.round(v * 1000) / 1000);
@@ -57,7 +80,26 @@ export function padMessage(slot: number, info: ControllerInfo, s: ControllerStat
   return msg;
 }
 
-export const goneMessage = (slot: number): Record<string, unknown> => ({ k: "pad", i: slot, gone: true });
+export const goneMessage = (slot: number, q?: number): Record<string, unknown> =>
+  q === undefined ? { k: "pad", i: slot, gone: true } : { k: "pad", i: slot, gone: true, q };
+
+/** Whether anything on the pad is held, as far as resending goes. */
+export function isHeld(s: ControllerState): boolean {
+  return (
+    s.buttons.some((v) => v > 0) ||
+    s.axes.some((v) => Math.abs(v) > HELD_AXIS) ||
+    !!s.touch?.some((p) => p.down)
+  );
+}
+
+/** A pad's last state sent by datagram, and how it is sent again. */
+interface Resend {
+  msg: Record<string, unknown>;
+  at: number;
+  /** Held pads are sent until something changes; others `left` more times. */
+  held: boolean;
+  left: number;
+}
 
 /** What was last sent for a slot, to tell whether anything changed. */
 interface Sent {
@@ -72,6 +114,11 @@ const near = (a: number[] | undefined, b: number[] | undefined, eps: number) =>
 export class ControllerManager {
   readonly backends: ControllerBackend[];
   private readonly send: Send | undefined;
+  private readonly sendUnreliable: ManagerOptions["sendUnreliable"];
+  private readonly now: () => number;
+  /** Each slot's last sequence number; never reset while the manager lives, so a pad that comes back is newer. */
+  private readonly seq = new Map<number, number>();
+  private readonly resends = new Map<number, Resend>();
   private readonly focused: () => boolean;
   /** Every controller of every backend, by key. */
   private readonly all = new Map<string, { backend: ControllerBackend; pad: BackendController }>();
@@ -86,6 +133,8 @@ export class ControllerManager {
   constructor(options: ManagerOptions = {}) {
     this.backends = options.backends ?? [new GamepadApiBackend(), new WebHidBackend()];
     this.send = options.send;
+    this.sendUnreliable = options.sendUnreliable;
+    this.now = options.now ?? (() => performance.now());
     this.focused = options.focused ?? (() => typeof document === "undefined" || document.hasFocus());
   }
 
@@ -104,8 +153,10 @@ export class ControllerManager {
           this.all.delete(pad.key);
           this.refresh();
         },
+        changed: (pad) => this.changed(pad),
       });
     }
+    // The poll is for what has no events (the Gamepad API); it also sees to the rest, finding no change.
     this.timer = setInterval(() => this.tick(), POLL_MS);
   }
 
@@ -210,6 +261,7 @@ export class ControllerManager {
   /** Sends every pad's state again, as after gaining the controls. */
   resync(): void {
     this.sent.clear();
+    this.resends.clear();
   }
 
   /** Slots and duplicates, after the set of pads changed. */
@@ -241,7 +293,7 @@ export class ControllerManager {
     for (const [key, slot] of this.slots) {
       if (keys.has(key)) continue;
       this.slots.delete(key);
-      this.sendNow(goneMessage(slot));
+      this.sendGone(slot);
       this.sent.delete(slot);
     }
     for (const pad of shown) {
@@ -263,10 +315,50 @@ export class ControllerManager {
     this.send?.(msg);
   }
 
+  private nextSeq(slot: number): number {
+    const q = ((this.seq.get(slot) ?? 0) + 1) >>> 0;
+    this.seq.set(slot, q);
+    return q;
+  }
+
+  /** `gone` always goes by the reliable channel; its sequence number puts it after any state still in flight. */
+  private sendGone(slot: number): void {
+    this.resends.delete(slot);
+    this.sendNow(goneMessage(slot, this.nextSeq(slot)));
+  }
+
+  /** A pad's new state: by datagram when the player has them (and it is sent again until it is surely there), else reliably. */
+  private sendState(slot: number, msg: Record<string, unknown>, held: boolean): void {
+    if (this.sendUnreliable?.(msg)) {
+      this.resends.set(slot, { msg, at: this.now(), held, left: REST_RESENDS });
+      return;
+    }
+    this.resends.delete(slot);
+    this.sendNow(msg);
+  }
+
+  /** Sends the states that were sent by datagram again, for those that are due. */
+  private resend(): void {
+    if (this.resends.size === 0) return;
+    const now = this.now();
+    for (const [slot, r] of this.resends) {
+      if (now - r.at < RESEND_MS) continue;
+      // The datagram path went away (a reconnect, a fallback): the reliable one carries it.
+      if (!this.sendUnreliable?.(r.msg)) {
+        this.resends.delete(slot);
+        this.sendNow(r.msg);
+        continue;
+      }
+      r.at = now;
+      if (!r.held && --r.left <= 0) this.resends.delete(slot);
+    }
+  }
+
   /** Lets go of everything held remotely. */
   private releaseAll(): void {
-    for (const slot of this.sent.keys()) this.sendNow(goneMessage(slot));
+    for (const slot of this.sent.keys()) this.sendGone(slot);
     this.sent.clear();
+    this.resends.clear();
   }
 
   /** One pass of the loop `start()` runs every few milliseconds: look for pads, send what changed. */
@@ -281,17 +373,32 @@ export class ControllerManager {
       return;
     }
     this.wasFocused = true;
-    for (const c of this.visible) {
-      if (c.slot === null) continue;
-      const s = this.state(c.id);
-      const key = `${s.buttons.map(round3).join(",")}|${s.axes.map(round3).join(",")}|${s.touch?.map((p) => `${round3(p.x)},${round3(p.y)},${+p.down}`).join(";") ?? ""}|${s.battery === undefined ? "" : Math.round(s.battery * 100)}`;
-      const last = this.sent.get(c.slot);
-      const motion = !!last && near(s.gyro, last.gyro, GYRO_EPSILON) && near(s.accel, last.accel, ACCEL_EPSILON);
-      const sensors = s.gyro === undefined && s.accel === undefined;
-      if (last && last.key === key && (sensors || motion)) continue;
-      this.sent.set(c.slot, { key, gyro: s.gyro && [...s.gyro], accel: s.accel && [...s.accel] });
-      this.sendNow(padMessage(c.slot, c.info, s));
-    }
+    for (const c of this.visible) this.publish(c);
+    this.resend();
+  }
+
+  /**
+   * Sends a pad's state if it changed since the last one sent. Called by the poll for every pad,
+   * and at once by a backend that has events (`changed`); whichever sees a change first sends it
+   * and the other finds nothing new, so nothing goes twice.
+   */
+  private publish(c: ManagedController): void {
+    if (c.slot === null || !this.send) return;
+    const s = this.state(c.id);
+    const key = `${s.buttons.map(round3).join(",")}|${s.axes.map(round3).join(",")}|${s.touch?.map((p) => `${round3(p.x)},${round3(p.y)},${+p.down}`).join(";") ?? ""}|${s.battery === undefined ? "" : Math.round(s.battery * 100)}`;
+    const last = this.sent.get(c.slot);
+    const motion = !!last && near(s.gyro, last.gyro, GYRO_EPSILON) && near(s.accel, last.accel, ACCEL_EPSILON);
+    const sensors = s.gyro === undefined && s.accel === undefined;
+    if (last && last.key === key && (sensors || motion)) return;
+    this.sent.set(c.slot, { key, gyro: s.gyro && [...s.gyro], accel: s.accel && [...s.accel] });
+    this.sendState(c.slot, padMessage(c.slot, c.info, s, this.nextSeq(c.slot)), isHeld(s));
+  }
+
+  /** A backend with events saw pad `pad` change: send it now rather than at the next poll. */
+  private changed(pad: BackendController): void {
+    if (!this.running || !this.send || !this.focused()) return;
+    const c = this.visible.find((v) => v.id === pad.key);
+    if (c) this.publish(c);
   }
 }
 

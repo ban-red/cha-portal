@@ -30,10 +30,11 @@ import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import { api } from "../api";
+import { api, type JoinableEnvironment } from "../api";
 import { backoffDelay, classifyConnectError } from "../reconnect";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import PowerOffDialog from "../components/PowerOffDialog.vue";
+import SessionAccessPanel from "../components/SessionAccessPanel.vue";
 import ShareDialog from "../components/ShareDialog.vue";
 import RecordingDialog from "../components/RecordingDialog.vue";
 import SessionToolbar from "../components/SessionToolbar.vue";
@@ -158,6 +159,15 @@ const audioBlocked = ref(false);
 /** Whether this page has the controls, and how many sessions watch (P2.6). */
 const hasControl = ref(true);
 const viewers = ref(1);
+/** This page could take the controls now; the gamepad slot a host gave it (player 2 is 1); what it asked for. */
+const canTake = ref(false);
+const playerSlot = ref<number | undefined>(undefined);
+const request = ref<"control" | "pad" | undefined>(undefined);
+/** The owner or an admin; anyone else is another user in a public or free environment. */
+const isHost = computed(() => {
+  const e = env.data.value;
+  return !e || !session.user || e.ownerId === session.user.id || session.isAdmin;
+});
 /** The other sessions, while this page has the controls (ADR 0015): who's watching, and who can be handed them. */
 const watchers = ref<Watcher[]>([]);
 /** A short note when an app's copy reaches (or waits for) this device's clipboard. */
@@ -531,10 +541,13 @@ async function connect() {
     onClipboard: (_text, written) => {
       if (player === p) noteClipboard(written);
     },
-    onFloor: (control, count) => {
+    onFloor: (control, count, slot, take, asked) => {
       if (player !== p) return;
       hasControl.value = control;
       viewers.value = count;
+      playerSlot.value = slot;
+      canTake.value = take === true;
+      request.value = asked;
     },
     onViewers: (list) => {
       if (player === p) watchers.value = list;
@@ -772,6 +785,7 @@ const capabilities = computed(() =>
     if (cap === "transport-switch") return wtSupported;
     if (cap === "probe") return env.data.value?.templateId === "test-pattern";
     if (cap === "gpu-badge") return !!env.data.value?.device;
+    if (cap === "share") return isHost.value;
     return true;
   }),
 );
@@ -786,7 +800,11 @@ const toolbarState = computed<ToolbarState>(() => ({
   gpu_kind: env.data.value?.device?.kind ?? "",
   viewers: viewers.value,
   has_control: hasControl.value,
-  watchers: watchers.value.map((w) => ({ id: String(w.id), label: watcherLabel(w), can_hand: w.role === "controller" })),
+  watchers: watchers.value.map((w) => ({
+    id: String(w.id),
+    label: watcherLabel(w),
+    can_hand: w.role === "controller" || w.role === "guest" || w.role === "member",
+  })),
   codec: codec.value,
   codecs: availableCodecs.value,
   pyrowave: isPyroWave(codec.value),
@@ -811,7 +829,25 @@ const toolbarState = computed<ToolbarState>(() => ({
   grade: health.value.grade ?? "",
   grade_summary: health.value.summary,
 }));
-const toolbarModel = computed(() => buildToolbar(TOOLBAR, toolbarState.value, capabilities.value, "web"));
+const toolbarModel = computed(() => {
+  const model = buildToolbar(TOOLBAR, toolbarState.value, capabilities.value, "web");
+  if (isHost.value) return model;
+  // Another user's session: it isn't theirs to power off, and the controls can't be taken unless the streamer says so.
+  return { ...model, controls: model.controls.filter((c) => c.id !== "power" && !(c.id === "take-control" && !canTake.value)) };
+});
+
+/** The owner's name for a joiner's page, from the dashboard's list of what is shared with them. */
+const ownerName = computed(
+  () => queryClient.getQueryData<JoinableEnvironment[]>(["joinable-environments"])?.find((e) => e.id === id.value)?.ownerName ?? "the owner",
+);
+
+function givePad(to: number, slot: number) {
+  player?.givePad(to, slot);
+}
+
+function revokePad(to: number) {
+  player?.revokePad(to);
+}
 
 function giveControl(watcherId: string) {
   player?.giveControl(Number(watcherId));
@@ -970,6 +1006,21 @@ const STATUS: Record<PlayerState, string> = {
       :failed="powerOffError"
       @cancel="powerOff = false"
       @confirm="confirmPowerOff"
+    />
+    <SessionAccessPanel
+      :host="isHost"
+      :has-control="hasControl"
+      :player="playerSlot"
+      :can-take="canTake"
+      :request="request"
+      :owner="ownerName"
+      :watchers="watchers"
+      @take="player?.takeControl()"
+      @ask-control="player?.requestControl()"
+      @ask-pad="player?.requestPad()"
+      @cancel="player?.cancelRequest()"
+      @give-pad="givePad"
+      @revoke-pad="revokePad"
     />
     <ShareDialog :open="sharing" :environment-id="id" :name="env.data.value?.templateName ?? 'the app'" @close="sharing = false" />
     <RecordingDialog :summary="recordingResult" @close="recordingResult = null" />

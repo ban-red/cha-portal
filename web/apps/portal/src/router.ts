@@ -28,6 +28,7 @@ export const router = createRouter({
         { path: "controllers", name: "controllers", component: () => import("./views/ControllersView.vue"), meta: { title: "Controllers" } },
         { path: "settings/appearance", name: "appearance", component: () => import("./views/AppearanceView.vue"), meta: { title: "Appearance" } },
         { path: "settings/storage", name: "storage", component: () => import("./views/StorageView.vue"), meta: { title: "Storage" } },
+        { path: "settings/sharing", name: "sharing", component: () => import("./views/SharingView.vue"), meta: { title: "Sharing", subtitle: "Who can join the environments you start." } },
         { path: "settings/moonlight", name: "moonlight-devices", component: () => import("./views/MoonlightDevicesView.vue"), meta: { title: "Moonlight", subtitle: "Pair Moonlight apps to play your running environments." } },
         { path: "settings/devices", name: "devices", component: () => import("./views/DevicesView.vue"), meta: { title: "Devices", subtitle: "Cha Player installs signed in as you." } },
         { path: "link", name: "link", component: () => import("./views/LinkView.vue"), meta: { title: "Link a device", subtitle: "Approve a sign-in from Cha Player." } },

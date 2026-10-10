@@ -20,6 +20,8 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     });
   } else if (msg.type === "send") {
     session?.send(msg.line);
+  } else if (msg.type === "datagram") {
+    session?.sendDatagram(msg.data);
   } else if (msg.type === "clock") {
     setClock(msg.offsetMs);
   } else if (msg.type === "close") {
@@ -53,6 +55,7 @@ async function start(urls: string[], certHash: string): Promise<void> {
 
 class Session {
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  private datagrams: WritableStreamDefaultWriter<Uint8Array> | null = null;
   private readonly encoder = new TextEncoder();
   private readonly rx = new Reassembler((line) => this.send(line));
   private closed = false;
@@ -67,7 +70,14 @@ class Session {
     }
     const ctl = await this.wt.createBidirectionalStream();
     this.writer = ctl.writable.getWriter();
-    post({ type: "ready", url });
+    try {
+      // `createWritable` is the current API; older Chromes have only `writable`.
+      const d = this.wt.datagrams as { createWritable?: () => WritableStream<Uint8Array>; writable?: WritableStream<Uint8Array> };
+      this.datagrams = (d.createWritable?.() ?? d.writable)?.getWriter() ?? null;
+    } catch {
+      // No sending of datagrams: the page's pad state goes on the control stream.
+    }
+    post({ type: "ready", url, datagrams: this.datagrams !== null });
     this.wt.closed.then(
       (info) => this.close(info.reason || "the streamer closed the session"),
       (err: unknown) => this.close(`closed: ${String(err)}`),
@@ -79,6 +89,13 @@ class Session {
 
   send(line: string): void {
     this.writer?.write(this.encoder.encode(line.endsWith("\n") ? line : line + "\n")).catch(() => this.close("control write failed"));
+  }
+
+  /** Latest wins: with one already waiting to go out, this one is dropped (the page sends the state again). */
+  sendDatagram(data: Uint8Array): void {
+    const w = this.datagrams;
+    if (!w || this.closed || (w.desiredSize ?? 1) <= 0) return;
+    w.write(data).catch(() => undefined);
   }
 
   close(reason: string): void {

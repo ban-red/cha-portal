@@ -268,6 +268,8 @@ async fn run(
             "overlay": sessions.media.overlay(),
             "transport": "webtransport",
             "maxDatagram": max_datagram,
+            // The page may send pad state as input datagrams (cha-proto's `input`).
+            "padDatagrams": true,
         }),
     });
 
@@ -372,6 +374,11 @@ async fn run(
                 if let Some(msg) = msg {
                     let _ = out.send(msg);
                 }
+            }
+            // Pad state, unreliably (the control stream carries the rest).
+            datagram = conn.receive_datagram() => {
+                let Ok(datagram) = datagram else { break Ok(()) };
+                handler.handle_datagram(&datagram.payload(), &mut stats, &mut |m| { let _ = out.send(m); });
             }
             line = lines.recv() => {
                 let Some(line) = line else { break Ok(()) };

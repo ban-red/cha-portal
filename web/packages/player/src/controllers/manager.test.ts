@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { ControllerManager, goneMessage, padMessage } from "./manager";
+import { ControllerManager, REST_RESENDS, RESEND_MS, goneMessage, isHeld, padMessage } from "./manager";
 import { WebHidBackend } from "./webhid";
 import {
   neutralState,
@@ -133,7 +133,7 @@ describe("slots", () => {
     manager.tick();
     sent.length = 0;
     gamepad.remove(a);
-    expect(sent).toEqual([goneMessage(0)]);
+    expect(sent).toEqual([goneMessage(0, 2)]);
     gamepad.add(new FakePad("b", "gamepad"));
     expect(manager.controllers()[0]?.slot).toBe(0);
     manager.stop();
@@ -258,7 +258,7 @@ describe("wire messages", () => {
     focus = false;
     manager.tick();
     manager.tick();
-    expect(sent).toEqual([goneMessage(0)]);
+    expect(sent).toEqual([goneMessage(0, 2)]);
     focus = true;
     manager.tick();
     expect(sent).toHaveLength(2);
@@ -273,7 +273,7 @@ describe("wire messages", () => {
     manager.tick();
     sent.length = 0;
     manager.stop();
-    expect(sent).toEqual([goneMessage(0), goneMessage(1)]);
+    expect(sent).toEqual([goneMessage(0, 2), goneMessage(1, 2)]);
   });
 });
 
@@ -343,6 +343,244 @@ describe("feedback from the streamer", () => {
     expect(a.rumbled).toEqual([[0.4, 1, 20]]);
     manager.haptic(0, "left", 0, 1000, 1000, 5);
     expect(a.rumbled).toHaveLength(1);
+    manager.stop();
+  });
+});
+
+/** A manager whose pad state can go by datagram, on a clock the test moves. */
+function datagramSetup(opts: { datagrams?: () => boolean; focused?: () => boolean } = {}) {
+  const gamepad = new FakeBackend("gamepad");
+  const hid = new FakeBackend("webhid");
+  const reliable: Record<string, unknown>[] = [];
+  const datagrams: Record<string, unknown>[] = [];
+  let now = 1000;
+  const manager = new ControllerManager({
+    backends: [gamepad, hid],
+    send: (m) => reliable.push(m),
+    sendUnreliable: (m) => {
+      if (opts.datagrams && !opts.datagrams()) return false;
+      datagrams.push(m);
+      return true;
+    },
+    now: () => now,
+    focused: opts.focused ?? (() => true),
+  });
+  manager.start();
+  return { gamepad, hid, reliable, datagrams, manager, advance: (ms: number) => (now += ms) };
+}
+
+describe("unreliable pad state", () => {
+  test("state goes by datagram, numbered per pad; gone goes reliably, numbered after it", () => {
+    const { gamepad, reliable, datagrams, manager } = datagramSetup();
+    const a = new FakePad("a", "gamepad");
+    const b = new FakePad("b", "gamepad");
+    gamepad.add(a);
+    gamepad.add(b);
+    manager.tick();
+    expect(datagrams.map((m) => [m.i, m.q])).toEqual([
+      [0, 1],
+      [1, 1],
+    ]);
+    a.s.buttons[0] = 1;
+    manager.tick();
+    expect(datagrams.map((m) => [m.i, m.q])).toEqual([
+      [0, 1],
+      [1, 1],
+      [0, 2],
+    ]);
+    expect(reliable).toEqual([]);
+    gamepad.remove(a);
+    expect(reliable).toEqual([goneMessage(0, 3)]);
+    // The pad that comes back is newer than anything still in flight from before.
+    gamepad.add(new FakePad("c", "gamepad"));
+    manager.tick();
+    expect(datagrams.at(-1)).toMatchObject({ i: 0, q: 4 });
+    manager.stop();
+  });
+
+  test("a held pad is sent again every RESEND_MS with the same number", () => {
+    const { gamepad, datagrams, manager, advance } = datagramSetup();
+    const a = new FakePad("a", "gamepad");
+    a.s.buttons[0] = 1;
+    gamepad.add(a);
+    manager.tick();
+    expect(datagrams).toHaveLength(1);
+    advance(RESEND_MS - 1);
+    manager.tick();
+    expect(datagrams).toHaveLength(1);
+    advance(1);
+    manager.tick();
+    expect(datagrams).toHaveLength(2);
+    expect(datagrams[1]).toEqual(datagrams[0]);
+    // Held for a long time: still going, a datagram per RESEND_MS.
+    for (let i = 0; i < 20; i++) {
+      advance(RESEND_MS);
+      manager.tick();
+    }
+    expect(datagrams).toHaveLength(22);
+    // Let go: the release is sent at once and then repeated, so a lost one can't leave the button down.
+    a.s.buttons[0] = 0;
+    manager.tick();
+    expect(datagrams.at(-1)).toMatchObject({ q: 2 });
+    const before = datagrams.length;
+    for (let i = 0; i < REST_RESENDS + 5; i++) {
+      advance(RESEND_MS);
+      manager.tick();
+    }
+    expect(datagrams.length).toBe(before + REST_RESENDS);
+    expect(datagrams.slice(before).every((m) => m.q === 2)).toBe(true);
+    manager.stop();
+  });
+
+  test("a stick off centre counts as held; drift and a sleeping pad don't", () => {
+    expect(isHeld(neutralState())).toBe(false);
+    expect(isHeld({ ...neutralState(), axes: [0.1, -0.1, 0, 0] })).toBe(false);
+    expect(isHeld({ ...neutralState(), axes: [0, 0, 0.5, 0] })).toBe(true);
+    expect(isHeld({ ...neutralState(), buttons: [...new Array(7).fill(0), 0.3, ...new Array(16).fill(0)] })).toBe(true);
+    expect(isHeld({ ...neutralState(), touch: [{ id: 0, x: 0.5, y: 0.5, down: true }] })).toBe(true);
+  });
+
+  test("a new state replaces the one being resent", () => {
+    const { gamepad, datagrams, manager, advance } = datagramSetup();
+    const a = new FakePad("a", "gamepad");
+    a.s.buttons[0] = 1;
+    gamepad.add(a);
+    manager.tick();
+    advance(RESEND_MS);
+    a.s.buttons[1] = 1;
+    manager.tick();
+    // The change goes out at once (q 2); the older state isn't resent after it.
+    expect(datagrams.map((m) => m.q)).toEqual([1, 2]);
+    advance(RESEND_MS);
+    manager.tick();
+    expect(datagrams.map((m) => m.q)).toEqual([1, 2, 2]);
+    manager.stop();
+  });
+
+  test("when the datagram path goes away the pad is sent reliably, and not resent", () => {
+    let on = true;
+    const { gamepad, reliable, datagrams, manager, advance } = datagramSetup({ datagrams: () => on });
+    const a = new FakePad("a", "gamepad");
+    a.s.buttons[0] = 1;
+    gamepad.add(a);
+    manager.tick();
+    expect(datagrams).toHaveLength(1);
+    on = false;
+    advance(RESEND_MS);
+    manager.tick();
+    expect(reliable).toHaveLength(1);
+    expect(reliable[0]).toMatchObject({ k: "pad", i: 0, q: 1 });
+    // From here changes go reliably, and nothing is resent.
+    a.s.buttons[0] = 0;
+    manager.tick();
+    expect(reliable).toHaveLength(2);
+    advance(RESEND_MS * 5);
+    manager.tick();
+    expect(reliable).toHaveLength(2);
+    expect(datagrams).toHaveLength(1);
+    manager.stop();
+  });
+
+  test("without an unreliable path, everything is as before: reliable, no resends", () => {
+    const { gamepad, sent, manager } = setup();
+    const a = new FakePad("a", "gamepad");
+    a.s.buttons[0] = 1;
+    gamepad.add(a);
+    manager.tick();
+    manager.tick();
+    expect(sent).toHaveLength(1);
+    manager.stop();
+  });
+
+  test("regaining the controls sends every pad again, with new numbers", () => {
+    const { gamepad, datagrams, manager, advance } = datagramSetup();
+    const a = new FakePad("a", "gamepad");
+    a.s.buttons[0] = 1;
+    gamepad.add(a);
+    manager.tick();
+    manager.resync();
+    advance(1);
+    manager.tick();
+    expect(datagrams.map((m) => m.q)).toEqual([1, 2]);
+    manager.stop();
+  });
+
+  test("an unfocused page lets go reliably and stops resending", () => {
+    let focus = true;
+    const { gamepad, reliable, datagrams, manager, advance } = datagramSetup({ focused: () => focus });
+    const a = new FakePad("a", "gamepad");
+    a.s.buttons[0] = 1;
+    gamepad.add(a);
+    manager.tick();
+    focus = false;
+    manager.tick();
+    expect(reliable).toEqual([goneMessage(0, 2)]);
+    advance(RESEND_MS * 4);
+    manager.tick();
+    expect(datagrams).toHaveLength(1);
+    manager.stop();
+  });
+});
+
+describe("events", () => {
+  /** A backend with events: `changed` is what its drivers call on each input report. */
+  test("a change the backend reports is sent at once, and the poll finds nothing new", () => {
+    const { hid, sent, manager } = setup();
+    const p = new FakePad("h", "webhid", [0x054c, 0x0ce6], "playstation");
+    hid.add(p);
+    manager.tick();
+    sent.length = 0;
+    p.s.buttons[0] = 1;
+    hid.listener!.changed!(p);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ k: "pad", i: 0 });
+    // The next poll sees the state already sent.
+    manager.tick();
+    manager.tick();
+    expect(sent).toHaveLength(1);
+    // A report that changes nothing sends nothing.
+    hid.listener!.changed!(p);
+    expect(sent).toHaveLength(1);
+    // And a change the backend didn't announce is still found by the poll.
+    p.s.buttons[1] = 1;
+    manager.tick();
+    expect(sent).toHaveLength(2);
+    manager.stop();
+  });
+
+  test("events for an unfocused page, a hidden duplicate or after stop send nothing", () => {
+    let focus = true;
+    const { gamepad, hid, sent, manager } = setup(() => focus);
+    const g = new FakePad("g0", "gamepad", [0x2dc8, 0x6101]);
+    gamepad.add(g);
+    const h = new FakePad("h0", "webhid", [0x2dc8, 0x6101]);
+    hid.add(h);
+    manager.tick();
+    sent.length = 0;
+    g.s.buttons[0] = 1; // hidden behind the HID one
+    hid.listener!.changed!(g);
+    expect(sent).toEqual([]);
+    h.s.buttons[0] = 1;
+    focus = false;
+    hid.listener!.changed!(h);
+    expect(sent).toEqual([]);
+    focus = true;
+    const listener = hid.listener!;
+    manager.stop();
+    sent.length = 0;
+    listener.changed!(h);
+    expect(sent).toEqual([]);
+  });
+
+  test("an event is sent by datagram like a polled change, with one number", () => {
+    const { hid, datagrams, manager } = datagramSetup();
+    const p = new FakePad("h", "webhid", [0x054c, 0x0ce6], "playstation");
+    hid.add(p);
+    manager.tick();
+    p.s.buttons[0] = 1;
+    hid.listener!.changed!(p);
+    manager.tick();
+    expect(datagrams.map((m) => m.q)).toEqual([1, 2]);
     manager.stop();
   });
 });

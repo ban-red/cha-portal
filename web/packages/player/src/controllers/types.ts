@@ -119,6 +119,12 @@ export interface BackendController {
 export interface BackendListener {
   arrived(controller: BackendController): void;
   removed(controller: BackendController): void;
+  /**
+   * A backend that is told when a controller's state changes (WebHID: an input report) says so
+   * here, and the manager sends it at once instead of at its next poll. Backends that must be
+   * polled (the Gamepad API) don't call it.
+   */
+  changed?(controller: BackendController): void;
 }
 
 export interface ControllerBackend {

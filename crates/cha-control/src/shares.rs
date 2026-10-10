@@ -345,6 +345,7 @@ pub(crate) async fn connect(
         sub: format!("share:{}", access.share.id),
         role,
         slot,
+        name: None,
     };
     let (codec, response) = environments::broker(&state, &row, req, guest).await?;
     db::audit(

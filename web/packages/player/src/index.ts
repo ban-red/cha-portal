@@ -22,7 +22,7 @@ export { resolveWsUrl } from "./ws-url";
 export { OVERLAY_LEVELS, type OverlayLevel, type OverlayState } from "./overlay";
 export { CaptureMode, type CaptureState, type CaptureView } from "./captureMode";
 export type { InputMode } from "./inputMode";
-export { handable, parseWatchers, watcherLabel, type Watcher } from "./watchers";
+export { freeSlot, handable, padCandidates, parseWatchers, watcherLabel, type Watcher } from "./watchers";
 export {
   assessHealth,
   HEALTH_WINDOW,

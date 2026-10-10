@@ -317,6 +317,13 @@ export interface Environment {
   streamer: { host: string | null; httpPort: number; webrtcPort: number } | null;
   /** The node's ports it asked for (custom environments, ADR 0021), the host's port filled in. */
   ports?: HostPort[] | null;
+  /** Who besides its owner and admins may join; absent from older portals (private). */
+  access?: "private" | "public" | "free";
+}
+
+/** Another user's running environment that anyone signed in may join. */
+export interface JoinableEnvironment extends Environment {
+  ownerName: string;
 }
 
 /** How the other users' copies of an app reach the app's shared data. */
@@ -833,6 +840,10 @@ export const api = {
   placements: () => request<{ templates: Record<string, Placements> }>("GET", "/placements"),
   stopEnvironment: (id: string) => request<Environment>("DELETE", `/environments/${encodeURIComponent(id)}`),
   environment: (id: string) => request<Environment>("GET", `/environments/${encodeURIComponent(id)}`),
+  /** Other users' public and free environments that are running. */
+  joinableEnvironments: () => request<JoinableEnvironment[]>("GET", "/environments/joinable"),
+  setEnvironmentAccess: (id: string, access: "private" | "public" | "free") =>
+    request<Environment>("PUT", `/environments/${encodeURIComponent(id)}/access`, { access }),
   /** Per-app data settings for the signed-in user. 404 until the server supports them. */
   storage: () => request<StorageInfo>("GET", "/storage"),
   /** 409 `live` while the user's environment of this app runs. */

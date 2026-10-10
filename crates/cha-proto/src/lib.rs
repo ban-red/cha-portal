@@ -8,6 +8,9 @@
 //! larger than one datagram are split by [`Fragmenter`] and rebuilt by
 //! [`Reassembler`]; [`fec`] protects them against lost fragments.
 //!
+//! [`input`] is the other direction: the page's controller state as unreliable
+//! datagrams.
+//!
 //! [`clipboard`] is the odd one out: the frames of the clipboard bridge on an
 //! environment's own socket, which the streamer and an app container's helper
 //! share.
@@ -15,6 +18,7 @@
 pub mod clipboard;
 pub mod fec;
 mod header;
+pub mod input;
 mod reassembly;
 
 pub use header::{DatagramHeader, DecodeError, Flags, HEADER_LEN, Kind, WIRE_VERSION};

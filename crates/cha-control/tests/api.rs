@@ -4757,3 +4757,113 @@ async fn the_nodes_list_carries_each_nodes_external_shared_directories() {
     let denied = p.call("GET", "/api/nodes", Some(&alice), None).await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
 }
+
+// ---- Who else may join an environment: private, public, free ----
+
+#[tokio::test]
+async fn an_environment_is_private_until_its_owner_opens_it() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, alice_id) = p.account(&admin, "alice", "user").await;
+    let (bob, _) = p.account(&admin, "bob", "user").await;
+    let (_, env) = p.live_environment(&alice_id, "chrome").await;
+    let path = format!("/api/environments/{env}");
+
+    // Private by default: bob can't see it, and it isn't listed for him.
+    assert_eq!(
+        p.call("GET", &path, Some(&bob), None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let list = p
+        .call("GET", "/api/environments/joinable", Some(&bob), None)
+        .await;
+    assert_eq!(list.body, json!([]));
+    assert_eq!(
+        p.call("GET", &path, Some(&alice), None).await.body["access"],
+        "private"
+    );
+
+    // Only the owner (or an admin) changes it, and only to a known mode.
+    let access = |mode: &str| Some(json!({ "access": mode }));
+    let denied = p
+        .call("PUT", &format!("{path}/access"), Some(&bob), access("free"))
+        .await;
+    assert_eq!(denied.status, StatusCode::NOT_FOUND);
+    let bad = p
+        .call(
+            "PUT",
+            &format!("{path}/access"),
+            Some(&alice),
+            access("open"),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    let set = p
+        .call(
+            "PUT",
+            &format!("{path}/access"),
+            Some(&alice),
+            access("public"),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK);
+    assert_eq!(set.body["access"], "public");
+
+    // Now bob sees it, with the owner's name, and still can't stop it.
+    assert_eq!(
+        p.call("GET", &path, Some(&bob), None).await.status,
+        StatusCode::OK
+    );
+    let list = p
+        .call("GET", "/api/environments/joinable", Some(&bob), None)
+        .await;
+    assert_eq!(list.body.as_array().map(Vec::len), Some(1));
+    assert_eq!(list.body[0]["id"], env);
+    assert_eq!(
+        p.call("DELETE", &path, Some(&bob), None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    // The owner's own list doesn't include their environment.
+    let own = p
+        .call("GET", "/api/environments/joinable", Some(&alice), None)
+        .await;
+    assert_eq!(own.body, json!([]));
+
+    // Private again, and it is gone for bob.
+    p.call(
+        "PUT",
+        &format!("{path}/access"),
+        Some(&alice),
+        access("private"),
+    )
+    .await;
+    assert_eq!(
+        p.call("GET", &path, Some(&bob), None).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn the_default_access_is_a_validated_preference() {
+    let p = portal().await;
+    let admin = p.setup_admin().await;
+    let (alice, _) = p.account(&admin, "alice", "user").await;
+    let put = p
+        .call(
+            "PUT",
+            "/api/me/prefs",
+            Some(&alice),
+            Some(json!({ "prefs": { "sessionAccess": "free" } })),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK);
+    let bad = p
+        .call(
+            "PUT",
+            "/api/me/prefs",
+            Some(&alice),
+            Some(json!({ "prefs": { "sessionAccess": "open" } })),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+}

@@ -39,12 +39,15 @@ import { BLOCK, recover } from "./fec";
 export type ToWorker =
   | { type: "start"; urls: string[]; certHash: string }
   | { type: "send"; line: string }
+  /** An input datagram (input-datagram.ts): pad state, unreliably. Dropped if the transport is backed up. */
+  | { type: "datagram"; data: Uint8Array<ArrayBuffer> }
   /** Local clock − server clock (ms), as the page's pings estimate it. */
   | { type: "clock"; offsetMs: number }
   | { type: "close" };
 
 export type FromWorker =
-  | { type: "ready"; url: string }
+  /** `datagrams`: the page can send input datagrams (the worker has a writer for them). */
+  | { type: "ready"; url: string; datagrams?: boolean }
   | { type: "line"; line: string }
   | {
       type: "video";

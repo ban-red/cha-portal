@@ -14,7 +14,7 @@ use std::time::Duration;
 use axum::extract::{Path, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use cha_wire::{
     Device, DeviceChoice, DeviceKind, EnvironmentSpec, GamepadKind, HostOptions, HostPort,
@@ -60,6 +60,8 @@ pub fn routes() -> Router<AppState> {
         .route("/catalog", get(list_catalog))
         .route("/catalog/{id}/icon", get(catalog_icon))
         .route("/environments", get(list).post(launch))
+        .route("/environments/joinable", get(joinable))
+        .route("/environments/{id}/access", put(set_access))
         .route("/environments/{id}", get(show).delete(stop))
         .route("/environments/{id}/connect", post(connect))
 }
@@ -468,6 +470,8 @@ struct EnvironmentView {
     template_id: String,
     template_name: String,
     owner_id: String,
+    /// Who besides its owner and admins may join: private, public or free.
+    access: String,
     node_id: Option<String>,
     node_name: Option<String>,
     state: String,
@@ -657,6 +661,7 @@ fn view(
         id: row.id,
         template_id: row.template_id,
         owner_id: row.owner_id,
+        access: row.access,
         node_id: row.node_id,
         state: row.state,
         detail: row.detail,
@@ -685,11 +690,37 @@ async fn nodes_by_id(state: &AppState) -> ApiResult<HashMap<String, NodeRow>> {
         .collect())
 }
 
+/// The access a user's new environments get: their `sessionAccess`
+/// preference, private without one.
+async fn default_access(state: &AppState, user_id: &str) -> String {
+    db::user_prefs(&state.db, user_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|p| p["sessionAccess"].as_str().map(str::to_string))
+        .filter(|a| ACCESS_MODES.contains(&a.as_str()))
+        .unwrap_or_else(|| "private".into())
+}
+
 /// The environment, if this user may see it (its owner, or an admin).
 pub(crate) async fn visible(state: &AppState, user: &User, id: &str) -> ApiResult<EnvironmentRow> {
     db::environment_by_id(&state.db, id)
         .await?
         .filter(|e| e.owner_id == user.id || user.role == Role::Admin)
+        .ok_or_else(|| ApiError::NotFound("no such environment".into()))
+}
+
+/// The environment, if this user may connect to it: what [`visible`] lets in,
+/// and any signed-in user but a guest when it is public or free.
+async fn connectable(state: &AppState, user: &User, id: &str) -> ApiResult<EnvironmentRow> {
+    db::environment_by_id(&state.db, id)
+        .await?
+        .filter(|e| {
+            e.owner_id == user.id
+                || user.role == Role::Admin
+                || (user.role != Role::Guest && e.access != "private")
+        })
         .ok_or_else(|| ApiError::NotFound("no such environment".into()))
 }
 
@@ -712,12 +743,82 @@ async fn list(
     Ok(Json(views))
 }
 
+const ACCESS_MODES: [&str; 3] = ["private", "public", "free"];
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JoinableView {
+    #[serde(flatten)]
+    environment: EnvironmentView,
+    owner_name: String,
+}
+
+/// `GET /api/environments/joinable`: other users' running environments that
+/// are public or free, for any signed-in user but a guest.
+async fn joinable(
+    State(state): State<AppState>,
+    PlayerUser(user): PlayerUser,
+) -> ApiResult<Json<Vec<JoinableView>>> {
+    if user.role == Role::Guest {
+        return Ok(Json(Vec::new()));
+    }
+    let rows = db::joinable_environments(&state.db, &user.id).await?;
+    let nodes = nodes_by_id(&state).await?;
+    let index = moonlight::Index::load(&state).await?;
+    let mut out = Vec::new();
+    for row in rows {
+        let owner_name = db::user_by_id(&state.db, &row.owner_id)
+            .await?
+            .map(|o| o.display_name)
+            .unwrap_or_default();
+        out.push(JoinableView {
+            environment: view(&state, row, &nodes, &user, &index),
+            owner_name,
+        });
+    }
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct SetAccess {
+    access: String,
+}
+
+/// `PUT /api/environments/{id}/access`: its owner (or an admin) changes who
+/// may join. Sessions already in stay until they reconnect.
+async fn set_access(
+    State(state): State<AppState>,
+    PlayerUser(user): PlayerUser,
+    client: ClientInfo,
+    Path(id): Path<String>,
+    Json(req): Json<SetAccess>,
+) -> ApiResult<Json<EnvironmentView>> {
+    let row = visible(&state, &user, &id).await?;
+    if !ACCESS_MODES.contains(&req.access.as_str()) {
+        return Err(ApiError::bad_request(
+            "bad_access",
+            "access is private, public or free",
+        ));
+    }
+    db::set_environment_access(&state.db, &id, &req.access).await?;
+    db::audit(
+        &state.db,
+        Some(&user.id),
+        "environment.access_set",
+        Some(&id),
+        Some(json!({ "from": row.access, "to": req.access })),
+        client.ip.as_deref(),
+    )
+    .await?;
+    show(State(state), PlayerUser(user), Path(id)).await
+}
+
 async fn show(
     State(state): State<AppState>,
     PlayerUser(user): PlayerUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<EnvironmentView>> {
-    let row = visible(&state, &user, &id).await?;
+    let row = connectable(&state, &user, &id).await?;
     let mut v = view(
         &state,
         row,
@@ -896,6 +997,7 @@ pub(crate) async fn launch_environment(
         "starting",
     )
     .await?;
+    db::set_environment_access(&state.db, &id, &default_access(state, &user.id).await).await?;
     db::audit(
         &state.db,
         Some(&user.id),
@@ -1119,16 +1221,21 @@ async fn connect(
     Path(id): Path<String>,
     Json(req): Json<ConnectRequest>,
 ) -> ApiResult<Json<ConnectResponse>> {
-    let row = visible(&state, &user, &id).await?;
+    let row = connectable(&state, &user, &id).await?;
     let role = if row.owner_id == user.id {
         "owner"
-    } else {
+    } else if user.role == Role::Admin {
         "admin"
+    } else if row.access == "free" {
+        "member"
+    } else {
+        "guest"
     };
     let guest = Guest {
         sub: user.id.clone(),
         role,
         slot: None,
+        name: Some(user.display_name.clone()),
     };
     let (codec, response) = broker(&state, &row, req, guest).await?;
     db::audit(
@@ -1148,6 +1255,8 @@ pub(crate) struct Guest {
     pub(crate) sub: String,
     pub(crate) role: &'static str,
     pub(crate) slot: Option<u8>,
+    /// Shown to whoever holds the controls; none for a share link.
+    pub(crate) name: Option<String>,
 }
 
 /// Connects `guest` to a running environment, for the owner's or an admin's
@@ -1201,6 +1310,7 @@ pub(crate) async fn broker(
         sub: guest.sub.clone(),
         role: guest.role.into(),
         slot: guest.slot,
+        name: guest.name.clone(),
         exp: db::now() + MEDIA_TOKEN_SECS,
     };
     let media_token = sign_media_token(&state.media_key, &claims);

@@ -85,6 +85,8 @@ export type EnvPrefs = {
   pinned: string[];
   envView: "grid" | "list";
   envSort: "name" | "recent";
+  /** Who besides the user and admins may join the environments they launch from now on. */
+  sessionAccess: "private" | "public" | "free";
 };
 
 /** Everything saved per user (`GET`/`PUT /api/me/prefs`): the theme choices and the page's. */
@@ -101,4 +103,5 @@ export const DEFAULT_PREFS: UserPrefs = {
   pinned: [],
   envView: "grid",
   envSort: "name",
+  sessionAccess: "private",
 };

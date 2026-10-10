@@ -10,6 +10,8 @@
 //! cookie-only, because the player only reads.
 //! Besides the theme keys: `pinned` (the app templates the user pinned),
 //! `envView` (grid or list) and `envSort` (name or recent) for the Environments page.
+//! `sessionAccess` (private, public or free) is the access new environments get;
+//! absent is private.
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::routing::get;
@@ -109,6 +111,7 @@ fn validate(v: &Value) -> ApiResult<Map<String, Value>> {
             "transparency" => one_of(key, value, &["system", "reduced"])?,
             "envView" => one_of(key, value, &["grid", "list"])?,
             "envSort" => one_of(key, value, &["name", "recent"])?,
+            "sessionAccess" => one_of(key, value, &["private", "public", "free"])?,
             "pinned" => {
                 let ok = value.as_array().is_some_and(|a| {
                     let ids: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
@@ -166,6 +169,8 @@ mod tests {
         );
         assert!(validate(&json!({"pinned": []})).is_ok());
         assert!(validate(&json!({"envView": "table"})).is_err());
+        assert!(validate(&json!({"sessionAccess": "free"})).is_ok());
+        assert!(validate(&json!({"sessionAccess": "open"})).is_err());
         assert!(validate(&json!({"envSort": "size"})).is_err());
         assert!(validate(&json!({"pinned": "chrome"})).is_err());
         assert!(validate(&json!({"pinned": ["Chrome"]})).is_err());

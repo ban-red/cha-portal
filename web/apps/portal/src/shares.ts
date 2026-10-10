@@ -156,3 +156,43 @@ export function guestCanRetry(err: unknown): boolean {
 export function guestCodec<C extends string>(browser: readonly C[], device: readonly string[] | null): C | "h264" {
   return browser.find((c) => !device || device.includes(c)) ?? "h264";
 }
+
+// ---- Who else may join an environment (private, public, free) ----
+
+/** Who besides the owner and admins may join a running environment. */
+export type SessionAccess = "private" | "public" | "free";
+
+export const SESSION_ACCESS: readonly { value: SessionAccess; label: string; note: string }[] = [
+  { value: "private", label: "Private", note: "Only you and admins can open it." },
+  {
+    value: "public",
+    label: "Public",
+    note: "Signed-in users can watch, and ask you for the controls or to add their gamepad.",
+  },
+  { value: "free", label: "Free", note: "Signed-in users can watch and take the controls any time." },
+];
+
+/** The note under the pick of `access`. */
+export function accessNote(access: SessionAccess): string {
+  return SESSION_ACCESS.find((a) => a.value === access)?.note ?? "";
+}
+
+/** What a joiner's page says about its place in someone else's session. */
+export type GuestPrompt =
+  | { kind: "player"; text: string }
+  | { kind: "take"; text: string }
+  | { kind: "ask"; text: string }
+  | { kind: "pending"; text: string };
+
+/**
+ * A signed-in user in another's environment starts as a viewer. With a gamepad slot it is player
+ * N; free to take the controls (`canTake`) it can; otherwise it can ask the owner, until the ask
+ * is answered.
+ */
+export function guestPrompt(player: number | undefined, canTake: boolean, request: "control" | "pad" | undefined, owner: string): GuestPrompt {
+  if (player !== undefined) return { kind: "player", text: `You are ${playerLabel(player)}. Press a button on your gamepad.` };
+  if (request === "control") return { kind: "pending", text: `Asked ${owner} for the controls` };
+  if (request === "pad") return { kind: "pending", text: `Asked ${owner} to add your gamepad` };
+  if (canTake) return { kind: "take", text: "You are watching. Take the controls when you want them." };
+  return { kind: "ask", text: `You are watching ${owner}'s session.` };
+}

@@ -207,6 +207,10 @@ describe("parsePrefs", () => {
       pinned: ["chrome", "steam-2"],
     });
   });
+  test("the default access for new environments is kept when valid", () => {
+    expect(parsePrefs({ sessionAccess: "free" }).sessionAccess).toBe("free");
+    expect(parsePrefs({ sessionAccess: "open" }).sessionAccess).toBe("private");
+  });
   test("invalid view, sort and pins fall back; pins are cleaned", () => {
     expect(parsePrefs({ envView: "table", envSort: "size", pinned: "chrome" })).toEqual(DEFAULT_PREFS);
     expect(parsePrefs({ pinned: ["a", "a", "B", 3, "ok-1", "x".repeat(41)] }).pinned).toEqual(["a", "ok-1"]);

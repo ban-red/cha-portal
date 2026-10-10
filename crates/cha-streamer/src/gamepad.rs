@@ -255,6 +255,10 @@ pub struct PadState {
     /// The browser lost it: back to rest.
     #[serde(default)]
     pub gone: bool,
+    /// The page's sequence number for this pad: a message is applied only if
+    /// newer than the newest applied (`Control::fresh`). Absent from older pages.
+    #[serde(default, deserialize_with = "lenient")]
+    pub q: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

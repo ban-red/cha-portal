@@ -158,12 +158,15 @@ export class WebHidBackend implements ControllerBackend {
     const pad = new HidController(this.keyOf(device), device, driver);
     this.pads.set(device, pad);
     this.lastError = null;
+    let announced = false;
     device.addEventListener("inputreport", (e) => {
       const ev = e as HidInputReportEvent;
-      if (this.pads.get(device) === pad) pad.report(ev.reportId, ev.data);
+      if (this.pads.get(device) !== pad) return;
+      pad.report(ev.reportId, ev.data);
+      // Tell the manager now, instead of leaving the change for its next poll.
+      if (announced) this.listener?.changed?.(pad);
     });
     // A dongle's controller comes and goes behind it.
-    let announced = false;
     const announce = () => {
       const now = driver.connected;
       if (now && !announced) this.listener?.arrived(pad);

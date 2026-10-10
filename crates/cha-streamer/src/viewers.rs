@@ -3,10 +3,21 @@
 //! Sessions coexist, up to `MAX_SESSIONS`, over either transport (WebRTC
 //! sessions share the environment's one UDP port, `rtc_hub`). One session has the floor: its
 //! keyboard, mouse, gamepads, resizes and clipboard reach the environment,
-//! and only it gets the apps' clipboard. The newest owner session takes it
-//! on joining; an admin's only when no owner is watching. When the
-//! controller leaves, the newest owner or admin gets it. Owners and admins
-//! can take it back (`{"t":"take_control"}`).
+//! and only it gets the apps' clipboard. A session joining an environment
+//! someone else is using starts as a viewer: it takes the floor on joining
+//! only when nobody active holds it, or the holder is the same user (another
+//! of their devices). Otherwise it watches, and `can_take` says whether its
+//! page may offer "Take control". When the controller leaves, the newest
+//! owner or admin gets it. Owners and admins can take it back
+//! (`{"t":"take_control"}`).
+//!
+//! Another signed-in user joins as a `guest` (the environment is public) or a
+//! `member` (free). A guest watches until the holder hands it the floor
+//! (`give_control`), or takes it when nobody holds it; it can ask with
+//! `request_control`, or for a gamepad with `request_pad`, and an owner or
+//! admin holding the floor sees the ask in the `viewers` list. A member takes
+//! the floor from anyone, freely. A host grants a pad slot to any of them
+//! (`give_pad`), which makes the session a player until `revoke_pad`.
 //!
 //! A share link's `controller` role (ADR 0015) is a guest who may hold the
 //! floor, one at a time: it takes it when nobody holds it, or from another
@@ -31,6 +42,8 @@ pub const MAX_SESSIONS: usize = 4;
 #[derive(Clone, Debug)]
 pub struct Viewer {
     pub user: String,
+    /// The user's display name, if the token carried one.
+    pub name: Option<String>,
     pub role: Role,
 }
 
@@ -40,9 +53,14 @@ pub enum Role {
     /// below every role, so the derived order never lets it near the floor.
     Player(u8),
     Viewer,
+    /// A signed-in user in a public environment: watches, may hold the floor
+    /// when nobody does or when handed it, and can ask for it or a pad.
+    Guest,
     /// A share link's guest who may hold the floor when it is free or a
     /// guest's, or when an owner or admin hands it over.
     Controller,
+    /// A signed-in user in a free environment: takes the floor from anyone.
+    Member,
     Admin,
     Owner,
 }
@@ -54,6 +72,8 @@ impl Role {
             ("owner", _) => Role::Owner,
             ("admin", _) => Role::Admin,
             ("controller", _) => Role::Controller,
+            ("guest", _) => Role::Guest,
+            ("member", _) => Role::Member,
             ("player", Some(slot @ 1..=3)) => Role::Player(slot),
             _ => Role::Viewer,
         }
@@ -61,7 +81,10 @@ impl Role {
 
     /// May hold the floor at all.
     fn may_control(self) -> bool {
-        matches!(self, Role::Controller | Role::Admin | Role::Owner)
+        matches!(
+            self,
+            Role::Guest | Role::Controller | Role::Member | Role::Admin | Role::Owner
+        )
     }
 
     /// An owner or admin: takes the floor back any time, gets it on a leave
@@ -75,7 +98,9 @@ impl Role {
         match self {
             Role::Player(_) => "player",
             Role::Viewer => "viewer",
+            Role::Guest => "guest",
             Role::Controller => "controller",
+            Role::Member => "member",
             Role::Admin => "admin",
             Role::Owner => "owner",
         }
@@ -85,8 +110,9 @@ impl Role {
     /// their role, `None` for nobody).
     fn can_take_from(self, holder: Option<Role>) -> bool {
         match self {
-            Role::Owner | Role::Admin => true,
+            Role::Owner | Role::Admin | Role::Member => true,
             Role::Controller => holder.is_none_or(|h| !h.is_host()),
+            Role::Guest => holder.is_none(),
             Role::Player(_) | Role::Viewer => false,
         }
     }
@@ -105,11 +131,40 @@ pub struct Watcher {
     /// A player's pad index (1 to 3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slot: Option<u8>,
+    /// What it asks the holder for: `control` or `pad`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<&'static str>,
+    /// A pad slot a host granted (not one its link gave): can be revoked.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub granted: bool,
+    /// The user's display name, when its token carried one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// What a session has asked the floor holder for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request {
+    Control,
+    Pad,
+}
+
+impl Request {
+    pub fn name(self) -> &'static str {
+        match self {
+            Request::Control => "control",
+            Request::Pad => "pad",
+        }
+    }
 }
 
 struct Entry {
     id: u64,
     viewer: Viewer,
+    /// The role its token gave; `viewer.role` is a player's while a host has
+    /// granted it a pad slot.
+    base: Role,
+    request: Option<Request>,
     /// Set once the session runs.
     running: Option<Running>,
     /// Someone is using this session: native clients always are; a browser says
@@ -172,6 +227,7 @@ impl Viewers {
         inner.next_id += 1;
         let id = inner.next_id;
         let role = viewer.role;
+        let user = viewer.user.clone();
         info!(id, user = %viewer.user, ?role, webrtc, "viewer joined");
         if let Role::Player(slot) = role {
             info!(id, slot, share = share_id(&viewer.user), "player joined");
@@ -179,21 +235,24 @@ impl Viewers {
         inner.entries.push(Entry {
             id,
             viewer,
+            base: role,
+            request: None,
             running: None,
             active: true,
         });
         inner.settle();
-        // The newest owner takes the floor; an admin an empty one or one held
-        // by a lower role; a guest controller only an empty one.
+        // Someone else using the session keeps the floor: a joiner takes it
+        // only from nobody, from an idle session, or from the same user's
+        // other device. A guest controller never takes a host's, and a guest
+        // of a public environment never takes any.
         let holder = self
             .controller()
-            .and_then(|c| inner.entries.iter().find(|e| e.id == c))
-            .map(|e| e.viewer.role);
+            .and_then(|c| inner.entries.iter().find(|e| e.id == c));
+        let busy = holder.is_some_and(|h| h.active && h.viewer.user != user);
         let takes = match role {
-            Role::Owner => true,
-            Role::Admin => holder.is_none_or(|h| role > h),
+            Role::Owner | Role::Admin | Role::Member => !busy,
             Role::Controller => holder.is_none(),
-            Role::Player(_) | Role::Viewer => false,
+            Role::Player(_) | Role::Viewer | Role::Guest => false,
         };
         if takes {
             self.give_floor(Some(id));
@@ -204,7 +263,6 @@ impl Viewers {
         Ok(Seat {
             viewers: Arc::clone(self),
             id,
-            role,
             floor: self.floor.subscribe(),
         })
     }
@@ -303,22 +361,112 @@ impl Viewers {
         true
     }
 
-    /// An owner or admin holding the floor hands it to the guest controller
-    /// `to`; false (nothing moves) if `from` doesn't hold it, isn't one, or
-    /// `to` isn't a controller here.
+    /// An owner or admin holding the floor hands it to the guest, member or
+    /// controller session `to`; false (nothing moves) if `from` doesn't hold
+    /// it, isn't a host, or `to` isn't one of those here.
     fn give(&self, from: u64, role: Role, to: u64) -> bool {
-        let inner = self.lock();
+        let mut inner = self.lock();
         if !role.is_host() || self.controller() != Some(from) {
             return false;
         }
-        if !inner
+        let Some(target) = inner.entries.iter_mut().find(|e| {
+            e.id == to && matches!(e.viewer.role, Role::Controller | Role::Guest | Role::Member)
+        }) else {
+            return false;
+        };
+        target.request = None;
+        self.give_floor(Some(to));
+        true
+    }
+
+    /// The role of session `id` now (a granted pad makes it a player).
+    fn role_of(&self, id: u64) -> Role {
+        self.lock()
             .entries
             .iter()
-            .any(|e| e.id == to && e.viewer.role == Role::Controller)
+            .find(|e| e.id == id)
+            .map_or(Role::Viewer, |e| e.viewer.role)
+    }
+
+    fn request_of(&self, id: u64) -> Option<Request> {
+        self.lock()
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| e.request)
+    }
+
+    /// A guest or member asks the holder for the floor or a pad (`None`
+    /// withdraws). Only the roles that can use it may ask; the holder's page
+    /// hears of it through the `viewers` list.
+    fn ask(&self, id: u64, request: Option<Request>) -> bool {
+        let mut inner = self.lock();
+        let Some(entry) = inner.entries.iter_mut().find(|e| e.id == id) else {
+            return false;
+        };
+        let allowed = matches!(
+            (entry.viewer.role, request),
+            (_, None)
+                | (Role::Guest, Some(_))
+                | (Role::Member | Role::Controller, Some(Request::Pad))
+        );
+        if !allowed || entry.request == request {
+            return allowed;
+        }
+        entry.request = request;
+        drop(inner);
+        self.floor.send_modify(|_| ());
+        true
+    }
+
+    /// A host holding the floor puts session `to` on pad slot `slot` (1 to 3,
+    /// free of other players), making it a player until revoked.
+    fn grant_pad(&self, from: u64, role: Role, to: u64, slot: u8) -> bool {
+        let mut inner = self.lock();
+        if !role.is_host() || self.controller() != Some(from) || !(1..=3).contains(&slot) {
+            return false;
+        }
+        if inner
+            .entries
+            .iter()
+            .any(|e| e.viewer.role == Role::Player(slot))
         {
             return false;
         }
-        self.give_floor(Some(to));
+        let Some(target) = inner.entries.iter_mut().find(|e| {
+            e.id == to
+                && matches!(
+                    e.viewer.role,
+                    Role::Guest | Role::Member | Role::Controller | Role::Viewer
+                )
+        }) else {
+            return false;
+        };
+        target.viewer.role = Role::Player(slot);
+        target.request = None;
+        info!(id = to, slot, "a pad slot is granted");
+        // The notification below makes every page re-read its floor.
+        drop(inner);
+        self.floor.send_modify(|_| ());
+        true
+    }
+
+    /// A host holding the floor takes a granted pad slot back; the session
+    /// returns to the role its token gave. A share link's own player stays.
+    fn revoke_pad(&self, from: u64, role: Role, to: u64) -> bool {
+        let mut inner = self.lock();
+        if !role.is_host() || self.controller() != Some(from) {
+            return false;
+        }
+        let Some(target) = inner.entries.iter_mut().find(|e| {
+            e.id == to && matches!(e.viewer.role, Role::Player(_)) && e.base != e.viewer.role
+        }) else {
+            return false;
+        };
+        target.viewer.role = target.base;
+        info!(id = to, "a pad slot is taken back");
+        drop(inner);
+        self.floor.send_modify(|_| ());
         true
     }
 
@@ -342,6 +490,9 @@ impl Viewers {
                     Role::Player(slot) => Some(slot),
                     _ => None,
                 },
+                request: e.request.map(Request::name),
+                granted: e.base != e.viewer.role,
+                name: e.viewer.name.clone(),
             })
             .collect()
     }
@@ -361,30 +512,56 @@ impl Viewers {
 pub struct Seat {
     viewers: Arc<Viewers>,
     pub id: u64,
-    pub role: Role,
     floor: watch::Receiver<Option<u64>>,
 }
 
 impl Seat {
+    /// This session's role now: its token's, or a player's while a host has
+    /// granted it a pad slot.
+    pub fn role(&self) -> Role {
+        self.viewers.role_of(self.id)
+    }
+
+    /// What this session has asked the holder for.
+    pub fn request(&self) -> Option<&'static str> {
+        self.viewers.request_of(self.id).map(Request::name)
+    }
+
+    /// Asks the holder for the controls (`control`) or a gamepad (`pad`);
+    /// `None` withdraws. False if this role may not ask.
+    pub fn ask(&self, request: Option<Request>) -> bool {
+        self.viewers.ask(self.id, request)
+    }
+
+    /// Puts session `to` on pad slot `slot`; only a host holding the floor.
+    pub fn give_pad(&self, to: u64, slot: u8) -> bool {
+        self.viewers.grant_pad(self.id, self.role(), to, slot)
+    }
+
+    /// Takes a granted pad slot from session `to`; only a host holding the floor.
+    pub fn revoke_pad(&self, to: u64) -> bool {
+        self.viewers.revoke_pad(self.id, self.role(), to)
+    }
+
     pub fn has_control(&self) -> bool {
         *self.floor.borrow() == Some(self.id)
     }
 
     /// Takes the floor, if this role may; true if it has it now.
     pub fn take_control(&self) -> bool {
-        self.viewers.take(self.id, self.role)
+        self.viewers.take(self.id, self.role())
     }
 
-    /// Hands the floor to the guest controller session `to`; true if it moved.
+    /// Hands the floor to the guest session `to`; true if it moved.
     /// Only an owner or admin holding the floor can.
     pub fn give_control(&self, to: u64) -> bool {
-        self.viewers.give(self.id, self.role, to)
+        self.viewers.give(self.id, self.role(), to)
     }
 
     /// Whether this session could take the floor now: an owner or admin
     /// without it, or a controller while nobody or a guest holds it.
     pub fn can_take(&self) -> bool {
-        self.viewers.can_take(self.id, self.role)
+        self.viewers.can_take(self.id, self.role())
     }
 
     /// The other sessions, if this one holds the floor (else empty).
@@ -435,6 +612,7 @@ mod tests {
     fn viewer(user: &str, role: Role) -> Viewer {
         Viewer {
             user: user.into(),
+            name: None,
             role,
         }
     }
@@ -446,9 +624,10 @@ mod tests {
         assert!(admin.has_control(), "an admin takes an empty floor");
         let owner = viewers.join(viewer("o", Role::Owner), false).await.unwrap();
         assert!(
-            owner.has_control() && !admin.has_control(),
-            "the owner takes it from an admin"
+            !owner.has_control() && admin.has_control(),
+            "joining doesn't take it from someone using it"
         );
+        assert!(owner.can_take() && owner.take_control() && owner.has_control());
         let admin2 = viewers.join(viewer("b", Role::Admin), false).await.unwrap();
         assert!(
             !admin2.has_control(),
@@ -647,9 +826,10 @@ mod tests {
         );
         let owner = viewers.join(viewer("o", Role::Owner), false).await.unwrap();
         assert!(
-            owner.has_control() && !c2.has_control(),
-            "the owner joins and takes it"
+            !owner.has_control() && c2.has_control(),
+            "the owner joins as a viewer while a guest uses it"
         );
+        assert!(owner.take_control() && !c2.has_control());
         assert!(!c1.can_take() && !c2.can_take(), "not from an owner");
         assert!(!c1.take_control() && !c2.take_control() && owner.has_control());
         // Only the holder, a host, hands it over, and only to a controller.
@@ -665,8 +845,9 @@ mod tests {
         // admin with the floor keeps it against a joining controller.
         assert!(owner.give_control(c2.id) && c2.has_control());
         let admin = viewers.join(viewer("a", Role::Admin), false).await.unwrap();
+        assert!(!admin.has_control() && c2.has_control());
         assert!(
-            admin.has_control() && !c2.has_control(),
+            admin.take_control() && !c2.has_control(),
             "an admin takes it from a guest"
         );
         assert!(!c2.can_take(), "and a guest can't take it back");
@@ -748,17 +929,26 @@ mod tests {
                 Watcher {
                     id: c.id,
                     role: "controller",
-                    slot: None
+                    slot: None,
+                    request: None,
+                    granted: false,
+                    name: None
                 },
                 Watcher {
                     id: p.id,
                     role: "player",
-                    slot: Some(2)
+                    slot: Some(2),
+                    request: None,
+                    granted: false,
+                    name: None
                 },
                 Watcher {
                     id: v.id,
                     role: "viewer",
-                    slot: None
+                    slot: None,
+                    request: None,
+                    granted: false,
+                    name: None
                 },
             ]
         );
@@ -815,5 +1005,71 @@ mod tests {
             0b0100,
             "a leaving player frees its slot"
         );
+    }
+
+    #[tokio::test]
+    async fn a_joiner_leaves_a_busy_session_alone() {
+        let viewers = Viewers::new(Box::new(|| ()));
+        let mac = viewers.join(viewer("o", Role::Owner), false).await.unwrap();
+        let other = viewers.join(viewer("x", Role::Admin), false).await.unwrap();
+        assert!(mac.has_control() && !other.has_control() && other.can_take());
+        // The holder's page goes quiet: the next to join may take it.
+        mac.set_active(false);
+        let late = viewers.join(viewer("y", Role::Admin), false).await.unwrap();
+        assert!(late.has_control(), "an idle holder doesn't keep the floor");
+        // The same user's other device takes over.
+        let phone = viewers.join(viewer("y", Role::Admin), false).await.unwrap();
+        assert!(phone.has_control() && !late.has_control());
+    }
+
+    #[tokio::test]
+    async fn a_guest_asks_and_a_host_answers() {
+        let viewers = Viewers::new(Box::new(|| ()));
+        let owner = viewers.join(viewer("o", Role::Owner), false).await.unwrap();
+        let guest = viewers.join(viewer("g", Role::Guest), false).await.unwrap();
+        assert!(!guest.has_control() && !guest.can_take() && !guest.take_control());
+        assert!(guest.ask(Some(Request::Control)));
+        assert_eq!(guest.request(), Some("control"));
+        let list = owner.watchers();
+        assert_eq!(list[0].request, Some("control"));
+        assert!(owner.give_control(guest.id) && guest.has_control());
+        assert_eq!(guest.request(), None, "the answer clears the ask");
+        assert!(owner.can_take() && owner.take_control());
+        // A pad instead.
+        assert!(guest.ask(Some(Request::Pad)));
+        assert!(!guest.give_pad(guest.id, 1), "only a host");
+        assert!(!owner.give_pad(guest.id, 0) && !owner.give_pad(guest.id, 4));
+        assert!(owner.give_pad(guest.id, 2));
+        assert_eq!(guest.role(), Role::Player(2));
+        assert_eq!(viewers.player_pads(), 0b0100);
+        assert!(!guest.take_control(), "a player never takes the floor");
+        let guest2 = viewers.join(viewer("h", Role::Guest), false).await.unwrap();
+        assert!(!owner.give_pad(guest2.id, 2), "the slot is taken");
+        assert!(owner.give_pad(guest2.id, 1));
+        assert!(owner.revoke_pad(guest.id));
+        assert_eq!(guest.role(), Role::Guest);
+        assert_eq!(viewers.player_pads(), 0b0010);
+        assert!(!owner.revoke_pad(owner.id));
+        // A link's own player can't be revoked.
+        let link = viewers
+            .join(viewer("share:p", Role::Player(3)), false)
+            .await
+            .unwrap();
+        assert!(!owner.revoke_pad(link.id));
+    }
+
+    #[tokio::test]
+    async fn a_member_takes_the_floor_from_anyone() {
+        let viewers = Viewers::new(Box::new(|| ()));
+        let owner = viewers.join(viewer("o", Role::Owner), false).await.unwrap();
+        let member = viewers
+            .join(viewer("m", Role::Member), false)
+            .await
+            .unwrap();
+        assert!(!member.has_control() && member.can_take());
+        assert!(member.take_control() && member.has_control() && !owner.has_control());
+        assert!(owner.take_control() && owner.has_control());
+        assert!(!member.ask(Some(Request::Control)), "it needn't ask");
+        assert!(member.ask(Some(Request::Pad)));
     }
 }

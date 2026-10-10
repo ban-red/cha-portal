@@ -5,6 +5,7 @@ import {
   freeSlots,
   guestCanRetry,
   guestCodec,
+  guestPrompt,
   guestProblem,
   guestTransports,
   internetNote,
@@ -124,5 +125,19 @@ describe("internet links", () => {
   test("an old node is named, and not retried", () => {
     expect(guestProblem(api(409, "node_outdated"))).toBe("The host's node needs updating to stream over the internet.");
     expect(guestCanRetry(api(409, "node_outdated"))).toBe(false);
+  });
+});
+
+describe("guestPrompt", () => {
+  test("a granted pad slot is player N", () => {
+    expect(guestPrompt(1, false, undefined, "Sam").text).toBe("You are player 2. Press a button on your gamepad.");
+  });
+  test("a pending ask names the owner", () => {
+    expect(guestPrompt(undefined, false, "control", "Sam")).toEqual({ kind: "pending", text: "Asked Sam for the controls" });
+    expect(guestPrompt(undefined, false, "pad", "Sam").text).toBe("Asked Sam to add your gamepad");
+  });
+  test("free to take, or ask", () => {
+    expect(guestPrompt(undefined, true, undefined, "Sam").kind).toBe("take");
+    expect(guestPrompt(undefined, false, undefined, "Sam").kind).toBe("ask");
   });
 });

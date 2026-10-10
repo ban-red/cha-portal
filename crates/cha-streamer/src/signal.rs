@@ -800,6 +800,7 @@ fn authorize(auth: &Auth, presented: &str) -> std::result::Result<Viewer, String
             // The shared token (benchmarks, the dev loop) is the owner's.
             Ok(Viewer {
                 user: "token".into(),
+                name: None,
                 role: Role::Owner,
             })
         }
@@ -809,6 +810,7 @@ fn authorize(auth: &Auth, presented: &str) -> std::result::Result<Viewer, String
                     info!(user = %claims.sub, role = %claims.role, "media token accepted");
                     Ok(Viewer {
                         role: Role::from_claims(&claims.role, claims.slot),
+                        name: claims.name,
                         user: claims.sub,
                     })
                 }

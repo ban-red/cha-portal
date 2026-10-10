@@ -208,6 +208,7 @@ mod tests {
                 sub: "u1".into(),
                 role: "owner".into(),
                 slot: None,
+                name: None,
                 exp,
             },
         )

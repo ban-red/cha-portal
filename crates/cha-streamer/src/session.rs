@@ -164,6 +164,8 @@ struct Session {
     mid: Option<Mid>,
     audio_mid: Option<Mid>,
     control: Option<ChannelId>,
+    /// The page's unordered "input" channel (pad state), when it opened one.
+    input: Option<ChannelId>,
     /// What the page's control messages do (shared with WebTransport).
     handler: Control,
     connected: bool,
@@ -236,6 +238,7 @@ impl Session {
             mid: None,
             audio_mid: None,
             control: None,
+            input: None,
             handler,
             connected: false,
             frames: None,
@@ -587,12 +590,20 @@ impl Session {
                     "gamepads": self.params.gamepads.is_some(),
                     "fps": media.fps(),
                     "overlay": media.overlay(),
+                    // The page may send pad state on an unordered "input"
+                    // channel with no retransmits (it falls back on `control`
+                    // if it didn't open one).
+                    "padDatagrams": true,
                 });
                 self.send_control(&ServerMsg::Hello { stream });
                 for msg in floor_msgs(&self.handler.seat) {
                     self.send_control(&msg);
                 }
                 self.replay_pads();
+            }
+            Event::ChannelOpen(id, label) if label == "input" => self.input = Some(id),
+            Event::ChannelData(data) if Some(data.id) == self.input => {
+                self.handle_client_datagram(&data.data);
             }
             Event::ChannelData(data) if Some(data.id) == self.control => {
                 for line in String::from_utf8_lossy(&data.data).lines() {
@@ -612,6 +623,17 @@ impl Session {
         }
         for msg in self.rumble.replay_for(&pad_audience(&self.handler.seat)) {
             self.send_control(&msg);
+        }
+    }
+
+    /// A message on the "input" channel: pad state, framed as an input
+    /// datagram (cha-proto's `input`).
+    fn handle_client_datagram(&mut self, data: &[u8]) {
+        let mut replies = Vec::new();
+        self.handler
+            .handle_datagram(data, &mut self.stats, &mut |m| replies.push(m));
+        for reply in replies {
+            self.send_control(&reply);
         }
     }
 

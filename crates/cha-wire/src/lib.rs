@@ -1179,13 +1179,18 @@ pub struct MediaClaims {
     pub env: String,
     /// The user it was issued to.
     pub sub: String,
-    /// `owner`, `admin`, or from a share link `player`, `viewer` or
-    /// `controller` (ADRs 0014 and 0015). A streamer treats a role it doesn't
-    /// know as a viewer with no input.
+    /// `owner`, `admin`, `guest` or `member` (another signed-in user in a
+    /// public or free environment), or from a share link `player`, `viewer`
+    /// or `controller` (ADRs 0014 and 0015). A streamer treats a role it
+    /// doesn't know as a viewer with no input.
     pub role: String,
     /// A player's gamepad slot, 1 to 3 (player 2 to 4); absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<u8>,
+    /// The user's display name, for the page of whoever holds the controls to
+    /// say who is asking; absent for a share link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Expiry, Unix seconds.
     pub exp: i64,
 }
@@ -2216,6 +2221,7 @@ mod tests {
             sub: "u1".into(),
             role: "owner".into(),
             slot: None,
+            name: None,
             exp: 1_000,
         };
         let token = sign_media_token(&portal, &claims);

@@ -41,6 +41,7 @@ export function parsePrefs(raw: unknown): UserPrefs {
     pinned: parsePinned(o.pinned),
     envView: pick(o.envView, ["grid", "list"] as const, DEFAULT_PREFS.envView),
     envSort: pick(o.envSort, ["name", "recent"] as const, DEFAULT_PREFS.envSort),
+    sessionAccess: pick(o.sessionAccess, ["private", "public", "free"] as const, DEFAULT_PREFS.sessionAccess),
   };
 }
 

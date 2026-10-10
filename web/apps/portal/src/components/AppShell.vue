@@ -6,7 +6,7 @@
 // - Under 768px: an off-canvas drawer opened from the header's menu button. While it is open
 //   focus is kept inside it, Esc and the scrim close it, and the page behind is `inert`.
 // A page can add controls to the header through the #page-actions element (Teleport).
-import { ChevronsLeft, Database, Eye, Laptop, FileText, Folder, Package, Copy, Gamepad2, LayoutGrid, LogOut, Menu, Monitor, MonitorPlay, MonitorSmartphone, Moon, Palette, Server, SlidersHorizontal, Sun, Undo2, User } from "lucide-vue-next";
+import { ChevronsLeft, Database, Eye, Laptop, FileText, Folder, Package, Copy, Gamepad2, LayoutGrid, LogOut, Menu, Monitor, MonitorPlay, MonitorSmartphone, Moon, Palette, Server, SlidersHorizontal, Sun, Undo2, User, Users } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -35,6 +35,7 @@ const nav = computed<NavItem[]>(() => [
   { to: "/controllers", label: "Controllers", icon: Gamepad2, show: true, section: "Settings" },
   { to: "/settings/appearance", label: "Appearance", icon: Palette, show: true },
   { to: "/settings/storage", label: "Storage", icon: Database, show: true },
+  { to: "/settings/sharing", label: "Sharing", icon: Users, show: session.user?.role !== "guest" },
   { to: "/settings/moonlight", label: "Moonlight", icon: MonitorSmartphone, show: session.user?.role !== "guest" },
   { to: "/settings/devices", label: "Devices", icon: Laptop, show: true },
   { to: "/admin/nodes", label: "Nodes", icon: Server, show: session.isAdmin, section: "Admin" },

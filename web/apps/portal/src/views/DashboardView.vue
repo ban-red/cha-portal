@@ -4,6 +4,7 @@ import { ArrowUpDown, LayoutGrid, List, Monitor, MonitorPlay, Pin, Search, Share
 import { computed, nextTick, reactive, ref } from "vue";
 
 import { ApiError, api, type Environment, type EnvironmentState, type StorageApp, type Template } from "../api";
+import AccessSelect from "../components/AccessSelect.vue";
 import AppCard from "../components/AppCard.vue";
 import DuplicateDialog from "../components/DuplicateDialog.vue";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
@@ -16,6 +17,7 @@ import SegmentedControl from "../components/SegmentedControl.vue";
 import WarningNote from "../components/WarningNote.vue";
 import { launchErrorText, portLines } from "../customEnv";
 import { ago, dateTime } from "../format";
+import type { SessionAccess } from "../shares";
 import { MOONLIGHT_HOSTS_KEY, hostMatches, isMissing, liveByTemplate, visibleApps } from "../moonlight";
 import { useSession } from "../stores/session";
 import { useAppFps } from "../appFps";
@@ -34,6 +36,15 @@ const queryClient = useQueryClient();
 const sharing = ref<Environment | null>(null);
 /** The template whose Duplicate dialog is open (admins). */
 const duplicating = ref<Template | null>(null);
+
+/** Other users' public and free environments. */
+const joinable = useQuery({ queryKey: ["joinable-environments"], queryFn: api.joinableEnvironments, refetchInterval: 10_000, retry: false });
+const joinableList = computed(() => joinable.data.value ?? []);
+
+const setAccess = useMutation({
+  mutationFn: (v: { id: string; access: SessionAccess }) => api.setEnvironmentAccess(v.id, v.access),
+  onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["environments"] }),
+});
 
 const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 });
 
@@ -394,6 +405,13 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             <MonitorPlay class="size-4" aria-hidden="true" />
             Connect
           </RouterLink>
+          <AccessSelect
+            v-if="e.state === 'running'"
+            label="Who can join"
+            :model-value="e.access ?? 'private'"
+            :disabled="setAccess.isPending.value"
+            @update:model-value="setAccess.mutate({ id: e.id, access: $event })"
+          />
           <button
             v-if="e.state === 'running'"
             class="btn-ghost min-h-9 shrink-0 px-3 pointer-coarse:min-h-11"
@@ -413,6 +431,25 @@ const STATES: Record<EnvironmentState, { text: string; dot: string }> = {
             Stop
           </button>
           <WarningNote :message="e.warning" class="basis-full" />
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="joinableList.length" class="space-y-4" aria-labelledby="joinable-heading">
+      <h2 id="joinable-heading" class="text-xl font-semibold tracking-tight">Open sessions</h2>
+      <ul class="card divide-y divide-line">
+        <li v-for="e in joinableList" :key="e.id" class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+          <div class="min-w-0 flex-1">
+            <p class="truncate font-medium">{{ e.templateName }}</p>
+            <p class="truncate text-xs text-ink-3">
+              {{ e.ownerName }}'s session ·
+              {{ e.access === "free" ? "you can take the controls" : "you can watch and ask for the controls" }}
+            </p>
+          </div>
+          <RouterLink :to="{ name: 'session', params: { id: e.id } }" class="btn-primary min-h-9 shrink-0 px-3 pointer-coarse:min-h-11">
+            <MonitorPlay class="size-4" aria-hidden="true" />
+            Watch
+          </RouterLink>
         </li>
       </ul>
     </section>
