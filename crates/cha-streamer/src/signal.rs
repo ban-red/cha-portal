@@ -393,9 +393,12 @@ pub fn main() -> Result<()> {
     });
     // Steam makes its virtual Xbox pad through a fake /dev/uinput (the image's
     // LD_PRELOAD shim), which this serves; it lives as long as the streamer.
+    // With any pad kind in a Steam environment: Steam hands games its own pad
+    // when it handles ours, and hides ours from them.
+    let steam_env = std::env::var(crate::uinput_broker::STEAM_ENV).ok();
     let _uinput_broker = gamepads
         .as_ref()
-        .filter(|pads| pads.kind() == GamepadKind::Steam)
+        .filter(|pads| crate::uinput_broker::wanted(pads.kind(), steam_env.as_deref()))
         .and_then(|pads| {
             let socket = runtime_dir.join(crate::uinput_proto::SOCKET_NAME);
             match UinputBroker::start(Arc::clone(pads), &socket, args.app_uid) {

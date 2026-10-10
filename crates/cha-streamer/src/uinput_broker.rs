@@ -59,6 +59,20 @@ const MAX_PENDING: usize = 32;
 /// the socket in a loop.
 const MAX_CONNECTIONS: usize = 16;
 
+/// Set by the node (to `1`) for the Steam environment: Steam makes the virtual
+/// Xbox pad it hands games whatever kind our own pads are, as long as it
+/// handles them (it does the Xbox 360 and DualSense ones), so the broker runs
+/// for every kind there. An environment variable, which an older streamer
+/// ignores.
+pub const STEAM_ENV: &str = "CHA_STEAM_UINPUT";
+
+/// Whether the broker runs: for the `steam` kind, whose pad Steam always
+/// handles, and wherever the node says the app is Steam (`steam_env` is
+/// [`STEAM_ENV`]'s value).
+pub fn wanted(kind: crate::gamepad::GamepadKind, steam_env: Option<&str>) -> bool {
+    kind == crate::gamepad::GamepadKind::Steam || matches!(steam_env, Some("1" | "true"))
+}
+
 /// The socket, and the threads behind it; ends with the streamer.
 pub struct UinputBroker {
     stop: Arc<AtomicBool>,
@@ -868,6 +882,18 @@ fn errno_message(err: &anyhow::Error) -> Message {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_broker_runs_for_the_steam_kind_and_for_a_steam_environment() {
+        use crate::gamepad::GamepadKind::{DualSense, Steam, Xbox360};
+        assert!(wanted(Steam, None));
+        assert!(wanted(Xbox360, Some("1")));
+        assert!(wanted(DualSense, Some("true")));
+        // Any other app: no socket that makes gamepads.
+        assert!(!wanted(Xbox360, None));
+        assert!(!wanted(DualSense, Some("")));
+        assert!(!wanted(Xbox360, Some("0")));
+    }
     use super::*;
     use crate::gamepad::GamepadKind;
     use crate::uinput_proto::{EFFECT_LEN, NAME_LEN};

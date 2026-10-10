@@ -2475,6 +2475,12 @@ impl DockerRuntime {
             // variable, which an older streamer ignores.
             format!("CHA_PAD_IDENTITY={}/{}", spec.owner, spec.template),
         ];
+        // Steam makes the virtual pad it gives games whatever kind ours are:
+        // the streamer serves its fake /dev/uinput for every kind (an older
+        // streamer ignores this).
+        if spec.security == SecurityProfile::Steam {
+            env.push("CHA_STEAM_UINPUT=1".to_string());
+        }
         let mut labels = self.labels(&spec.id, "streamer", port);
         // Whose it is, which the node's GameStream host reads back after a restart.
         labels[LABEL_OWNER] = json!(spec.owner);
@@ -4367,6 +4373,35 @@ mod tests {
         EnvironmentSpec {
             gamepad: kind,
             ..spec(SecurityProfile::Standard)
+        }
+    }
+
+    #[test]
+    fn only_a_steam_streamer_is_told_to_serve_uinput_for_any_pad_kind() {
+        let rt = runtime();
+        let env = |spec: &EnvironmentSpec| rt.streamer_config(spec, 7600)["Env"].clone();
+        for kind in [
+            None,
+            Some(GamepadKind::Xbox360),
+            Some(GamepadKind::Dualsense),
+        ] {
+            let mut steam = steam_spec();
+            steam.gamepad = kind;
+            assert!(
+                env(&steam)
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("CHA_STEAM_UINPUT=1")),
+                "{kind:?}: Steam hands games its own pad whatever ours is"
+            );
+        }
+        for security in [SecurityProfile::Standard, SecurityProfile::Browser] {
+            assert!(
+                !env(&spec(security))
+                    .to_string()
+                    .contains("CHA_STEAM_UINPUT"),
+                "{security:?}: no other app gets a socket that makes gamepads"
+            );
         }
     }
 

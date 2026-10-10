@@ -114,6 +114,15 @@ report 1 (settings, attributes, the serial), and output reports `0x80`
   Steam also tells games to ignore every physical Steam Controller
   (`SDL_GAMECONTROLLER_IGNORE_DEVICES`), and Proton's winebus applies that list
   to SDL and hidraw alike: without Steam's pad, a Proton game sees no controller.
+  - **On the other kinds (found 2026-10-10).** Steam Input handles our Xbox 360
+    and DualSense pads too (its log applies `controller_xbox360` configs to
+    them), so at a game's launch it asks for its own virtual pad and hides ours
+    from the game. With the broker started only for the `steam` kind, that open
+    failed (`no broker` in `uinput-shim.log`): Big Picture worked, and a game
+    (Balatro) saw no controller. The node now sets `CHA_STEAM_UINPUT=1` on the
+    Steam environment's streamer, which serves the broker for every kind. No
+    other app gets the socket. Confirmed by the owner on the iolinux node
+    (2026-10-10).
   - **Verified 2026-10-06:** Steam makes its pad through the shim (the legacy
     uinput calls, "Microsoft X-Box 360 pad 0", rumble asked for) and re-makes it
     when a game starts; the broker follows. Balatro (Proton) plays with no
