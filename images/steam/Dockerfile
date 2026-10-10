@@ -102,6 +102,8 @@ USER root
 # The final stage is five layers, ordered by how often they change, so a new
 # gamescope patch or mangoapp build doesn't make a node pull the multi-hundred
 # megabyte i386 libraries, Steam's runtime libraries or XFCE again.
+# CI keeps these layers (and gamescope's and mangoapp's build stages) in the
+# registry as :buildcache, so a release rebuilds only the layers that changed.
 # 1. The i386 architecture and the 32-bit Mesa that games fall back to.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
