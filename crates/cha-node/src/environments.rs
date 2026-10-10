@@ -112,6 +112,9 @@ const GATEWAY_IDENTITY_DIR: &str = "/identity";
 pub(crate) const RUNTIME_DIR: &str = "/run/cha";
 /// Where the streamer puts gamepad nodes (`dev/`) and udev entries (`udev/`).
 const INPUT_DIR: &str = "/run/cha-input";
+/// The kernel's virtual USB host controller: its `attach` and `detach` files are
+/// how a streamer presents a pad as a USB device (`CHA_STEAM_PAD_TRANSPORT=usbip`).
+pub const VHCI_DIR: &str = "/sys/devices/platform/vhci_hcd.0";
 const BROWSER_SECCOMP: &str = include_str!("../profiles/seccomp-browser.json");
 /// The AppArmor profile for the `steam` security profile, which the owner
 /// loads on the node (`deploy/node/host/apparmor/cha-sandbox`).
@@ -301,6 +304,16 @@ pub struct DockerConfig {
     /// The host's uhid device, for the DualSense and Steam Controller;
     /// `None` goes without (the streamer then makes Xbox 360 pads instead).
     pub uhid: Option<String>,
+    /// Steam Controllers as real USB devices over the kernel's `vhci_hcd`
+    /// loopback instead of uhid (`CHA_STEAM_PAD_TRANSPORT=usbip`, off by
+    /// default): the streamer of a `steam` pad kind gets the setting and
+    /// write access to [`VHCI_DIR`].
+    pub steam_pad_usbip: bool,
+    /// The AppArmor profile that streamer runs under (`CHA_STEAM_PAD_APPARMOR`;
+    /// `None` keeps Docker's default). Docker's default denies writes under
+    /// `/sys`, so with it the streamer cannot open `attach` and falls back to
+    /// uhid: the owner decides what to loosen, by naming a profile they loaded.
+    pub steam_pad_apparmor: Option<String>,
     /// The router's public address, when it forwards the streamers' UDP ports
     /// (`port_base + 1`, `+ 3`, …) to this node.
     pub public_address: Option<String>,
@@ -2463,6 +2476,28 @@ impl DockerRuntime {
         if let Some(kind) = spec.gamepad.filter(|_| self.has_pads()) {
             cmd.extend(["--pad-kind", kind.as_str()].map(String::from));
         }
+        let mut mounts = self.mounts(&spec.id, false);
+        let usbip = self.config.steam_pad_usbip
+            && self.has_pads()
+            && spec.gamepad == Some(cha_wire::GamepadKind::Steam);
+        let security_opt: Vec<String> = match (&self.config.steam_pad_apparmor, usbip) {
+            (Some(profile), true) => vec![format!("apparmor={profile}")],
+            _ => Vec::new(),
+        };
+        if usbip {
+            // The one sysfs directory the streamer writes `attach` and
+            // `detach` in (Docker's /sys is read-only otherwise).
+            mounts
+                .as_array_mut()
+                .expect("mounts are a list")
+                .push(json!({
+                    "Type": "bind",
+                    "Source": VHCI_DIR,
+                    "Target": VHCI_DIR,
+                    "ReadOnly": false,
+                    "BindOptions": { "CreateMountpoint": false },
+                }));
+        }
         cmd.extend(self.config.streamer_args.iter().cloned());
         // The Moonlight media ports and the API secret; an older streamer
         // image never gets them (this is off by default).
@@ -2481,6 +2516,9 @@ impl DockerRuntime {
         if spec.security == SecurityProfile::Steam {
             env.push("CHA_STEAM_UINPUT=1".to_string());
         }
+        if usbip {
+            env.push("CHA_STEAM_PAD_TRANSPORT=usbip".to_string());
+        }
         let mut labels = self.labels(&spec.id, "streamer", port);
         // Whose it is, which the node's GameStream host reads back after a restart.
         labels[LABEL_OWNER] = json!(spec.owner);
@@ -2498,9 +2536,10 @@ impl DockerRuntime {
             "Labels": labels,
             "HostConfig": {
                 "NetworkMode": "host",
-                "Mounts": self.mounts(&spec.id, false),
+                "Mounts": mounts,
                 "DeviceRequests": self.gpu(spec),
                 "Devices": devices,
+                "SecurityOpt": security_opt,
                 "RestartPolicy": { "Name": "no" },
                 "Init": true,
             },
@@ -3686,6 +3725,8 @@ mod tests {
                 gpu_device: "nvidia.com/gpu=all".into(),
                 uinput: Some("/dev/uinput".into()),
                 uhid: Some("/dev/uhid".into()),
+                steam_pad_usbip: false,
+                steam_pad_apparmor: None,
                 public_address: None,
                 port_base: 7600,
                 gamestream_port_base: None,
@@ -4457,6 +4498,49 @@ mod tests {
         none.config.uhid = None;
         let s = none.streamer_config(&pad_spec(Some(GamepadKind::Dualsense)), 7600);
         assert!(!s["Cmd"].as_array().unwrap().contains(&json!("--uhid")));
+    }
+
+    #[test]
+    fn steam_pads_over_usbip_get_the_vhci_directory_and_the_setting() {
+        let mounts = |s: &Value| s["HostConfig"]["Mounts"].as_array().unwrap().clone();
+        let has_vhci = |s: &Value| mounts(s).iter().any(|m| m["Source"] == VHCI_DIR);
+        let env_of = |s: &Value| s["Env"].to_string();
+        // Off by default: nothing changes.
+        let off = runtime().streamer_config(&pad_spec(Some(GamepadKind::Steam)), 7600);
+        assert!(!has_vhci(&off));
+        assert!(!env_of(&off).contains("CHA_STEAM_PAD_TRANSPORT"));
+        // On: the Steam kind only, with the one directory read-write.
+        let mut rt = runtime();
+        rt.config.steam_pad_usbip = true;
+        let on = rt.streamer_config(&pad_spec(Some(GamepadKind::Steam)), 7600);
+        assert!(env_of(&on).contains("CHA_STEAM_PAD_TRANSPORT=usbip"));
+        let vhci = mounts(&on)
+            .into_iter()
+            .find(|m| m["Source"] == VHCI_DIR)
+            .expect("the vhci bind");
+        assert_eq!(vhci["Target"], VHCI_DIR);
+        assert_eq!(vhci["Type"], "bind");
+        assert_eq!(vhci["ReadOnly"], false);
+        // Docker's default AppArmor profile stays unless the owner names one.
+        assert_eq!(on["HostConfig"]["SecurityOpt"], json!([]));
+        rt.config.steam_pad_apparmor = Some("cha-streamer-usbip".into());
+        let named = rt.streamer_config(&pad_spec(Some(GamepadKind::Steam)), 7600);
+        assert_eq!(
+            named["HostConfig"]["SecurityOpt"],
+            json!(["apparmor=cha-streamer-usbip"])
+        );
+        for kind in [
+            Some(GamepadKind::Dualsense),
+            Some(GamepadKind::Xbox360),
+            None,
+        ] {
+            let other = rt.streamer_config(&pad_spec(kind), 7600);
+            assert!(!has_vhci(&other), "{kind:?}");
+            assert!(
+                !env_of(&other).contains("CHA_STEAM_PAD_TRANSPORT"),
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]

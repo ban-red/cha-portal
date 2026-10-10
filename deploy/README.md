@@ -4,7 +4,7 @@
 |---|---|
 | [`portal/`](portal) | The portal's compose stack: `cha-control` (API, SPA, the nodes' WebSocket, SQLite), plus optional Caddy (HTTPS with public DNS) and coturn (TURN) profiles |
 | [`node/`](node) | A node's compose stack: the agent, which starts each environment's streamer and app containers through the Docker socket |
-| [`node/host/`](node/host) | Host files that need root, installed by the owner with `install.sh`: the `cha-sandbox` AppArmor profile (Steam environments need it), the udev rules that keep virtual gamepads (Xbox 360, DualSense, Steam Controller) out of a desktop host's own session, and the `uinput`/`uhid` module list |
+| [`node/host/`](node/host) | Host files that need root, installed by the owner with `install.sh`: the `cha-sandbox` AppArmor profile (Steam environments need it), the udev rules that keep virtual gamepads (Xbox 360, DualSense, Steam Controller) out of a desktop host's own session, and the `uinput`/`uhid`/`vhci-hcd` module list |
 | [`quickstart/`](quickstart) | The portal and a node on one machine from the published images, and `setup.sh`, which prepares an Ubuntu or Debian machine for it ([SETUP.md](../SETUP.md#quick-start)) |
 | [`proxmox/`](proxmox) | `create-node.sh`: a node, or the quick start, in an LXC container on a Proxmox VE host, sharing its Intel or AMD GPU; and the VM to use for NVIDIA ([guide](proxmox/README.md)) |
 | [`streamer/`](streamer) | The streamer's image (`--target runtime`) and its dev loop on a node |
@@ -50,7 +50,7 @@
    sudo deploy/node/host/install.sh
    ```
 
-   It installs, only where they differ, the udev rules (`/etc/udev/rules.d`), the `cha-sandbox` AppArmor profile (`/etc/apparmor.d`, loaded; skipped on a host without AppArmor) and `/etc/modules-load.d/cha.conf` (`uinput` and `uhid` at boot, and loaded now), prints one line for each, and can be run again safely. `deploy/node/host/install.sh --check` only reports, without root. The agent never writes these: it only reads them, through read-only binds in the compose file.
+   It installs, only where they differ, the udev rules (`/etc/udev/rules.d`), the `cha-sandbox` AppArmor profile (`/etc/apparmor.d`, loaded; skipped on a host without AppArmor) and `/etc/modules-load.d/cha.conf` (`uinput`, `uhid` and `vhci-hcd` at boot, and loaded now; a kernel without `vhci-hcd` is skipped), prints one line for each, and can be run again safely. `deploy/node/host/install.sh --check` only reports, without root. The agent never writes these: it only reads them, through read-only binds in the compose file.
 
 4. **Check the node**:
 
@@ -232,6 +232,8 @@ The spikes under `spikes/` keep their own ports.
 | `CHA_GATEWAY_IMAGE` | `cha/gateway:dev` | The image that streams an adopted Moonlight host; mapped through `CHA_IMAGE_REGISTRY` like the environments |
 | `CHA_UINPUT` | `/dev/uinput` | For virtual gamepads; empty goes without (no `uinput` module) |
 | `CHA_UHID` | `/dev/uhid` | For virtual DualSense and Steam Controllers; empty goes without (no `uhid` module), and those fall back to an Xbox 360 pad |
+| `CHA_STEAM_PAD_TRANSPORT` | `uhid` | `usbip` makes the Steam Controller a real USB device instead of a Bluetooth uhid one ([below](#steam-controller-as-a-usb-device)); `uhid` or empty is the default. Anything else stops the agent at start-up |
+| `CHA_STEAM_PAD_APPARMOR` | | The AppArmor profile for the streamers of USB Steam pads; empty keeps Docker's default, which blocks the write usbip needs ([below](#steam-controller-as-a-usb-device)) |
 | `CHA_PUBLIC_ADDRESS` | | The router's public IP, when it forwards the streamers' UDP ports |
 | `CHA_PORT_BASE` | `7600` | Streamers use three ports each from here: TCP on localhost (signalling), UDP for WebRTC, UDP for WebTransport |
 | `CHA_MAX_ENVIRONMENTS` | `16` | |
@@ -286,6 +288,17 @@ The same tails reach the portal: a failed environment says why in a sentence (th
 ### Live usage
 
 The Nodes page shows each online node's CPU, RAM and GPUs, refreshed every few seconds. The agent reads the host's `/proc` (which its container shares) and every NVIDIA GPU through NVML (`libnvidia-ml.so.1`, which the `nvidia.com/gpu=all` CDI device brings, like `nvidia-smi`); without NVML the GPU rows are left out. The portal keeps only the latest reading in memory, so it shows nothing for a node that is offline or has been quiet for 15 seconds. An agent sends it only to a portal that says it reads it, so either can be updated first.
+
+### Steam Controller as a USB device
+
+Off by default and experimental. With `CHA_STEAM_PAD_TRANSPORT=usbip` in the agent's environment, an environment whose controller kind is `steam` gets its virtual Steam Controller as a real USB device (`28de:1302`, full speed, one HID interface) instead of a Bluetooth `28de:1303` uhid one. The streamer serves USB/IP on a socketpair and hands the other end to the kernel's `vhci_hcd`, which enumerates it; `usbhid` binds it and a `hidraw` node appears, which the node mounts into the app as for uhid. Other kinds are unchanged.
+
+- The host needs the `vhci-hcd` module (`sudo modprobe vhci-hcd`; `install.sh` puts it in `modules-load.d`). `--doctor` checks for it when the setting is on.
+- The streamer container gets `/sys/devices/platform/vhci_hcd.0` bound in read-write, which holds the `attach` and `detach` files (mode 0200, root; the streamer runs as root in its container). It gets no extra capability or device.
+- **Docker's default AppArmor profile still denies the write** (`deny /sys/[^f]*/** wklx`, even to a read-write bind). The streamer then logs `opening .../attach: Permission denied` and uses uhid, so the setting alone changes nothing on a host with AppArmor. The owner chooses how to allow it: `CHA_STEAM_PAD_APPARMOR=<profile>` runs these streamers (and only these) under a profile loaded on the host, or `unconfined` for a test. No profile for this ships yet.
+- `install.sh` also installs a udev rule line that keeps these devices off the host's seat, like the uhid ones. Without it the person at the desk gets access to the virtual controller's `hidraw` node.
+- A stopped environment detaches the port. A streamer that is killed doesn't: the port is released when the process's end of the socket closes, which is when the process dies, and the kernel then disconnects the device by itself.
+- To go back: remove the setting (or set `uhid`) and recreate the agent; the next launch of each environment uses uhid.
 
 ## Devices
 

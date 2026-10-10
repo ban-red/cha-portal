@@ -113,6 +113,8 @@ const PRODUCT_BLE: u16 = 0x1106;
 /// SDL's `controller_list.h`); its wired id, `0x1302`, would meet the same
 /// missing USB interface as `0x1102` did.
 const PRODUCT_TRITON: u16 = 0x1303;
+/// The 2026 controller on a USB cable (`USB_DEVICE_ID_STEAM_CONTROLLER_IBEX`).
+const PRODUCT_TRITON_USB: u16 = 0x1302;
 pub const VERSION: u16 = 0x0100;
 /// The controller's own rate, and what it says its connection interval is.
 const PERIOD: Duration = Duration::from_micros(9000);
@@ -135,23 +137,36 @@ pub enum Variant {
     Ble,
     /// The 2026 controller over Bluetooth, `28de:1303`: numbered reports.
     Triton,
+    /// The 2026 controller on a USB cable, `28de:1302`, as a real USB device
+    /// over the vhci loopback ([`crate::usbdev`], opt-in): the same numbered
+    /// reports, with the wired state id `0x42` and no wireless status.
+    TritonUsb,
 }
 
 /// What the `steam` kind creates.
 pub const VARIANT: Variant = Variant::Triton;
 
 impl Variant {
+    /// The same controller on a USB cable (itself for the rest).
+    pub fn usb(self) -> Variant {
+        match self {
+            Variant::Triton => Variant::TritonUsb,
+            other => other,
+        }
+    }
+
     pub fn product(self) -> u16 {
         match self {
             Variant::Wired => PRODUCT_WIRED,
             Variant::Ble => PRODUCT_BLE,
             Variant::Triton => PRODUCT_TRITON,
+            Variant::TritonUsb => PRODUCT_TRITON_USB,
         }
     }
 
     pub fn bus(self) -> u16 {
         match self {
-            Variant::Wired => BUS_USB,
+            Variant::Wired | Variant::TritonUsb => BUS_USB,
             Variant::Ble | Variant::Triton => BUS_BLUETOOTH,
         }
     }
@@ -160,7 +175,7 @@ impl Variant {
     pub fn name(self) -> &'static str {
         match self {
             Variant::Wired | Variant::Ble => "Valve Software Steam Controller",
-            Variant::Triton => "Steam Controller",
+            Variant::Triton | Variant::TritonUsb => "Steam Controller",
         }
     }
 
@@ -169,6 +184,7 @@ impl Variant {
             Variant::Wired => &DESCRIPTOR,
             Variant::Ble => &DESCRIPTOR_BLE,
             Variant::Triton => DESCRIPTOR_TRITON,
+            Variant::TritonUsb => DESCRIPTOR_TRITON_USB,
         }
     }
 
@@ -176,7 +192,7 @@ impl Variant {
     fn period(self) -> Duration {
         match self {
             Variant::Wired | Variant::Ble => PERIOD,
-            Variant::Triton => TRITON_PERIOD,
+            Variant::Triton | Variant::TritonUsb => TRITON_PERIOD,
         }
     }
 
@@ -184,7 +200,7 @@ impl Variant {
     pub fn driver(self) -> &'static str {
         match self {
             Variant::Wired => "hid-steam",
-            Variant::Ble | Variant::Triton => "hid-generic",
+            Variant::Ble | Variant::Triton | Variant::TritonUsb => "hid-generic",
         }
     }
 
@@ -192,7 +208,7 @@ impl Variant {
     pub fn inputs(self) -> usize {
         match self {
             Variant::Wired => 1,
-            Variant::Ble | Variant::Triton => 0,
+            Variant::Ble | Variant::Triton | Variant::TritonUsb => 0,
         }
     }
 }
@@ -271,10 +287,47 @@ pub const DESCRIPTOR_TRITON: &[u8] = &[
     0xC0,              // End Collection
 ];
 
+/// The cable's descriptor: [`DESCRIPTOR_TRITON`] with the wired state report
+/// (0x42) in place of the Bluetooth one (0x45) and without the wireless status
+/// (0x79). A guess like the other: no real one was at hand.
+#[rustfmt::skip]
+pub const DESCRIPTOR_TRITON_USB: &[u8] = &[
+    0x06, 0x00, 0xFF,  // Usage Page (Vendor Defined 0xFF00)
+    0x09, 0x01,        // Usage (1)
+    0xA1, 0x01,        // Collection (Application)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,  //   Logical Maximum (255)
+    0x75, 0x08,        //   Report Size (8)
+    0x85, 0x01,        //   Report ID (1)
+    0x95, 0x3F,        //   Report Count (63)
+    0x09, 0x01,        //   Usage (1)
+    0xB1, 0x02,        //   Feature (Data,Var,Abs)
+    0x85, 0x42,        //   Report ID (0x42)
+    0x95, 0x2D,        //   Report Count (45)
+    0x09, 0x01,        //   Usage (1)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x85, 0x43,        //   Report ID (0x43)
+    0x95, 0x0E,        //   Report Count (14)
+    0x09, 0x01,        //   Usage (1)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x85, 0x80,        //   Report ID (0x80)
+    0x95, 0x09,        //   Report Count (9)
+    0x09, 0x01,        //   Usage (1)
+    0x91, 0x02,        //   Output (Data,Var,Abs)
+    0x85, 0x81,        //   Report ID (0x81)
+    0x95, 0x07,        //   Report Count (7)
+    0x09, 0x01,        //   Usage (1)
+    0x91, 0x02,        //   Output (Data,Var,Abs)
+    0xC0,              // End Collection
+];
+
 pub const REPORT_SIZE: usize = 64;
 
 // The 2026 controller (SDL's `ID_TRITON_*` and `TritonButtons`).
 const TRITON_STATE: u8 = 0x45;
+/// The state report of the cable (SDL's `ID_TRITON_CONTROLLER_STATE`; the
+/// Bluetooth one's is `..._BLE`, 0x45). SDL parses both the same.
+const TRITON_STATE_WIRED: u8 = 0x42;
 const TRITON_BATTERY: u8 = 0x43;
 const TRITON_WIRELESS: u8 = 0x79;
 const TRITON_RUMBLE: u8 = 0x80;
@@ -390,7 +443,7 @@ const ATTRIB_STR_UNIT_SERIAL: u8 = 1;
 pub fn serial_for(variant: Variant, hash: u64) -> String {
     match variant {
         Variant::Wired | Variant::Ble => format!("F{:09X}", hash & 0xf_ffff_ffff),
-        Variant::Triton => format!("FXA{:010X}", hash & 0xff_ffff_ffff),
+        Variant::Triton | Variant::TritonUsb => format!("FXA{:010X}", hash & 0xff_ffff_ffff),
     }
 }
 
@@ -547,7 +600,7 @@ impl SteamController {
         let room = match self.variant {
             Variant::Wired => REPORT_SIZE,
             Variant::Ble => MAX_SEGMENTS * SEGMENT,
-            Variant::Triton => TRITON_FEATURE_BYTES,
+            Variant::Triton | Variant::TritonUsb => TRITON_FEATURE_BYTES,
         };
         let n = reply.len().min(room - 2);
         self.reply[1] = if cmd == GET_DIGITAL_MAPPINGS {
@@ -636,17 +689,26 @@ impl Protocol for SteamController {
                 vec![input_report(state, self.packet).to_vec()]
             }
             Variant::Ble => segments(&ble_state(state)),
-            Variant::Triton => {
+            Variant::Triton | Variant::TritonUsb => {
                 self.packet = self.packet.wrapping_add(1);
                 // The IMU's clock, in microseconds; it has to change for SDL
                 // to take the sensors.
                 let micros = now.saturating_duration_since(self.start).as_micros() as u32;
-                let mut out = vec![triton_state(state, self.packet as u8, micros)];
+                let usb = self.variant == Variant::TritonUsb;
+                let id = if usb {
+                    TRITON_STATE_WIRED
+                } else {
+                    TRITON_STATE
+                };
+                let mut out = vec![triton_state(id, state, self.packet as u8, micros)];
                 // A battery and a wireless status now and then (a real one
                 // reports its battery as it changes; how often is a guess).
                 if self.sent.is_multiple_of(TRITON_STATUS_EVERY) {
                     out.push(triton_battery(state));
-                    out.push(vec![TRITON_WIRELESS, WIRELESS_CONNECT]);
+                    // A cable has no wireless link to report.
+                    if !usb {
+                        out.push(vec![TRITON_WIRELESS, WIRELESS_CONNECT]);
+                    }
                 }
                 self.sent = self.sent.wrapping_add(1);
                 out
@@ -663,7 +725,7 @@ impl Protocol for SteamController {
             return Err(libc::EINVAL);
         }
         match self.variant {
-            Variant::Triton => {
+            Variant::Triton | Variant::TritonUsb => {
                 if number != TRITON_FEATURE {
                     return Err(libc::EINVAL);
                 }
@@ -708,7 +770,7 @@ impl Protocol for SteamController {
             return Err(libc::EINVAL);
         }
         match self.variant {
-            Variant::Triton => {
+            Variant::Triton | Variant::TritonUsb => {
                 if number != TRITON_FEATURE {
                     return Err(libc::EINVAL);
                 }
@@ -760,7 +822,7 @@ impl Protocol for SteamController {
             "steam controller output report"
         );
         // Only the 2026 controller has output reports; the id leads.
-        if self.variant != Variant::Triton || kind != OUTPUT_REPORT {
+        if !matches!(self.variant, Variant::Triton | Variant::TritonUsb) || kind != OUTPUT_REPORT {
             return Vec::new();
         }
         match data.split_first() {
@@ -944,7 +1006,7 @@ fn parts(state: &PadState) -> Parts {
 
 /// The 2026 controller's state report, id first (46 bytes): see the header.
 /// `timestamp` is its IMU's clock in microseconds.
-fn triton_state(state: &PadState, seq: u8, timestamp: u32) -> Vec<u8> {
+fn triton_state(id: u8, state: &PadState, seq: u8, timestamp: u32) -> Vec<u8> {
     let live = !state.gone;
     let b = |i: usize| {
         if live {
@@ -1012,7 +1074,7 @@ fn triton_state(state: &PadState, seq: u8, timestamp: u32) -> Vec<u8> {
     }
     let trigger = |i: usize| (b(i).clamp(0.0, 1.0) * 32767.0).round() as i16;
     let mut m = Vec::with_capacity(1 + TRITON_STATE_BYTES);
-    m.push(TRITON_STATE);
+    m.push(id);
     m.push(seq);
     m.extend_from_slice(&buttons.to_le_bytes());
     for v in [
@@ -1604,7 +1666,7 @@ mod tests {
 
     #[test]
     fn the_2026_state_for_a_known_state_is_byte_exact() {
-        let r = triton_state(&triton_known_state(), 7, 0x0102_0304);
+        let r = triton_state(TRITON_STATE, &triton_known_state(), 7, 0x0102_0304);
         let mut want = vec![0x45, 7];
         // A, the quick-access button, d-pad up and right, Steam, L4, the left
         // trigger's click and the right pad's touch; the left stick's touch too.
@@ -1641,7 +1703,7 @@ mod tests {
     fn the_2026_state_reads_back_as_the_page_reads_it() {
         // The page's `state32` (steam-triton.ts), over what we send: the
         // buttons' bits, the pads' place and the sensors' axes.
-        let r = triton_state(&triton_known_state(), 1, 0);
+        let r = triton_state(TRITON_STATE, &triton_known_state(), 1, 0);
         let d = &r[1..];
         let i16_at = |at: usize| f32::from(i16::from_le_bytes([d[at], d[at + 1]]));
         let buttons = u32::from_le_bytes([d[1], d[2], d[3], d[4]]);
@@ -1655,9 +1717,10 @@ mod tests {
         // 1 g up: the page's y is the third axis.
         assert_eq!(i16_at(37), 16384.0);
         // A pad with nothing touched at rest, and a gone one is at rest.
-        let rest = triton_state(&PadState::default(), 1, 0);
+        let rest = triton_state(TRITON_STATE, &PadState::default(), 1, 0);
         assert!(rest[2..6].iter().all(|b| *b == 0));
         let gone = triton_state(
+            TRITON_STATE,
             &PadState {
                 gone: true,
                 ..triton_known_state()
@@ -1788,5 +1851,40 @@ mod tests {
         right[1] = 2;
         assert_eq!(sc.output(OUTPUT_REPORT, &right).len(), 2);
         assert!(sc.output(OUTPUT_REPORT, &report[..5]).is_empty());
+    }
+
+    #[test]
+    fn the_cable_is_the_same_controller_with_its_own_ids() {
+        assert_eq!(Variant::Triton.usb(), Variant::TritonUsb);
+        assert_eq!(Variant::Ble.usb(), Variant::Ble);
+        let v = Variant::TritonUsb;
+        assert_eq!((v.product(), v.bus()), (0x1302, BUS_USB));
+        assert_eq!(v.driver(), "hid-generic");
+        assert_eq!(v.inputs(), 0);
+        assert!(serial_for(v, 1).starts_with("FXA"));
+        // The descriptor: the wired state (0x42), no wireless status (0x79).
+        let mut sc = SteamController::new(v, 0, "FXA0123456789");
+        let first = sc.report(&PadState::default(), Instant::now());
+        // The state and the battery; a cable has no wireless link.
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0][0], 0x42);
+        assert_eq!(first[0].len(), 46);
+        assert_eq!(first[1][0], 0x43);
+        let d = v.descriptor();
+        assert!(d.windows(2).any(|w| w == [0x85, 0x42]));
+        assert!(!d.windows(2).any(|w| w == [0x85, 0x45] || w == [0x85, 0x79]));
+        assert_eq!(d.len(), DESCRIPTOR_TRITON.len() - 8);
+        // Commands and output reports are the Bluetooth one's.
+        let mut data = vec![0u8; 64];
+        data[0] = TRITON_FEATURE;
+        data[1] = GET_ATTRIBUTES;
+        sc.set_report(TRITON_FEATURE, FEATURE_REPORT, &data)
+            .unwrap();
+        assert_eq!(
+            sc.get_report(TRITON_FEATURE, FEATURE_REPORT).unwrap()[..2],
+            [TRITON_FEATURE, GET_ATTRIBUTES]
+        );
+        let rumble = [TRITON_RUMBLE, 0, 1, 0, 0xff, 0xff, 0, 0, 0xff, 0xff];
+        assert_eq!(sc.output(OUTPUT_REPORT, &rumble).len(), 1);
     }
 }

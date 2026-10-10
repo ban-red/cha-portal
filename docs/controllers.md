@@ -11,6 +11,24 @@ feeds it into a **virtual controller** of the kind the user chose for the app:
 | `dualsense` | uhid | A wired DualSense (`054c:0ce6`): the host kernel's `hid-playstation` binds it (gamepad, touchpad and motion evdev nodes), and the app also gets its `hidraw` node (SDL's HIDAPI driver, Proton's winebus, Steam). Touchpad, gyro, accelerometer, rumble, lightbar, adaptive triggers, player LEDs. |
 | `steam` | uhid | The 2026 Steam Controller over Bluetooth (`28de:1303`; its wired id would meet the missing USB interface a wired original did): Steam talks to it over `hidraw` (Steam Input: layouts, gyro, trackpads, haptics); the host's `hid-generic` binds it, with no evdev devices. A real d-pad, two sticks, both trackpads, four back paddles, the quick-access button, gyro, accelerometer, battery, rumble and trackpad haptic pulses. The original Bluetooth controller (`28de:1106`) is still in the code behind `steam_controller::VARIANT`. |
 
+### The Steam Controller as a USB device (opt-in)
+
+Set `CHA_STEAM_PAD_TRANSPORT=usbip` on the node agent ([deploy/README.md](../deploy/README.md#steam-controller-as-a-usb-device))
+and the `steam` kind is a wired controller, `28de:1302`, instead of the
+Bluetooth `28de:1303` uhid device. The streamer is the USB device: it answers
+the kernel's USB/IP requests on a `socketpair` whose other end `vhci_hcd` holds
+(`vhci.rs`, `usbdev.rs`, `usbip.rs`; [research note 10](research/10-usbip-and-usb-passthrough.md), design B).
+`usbhid` binds it, SDL's interface check no longer matters (the device has a
+real interface 0), and the app sees a `hidraw` node with USB attributes. The
+reports are the same: the page's pad state, rumble and trackpad pulses (by
+interrupt OUT or SET_REPORT), and feature report 1 by GET/SET_REPORT on
+endpoint 0. What differs for `1302`: the state report id is `0x42` (SDL's
+wired state; `0x45` is the Bluetooth one, both parsed alike) and there is no
+`0x79` wireless status. Those ids, the descriptors and the serial are our
+assumption: no real wired controller was at hand. Default is uhid. If `attach`
+can't be written (module not loaded, or AppArmor, see the deploy README) the
+streamer uses uhid.
+
 The kind is the user's per-app choice (the portal's Controllers page), with a
 default per app from the catalog. It is fixed for an environment's life: hotplug
 events don't reach the app's network namespace, so devices are made before the
@@ -88,7 +106,7 @@ ignores them otherwise.
   Xbox pad's do.
 - Host: `deploy/node/host/72-cha-virtual-pads.rules` keeps the virtual devices
   (input and hidraw) off the host's own seat; the doctor checks `uhid`,
-  `hid-playstation` and `hid-steam`.
+  `hid-playstation` and `hid-steam` (and `vhci-hcd` with the USB opt-in).
 
 ## Known gaps (2026-10-05)
 

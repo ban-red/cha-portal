@@ -444,42 +444,54 @@ pub fn scan(phys: &str) -> Found {
         if !uevent.lines().any(|line| line == want) {
             continue;
         }
-        if let Some(driver) = std::fs::read_link(path.join("driver"))
-            .ok()
-            .and_then(|l| l.file_name().map(|n| n.to_string_lossy().into_owned()))
-        {
-            found.driver = Some(driver);
-        }
-        for entry in read_names(&path.join("hidraw")) {
-            if let Some(node) = node_at(&path.join("hidraw").join(&entry), &entry) {
-                found.hidraw.push(node);
-            }
-        }
-        for input in read_names(&path.join("input")) {
-            let dir = path.join("input").join(&input);
-            let abs = std::fs::read_to_string(dir.join("capabilities/abs")).unwrap_or_default();
-            let props = std::fs::read_to_string(dir.join("properties")).unwrap_or_default();
-            let mut device = InputDevice {
-                name: std::fs::read_to_string(dir.join("name"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string(),
-                accelerometer: hex_bit(&props, 6),
-                // ABS_MT_POSITION_X is 0x35.
-                touch: hex_bit(&abs, 0x35),
-                nodes: Vec::new(),
-            };
-            for node in read_names(&dir) {
-                if (node.starts_with("event") || node.starts_with("js"))
-                    && let Some(node) = node_at(&dir.join(&node), &node)
-                {
-                    device.nodes.push(node);
-                }
-            }
-            found.inputs.push(device);
-        }
+        collect(&path, &mut found);
     }
     found
+}
+
+/// What the kernel made for the HID device at `path` (its sysfs directory,
+/// from either transport).
+pub fn scan_hid(path: &Path) -> Found {
+    let mut found = Found::default();
+    collect(path, &mut found);
+    found
+}
+
+fn collect(path: &Path, found: &mut Found) {
+    if let Some(driver) = std::fs::read_link(path.join("driver"))
+        .ok()
+        .and_then(|l| l.file_name().map(|n| n.to_string_lossy().into_owned()))
+    {
+        found.driver = Some(driver);
+    }
+    for entry in read_names(&path.join("hidraw")) {
+        if let Some(node) = node_at(&path.join("hidraw").join(&entry), &entry) {
+            found.hidraw.push(node);
+        }
+    }
+    for input in read_names(&path.join("input")) {
+        let dir = path.join("input").join(&input);
+        let abs = std::fs::read_to_string(dir.join("capabilities/abs")).unwrap_or_default();
+        let props = std::fs::read_to_string(dir.join("properties")).unwrap_or_default();
+        let mut device = InputDevice {
+            name: std::fs::read_to_string(dir.join("name"))
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            accelerometer: hex_bit(&props, 6),
+            // ABS_MT_POSITION_X is 0x35.
+            touch: hex_bit(&abs, 0x35),
+            nodes: Vec::new(),
+        };
+        for node in read_names(&dir) {
+            if (node.starts_with("event") || node.starts_with("js"))
+                && let Some(node) = node_at(&dir.join(&node), &node)
+            {
+                device.nodes.push(node);
+            }
+        }
+        found.inputs.push(device);
+    }
 }
 
 /// Whether bit `bit` is set in a sysfs bitmap (space-separated hex words, the
@@ -518,9 +530,21 @@ fn node_at(dir: &Path, name: &str) -> Option<Node> {
 /// event nodes. Gives back what
 /// there is when the time runs out, if that is anything.
 pub fn wait_for_nodes(phys: &str, driver: &str, inputs: usize, within: Duration) -> Result<Found> {
+    wait_until(phys, || scan(phys), driver, inputs, within)
+}
+
+/// [`wait_for_nodes`] with the looking left to `scan` (`what` names the device
+/// in messages).
+pub fn wait_until(
+    what: &str,
+    scan: impl Fn() -> Found,
+    driver: &str,
+    inputs: usize,
+    within: Duration,
+) -> Result<Found> {
     let deadline = Instant::now() + within;
     loop {
-        let found = scan(phys);
+        let found = scan();
         let events = found
             .inputs
             .iter()
@@ -532,14 +556,14 @@ pub fn wait_for_nodes(phys: &str, driver: &str, inputs: usize, within: Duration)
             // The driver registers its input devices one after another; the
             // last may be a moment behind the first.
             std::thread::sleep(Duration::from_millis(200));
-            return Ok(scan(phys));
+            return Ok(scan());
         }
         if Instant::now() > deadline {
             if found.hidraw.is_empty() && events == 0 {
-                bail!("the kernel made no nodes for {phys} (is {driver} loaded?)");
+                bail!("the kernel made no nodes for {what} (is {driver} loaded?)");
             }
             warn!(
-                phys,
+                what,
                 driver = ?found.driver,
                 hidraw = found.hidraw.len(),
                 input_devices = events,

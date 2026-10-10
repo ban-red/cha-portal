@@ -16,8 +16,9 @@
 #   and reboot to undo it);
 # - the AppArmor profile(s) Steam environments run under (/etc/apparmor.d),
 #   loaded with apparmor_parser; skipped on a host without AppArmor;
-# - /etc/modules-load.d/cha.conf, so uinput and uhid load at boot; both are
-#   loaded now too.
+# - /etc/modules-load.d/cha.conf, so uinput, uhid and vhci-hcd load at boot;
+#   they are loaded now too (vhci-hcd only matters for the opt-in USB Steam
+#   pads, and a kernel without it is not an error).
 # This is the operator's step: the agent and its containers never write these.
 #
 # CHA_HOST_ROOT is a prefix for every destination path (the tests use it).
@@ -149,6 +150,7 @@ if [ "$check_only" = 0 ]; then
     if command -v modprobe >/dev/null 2>&1; then
         run modprobe uinput
         run modprobe uhid
+        modprobe vhci-hcd 2>/dev/null || echo "skipped    modprobe vhci-hcd (not in this kernel; only the opt-in USB Steam pads need it)"
     else
         echo "skipped    modprobe (not found; the modules load at next boot)"
     fi

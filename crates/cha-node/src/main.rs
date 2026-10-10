@@ -2,7 +2,7 @@ use std::path::PathBuf;
 #[cfg(feature = "gamestream")]
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use cha_node::claim::{self, ClaimConfig};
 use cha_node::docker::{DEFAULT_SOCKET, Docker};
 use cha_node::environments::{DockerConfig, DockerRuntime, PublishedImages};
@@ -162,6 +162,18 @@ struct Args {
     /// Xbox 360 pad).
     #[arg(long, env = "CHA_UHID", default_value = "/dev/uhid")]
     uhid: String,
+    /// How a `steam` pad kind reaches the host: `uhid` (the default, a
+    /// Bluetooth controller) or `usbip` (a USB controller through the kernel's
+    /// `vhci_hcd` loopback; needs the `vhci-hcd` module, and gives the streamer
+    /// write access to `/sys/devices/platform/vhci_hcd.0`).
+    #[arg(long, env = "CHA_STEAM_PAD_TRANSPORT", default_value = "")]
+    steam_pad_transport: String,
+    /// The AppArmor profile the streamer of a USB Steam pad runs under. Docker's
+    /// default profile denies the write to `vhci_hcd`'s `attach`, so with
+    /// `usbip` and no profile the streamer falls back to uhid. Name a profile
+    /// the owner loaded on the host; empty keeps Docker's default.
+    #[arg(long, env = "CHA_STEAM_PAD_APPARMOR", default_value = "")]
+    steam_pad_apparmor: String,
     /// The router's public IP, if it forwards the streamers' UDP ports here
     /// (WAN without a mesh or TURN).
     #[arg(long, env = "CHA_PUBLIC_ADDRESS")]
@@ -488,6 +500,8 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
         gpu_device: args.gpu_device.clone(),
         uinput: Some(args.uinput.trim().to_string()).filter(|u| !u.is_empty()),
         uhid: Some(args.uhid.trim().to_string()).filter(|u| !u.is_empty()),
+        steam_pad_usbip: parse_pad_transport(&args.steam_pad_transport)?,
+        steam_pad_apparmor: parse_apparmor_profile(&args.steam_pad_apparmor)?,
         public_address: args
             .public_address
             .clone()
@@ -508,6 +522,32 @@ fn docker_config(args: &Args) -> Result<DockerConfig> {
         gateway_image: args.gateway_image.trim().to_string(),
         host_options: host_options_config(args)?,
     })
+}
+
+/// `CHA_STEAM_PAD_TRANSPORT`: whether Steam Controllers go over the vhci
+/// loopback. A bad value stops the agent.
+fn parse_pad_transport(text: &str) -> Result<bool> {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "usbip" => Ok(true),
+        "" | "uhid" => Ok(false),
+        other => bail!("CHA_STEAM_PAD_TRANSPORT is {other:?}: use uhid or usbip"),
+    }
+}
+
+/// `CHA_STEAM_PAD_APPARMOR`: a profile's name, or `None` when empty. It goes
+/// into `apparmor=<name>`, so it is a plain name. A bad value stops the agent.
+fn parse_apparmor_profile(text: &str) -> Result<Option<String>> {
+    let name = text.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    {
+        bail!("CHA_STEAM_PAD_APPARMOR is {name:?}: a profile name is letters, digits, _ . -");
+    }
+    Ok(Some(name.to_string()))
 }
 
 /// `CHA_HOST_OPTIONS` and its lists. A bad value stops the agent.
@@ -547,6 +587,22 @@ fn parse_nvidia_wine_dir(value: &str) -> Result<Option<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pad_transport_is_uhid_or_usbip() {
+        assert!(!super::parse_pad_transport("").unwrap());
+        assert!(!super::parse_pad_transport(" UHID ").unwrap());
+        assert!(super::parse_pad_transport("usbip").unwrap());
+        assert!(super::parse_pad_transport("usb").is_err());
+        assert_eq!(super::parse_apparmor_profile(" ").unwrap(), None);
+        assert_eq!(
+            super::parse_apparmor_profile("unconfined")
+                .unwrap()
+                .as_deref(),
+            Some("unconfined")
+        );
+        assert!(super::parse_apparmor_profile("a=b").is_err());
+    }
+
     use super::*;
 
     #[test]

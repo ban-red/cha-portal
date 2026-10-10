@@ -28,6 +28,12 @@
 #   "input" for the evdev nodes (gamepad, touchpad, motion sensors) and
 #   "hidraw" for the raw one.
 #
+# - With CHA_STEAM_PAD_TRANSPORT=usbip the Steam Controller is a real USB
+#   device the streamer serves through the kernel's vhci_hcd loopback
+#   (0003:28DE:1302, usbhid/hid-generic). It enumerates under
+#   /devices/platform/vhci_hcd.0, which no controller on the desk does, so the
+#   last rule below matches on that parent, as the uhid one does on its own.
+#
 # Install (root), and again after an update that changes this file:
 #   sudo deploy/node/host/install.sh
 #
@@ -35,3 +41,4 @@
 # the tags.
 SUBSYSTEM=="input", ATTRS{phys}=="cha/pad*", TAG-="uaccess", TAG-="seat", ENV{ID_SEAT}="seat-cha", ENV{LIBINPUT_IGNORE_DEVICE}="1", MODE="0600"
 SUBSYSTEM=="input|hidraw", DEVPATH=="*/virtual/misc/uhid/*", KERNELS=="0003:054C:0CE6.*|0005:28DE:1303.*|0005:28DE:1106.*|0003:28DE:1102.*", TAG-="uaccess", TAG-="seat", ENV{ID_SEAT}="seat-cha", ENV{LIBINPUT_IGNORE_DEVICE}="1", MODE="0600"
+SUBSYSTEM=="input|hidraw", DEVPATH=="*/platform/vhci_hcd.0/*", KERNELS=="0003:28DE:1302.*", TAG-="uaccess", TAG-="seat", ENV{ID_SEAT}="seat-cha", ENV{LIBINPUT_IGNORE_DEVICE}="1", MODE="0600"

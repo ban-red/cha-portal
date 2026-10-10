@@ -50,6 +50,8 @@ use tracing::{info, warn};
 use crate::dualsense::{self, DualSense};
 use crate::steam_controller::{self, SteamController};
 use crate::uhid::{self, Device, Node};
+use crate::usbdev::Identity as UsbIdentity;
+use crate::vhci::{self, UsbPad};
 
 /// Pads one environment can have (the Gamepad API's usual four).
 pub const MAX_PADS: usize = 4;
@@ -455,6 +457,32 @@ impl GamepadKind {
     }
 }
 
+/// How a Steam Controller reaches the host's kernel: as a uhid device
+/// (a Bluetooth `28de:1303`, the default), or as a real USB device
+/// (`28de:1302`) served over a `vhci_hcd` loopback, [`crate::vhci`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadTransport {
+    Uhid,
+    Usbip,
+}
+
+/// The environment variable choosing the Steam Controller's [`PadTransport`]:
+/// `usbip`, or `uhid` (the default, also for an empty or unknown value).
+pub const PAD_TRANSPORT_ENV: &str = "CHA_STEAM_PAD_TRANSPORT";
+
+impl PadTransport {
+    fn parse(text: &str) -> Self {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "usbip" => Self::Usbip,
+            "" | "uhid" => Self::Uhid,
+            other => {
+                warn!("{PAD_TRANSPORT_ENV}={other:?} is not uhid or usbip: using uhid");
+                Self::Uhid
+            }
+        }
+    }
+}
+
 /// A `hidraw` node of a uhid pad, in `<input-dir>/dev/hidraw/<name>`: what the
 /// node mounts into the app at `/dev/<name>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -468,6 +496,8 @@ pub struct Gamepads {
     kind: GamepadKind,
     uinput: PathBuf,
     uhid: PathBuf,
+    /// How the Steam Controller reaches the kernel (`CHA_STEAM_PAD_TRANSPORT`).
+    transport: PadTransport,
     dev_dir: PathBuf,
     hidraw_dir: PathBuf,
     udev_dir: PathBuf,
@@ -501,8 +531,31 @@ struct Pad {
 }
 
 struct HidPad {
-    device: Arc<Device>,
+    device: PadDevice,
     hidraw: Vec<HidrawNode>,
+}
+
+/// The device behind a HID pad.
+enum PadDevice {
+    Uhid(Arc<Device>),
+    Usb(Arc<UsbPad>),
+}
+
+impl PadDevice {
+    fn update(&self, state: &PadState) {
+        match self {
+            Self::Uhid(device) => device.update(state),
+            Self::Usb(pad) => pad.update(state),
+        }
+    }
+
+    /// Takes the device away (the kernel unbinds it and removes its nodes).
+    fn destroy(&self) {
+        match self {
+            Self::Uhid(device) => device.destroy(),
+            Self::Usb(pad) => pad.destroy(),
+        }
+    }
 }
 
 impl Drop for HidPad {
@@ -550,6 +603,14 @@ const STEAM_CONTROLLER: Identity = Identity {
     serial: "Valve_Software_Steam_Controller",
 };
 
+/// The same controller as a USB device ([`PadTransport::Usbip`]).
+const STEAM_CONTROLLER_USB: Identity = Identity {
+    bus: "usb",
+    vendor: "28de",
+    product: "1302",
+    serial: "Valve_Software_Steam_Controller",
+};
+
 /// What a node is, for its udev entry.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Class {
@@ -575,7 +636,22 @@ impl Gamepads {
         app_uid: Option<u32>,
         ahead: usize,
     ) -> Result<Self> {
-        if kind != GamepadKind::Xbox360 {
+        let mut transport = std::env::var(PAD_TRANSPORT_ENV)
+            .map(|v| PadTransport::parse(&v))
+            .unwrap_or(PadTransport::Uhid);
+        if kind != GamepadKind::Steam {
+            transport = PadTransport::Uhid;
+        }
+        if transport == PadTransport::Usbip {
+            match vhci::available() {
+                Ok(()) => info!("Steam Controllers are USB devices (vhci_hcd loopback)"),
+                Err(err) => {
+                    warn!("{PAD_TRANSPORT_ENV}=usbip but {err:#}: using uhid");
+                    transport = PadTransport::Uhid;
+                }
+            }
+        }
+        if kind != GamepadKind::Xbox360 && transport == PadTransport::Uhid {
             let usable = if uhid.as_os_str().is_empty() {
                 Err(anyhow::anyhow!("no --uhid"))
             } else {
@@ -604,6 +680,7 @@ impl Gamepads {
             kind,
             uinput: uinput.to_path_buf(),
             uhid: uhid.to_path_buf(),
+            transport,
             dev_dir: input_dir.join("dev"),
             hidraw_dir: input_dir.join("dev/hidraw"),
             udev_dir: input_dir.join("udev/data"),
@@ -748,8 +825,14 @@ impl Gamepads {
         // bytes of the run's. A Steam Controller's `uniq` is one too (it is
         // Bluetooth); its serial is made as Valve formats them, from the run's.
         let mac = [0x02, 0xca, 0xfe, bytes[5], bytes[6], bytes[7]];
-        let serial =
-            steam_controller::serial_for(steam_controller::VARIANT, self.serial_hash(index));
+        // A Steam Controller on a USB transport is the wired one.
+        let usb = self.kind == GamepadKind::Steam && self.transport == PadTransport::Usbip;
+        let variant = if usb {
+            steam_controller::VARIANT.usb()
+        } else {
+            steam_controller::VARIANT
+        };
+        let serial = steam_controller::serial_for(variant, self.serial_hash(index));
         let tag = format!("{hash:016x}");
         // What the kernel keeps as the device's `phys` (and finds it by here).
         let phys = format!("cha/pad{index}/{tag}");
@@ -768,12 +851,12 @@ impl Gamepads {
                         .join(":"),
                 ),
                 _ => (
-                    steam_controller::VARIANT.name(),
-                    steam_controller::VARIANT.bus(),
+                    variant.name(),
+                    variant.bus(),
                     steam_controller::VENDOR,
-                    steam_controller::VARIANT.product(),
+                    variant.product(),
                     steam_controller::VERSION,
-                    steam_controller::VARIANT.descriptor(),
+                    variant.descriptor(),
                     // The Bluetooth controller's `uniq` is its address.
                     mac.iter()
                         .map(|b| format!("{b:02x}"))
@@ -791,40 +874,67 @@ impl Gamepads {
                     "virtual DualSense",
                 ),
                 _ => (
-                    Box::new(SteamController::new(
-                        steam_controller::VARIANT,
-                        index,
-                        &serial,
-                    )),
-                    steam_controller::VARIANT.driver(),
-                    steam_controller::VARIANT.inputs(),
-                    &STEAM_CONTROLLER,
+                    Box::new(SteamController::new(variant, index, &serial)),
+                    variant.driver(),
+                    variant.inputs(),
+                    if usb {
+                        &STEAM_CONTROLLER_USB
+                    } else {
+                        &STEAM_CONTROLLER
+                    },
                     "virtual Steam Controller",
                 ),
             };
-        let params = uhid::Params {
-            name,
-            phys: &phys,
-            uniq: &uniq,
-            bus,
-            vendor,
-            product,
-            version,
-            descriptor,
-        };
-        let device = Device::create(
-            &self.uhid,
-            &params,
-            protocol,
-            self.events.clone(),
-            format!("pad{index}-uhid"),
-        )?;
-        let found = match uhid::wait_for_nodes(&phys, driver, inputs, BIND_WAIT) {
-            Ok(found) => found,
-            Err(err) => {
-                device.destroy();
-                return Err(err);
-            }
+        let (device, found) = if usb {
+            let usb_identity = UsbIdentity {
+                vendor,
+                product,
+                bcd_device: version,
+                manufacturer: "Valve Software".to_string(),
+                product_name: name.to_string(),
+                serial: serial.clone(),
+                report_descriptor: variant.descriptor(),
+            };
+            let pad = UsbPad::attach(
+                usb_identity,
+                protocol,
+                self.events.clone(),
+                &format!("pad{index}"),
+            )?;
+            let found = match pad.wait_for_nodes(driver, BIND_WAIT) {
+                Ok(found) => found,
+                Err(err) => {
+                    pad.destroy();
+                    return Err(err);
+                }
+            };
+            (PadDevice::Usb(pad), found)
+        } else {
+            let params = uhid::Params {
+                name,
+                phys: &phys,
+                uniq: &uniq,
+                bus,
+                vendor,
+                product,
+                version,
+                descriptor,
+            };
+            let device = Device::create(
+                &self.uhid,
+                &params,
+                protocol,
+                self.events.clone(),
+                format!("pad{index}-uhid"),
+            )?;
+            let found = match uhid::wait_for_nodes(&phys, driver, inputs, BIND_WAIT) {
+                Ok(found) => found,
+                Err(err) => {
+                    device.destroy();
+                    return Err(err);
+                }
+            };
+            (PadDevice::Uhid(device), found)
         };
         let mut pad = HidPad {
             device,
@@ -1632,6 +1742,20 @@ mod tests {
         let hidraw = udev_entry(5, Class::Hidraw, &DUALSENSE);
         assert!(!hidraw.contains("ID_INPUT"));
         assert!(hidraw.starts_with("I:5\nE:ID_BUS=usb\n") && hidraw.ends_with("V:1\n"));
+    }
+
+    #[test]
+    fn the_steam_pad_transport_is_uhid_unless_usbip_is_asked() {
+        assert_eq!(PadTransport::parse(""), PadTransport::Uhid);
+        assert_eq!(PadTransport::parse("uhid"), PadTransport::Uhid);
+        assert_eq!(PadTransport::parse(" USBIP\n"), PadTransport::Usbip);
+        assert_eq!(PadTransport::parse("bluetooth"), PadTransport::Uhid);
+        // The cable's udev identity is the wired controller's.
+        assert_eq!(STEAM_CONTROLLER_USB.bus, "usb");
+        assert_eq!(
+            STEAM_CONTROLLER_USB.product,
+            format!("{:04x}", steam_controller::VARIANT.usb().product())
+        );
     }
 
     #[test]

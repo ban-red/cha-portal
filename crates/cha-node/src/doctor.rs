@@ -103,6 +103,9 @@ pub async fn run(
         });
         checks.push(gamepads(docker, config).await);
         checks.push(uhid_pads(docker, config).await);
+        if config.steam_pad_usbip {
+            checks.push(vhci_pads(Path::new(crate::environments::VHCI_DIR)));
+        }
         checks.push(kvm(std::path::Path::new("/sys")));
         checks.push(sandboxes(docker, config).await);
         checks.push(nvidia_wine(docker, config).await);
@@ -498,6 +501,32 @@ async fn uhid_pads(docker: &Docker, config: &DockerConfig) -> Check {
     }
     .fix(format!(
         "load the module: {} (or run the agent with CHA_UHID= to go without)",
+        hostfiles::FIX
+    ))
+}
+
+/// `CHA_STEAM_PAD_TRANSPORT=usbip`: the kernel's virtual USB host controller
+/// (`vhci-hcd`) must be loaded, or its `attach` file is missing and a streamer
+/// falls back to uhid.
+fn vhci_pads(dir: &Path) -> Check {
+    let name = "Steam pads over USB";
+    if dir.join("attach").exists() {
+        return check(
+            Level::Ok,
+            name,
+            format!("{} is there (vhci-hcd is loaded)", dir.display()),
+        );
+    }
+    check(
+        Level::Warn,
+        name,
+        format!(
+            "{} is missing: the vhci-hcd module isn't loaded, so Steam pads use uhid",
+            dir.display()
+        ),
+    )
+    .fix(format!(
+        "load it: {} (or sudo modprobe vhci-hcd)",
         hostfiles::FIX
     ))
 }
@@ -1304,6 +1333,16 @@ mod tests {
         ));
         assert!(low.level == Level::Warn);
         assert_eq!(low.name, "Docker's and app data disk");
+    }
+
+    #[test]
+    fn the_vhci_check_looks_for_the_attach_file() {
+        let dir = std::env::temp_dir().join(format!("cha-vhci-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(vhci_pads(&dir).level == Level::Warn);
+        std::fs::write(dir.join("attach"), "").unwrap();
+        assert!(vhci_pads(&dir).level == Level::Ok);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

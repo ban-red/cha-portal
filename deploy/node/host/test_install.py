@@ -70,19 +70,23 @@ class InstallTest(unittest.TestCase):
                 f"apparmor_parser -r -W {self.dest(PROFILE)}",
                 "modprobe uinput",
                 "modprobe uhid",
+                "modprobe vhci-hcd",
             ],
         )
         with open(self.dest(MODULES)) as f:
             modules = f.read().split()
         self.assertIn("uinput", modules)
         self.assertIn("uhid", modules)
+        self.assertIn("vhci-hcd", modules)
 
         os.remove(self.log)
         again = self.run_script()
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(again.stdout.count("unchanged"), 4)
         # Nothing to reload; the modules are loaded each time (cheap).
-        self.assertEqual(self.calls(), ["modprobe uinput", "modprobe uhid"])
+        self.assertEqual(
+            self.calls(), ["modprobe uinput", "modprobe uhid", "modprobe vhci-hcd"]
+        )
 
     def test_updates_only_what_differs(self):
         self.run_script()
@@ -136,7 +140,9 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         with open(self.dest(CLOCKS)) as f:
             self.assertEqual(f.read(), "mine\n")
-        self.assertEqual(self.calls(), ["modprobe uinput", "modprobe uhid"])
+        self.assertEqual(
+            self.calls(), ["modprobe uinput", "modprobe uhid", "modprobe vhci-hcd"]
+        )
         self.assertEqual(self.run_script("--check").returncode, 1)
 
     def test_check_reports_without_changing(self):

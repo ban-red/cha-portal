@@ -79,6 +79,12 @@ mod uinput_policy;
 #[cfg(target_os = "linux")]
 mod uinput_proto;
 #[cfg(target_os = "linux")]
+mod usbdev;
+#[cfg(target_os = "linux")]
+mod usbip;
+#[cfg(target_os = "linux")]
+mod vhci;
+#[cfg(target_os = "linux")]
 mod viewers;
 #[cfg(target_os = "linux")]
 mod ws;
