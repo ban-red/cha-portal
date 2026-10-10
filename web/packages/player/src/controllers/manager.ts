@@ -214,21 +214,26 @@ export class ControllerManager {
 
   /** Slots and duplicates, after the set of pads changed. */
   private refresh(): void {
-    const hidCounts = new Map<string, number>();
-    const idKey = (i: ControllerInfo) => `${i.vendorId}:${i.productId}`;
-    const pads = [...this.all.values()];
-    for (const { pad } of pads) {
-      if (pad.info.backend === "webhid" && pad.info.vendorId !== undefined) {
-        hidCounts.set(idKey(pad.info), (hidCounts.get(idKey(pad.info)) ?? 0) + 1);
-      }
-    }
     // A pad both backends see: the driver's version is the one that counts.
+    // The Gamepad API's copy is matched by its ids, or by its name when it
+    // has none: Chrome on macOS reads some pads through the GameController
+    // framework, whose ids say only "Steam Controller".
+    const idKey = (i: ControllerInfo) => `${i.vendorId}:${i.productId}`;
+    const nameKey = (i: ControllerInfo) => i.name.trim().toLowerCase();
+    const pads = [...this.all.values()];
+    const unmatched = pads.filter(({ pad }) => pad.info.backend === "webhid" && pad.info.vendorId !== undefined);
     const shown: BackendController[] = [];
     for (const { pad } of pads) {
-      const left = hidCounts.get(idKey(pad.info)) ?? 0;
-      if (pad.info.backend === "gamepad" && pad.info.vendorId !== undefined && left > 0) {
-        hidCounts.set(idKey(pad.info), left - 1);
-        continue;
+      if (pad.info.backend === "gamepad") {
+        const same =
+          pad.info.vendorId !== undefined
+            ? (h: BackendController) => idKey(h.info) === idKey(pad.info)
+            : (h: BackendController) => nameKey(h.info) === nameKey(pad.info);
+        const at = unmatched.findIndex(({ pad: h }) => same(h));
+        if (at >= 0) {
+          unmatched.splice(at, 1);
+          continue;
+        }
       }
       shown.push(pad);
     }

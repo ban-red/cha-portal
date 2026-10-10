@@ -168,6 +168,26 @@ describe("dedupe", () => {
     manager.stop();
   });
 
+  test("a Gamepad API pad without ids matches the HID one by name", () => {
+    const { gamepad, hid, manager } = setup();
+    const api = new FakePad("g0", "gamepad", undefined, "steam");
+    Object.assign(api.info, { name: "Steam Controller" });
+    gamepad.add(api);
+    const h = new FakePad("h0", "webhid", [0x28de, 0x1302], "steam");
+    Object.assign(h.info, { name: "Steam Controller" });
+    hid.add(h);
+    expect(manager.controllers().map((x) => x.id)).toEqual(["h0"]);
+    manager.stop();
+  });
+
+  test("a Gamepad API pad without ids and another name stays", () => {
+    const { gamepad, hid, manager } = setup();
+    gamepad.add(new FakePad("Wireless Controller", "gamepad"));
+    hid.add(new FakePad("h0", "webhid", [0x28de, 0x1302], "steam"));
+    expect(manager.controllers()).toHaveLength(2);
+    manager.stop();
+  });
+
   test("the Gamepad API's pad returns when the HID one leaves", () => {
     const { gamepad, hid, manager } = setup();
     gamepad.add(new FakePad("g0", "gamepad", [0x2dc8, 0x6101]));
