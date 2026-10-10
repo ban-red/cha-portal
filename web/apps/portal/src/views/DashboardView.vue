@@ -228,11 +228,14 @@ function cardOn(t: Template) {
     launch: (choice: Parameters<typeof launch.mutate>[0]["choice"]) => launch.mutate({ template: t, choice }),
     duplicate: () => (duplicating.value = t),
     pin: () => togglePin(t.id),
-    "open-in-player": () => openInPlayerApp(t.id),
-    "set-persistent": (persistent: boolean) => setPersistent.mutate({ template: t.id, persistent }),
-    "choose-controller": (kind: Parameters<typeof controllerApps.choose>[1]) =>
+    // camelCase, as AppCard emits them: through `v-on` an object's keys aren't
+    // converted the way a template's `@open-in-player` is, and a kebab-case
+    // key never matches.
+    openInPlayer: () => openInPlayerApp(t.id),
+    setPersistent: (persistent: boolean) => setPersistent.mutate({ template: t.id, persistent }),
+    chooseController: (kind: Parameters<typeof controllerApps.choose>[1]) =>
       controllerApps.choose(controllerApps.byTemplate.value.get(t.id)!, kind),
-    "choose-fps": (fps: Parameters<typeof appFps.choose>[1]) => appFps.choose(appFps.byTemplate.value.get(t.id)!, fps),
+    chooseFps: (fps: Parameters<typeof appFps.choose>[1]) => appFps.choose(appFps.byTemplate.value.get(t.id)!, fps),
   };
 }
 
