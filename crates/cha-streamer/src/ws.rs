@@ -43,7 +43,7 @@ use crate::system::Sampler;
 use crate::viewers::Seat;
 use crate::wt::{
     HOLD_MS, PACE_INTERVAL, STATS_INTERVAL, SYSTEM_INTERVAL, Video, ceiling_bps, codec_request,
-    next_frame, next_packet, rfi_request,
+    next_frame, next_packet, presence_request, rfi_request,
 };
 
 /// The biggest message of media, header included.
@@ -552,6 +552,10 @@ pub async fn run(
                 if let Some(report) = parse_report(&line) {
                     pacing.reports.record(report, Instant::now());
                     continue;
+                }
+                // Also the viewers' (idle clock); the rate holds while the page is hidden.
+                if let Some(active) = presence_request(&line) {
+                    pacing.rate.set_away(!active);
                 }
                 if let Some(id) = rfi_request(&line) {
                     video.page_lost(&sessions.media, id);
