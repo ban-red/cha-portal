@@ -302,6 +302,43 @@ struct UserApp {
     /// outside the data root (a NAS share); absent when it is under the root.
     #[serde(skip_serializing_if = "Option::is_none")]
     shared_path: Option<String>,
+    /// Why a launch would go without that share, when every online node that
+    /// keeps it reports it unusable (a stale NFS mount, say); absent when
+    /// some node can use it or none reports a state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shared_problem: Option<String>,
+}
+
+/// What is wrong with the app's shared folder on every online node that keeps
+/// one, for the user to see before launching.
+fn shared_problem(data: &str, nodes: &[NodeShared]) -> Option<String> {
+    let mut problem = None;
+    for node in nodes
+        .iter()
+        .filter(|n| n.online && n.dirs.contains_key(data))
+    {
+        match node.status.get(data) {
+            Some(status) if status.state != SharedDirState::Ok => {
+                problem.get_or_insert_with(|| {
+                    let why = status.detail.clone().unwrap_or_else(|| {
+                        match status.state {
+                            SharedDirState::Missing => "it isn't mounted",
+                            SharedDirState::Incomplete => "it lacks folders the app needs",
+                            SharedDirState::Unreachable => "it didn't answer in time",
+                            _ => "it can't be written to",
+                        }
+                        .to_string()
+                    });
+                    format!(
+                        "The shared folder ({}) isn't usable on {}: {why}. A launch now starts without it.",
+                        node.dirs[data], node.name
+                    )
+                });
+            }
+            _ => return None,
+        }
+    }
+    problem
 }
 
 fn user_app(
@@ -309,7 +346,7 @@ fn user_app(
     rows: &[AppStorageRow],
     choices: &HashMap<String, bool>,
     live: &[String],
-    shared_paths: &HashMap<String, String>,
+    nodes: &NodeStorage,
 ) -> UserApp {
     let data = template.data_id();
     let app = app_settings(template, rows.iter().find(|r| r.template_id == data));
@@ -321,7 +358,8 @@ fn user_app(
         default: app.default_persistent,
         shared_access: eff.shared_access,
         live: live.iter().any(|l| l == data),
-        shared_path: shared_paths.get(data).cloned(),
+        shared_path: nodes.shared_paths.get(data).cloned(),
+        shared_problem: shared_problem(data, &nodes.nodes),
     }
 }
 
@@ -341,12 +379,13 @@ async fn list(
     let rows = db::app_storage(&state.db).await?;
     let choices = db::user_storage(&state.db, &user.id).await?;
     let live = live_data_ids(&state, &user.id).await?;
+    let apps = environments::all(&state)
+        .iter()
+        .map(|t| user_app(t, &rows, &choices, &live, &nodes))
+        .collect();
     Ok(Json(UserStorage {
         root: nodes.root,
-        apps: environments::all(&state)
-            .iter()
-            .map(|t| user_app(t, &rows, &choices, &live, &nodes.shared_paths))
-            .collect(),
+        apps,
     }))
 }
 
@@ -409,13 +448,7 @@ async fn show(state: &AppState, user: &User, template: &Template) -> ApiResult<U
     let choices = db::user_storage(&state.db, &user.id).await?;
     let live = live_data_ids(state, &user.id).await?;
     let nodes = node_storage(state).await?;
-    Ok(user_app(
-        template,
-        &rows,
-        &choices,
-        &live,
-        &nodes.shared_paths,
-    ))
+    Ok(user_app(template, &rows, &choices, &live, &nodes))
 }
 
 #[derive(Deserialize)]
@@ -890,5 +923,57 @@ mod tests {
         }
         assert_eq!(SharedAccess::parse("rw"), None);
         assert!(serde_json::from_value::<SharedAccess>(json!("rw")).is_err());
+    }
+
+    fn node_with(name: &str, online: bool, state: Option<SharedDirState>) -> NodeShared {
+        NodeShared {
+            id: name.into(),
+            name: name.into(),
+            online,
+            data_root: "/srv".into(),
+            dirs: [("steam".to_string(), "/mnt/games/steam".to_string())].into(),
+            status: state
+                .map(|state| {
+                    (
+                        "steam".to_string(),
+                        SharedDirStatus {
+                            state,
+                            fs_type: None,
+                            source: None,
+                            detail: Some("Stale file handle".into()),
+                            checked_at: 1,
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_launch_is_warned_about_only_when_no_online_node_has_a_usable_share() {
+        let bad = SharedDirState::Missing;
+        let ok = SharedDirState::Ok;
+        let one = [node_with("amd", true, Some(bad))];
+        let said = shared_problem("steam", &one).unwrap();
+        assert!(
+            said.contains("amd") && said.contains("Stale file handle"),
+            "{said}"
+        );
+        // Another node can use it; an older agent says nothing; offline nodes don't count.
+        let two = [
+            node_with("amd", true, Some(bad)),
+            node_with("nv", true, Some(ok)),
+        ];
+        assert_eq!(shared_problem("steam", &two), None);
+        assert_eq!(
+            shared_problem("steam", &[node_with("old", true, None)]),
+            None
+        );
+        assert_eq!(
+            shared_problem("steam", &[node_with("off", false, Some(bad))]),
+            None
+        );
+        assert_eq!(shared_problem("chrome", &one), None);
     }
 }

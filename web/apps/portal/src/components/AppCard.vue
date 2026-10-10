@@ -13,6 +13,7 @@ import { autoOption } from "../placements";
 import AppStorageMenu from "./AppStorageMenu.vue";
 import GpuBadge from "./GpuBadge.vue";
 import FormError from "./FormError.vue";
+import WarningNote from "./WarningNote.vue";
 import LaunchButton from "./LaunchButton.vue";
 
 const props = defineProps<{
@@ -183,6 +184,7 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
       </div>
 
       <div class="mt-auto pt-3">
+        <WarningNote v-if="!instance" class="mb-2" :message="storage?.sharedProblem ?? null" />
         <LaunchButton
           :id="t.id"
           :placements="placements"
@@ -269,5 +271,6 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
         />
       </div>
     </div>
+    <WarningNote v-if="!instance" class="mx-3 mb-3" :message="storage?.sharedProblem ?? null" />
   </article>
 </template>

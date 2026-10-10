@@ -336,6 +336,8 @@ export interface StorageApp {
   live: boolean;
   /** Where the node keeps the shared data, when that's outside the data root (a NAS share). */
   sharedPath?: string;
+  /** Why a launch would go without that share (every node that keeps it reports it unusable). */
+  sharedProblem?: string;
 }
 
 export interface StorageInfo {
