@@ -210,6 +210,9 @@ impl App {
             }
             if prev.pad != now.pad {
                 rects.push(pad_rect(width));
+                if prev.pad.buttons & 1 != now.pad.buttons & 1 {
+                    rects.push(flash_rect(width, height));
+                }
             }
             rects
         };

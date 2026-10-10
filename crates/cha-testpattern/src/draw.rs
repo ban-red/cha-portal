@@ -1,7 +1,7 @@
 //! The picture: a static backdrop and title, plus what changes every frame
 //! (a sweeping bar, the frame counter, the frame number as a 32-cell binary
-//! strip), a flash while input was just received, and the first gamepad's
-//! state. Only the regions that change are repainted.
+//! strip), a flash while input was just received, a green centre square while
+//! pad button A is held, and the first gamepad's state. Only the regions that change are repainted.
 
 /// A rectangle in pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -93,6 +93,8 @@ const PAD_LABEL_SCALE: i32 = 4;
 const STICK: i32 = 96;
 const STICK_DOT: i32 = 12;
 const TRIGGER: i32 = 96;
+/// The centre square's colour while pad button A is held (a probe looks for it).
+pub const PAD_A_FLASH: u32 = 0x0000_ff00;
 const OFF: u32 = 0x0020_2020;
 
 fn text_rect(x: i32, y: i32, chars: usize, scale: i32) -> Rect {
@@ -169,6 +171,10 @@ impl Canvas<'_> {
         }
         if !pad_rect(self.width).intersect(&area).is_empty() {
             self.pad(area, &scene.pad);
+        }
+        if scene.pad.buttons & 1 == 1 {
+            // Button A held: the centre square goes green (input → screen for pads).
+            self.fill(area, flash_rect(self.width, self.height), PAD_A_FLASH);
         }
         if scene.flash {
             self.fill(area, flash_rect(self.width, self.height), 0x00ff_ffff);
@@ -366,5 +372,32 @@ mod tests {
         assert_eq!(at(0), OFF);
         assert_eq!(at(1), 0x00e8_4a3c);
         assert!(p.x + p.w <= w);
+    }
+
+    #[test]
+    fn pad_a_turns_the_centre_green() {
+        let (w, h) = (1280, 720);
+        let mut pixels = vec![0u32; (w * h) as usize];
+        let mut canvas = Canvas {
+            pixels: &mut pixels,
+            width: w,
+            height: h,
+        };
+        let mut scene = Scene {
+            noise: Rect::new(0, 0, 0, 0),
+            ..Scene::default()
+        };
+        let f = flash_rect(w, h);
+        let centre = ((f.y + f.h / 2) * w + f.x + f.w / 2) as usize;
+        canvas.paint(f, &scene);
+        assert_ne!(pixels[centre], PAD_A_FLASH);
+        scene.pad.buttons = 1;
+        let mut canvas = Canvas {
+            pixels: &mut pixels,
+            width: w,
+            height: h,
+        };
+        canvas.paint(f, &scene);
+        assert_eq!(pixels[centre], PAD_A_FLASH);
     }
 }

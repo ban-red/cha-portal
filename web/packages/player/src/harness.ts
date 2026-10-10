@@ -76,6 +76,7 @@
 
 import { pictureSize } from "./crop";
 import { round3 } from "./controllers/types";
+import { runPadProbe, type PadProbeOptions, type PadProbeResult } from "./pad-probe";
 
 /** A small seeded generator (mulberry32): the same seed gives the same run. */
 export function rng(seed: number): () => number {
@@ -482,6 +483,8 @@ export class Harness {
   private pad = { b: new Array<number>(24).fill(0), a: [0, 0, 0, 0] };
   /** The quantized key of what was last sent, so the pad streams change-only like the real ones. */
   private padLast = "";
+  /** The sequence number of the last pad state sent (`q`, counted from 1). */
+  private padSeq = 0;
   /** Live runs per pad index ("b6", "a0"): overlapping holds let go only of their own. */
   private readonly padRefs = new Map<string, number>();
   /** Bumped by releaseAll: a pad run whose generation is stale stops where it is, sending nothing. */
@@ -502,7 +505,9 @@ export class Harness {
     const key = `${this.pad.b.map(round3).join(",")}|${this.pad.a.map(round3).join(",")}`;
     if (key === this.padLast) return;
     this.padLast = key;
-    this.sendPad({ k: "pad", i: 0, ty: "xbox", b: this.pad.b.map(round3), a: this.pad.a.map(round3) });
+    // Numbered like a real pad's (`q`), so a datagram that arrives late is dropped.
+    this.padSeq += 1;
+    this.sendPad({ k: "pad", i: 0, ty: "xbox", q: this.padSeq, b: this.pad.b.map(round3), a: this.pad.a.map(round3) });
   }
 
   private padButtons(spec: Record<string, unknown>): [number, number][] {
@@ -651,6 +656,30 @@ export class Harness {
       this.padGive(refs);
       if (this.sendPad) this.padSend();
     }
+  }
+
+  /**
+   * Pad input → decoded frame, for the test-pattern environment (its centre square turns green
+   * while A is held): presses A as the session's own pad `count` times at random gaps and times how
+   * long the decoded video takes to show it. See pad-probe.ts and docs/benchmarks/.
+   */
+  padProbe(options: PadProbeOptions = {}): Promise<PadProbeResult> {
+    const a = PAD_BUTTONS.a;
+    return runPadProbe(
+      this.video,
+      () => {
+        this.pad.b[a] = 1;
+        this.padLast = ""; // always send, even if a stale state matched
+        const t0 = performance.now();
+        this.padSend();
+        return t0;
+      },
+      () => {
+        this.pad.b[a] = 0;
+        this.padSend();
+      },
+      options,
+    );
   }
 
   /** Pull an analog trigger to `depth` (default 1) over ~70 ms, hold for `ms`, ease off over ~90 ms. */

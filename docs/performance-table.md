@@ -33,6 +33,23 @@ These come from the same browser, so they compare nodes, not browsers.
 The app's browser pane doesn't present like Chrome, so treat click → screen as
 a comparison between nodes, not as the number a Chrome user gets.
 
+### Pad press → decoded frame (not glass to glass)
+
+Measured 2026-10-10 in the same browser pane, over the control channel (before
+pad input moves to datagrams): a pad's button A is sent as the player sends it,
+and the page times the decoded frame in which the test pattern shows it
+(1920×1440 decoded, 100 presses per run, 3 runs). **Decoded, not presented:**
+it leaves out the controller's USB hop and the display's scan-out, so it is not
+a controller-to-screen number. Procedure and raw runs:
+[benchmarks/pad-latency.md](benchmarks/pad-latency.md).
+
+| Transport, codec | 60 fps p50 / p95 | 120 fps p50 / p95 |
+|---|---|---|
+| WebTransport, AV1 | **18.6** / 25.6 ms | **13.6** / 20.4 ms |
+| WebTransport, H.264 | **18.9** / 26.7 ms | **13.0** / 20.8 ms |
+| WebRTC, AV1 | **20.7** / 27.7 ms | **15.1** / 20.6 ms |
+| WebRTC, H.264 | **19.0** / 26.7 ms | **14.1** / 20.8 ms |
+
 ## The latency budget on the baseline
 
 For a 4090 into Chrome on an M4 over 1 GbE (S1c, S1d, S1e):
