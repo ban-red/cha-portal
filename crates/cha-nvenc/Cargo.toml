@@ -1,6 +1,6 @@
 [package]
 name = "cha-nvenc"
-version = "0.5.0"
+version = "0.5.1"
 description = "Our NVENC + CUDA binding: the driver's libraries loaded at runtime, zero-copy input from EGL images"
 edition.workspace = true
 license.workspace = true

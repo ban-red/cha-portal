@@ -1,6 +1,6 @@
 [package]
 name = "cha-player"
-version = "0.5.0"
+version = "0.5.1"
 description = "The native game-streaming client, macOS first: winit, wgpu on Metal, VideoToolbox, CoreAudio, SDL3 gamepads (ADR 0010)"
 edition.workspace = true
 license.workspace = true

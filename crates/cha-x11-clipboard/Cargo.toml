@@ -1,6 +1,6 @@
 [package]
 name = "cha-x11-clipboard"
-version = "0.5.0"
+version = "0.5.1"
 description = "Bridges an X11 desktop's CLIPBOARD to the streamer (and so the browser), inside the environment's app container"
 edition.workspace = true
 license.workspace = true
