@@ -12,7 +12,7 @@
 // streamer answers the app itself whenever this page is slow, fails or goes (docs say how long it waits).
 
 import type { HidDevice } from "./hid-types";
-import { VALVE_VENDOR_ID, relayedWriteAllowed, rewriteBuildTimes } from "./steam-protocol";
+import { COMMAND_FEATURE, ECHOING_COMMANDS, VALVE_VENDOR_ID, receiveReply, relayedWriteAllowed, rewriteBuildTimes, type GetRetry } from "./steam-protocol";
 
 /** A raw report not heard from for this long is sent again (a datagram may have been lost). */
 export const RAW_RESEND_MS = 50;
@@ -83,6 +83,8 @@ export class HidRelay {
   private queue: Promise<void> = Promise.resolve();
   private queued = 0;
   private readonly warned = new Set<string>();
+  /** The command last written to the command channel, whose reply the next read of it must echo. */
+  private lastCommand: number | undefined;
 
   constructor(
     readonly slot: number,
@@ -92,6 +94,8 @@ export class HidRelay {
     private readonly nextQ: () => number,
     private readonly now: () => number,
     private readonly skip: ReadonlySet<number> = new Set(),
+    /** Reads of a feature report are repeated like this (a puck answers late). Default: once. */
+    private readonly getRetry?: GetRetry,
   ) {}
 
   /** Asks the streamer to pass this controller through; `accepted` is the answer. */
@@ -211,8 +215,9 @@ export class HidRelay {
       try {
         switch (req.op) {
           case "get_feature": {
-            const view = await this.device.receiveFeatureReport(req.r);
-            const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+            // On a command channel the reply starts with the command that asked for it.
+            const echo = req.r === COMMAND_FEATURE && this.lastCommand !== undefined && ECHOING_COMMANDS.has(this.lastCommand) ? this.lastCommand : undefined;
+            const bytes = await receiveReply(this.device, req.r, echo, this.getRetry);
             // Steam must not see a firmware older than the one it bundles (it would update it here).
             if (this.device.vendorId === VALVE_VENDOR_ID && req.r === 1) rewriteBuildTimes(bytes);
             this.noteGet(req.r, bytes);
@@ -221,6 +226,7 @@ export class HidRelay {
           }
           case "set_feature":
             await this.device.sendFeatureReport(req.r, data as BufferSource);
+            if (req.r === COMMAND_FEATURE) this.lastCommand = data[0];
             break;
           case "set_output":
           case "output":

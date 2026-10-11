@@ -52,6 +52,51 @@ export function settingsMessage(...settings: [number, number][]): number[] {
 
 export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** How a feature read is repeated (a failure, or a reply that is not the command's yet). */
+export interface GetRetry {
+  attempts: number;
+  delayMs: number;
+}
+
+/**
+ * A puck's feature replies are not ready when the command returns: read from a connected slot, the
+ * reply was there 20 to 40 ms later, after one or two failed reads (macOS, 2026-10-10). Ten reads
+ * 10 ms apart cover that; the streamer waits a second for any request.
+ */
+export const PUCK_GET_RETRY: GetRetry = { attempts: 10, delayMs: 10 };
+
+/** Commands (feature report 1) whose reply starts with the command: the reads. */
+export const ECHOING_COMMANDS: ReadonlySet<number> = new Set([0x82, 0x83, 0x89, 0xae, 0xb4]);
+
+/**
+ * Reads feature report `reportId`. With a `command` the reply must start with it (or with the
+ * report id and then it): anything else is read again, as is a failure, up to `retry.attempts` in
+ * all. If no reply ever echoes the command, the last one read is returned for the caller to judge;
+ * if none could be read at all, the last error is thrown.
+ */
+export async function receiveReply(
+  device: { receiveFeatureReport(reportId: number): Promise<DataView> },
+  reportId: number,
+  command: number | undefined,
+  retry: GetRetry = { attempts: 1, delayMs: 0 },
+): Promise<Uint8Array> {
+  let last: Uint8Array | undefined;
+  let error: unknown;
+  for (let attempt = 0; attempt < Math.max(1, retry.attempts); attempt++) {
+    if (attempt) await sleep(retry.delayMs);
+    try {
+      const view = await device.receiveFeatureReport(reportId);
+      const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      if (command === undefined || bytes[0] === command || (bytes[0] === reportId && bytes[1] === command)) return bytes;
+      last = bytes;
+    } catch (err) {
+      error = err;
+    }
+  }
+  if (last) return last;
+  throw error ?? new Error("no reply");
+}
+
 /** SDL's sensor units: gyro ±2000 deg/s and accel ±2 g over the 16-bit range. */
 export const GYRO_SCALE = (2000 * Math.PI) / 180 / 32768;
 export const ACCEL_SCALE = (2 * 9.80665) / 32768;

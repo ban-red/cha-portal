@@ -455,6 +455,13 @@ impl Relay {
         self.owner.is_some()
     }
 
+    /// The pad slot the page knows this relay's controller by: what its
+    /// requests are addressed to. A puck's interface carries different
+    /// controllers over time, each in its slot.
+    pub fn set_slot(&mut self, slot: usize) {
+        self.slot = slot;
+    }
+
     #[cfg(test)]
     pub fn owner(&self) -> Option<u64> {
         self.owner

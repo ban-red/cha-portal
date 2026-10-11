@@ -256,11 +256,11 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
           Pass the Steam Controller through to Steam (experimental)
         </p>
         <p id="steam-passthrough-hint" class="mt-0.5 text-xs text-ink-3">
-          For a 2026 Steam Controller on a USB cable. Steam in the environment then talks to the controller itself:
-          its settings, haptics and Steam button come from the real firmware, and this page forwards the controller's
-          reports as they are. Until Steam has started there, the controller acts as a keyboard and mouse here. It
-          needs a node whose Steam controllers are USB devices; otherwise sessions send the controller the usual way.
-          Applies from the next session.
+          For a 2026 Steam Controller on a USB cable, or paired to its wireless puck (connect the puck with WebHID
+          too). Steam in the environment then talks to the controller itself: its settings, haptics and Steam button
+          come from the real firmware, and this page forwards the controller's reports as they are. Until Steam has
+          started there, the controller acts as a keyboard and mouse here. It needs a node whose Steam controllers
+          are USB devices; otherwise sessions send the controller the usual way. Applies from the next session.
         </p>
       </div>
       <ToggleSwitch

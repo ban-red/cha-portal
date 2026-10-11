@@ -204,13 +204,14 @@ is used unchanged:
   (experimental)" on the Controllers page (`localStorage` key
   `cha.player.steamPassthrough`, read when a session starts; the `Player`
   option `rawSteam`). A share link's player or viewer never relays.
-- The streamer's hello has `"rawHid": ["28de:1302"]`. It does when the
+- The streamer's hello has `"rawHid": ["28de:1302", "28de:1304"]`. It does when the
   environment's kind is `steam` and the pads are USB devices
   (`CHA_STEAM_PAD_TRANSPORT=usbip`, and the attach worked); otherwise it is
   `[]`, and an older streamer has no such key.
-- The controller is a WebHID `28de:1302` (the puck and Bluetooth are not
-  relayed yet), the page has the controls and the focus, and the streamer
-  answers its `open` with yes.
+- The controller is a WebHID `28de:1302`, or one behind a puck `28de:1304`
+  ([below](#the-wireless-puck-28de1304)); Bluetooth is not relayed yet. The
+  page has the controls and the focus, and the streamer answers its `open`
+  with yes.
 
 A pad is only ever made by a state; a `gone` for a pad that was never made
 makes none (it used to make a virtual controller for the app to find). The Gamepad
@@ -339,7 +340,132 @@ mouse on the computer it is plugged into. When the page loses the focus or the
 controls the relay closes and the page turns lizard mode off itself again
 (so the controller stays quiet), and when they come back it opens again; Steam
 then finds the emulated device had been answering in between. Not relayed yet:
-the puck, Bluetooth, other models, other kinds, the uhid transport.
+Bluetooth, other models, other kinds, the uhid transport.
+
+### The wireless puck (`28de:1304`)
+
+The 2026 controller's puck takes up to four controllers. A controller paired
+to the owner's real puck, which the page has open with WebHID, can be passed
+through the way the cable's is: same opt-in, same messages (`open` names
+`vid` 10462, `pid` 4868), same allowlist. What differs is the USB device Steam
+sees. The first controller behind a puck makes a second virtual USB device in
+the streamer, a puck, and each controller after it takes one of its slots.
+
+**The real puck's layout** (read from one on a Mac, 2026-10-10): full speed,
+bcdUSB `0x0201`, bcdDevice `0x0002`, endpoint 0 of 64 bytes, device class 0,
+one configuration, seven interfaces:
+
+| Interface | Real puck | Virtual puck |
+|---|---|---|
+| 0 | CDC communication (2/2/0), 1 endpoint | placeholder, vendor class `0xff`, 1 interrupt IN endpoint, never carries data |
+| 1 | CDC data (class 10), 2 endpoints | placeholder, vendor class `0xff`, bulk IN and OUT, never carries data |
+| 2 to 5 | HID (3/0/0), 2 endpoints each, one per controller slot, the cable controller's report descriptor byte for byte | the same, interrupt IN `0x83` to `0x86` and OUT `0x03` to `0x06` |
+| 6 | HID (3/0/0), vendor page `0xff00` usage 2: input `0x42` (53 bytes) and `0x79` (1), features 1 and 2 (63) | the same descriptor; its feature requests stall; nothing is relayed |
+
+**What is the real puck's and what is ours.** From the real one: the ids,
+bcdDevice and bcdUSB, the interface count, classes and numbers, interface 6's
+descriptor, and slots 2 to 5 using the cable's. Ours: the strings ("Valve
+Software", "Steam Controller Puck", a made-up serial `PXA` and ten hex digits),
+the endpoint addresses and intervals (the I/O Registry doesn't show them), the
+configuration's attributes, and the stubs behind interfaces 0 and 1. SDL's
+triton driver takes a puck only on HID interfaces 2 to 5 (`bInterfaceNumber`);
+the virtual puck has real interface numbers, which a uhid device cannot.
+
+**Why the CDC pair is a placeholder.** With real CDC class descriptors the
+host's `cdc_acm` could bind them and make a `ttyACM` on the node (and a
+ModemManager probe it), for nothing: Steam in the app sees `hidraw` nodes, not
+USB interfaces. Vendor class `0xff` interfaces bind no host driver. Tested on
+the node (kernel 6.17): `lsusb -t` lists interfaces 0 and 1 as "Vendor Specific
+Class", driver none, interfaces 2 to 6 on `usbhid`, and no tty appears. The cost:
+`lsusb` on the node shows a different class for 0 and 1 than the real puck's.
+`deploy/node/host/72-cha-virtual-pads.rules` names `0003:28DE:1304` beside the
+cable's `1302` so the five `hidraw` nodes and the slots' lizard-mode mouse and
+keyboard stay off the desk user's seat (re-run `install.sh`, which needs
+sudo; the puck works without it).
+
+**Slots.** The page sends `open` for a controller in its pad slot `i`, as for
+a cable. The streamer gives that controller a free slot interface of the puck
+(the one it had before if that is free) and keeps the mapping: requests for the
+controller go to the page under `i`, the page's reports for `i` go to that
+interface (`puck.rs`). A controller behind the puck has a pad slot and no
+virtual pad of its own, so the streamer does not make the cable's `1302`
+for it: pads are made only for the slot a state names, and the page sends no
+parsed state for a relayed slot (the streamer also ignores any that comes, and
+a `gone` ends the relay). Chrome gives the page each puck interface as its own
+HID device with no interface number; the page does not need one. It identifies
+the puck's own interface 6 by having no mouse or keyboard collection and does
+not open it.
+
+**Wireless status.** A dongle announces a controller with input report `0x79`,
+one byte: 2 connected, 1 disconnected (SDL's triton driver reads it so, and the
+page's `steam-triton.ts` was ported from it). The virtual puck sends `[0x79, 2]`
+on a slot interface when a relay opens on it and `[0x79, 1]` when it ends (the
+controller left, the session left, a failed page); the controller's own reports,
+the real puck's `0x79` among them, are relayed verbatim in between. The real
+puck's exact behaviour (whether it repeats the status, what it sends to a
+reader that opens late) is not known: reading from the kernel's `hidraw`
+reaches a reader only if it is open when the report is sent, so a Steam that
+opens a node after the controller joined does not see the connect status, and
+learns of the controller from the state reports that follow (the page's port of
+SDL's driver counts a state report as a connection; whether Steam does is not
+known). An empty slot sends nothing.
+
+**Empty slots refuse.** A slot interface with no controller answers every
+feature request with a stall, as the real puck's empty slots do (IOKit error on
+both the write and the read); so does interface 6. When the page is slow or
+fails on a controller's request, the emulated cable controller answers it (as for a
+cable), with this difference: nothing else exists behind the slot, so three
+failures in a row end the relay and the slot reports its controller gone.
+Commands not on the allowlist (`0x90`, `0xa9`, `0xb7` and the rest) are stalled by the emulation
+and never sent to the page, as for a cable.
+
+**Late feature replies.** A connected slot's reply to a command arrived 20 to
+40 ms after the write, after one or two failed reads (macOS, 2026-10-10); an
+immediate read failed. The page therefore reads a puck's feature report 1 again
+until the reply starts with the command that asked (or the report id and
+then it), up to 10 times 10 ms apart, and a read that failed is read again the
+same way (`receiveReply` in `steam-protocol.ts`). If no reply ever echoes the
+command, the last one read goes to the streamer, which asks again (3 times, as
+for a cable) before the emulation answers; the streamer's wait for a request
+stays 1 s. The commands whose replies are checked this way: `0x82`, `0x83`,
+`0x89`, `0xae`, `0xb4`.
+
+**Finding the controller.** A slot left alone for a relay says nothing of a
+controller already behind it (it is in lizard mode: a keyboard and mouse, not
+state reports). The page's driver therefore asks each slot of the puck every
+2 s while it is waiting and has found nobody: it writes `0x83` (get attributes;
+a read-only command on the allowlist) and counts the slot as having a
+controller only if the reply comes back as that command (the real puck's empty
+slots refuse the write; the echo check guards against a platform where they do
+not). A controller that wakes later is found by its `0x79` report. The driver
+does not claim the controller (lizard mode, sensors) when it is found while a
+relay may take it; that is Steam's job through the relay. Where no relay takes
+it (the option off, no offer, a refusal, no controls or focus), the driver
+claims it as it did before and the parsed path carries it.
+
+**Hotplug.** The virtual puck is made when the first controller behind a puck
+is passed through, mid-session or not, and kept for the streamer's life (like
+the pads). Its five `hidraw` nodes are in `/info` and follow the path of a pad
+that joins ([More players](#more-players-pads-that-join-mid-session)): the
+agent makes them in the running app, announces them, and Steam opens them.
+The owner plugging the puck in later is the same event for the page (its
+devices arrive, controllers wake). Controllers joining and leaving behind a
+puck that is already there change only their slot's status.
+
+**Firmware.** The same allowlist guards every relayed slot (streamer and page
+both check). The page also never writes to interface 6 or an empty slot.
+Nothing reaches the puck's own firmware, pairing or bootloader.
+
+**Tested** (2026-10-11, iolinux, kernel 6.17) with the real kernel and no
+controller: `gamepad::tests::live_steam_puck` (ignored; the same container as
+`live_steam_relay`) made the virtual puck and checked its seven interfaces,
+classes and numbers in sysfs, the five `hidraw` nodes, no host driver and no tty
+for interfaces 0 and 1, a connect status on a slot interface whose node was
+open, a feature round trip to the page under the controller's pad slot, a report
+arriving on its own interface verbatim, stalls on an empty slot and on interface
+6, a second controller on the next interface, and the disconnect status when the
+first left. Not tested: Steam, or a real puck (the feature queries above were made
+on a Mac with IOKit, not through WebHID).
 
 ### Firmware updates
 

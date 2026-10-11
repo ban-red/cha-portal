@@ -1,26 +1,34 @@
-//! A full-speed USB HID device and the device end of a USB/IP connection,
-//! Sans-IO: commands in, reply bytes out. Generalised from the spike
-//! `spikes/s9-usbip-loopback` (`device.rs` and `engine.rs`): the identity,
-//! strings and report descriptor come from the pad variant, and what a HID
-//! class request means is the caller's ([`Hid`]).
+//! A full-speed USB device with HID interfaces and the device end of a
+//! USB/IP connection, Sans-IO: commands in, reply bytes out. Generalised from
+//! the spike `spikes/s9-usbip-loopback` (`device.rs` and `engine.rs`): the
+//! identity, strings and report descriptors come from the pad variant, and
+//! what a HID class request means is the caller's ([`Hid`]).
 //!
-//! The device is one configuration with one HID interface (no boot protocol)
+//! A wired pad is one configuration with one HID interface (no boot protocol)
 //! and two interrupt endpoints, IN `0x81` and OUT `0x01`, 64 bytes, every
-//! frame. Endpoint 0's standard requests (GET_DESCRIPTOR, SET_ADDRESS,
+//! frame. A composite device (the wireless puck, [`crate::puck`]) lists its
+//! interfaces in [`Identity::interfaces`]: HID ones with their own report
+//! descriptors and interrupt endpoints, and placeholders of vendor class that
+//! never carry data. Interface numbers are the list's indices.
+//!
+//! Endpoint 0's standard requests (GET_DESCRIPTOR, SET_ADDRESS,
 //! SET/GET_CONFIGURATION, SET/GET_INTERFACE, GET_STATUS, SET/CLEAR_FEATURE of
 //! ENDPOINT_HALT) are answered here, always with success: replaying them on
 //! a device already configured would desync the data toggles. HID GET/SET_REPORT
-//! go to [`Hid`]; GET/SET_IDLE and GET/SET_PROTOCOL are kept here. Anything
-//! else stalls (the URB completes with -EPIPE).
+//! go to [`Hid`], told which interface they are for; GET/SET_IDLE and
+//! GET/SET_PROTOCOL are kept here. Anything else stalls (the URB completes
+//! with -EPIPE).
 //!
-//! [`Engine`] parks the kernel's interrupt-IN `CMD_SUBMIT`s; a report completes
-//! the oldest, or, with none parked, waits in a FIFO of [`PENDING_MAX`].
+//! [`Engine`] parks the kernel's interrupt-IN `CMD_SUBMIT`s per interface; a
+//! report completes the oldest of its interface, or, with none parked, waits
+//! in a FIFO of [`PENDING_MAX`].
 //!
 //! A control transfer can also stay pending: [`Hid`] answers a GET/SET_REPORT
 //! with [`Reply::Pending`] and a ticket, the URB is held, and
 //! [`Engine::complete_control`] answers it later (the raw HID relay waits for
 //! the real controller this way; USB/IP lets the device reply whenever it
-//! likes). An unlink of a held URB cancels it.
+//! likes). An unlink of a held URB cancels it. A ticket is the interface's:
+//! two interfaces may hold the same number.
 
 use std::collections::VecDeque;
 
@@ -37,6 +45,112 @@ pub const EP_SIZE: u16 = 64;
 /// Reports kept while no URB is parked, so a press/release pair survives.
 pub const PENDING_MAX: usize = 4;
 
+/// `bmAttributes` transfer types.
+pub const XFER_BULK: u8 = 2;
+pub const XFER_INTERRUPT: u8 = 3;
+
+/// One endpoint of an interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointSpec {
+    pub addr: u8,
+    pub transfer: u8,
+    pub size: u16,
+    pub interval: u8,
+}
+
+impl EndpointSpec {
+    pub const fn interrupt(addr: u8, size: u16, interval: u8) -> Self {
+        Self {
+            addr,
+            transfer: XFER_INTERRUPT,
+            size,
+            interval,
+        }
+    }
+
+    pub const fn bulk(addr: u8, size: u16) -> Self {
+        Self {
+            addr,
+            transfer: XFER_BULK,
+            size,
+            interval: 0,
+        }
+    }
+
+    pub const fn is_in(&self) -> bool {
+        self.addr & 0x80 != 0
+    }
+
+    /// The address without its direction bit: what USB/IP's `ep` field holds.
+    pub const fn number(&self) -> u8 {
+        self.addr & 0x0f
+    }
+
+    fn descriptor(&self) -> [u8; 7] {
+        let size = self.size.to_le_bytes();
+        [
+            7,
+            DT_ENDPOINT,
+            self.addr,
+            self.transfer,
+            size[0],
+            size[1],
+            self.interval,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceKind {
+    /// HID class (3/0/0, no boot protocol) with this report descriptor.
+    Hid(&'static [u8]),
+    /// Vendor class (0xff/0/0) with endpoints that stall every transfer: a
+    /// slot in the numbering that no host driver binds.
+    Placeholder,
+}
+
+/// One interface of the configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceSpec {
+    pub kind: InterfaceKind,
+    pub endpoints: Vec<EndpointSpec>,
+}
+
+impl InterfaceSpec {
+    /// A HID interface with an interrupt IN endpoint `ep_in` and an OUT one
+    /// `ep_out`, 64 bytes, every frame.
+    pub fn hid(report_descriptor: &'static [u8], ep_in: u8, ep_out: u8) -> Self {
+        Self {
+            kind: InterfaceKind::Hid(report_descriptor),
+            endpoints: vec![
+                EndpointSpec::interrupt(ep_in, EP_SIZE, 1),
+                EndpointSpec::interrupt(ep_out, EP_SIZE, 1),
+            ],
+        }
+    }
+
+    pub fn placeholder(endpoints: Vec<EndpointSpec>) -> Self {
+        Self {
+            kind: InterfaceKind::Placeholder,
+            endpoints,
+        }
+    }
+
+    pub fn report_descriptor(&self) -> Option<&'static [u8]> {
+        match self.kind {
+            InterfaceKind::Hid(rd) => Some(rd),
+            InterfaceKind::Placeholder => None,
+        }
+    }
+
+    fn class(&self) -> u8 {
+        match self.kind {
+            InterfaceKind::Hid(_) => 3,
+            InterfaceKind::Placeholder => 0xff,
+        }
+    }
+}
+
 /// What the device says it is.
 #[derive(Debug, Clone)]
 pub struct Identity {
@@ -46,7 +160,11 @@ pub struct Identity {
     pub manufacturer: String,
     pub product_name: String,
     pub serial: String,
+    /// The report descriptor of the one HID interface of a pad.
     pub report_descriptor: &'static [u8],
+    /// A composite device's interfaces, by number. Empty: the one HID
+    /// interface 0 with `report_descriptor`, endpoints [`EP_IN`] and [`EP_OUT`].
+    pub interfaces: Vec<InterfaceSpec>,
 }
 
 // bmRequestType fields.
@@ -104,18 +222,35 @@ pub enum Reply<T> {
 }
 
 /// What the device does with HID class requests and interrupt OUT data.
+/// `iface` is the interface (its number) the request is for.
 pub trait Hid {
     /// GET_REPORT: `kind` is input (1), [`REPORT_OUTPUT`] or
     /// [`REPORT_FEATURE`]; the bytes lead with the report id. `w_length` is
     /// what the host asked for.
-    fn get_report(&mut self, kind: u8, id: u8, w_length: u16) -> Reply<Vec<u8>>;
+    fn get_report(&mut self, iface: usize, kind: u8, id: u8, w_length: u16) -> Reply<Vec<u8>>;
     /// SET_REPORT with its data stage (the report id leads when numbered).
-    fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Reply<()>;
+    fn set_report(&mut self, iface: usize, kind: u8, id: u8, data: &[u8]) -> Reply<()>;
     /// Data of an interrupt OUT transfer (the report id leads).
-    fn output(&mut self, data: &[u8]);
+    fn output(&mut self, iface: usize, data: &[u8]);
+}
+
+/// The HID descriptor of an interface whose report descriptor is `len` bytes.
+fn hid_descriptor_for(len: usize) -> Vec<u8> {
+    let mut d = vec![9, DT_HID, 0x11, 0x01, 0, 1, DT_REPORT];
+    d.extend_from_slice(&(len as u16).to_le_bytes());
+    d
 }
 
 impl Identity {
+    /// The interfaces, by number.
+    pub fn layout(&self) -> Vec<InterfaceSpec> {
+        if self.interfaces.is_empty() {
+            vec![InterfaceSpec::hid(self.report_descriptor, EP_IN, EP_OUT)]
+        } else {
+            self.interfaces.clone()
+        }
+    }
+
     pub fn device_descriptor(&self) -> Vec<u8> {
         let mut d = vec![18, DT_DEVICE, 0x01, 0x02, 0, 0, 0, 64];
         d.extend_from_slice(&self.vendor.to_le_bytes());
@@ -144,22 +279,39 @@ impl Identity {
         ]
     }
 
-    pub fn hid_descriptor(&self) -> Vec<u8> {
-        let mut d = vec![9, DT_HID, 0x11, 0x01, 0, 1, DT_REPORT];
-        d.extend_from_slice(&(self.report_descriptor.len() as u16).to_le_bytes());
-        d
-    }
-
-    /// Configuration 1: interface 0 (HID, no boot protocol), the HID
-    /// descriptor, then the interrupt IN and OUT endpoints.
+    /// Configuration 1: each interface (no boot protocol for the HID ones),
+    /// its HID descriptor, then its endpoints.
     pub fn configuration_descriptor(&self) -> Vec<u8> {
-        let mut d = vec![9, DT_CONFIGURATION, 0, 0, 1, 1, 0, 0xa0, 250];
-        d.extend_from_slice(&[9, DT_INTERFACE, 0, 0, 2, 3, 0, 0, 0]);
-        d.extend_from_slice(&self.hid_descriptor());
-        for ep in [EP_IN, EP_OUT] {
-            d.extend_from_slice(&[7, DT_ENDPOINT, ep, 3]); // interrupt
-            d.extend_from_slice(&EP_SIZE.to_le_bytes());
-            d.push(1);
+        let layout = self.layout();
+        let mut d = vec![
+            9,
+            DT_CONFIGURATION,
+            0,
+            0,
+            layout.len() as u8,
+            1,
+            0,
+            0xa0,
+            250,
+        ];
+        for (number, spec) in layout.iter().enumerate() {
+            d.extend_from_slice(&[
+                9,
+                DT_INTERFACE,
+                number as u8,
+                0,
+                spec.endpoints.len() as u8,
+                spec.class(),
+                0,
+                0,
+                0,
+            ]);
+            if let Some(rd) = spec.report_descriptor() {
+                d.extend_from_slice(&hid_descriptor_for(rd.len()));
+            }
+            for ep in &spec.endpoints {
+                d.extend_from_slice(&ep.descriptor());
+            }
         }
         let total = d.len() as u16;
         d[2..4].copy_from_slice(&total.to_le_bytes());
@@ -197,15 +349,28 @@ pub enum Control {
     Pending(u32),
 }
 
+/// What the device keeps of one interface.
+#[derive(Debug)]
+pub struct IfaceState {
+    spec: InterfaceSpec,
+    /// The endpoints (addresses) that are halted.
+    halted: Vec<u8>,
+    pub idle: u8,
+    pub protocol: u8,
+}
+
+impl IfaceState {
+    fn endpoint(&self, addr: u8) -> Option<&EndpointSpec> {
+        self.spec.endpoints.iter().find(|e| e.addr == addr)
+    }
+}
+
 #[derive(Debug)]
 pub struct Device {
     identity: Identity,
+    ifaces: Vec<IfaceState>,
     pub address: u8,
     pub configuration: u8,
-    pub halted_in: bool,
-    pub halted_out: bool,
-    pub idle: u8,
-    pub protocol: u8,
 }
 
 fn truncate(mut v: Vec<u8>, w_length: u16) -> Control {
@@ -215,15 +380,58 @@ fn truncate(mut v: Vec<u8>, w_length: u16) -> Control {
 
 impl Device {
     pub fn new(identity: Identity) -> Self {
+        let ifaces = identity
+            .layout()
+            .into_iter()
+            .map(|spec| IfaceState {
+                spec,
+                halted: Vec::new(),
+                idle: 0,
+                protocol: 0,
+            })
+            .collect();
         Self {
             identity,
+            ifaces,
             address: 0,
             configuration: 0,
-            halted_in: false,
-            halted_out: false,
-            idle: 0,
-            protocol: 0,
         }
+    }
+
+    pub fn interfaces(&self) -> usize {
+        self.ifaces.len()
+    }
+
+    pub fn iface(&self, number: usize) -> Option<&IfaceState> {
+        self.ifaces.get(number)
+    }
+
+    /// The endpoint with this number and direction: its interface and spec.
+    pub fn endpoint(&self, number: u32, input: bool) -> Option<(usize, EndpointSpec)> {
+        self.ifaces.iter().enumerate().find_map(|(at, iface)| {
+            iface
+                .spec
+                .endpoints
+                .iter()
+                .find(|e| u32::from(e.number()) == number && e.is_in() == input)
+                .map(|e| (at, *e))
+        })
+    }
+
+    pub fn halted(&self, addr: u8) -> bool {
+        self.ifaces.iter().any(|i| i.halted.contains(&addr))
+    }
+
+    /// Halts or clears an endpoint; false if the device has none at `addr`.
+    pub fn set_halted(&mut self, addr: u8, halted: bool) -> bool {
+        let Some(iface) = self.ifaces.iter_mut().find(|i| i.endpoint(addr).is_some()) else {
+            return false;
+        };
+        iface.halted.retain(|a| *a != addr);
+        if halted {
+            iface.halted.push(addr);
+        }
+        true
     }
 
     /// Dispatch one control transfer: the 8-byte setup packet and, for OUT
@@ -236,16 +444,23 @@ impl Device {
         let recipient = bm & RECIPIENT_MASK;
         match bm & TYPE_MASK {
             TYPE_STANDARD => self.standard(bm, req, value, index, w_length),
-            TYPE_CLASS if recipient == RECIP_INTERFACE && index == 0 => {
-                self.hid(req, value, w_length, out, hid)
+            TYPE_CLASS if recipient == RECIP_INTERFACE && self.is_hid(index) => {
+                self.hid(usize::from(index), req, value, w_length, out, hid)
             }
             _ => Control::Stall,
         }
     }
 
+    fn is_hid(&self, interface: u16) -> bool {
+        self.ifaces
+            .get(usize::from(interface))
+            .is_some_and(|i| i.spec.report_descriptor().is_some())
+    }
+
     fn standard(&mut self, bm: u8, req: u8, value: u16, index: u16, w_length: u16) -> Control {
         let recipient = bm & RECIPIENT_MASK;
         let [value_lo, value_hi] = value.to_le_bytes();
+        let interface = usize::from(index);
         match (req, recipient) {
             (GET_DESCRIPTOR, RECIP_DEVICE) => match value_hi {
                 DT_DEVICE => truncate(self.identity.device_descriptor(), w_length),
@@ -261,11 +476,20 @@ impl Device {
                 // device stalls these.
                 _ => Control::Stall,
             },
-            (GET_DESCRIPTOR, RECIP_INTERFACE) if index == 0 => match value_hi {
-                DT_REPORT => truncate(self.identity.report_descriptor.to_vec(), w_length),
-                DT_HID => truncate(self.identity.hid_descriptor(), w_length),
-                _ => Control::Stall,
-            },
+            (GET_DESCRIPTOR, RECIP_INTERFACE) => {
+                let Some(rd) = self
+                    .ifaces
+                    .get(interface)
+                    .and_then(|i| i.spec.report_descriptor())
+                else {
+                    return Control::Stall;
+                };
+                match value_hi {
+                    DT_REPORT => truncate(rd.to_vec(), w_length),
+                    DT_HID => truncate(hid_descriptor_for(rd.len()), w_length),
+                    _ => Control::Stall,
+                }
+            }
             (SET_ADDRESS, RECIP_DEVICE) => {
                 self.address = value_lo;
                 Control::Data(Vec::new())
@@ -273,29 +497,33 @@ impl Device {
             (SET_CONFIGURATION, RECIP_DEVICE) if value_lo <= 1 => {
                 self.configuration = value_lo;
                 // Entering a configuration resets the endpoints' toggles and halts.
-                self.halted_in = false;
-                self.halted_out = false;
+                for iface in &mut self.ifaces {
+                    iface.halted.clear();
+                }
                 Control::Data(Vec::new())
             }
             (GET_CONFIGURATION, RECIP_DEVICE) => truncate(vec![self.configuration], w_length),
-            (SET_INTERFACE, RECIP_INTERFACE) if index == 0 && value == 0 => {
-                self.halted_in = false;
-                self.halted_out = false;
+            (SET_INTERFACE, RECIP_INTERFACE) if value == 0 && interface < self.ifaces.len() => {
+                self.ifaces[interface].halted.clear();
                 Control::Data(Vec::new())
             }
-            (GET_INTERFACE, RECIP_INTERFACE) if index == 0 => truncate(vec![0], w_length),
+            (GET_INTERFACE, RECIP_INTERFACE) if interface < self.ifaces.len() => {
+                truncate(vec![0], w_length)
+            }
             (GET_STATUS, RECIP_DEVICE | RECIP_INTERFACE) => truncate(vec![0, 0], w_length),
-            (GET_STATUS, RECIP_ENDPOINT) => match self.halt_flag(index) {
-                Some(halted) => truncate(vec![u8::from(*halted), 0], w_length),
-                None => Control::Stall,
-            },
+            (GET_STATUS, RECIP_ENDPOINT) => {
+                let addr = index as u8;
+                if self.ifaces.iter().any(|i| i.endpoint(addr).is_some()) {
+                    truncate(vec![u8::from(self.halted(addr)), 0], w_length)
+                } else {
+                    Control::Stall
+                }
+            }
             (CLEAR_FEATURE | SET_FEATURE, RECIP_ENDPOINT) if value == FEATURE_ENDPOINT_HALT => {
-                match self.halt_flag(index) {
-                    Some(halted) => {
-                        *halted = req == SET_FEATURE;
-                        Control::Data(Vec::new())
-                    }
-                    None => Control::Stall,
+                if self.set_halted(index as u8, req == SET_FEATURE) {
+                    Control::Data(Vec::new())
+                } else {
+                    Control::Stall
                 }
             }
             // Remote wakeup and the like: nothing to do.
@@ -306,16 +534,9 @@ impl Device {
         }
     }
 
-    fn halt_flag(&mut self, endpoint: u16) -> Option<&mut bool> {
-        match endpoint as u8 {
-            EP_IN => Some(&mut self.halted_in),
-            EP_OUT => Some(&mut self.halted_out),
-            _ => None,
-        }
-    }
-
     fn hid(
         &mut self,
+        iface: usize,
         req: u8,
         value: u16,
         w_length: u16,
@@ -324,24 +545,24 @@ impl Device {
     ) -> Control {
         let [id, kind] = value.to_le_bytes();
         match req {
-            HID_GET_REPORT => match hid.get_report(kind, id, w_length) {
+            HID_GET_REPORT => match hid.get_report(iface, kind, id, w_length) {
                 Reply::Done(Ok(data)) => truncate(data, w_length),
                 Reply::Done(Err(_)) => Control::Stall,
                 Reply::Pending(ticket) => Control::Pending(ticket),
             },
-            HID_SET_REPORT => match hid.set_report(kind, id, out) {
+            HID_SET_REPORT => match hid.set_report(iface, kind, id, out) {
                 Reply::Done(Ok(())) => Control::Data(Vec::new()),
                 Reply::Done(Err(_)) => Control::Stall,
                 Reply::Pending(ticket) => Control::Pending(ticket),
             },
-            HID_GET_IDLE => truncate(vec![self.idle], w_length),
+            HID_GET_IDLE => truncate(vec![self.ifaces[iface].idle], w_length),
             HID_SET_IDLE => {
-                self.idle = (value >> 8) as u8;
+                self.ifaces[iface].idle = (value >> 8) as u8;
                 Control::Data(Vec::new())
             }
-            HID_GET_PROTOCOL => truncate(vec![self.protocol], w_length),
+            HID_GET_PROTOCOL => truncate(vec![self.ifaces[iface].protocol], w_length),
             HID_SET_PROTOCOL => {
-                self.protocol = value as u8;
+                self.ifaces[iface].protocol = value as u8;
                 Control::Data(Vec::new())
             }
             _ => Control::Stall,
@@ -359,20 +580,27 @@ struct Parked {
 #[derive(Debug)]
 struct Held {
     seqnum: u32,
+    iface: usize,
     ticket: u32,
     /// An IN transfer (GET_REPORT): the answer carries data.
     input: bool,
     length: u32,
 }
 
+/// An interface's interrupt IN side.
+#[derive(Debug, Default)]
+struct Queue {
+    parked: VecDeque<Parked>,
+    pending: VecDeque<Vec<u8>>,
+}
+
 #[derive(Debug)]
 pub struct Engine {
     pub device: Device,
-    parked: VecDeque<Parked>,
-    pending: VecDeque<Vec<u8>>,
+    queues: Vec<Queue>,
     held: Vec<Held>,
-    cancelled: Vec<u32>,
-    /// Reports dropped because the FIFO was full.
+    cancelled: Vec<(usize, u32)>,
+    /// Reports dropped because a FIFO was full.
     pub dropped: u64,
 }
 
@@ -383,30 +611,52 @@ fn complete_in(out: &mut Vec<u8>, seqnum: u32, length: u32, report: &[u8]) {
 
 impl Engine {
     pub fn new(identity: Identity) -> Self {
+        let device = Device::new(identity);
+        let queues = (0..device.interfaces()).map(|_| Queue::default()).collect();
         Self {
-            device: Device::new(identity),
-            parked: VecDeque::new(),
-            pending: VecDeque::new(),
+            device,
+            queues,
             held: Vec::new(),
             cancelled: Vec::new(),
             dropped: 0,
         }
     }
 
+    /// Interrupt IN URBs waiting for a report, over all interfaces.
     #[cfg(test)]
     pub fn parked(&self) -> usize {
-        self.parked.len()
+        self.queues.iter().map(|q| q.parked.len()).sum()
     }
 
     #[cfg(test)]
+    pub fn parked_on(&self, iface: usize) -> usize {
+        self.queues[iface].parked.len()
+    }
+
+    /// Reports waiting for a URB, over all interfaces.
+    #[cfg(test)]
     pub fn pending(&self) -> usize {
-        self.pending.len()
+        self.queues.iter().map(|q| q.pending.len()).sum()
+    }
+
+    #[cfg(test)]
+    pub fn pending_on(&self, iface: usize) -> usize {
+        self.queues[iface].pending.len()
     }
 
     /// Forgets the reports waiting for a URB (a relay starting or ending:
     /// what the other source made is stale).
     pub fn clear_pending(&mut self) {
-        self.pending.clear();
+        for queue in &mut self.queues {
+            queue.pending.clear();
+        }
+    }
+
+    /// The same for one interface.
+    pub fn clear_pending_on(&mut self, iface: usize) {
+        if let Some(queue) = self.queues.get_mut(iface) {
+            queue.pending.clear();
+        }
     }
 
     /// Control URBs waiting for an answer.
@@ -415,22 +665,27 @@ impl Engine {
         self.held.len()
     }
 
-    /// Tickets of held URBs the kernel gave up on (unlinked) since the last
-    /// call: nobody should answer them any more.
-    pub fn take_cancelled(&mut self) -> Vec<u32> {
+    /// (Interface, ticket) of held URBs the kernel gave up on (unlinked)
+    /// since the last call: nobody should answer them any more.
+    pub fn take_cancelled(&mut self) -> Vec<(usize, u32)> {
         std::mem::take(&mut self.cancelled)
     }
 
-    /// Answers the URB held under `ticket`: the data of a GET_REPORT, nothing
-    /// for a SET_REPORT, or an errno that stalls it. False if the kernel
-    /// unlinked it meanwhile.
+    /// Answers the URB held under `ticket` of `iface`: the data of a
+    /// GET_REPORT, nothing for a SET_REPORT, or an errno that stalls it.
+    /// False if the kernel unlinked it meanwhile.
     pub fn complete_control(
         &mut self,
+        iface: usize,
         ticket: u32,
         result: Result<Vec<u8>, i32>,
         out: &mut Vec<u8>,
     ) -> bool {
-        let Some(at) = self.held.iter().position(|h| h.ticket == ticket) else {
+        let Some(at) = self
+            .held
+            .iter()
+            .position(|h| h.iface == iface && h.ticket == ticket)
+        else {
             return false;
         };
         let held = self.held.remove(at);
@@ -449,42 +704,64 @@ impl Engine {
     pub fn on_command(&mut self, cmd: &Command, body: &[u8], out: &mut Vec<u8>, hid: &mut dyn Hid) {
         match cmd {
             Command::Submit(s) if s.ep == 0 => self.control(s, body, out, hid),
-            Command::Submit(s) if s.direction == DIR_IN && s.ep == 1 => {
-                if self.device.halted_in {
-                    encode_ret_submit(out, s.seqnum, -EPIPE, 0, &[]);
-                } else if let Some(report) = self.pending.pop_front() {
-                    complete_in(out, s.seqnum, s.length, &report);
-                } else {
-                    self.parked.push_back(Parked {
-                        seqnum: s.seqnum,
-                        length: s.length,
-                    });
-                }
-            }
-            Command::Submit(s) if s.direction != DIR_IN && s.ep == u32::from(EP_OUT) => {
-                let n = body.len().min(s.length as usize);
-                hid.output(&body[..n]);
-                encode_ret_submit(out, s.seqnum, 0, n as u32, &[]);
-            }
-            Command::Submit(s) => encode_ret_submit(out, s.seqnum, -EPIPE, 0, &[]),
+            Command::Submit(s) => self.transfer(s, body, out, hid),
             Command::Unlink {
                 seqnum,
                 unlink_seqnum,
                 ..
             } => {
-                let found = self.parked.iter().position(|p| p.seqnum == *unlink_seqnum);
+                let parked = self.queues.iter().enumerate().find_map(|(iface, q)| {
+                    q.parked
+                        .iter()
+                        .position(|p| p.seqnum == *unlink_seqnum)
+                        .map(|at| (iface, at))
+                });
                 let held = self.held.iter().position(|h| h.seqnum == *unlink_seqnum);
-                let status = if let Some(at) = found {
-                    self.parked.remove(at);
+                let status = if let Some((iface, at)) = parked {
+                    self.queues[iface].parked.remove(at);
                     -ECONNRESET
                 } else if let Some(at) = held {
-                    self.cancelled.push(self.held.remove(at).ticket);
+                    let h = self.held.remove(at);
+                    self.cancelled.push((h.iface, h.ticket));
                     -ECONNRESET
                 } else {
                     0
                 };
                 encode_ret_unlink(out, *seqnum, status);
             }
+        }
+    }
+
+    /// A transfer on an endpoint other than 0: interrupt IN parks until a
+    /// report, interrupt OUT goes to the handler, the rest stalls.
+    fn transfer(&mut self, s: &Submit, body: &[u8], out: &mut Vec<u8>, hid: &mut dyn Hid) {
+        let found = self.device.endpoint(s.ep, s.direction == DIR_IN);
+        let Some((iface, ep)) = found.filter(|(iface, ep)| {
+            ep.transfer == XFER_INTERRUPT
+                && self
+                    .device
+                    .iface(*iface)
+                    .is_some_and(|i| i.spec.report_descriptor().is_some())
+        }) else {
+            encode_ret_submit(out, s.seqnum, -EPIPE, 0, &[]);
+            return;
+        };
+        if self.device.halted(ep.addr) {
+            encode_ret_submit(out, s.seqnum, -EPIPE, 0, &[]);
+        } else if ep.is_in() {
+            let queue = &mut self.queues[iface];
+            if let Some(report) = queue.pending.pop_front() {
+                complete_in(out, s.seqnum, s.length, &report);
+            } else {
+                queue.parked.push_back(Parked {
+                    seqnum: s.seqnum,
+                    length: s.length,
+                });
+            }
+        } else {
+            let n = body.len().min(s.length as usize);
+            hid.output(iface, &body[..n]);
+            encode_ret_submit(out, s.seqnum, 0, n as u32, &[]);
         }
     }
 
@@ -500,6 +777,8 @@ impl Engine {
             Control::Stall => encode_ret_submit(out, s.seqnum, -EPIPE, 0, &[]),
             Control::Pending(ticket) => self.held.push(Held {
                 seqnum: s.seqnum,
+                // Only a class request to a HID interface is held: wIndex is its number.
+                iface: usize::from(u16::from_le_bytes([s.setup[4], s.setup[5]])),
                 ticket,
                 input: s.setup[0] & 0x80 != 0,
                 length: s.length,
@@ -507,17 +786,25 @@ impl Engine {
         }
     }
 
-    /// A report was produced: complete the oldest parked URB with it, or keep
-    /// it (the newest `PENDING_MAX`).
+    /// A report was produced for interface 0.
     pub fn push_report(&mut self, report: &[u8], out: &mut Vec<u8>) {
-        if let Some(p) = self.parked.pop_front() {
+        self.push_report_on(0, report, out);
+    }
+
+    /// A report was produced for `iface`: complete its oldest parked URB with
+    /// it, or keep it (the newest `PENDING_MAX`).
+    pub fn push_report_on(&mut self, iface: usize, report: &[u8], out: &mut Vec<u8>) {
+        let Some(queue) = self.queues.get_mut(iface) else {
+            return;
+        };
+        if let Some(p) = queue.parked.pop_front() {
             complete_in(out, p.seqnum, p.length, report);
         } else {
-            if self.pending.len() == PENDING_MAX {
-                self.pending.pop_front();
+            if queue.pending.len() == PENDING_MAX {
+                queue.pending.pop_front();
                 self.dropped += 1;
             }
-            self.pending.push_back(report.to_vec());
+            queue.pending.push_back(report.to_vec());
         }
     }
 }
@@ -542,6 +829,7 @@ mod tests {
             product_name: "Steam Controller".into(),
             serial: "FXA0123456789".into(),
             report_descriptor: RD,
+            interfaces: Vec::new(),
         }
     }
 
@@ -553,7 +841,13 @@ mod tests {
     }
 
     impl Hid for Recorder {
-        fn get_report(&mut self, kind: u8, id: u8, _w_length: u16) -> Reply<Vec<u8>> {
+        fn get_report(
+            &mut self,
+            _iface: usize,
+            kind: u8,
+            id: u8,
+            _w_length: u16,
+        ) -> Reply<Vec<u8>> {
             if kind == REPORT_FEATURE && id == 1 {
                 let mut v = vec![0; 64];
                 v[0] = 1;
@@ -564,7 +858,7 @@ mod tests {
                 Reply::Done(Err(libc::EINVAL))
             }
         }
-        fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Reply<()> {
+        fn set_report(&mut self, _iface: usize, kind: u8, id: u8, data: &[u8]) -> Reply<()> {
             self.sets.push((kind, id, data.to_vec()));
             if id == 0x70 {
                 Reply::Pending(8)
@@ -572,7 +866,7 @@ mod tests {
                 Reply::Done(Ok(()))
             }
         }
-        fn output(&mut self, data: &[u8]) {
+        fn output(&mut self, _iface: usize, data: &[u8]) {
             self.outs.push(data.to_vec());
         }
     }
@@ -629,7 +923,7 @@ mod tests {
                 DT_ENDPOINT
             ]
         );
-        let hid = id.hid_descriptor();
+        let hid = hid_descriptor_for(RD.len());
         assert_eq!(usize::from(u16::from_le_bytes([hid[7], hid[8]])), RD.len());
         assert_eq!(&cfg[18..27], hid.as_slice());
         assert_eq!((cfg[4], cfg[13], cfg[14]), (1, 2, 3));
@@ -724,7 +1018,7 @@ mod tests {
             ctl(&mut d, setup(0x21, HID_SET_IDLE, 0x0400, 0, 0), &[]),
             ack
         );
-        assert_eq!(d.idle, 4);
+        assert_eq!(d.iface(0).unwrap().idle, 4);
     }
 
     #[test]
@@ -933,7 +1227,7 @@ mod tests {
     #[test]
     fn a_halted_in_endpoint_stalls_urbs() {
         let mut e = Engine::new(identity());
-        e.device.halted_in = true;
+        assert!(e.device.set_halted(EP_IN, true));
         let mut out = Vec::new();
         run(&mut e, &in_urb(1), &[], &mut out);
         assert_eq!(word(&out, 20) as i32, -EPIPE);
@@ -976,11 +1270,11 @@ mod tests {
         assert!(out.is_empty(), "no answer yet");
         assert_eq!(e.held(), 1);
         // A different ticket is nobody's.
-        assert!(!e.complete_control(99, Ok(vec![1]), &mut out));
+        assert!(!e.complete_control(0, 99, Ok(vec![1]), &mut out));
         assert!(out.is_empty());
         let mut reply = vec![0x70];
         reply.resize(100, 5);
-        assert!(e.complete_control(7, Ok(reply), &mut out));
+        assert!(e.complete_control(0, 7, Ok(reply), &mut out));
         assert_eq!(word(&out, 0), RET_SUBMIT);
         assert_eq!(word(&out, 4), 30);
         assert_eq!(word(&out, 20), 0);
@@ -989,7 +1283,7 @@ mod tests {
         assert_eq!(e.held(), 0);
         // Answered once only.
         let mut again = Vec::new();
-        assert!(!e.complete_control(7, Ok(vec![1]), &mut again));
+        assert!(!e.complete_control(0, 7, Ok(vec![1]), &mut again));
     }
 
     #[test]
@@ -1005,7 +1299,7 @@ mod tests {
         );
         assert_eq!(hid.sets, [(REPORT_FEATURE, 0x70, vec![0x70, 1, 2, 3])]);
         assert!(out.is_empty());
-        assert!(e.complete_control(8, Ok(Vec::new()), &mut out));
+        assert!(e.complete_control(0, 8, Ok(Vec::new()), &mut out));
         assert_eq!((word(&out, 4), word(&out, 20), word(&out, 24)), (31, 0, 4));
         assert_eq!(out.len(), HEADER_LEN, "an OUT answer has no data");
         // And a failure stalls.
@@ -1016,7 +1310,7 @@ mod tests {
             &[0x70, 1, 2, 3],
             &mut out,
         );
-        assert!(e.complete_control(8, Err(libc::EIO), &mut out));
+        assert!(e.complete_control(0, 8, Err(libc::EIO), &mut out));
         assert_eq!(word(&out, 20) as i32, -EPIPE);
     }
 
@@ -1041,10 +1335,10 @@ mod tests {
         assert_eq!(word(&out, 0), RET_UNLINK);
         assert_eq!(word(&out, 20) as i32, -ECONNRESET);
         assert_eq!(e.held(), 0);
-        assert_eq!(e.take_cancelled(), [7]);
+        assert_eq!(e.take_cancelled(), [(0, 7)]);
         assert!(e.take_cancelled().is_empty());
         let mut late = Vec::new();
-        assert!(!e.complete_control(7, Ok(vec![]), &mut late));
+        assert!(!e.complete_control(0, 7, Ok(vec![]), &mut late));
         assert!(late.is_empty());
     }
 
@@ -1060,5 +1354,305 @@ mod tests {
         );
         assert_eq!(word(&out, 24), 3);
         assert_eq!(hid.outs, vec![vec![0x80, 1, 2]]);
+    }
+
+    // ---- a composite device ----
+
+    #[rustfmt::skip]
+    const RD2: &[u8] = &[
+        0x06, 0x00, 0xFF, 0x09, 0x02, 0xA1, 0x01, 0x85, 0x42, 0x75, 0x08, 0x95, 0x04, 0x09, 0x01,
+        0x81, 0x02, 0xC0,
+    ];
+
+    /// Placeholder 0 and 1, HID 2 and 3 (RD), HID 4 (RD2), as a small puck.
+    fn composite() -> Identity {
+        Identity {
+            product: 0x1304,
+            interfaces: vec![
+                InterfaceSpec::placeholder(vec![EndpointSpec::interrupt(0x81, 16, 16)]),
+                InterfaceSpec::placeholder(vec![
+                    EndpointSpec::bulk(0x82, 64),
+                    EndpointSpec::bulk(0x02, 64),
+                ]),
+                InterfaceSpec::hid(RD, 0x83, 0x03),
+                InterfaceSpec::hid(RD, 0x84, 0x04),
+                InterfaceSpec::hid(RD2, 0x85, 0x05),
+            ],
+            ..identity()
+        }
+    }
+
+    /// Splits a configuration descriptor into (type, bytes).
+    fn descriptors(cfg: &[u8]) -> Vec<(u8, &[u8])> {
+        let (mut at, mut out) = (0, Vec::new());
+        while at < cfg.len() {
+            let len = usize::from(cfg[at]);
+            out.push((cfg[at + 1], &cfg[at..at + len]));
+            at += len;
+        }
+        assert_eq!(at, cfg.len(), "descriptors tile the configuration");
+        out
+    }
+
+    #[test]
+    fn a_composite_configuration_lists_every_interface_with_its_endpoints() {
+        let id = composite();
+        let cfg = id.configuration_descriptor();
+        assert_eq!(usize::from(u16::from_le_bytes([cfg[2], cfg[3]])), cfg.len());
+        assert_eq!(cfg[4], 5, "bNumInterfaces");
+        let all = descriptors(&cfg);
+        // (number, class, endpoints) of each interface descriptor, and what follows it.
+        let interfaces: Vec<_> = all
+            .iter()
+            .filter(|(t, _)| *t == DT_INTERFACE)
+            .map(|(_, d)| (d[2], d[4], d[5]))
+            .collect();
+        assert_eq!(
+            interfaces,
+            [(0, 1, 0xff), (1, 2, 0xff), (2, 2, 3), (3, 2, 3), (4, 2, 3)]
+        );
+        let types: Vec<u8> = all.iter().map(|(t, _)| *t).collect();
+        assert_eq!(
+            types,
+            [
+                DT_CONFIGURATION,
+                DT_INTERFACE,
+                DT_ENDPOINT,
+                DT_INTERFACE,
+                DT_ENDPOINT,
+                DT_ENDPOINT,
+                DT_INTERFACE,
+                DT_HID,
+                DT_ENDPOINT,
+                DT_ENDPOINT,
+                DT_INTERFACE,
+                DT_HID,
+                DT_ENDPOINT,
+                DT_ENDPOINT,
+                DT_INTERFACE,
+                DT_HID,
+                DT_ENDPOINT,
+                DT_ENDPOINT,
+            ]
+        );
+        // Endpoint addresses and types, in order.
+        let endpoints: Vec<_> = all
+            .iter()
+            .filter(|(t, _)| *t == DT_ENDPOINT)
+            .map(|(_, d)| (d[2], d[3]))
+            .collect();
+        assert_eq!(
+            endpoints,
+            [
+                (0x81, 3),
+                (0x82, 2),
+                (0x02, 2),
+                (0x83, 3),
+                (0x03, 3),
+                (0x84, 3),
+                (0x04, 3),
+                (0x85, 3),
+                (0x05, 3)
+            ]
+        );
+        // Each HID descriptor carries its own interface's report length.
+        let lengths: Vec<_> = all
+            .iter()
+            .filter(|(t, _)| *t == DT_HID)
+            .map(|(_, d)| usize::from(u16::from_le_bytes([d[7], d[8]])))
+            .collect();
+        assert_eq!(lengths, [RD.len(), RD.len(), RD2.len()]);
+        // The device descriptor still says 0x1304 and one configuration.
+        assert_eq!(
+            u16::from_le_bytes([id.device_descriptor()[10], id.device_descriptor()[11]]),
+            0x1304
+        );
+    }
+
+    #[test]
+    fn report_descriptors_are_served_by_interface_number() {
+        let mut d = Device::new(composite());
+        let get = |d: &mut Device, interface: u16, kind: u16| {
+            ctl(
+                d,
+                setup(0x81, GET_DESCRIPTOR, kind << 8, interface, 4096),
+                &[],
+            )
+        };
+        assert_eq!(data(get(&mut d, 2, 0x22)), RD);
+        assert_eq!(data(get(&mut d, 3, 0x22)), RD);
+        assert_eq!(data(get(&mut d, 4, 0x22)), RD2);
+        let hid = data(get(&mut d, 4, 0x21));
+        assert_eq!(usize::from(u16::from_le_bytes([hid[7], hid[8]])), RD2.len());
+        // The placeholders and numbers past the list have none.
+        assert_eq!(get(&mut d, 0, 0x22), Control::Stall);
+        assert_eq!(get(&mut d, 1, 0x22), Control::Stall);
+        assert_eq!(get(&mut d, 5, 0x22), Control::Stall);
+    }
+
+    /// Records the interface each request came for.
+    #[derive(Default)]
+    struct Which {
+        calls: Vec<(&'static str, usize, u8)>,
+    }
+
+    impl Hid for Which {
+        fn get_report(&mut self, iface: usize, _kind: u8, id: u8, _w: u16) -> Reply<Vec<u8>> {
+            self.calls.push(("get", iface, id));
+            Reply::Pending(iface as u32 * 10 + 1)
+        }
+        fn set_report(&mut self, iface: usize, _kind: u8, id: u8, _d: &[u8]) -> Reply<()> {
+            self.calls.push(("set", iface, id));
+            Reply::Done(Ok(()))
+        }
+        fn output(&mut self, iface: usize, data: &[u8]) {
+            self.calls.push(("out", iface, data[0]));
+        }
+    }
+
+    #[test]
+    fn class_requests_and_outputs_reach_the_interface_they_are_for() {
+        let mut e = Engine::new(composite());
+        let mut hid = Which::default();
+        let mut out = Vec::new();
+        let get = |wi: u8| [0xa1, 1, 1, 3, wi, 0, 64, 0];
+        let set = |wi: u8| [0x21, 9, 1, 3, wi, 0, 4, 0];
+        e.on_command(&submit(1, DIR_IN, 0, 64, get(3)), &[], &mut out, &mut hid);
+        e.on_command(
+            &submit(2, DIR_OUT, 0, 4, set(4)),
+            &[1, 2, 3, 4],
+            &mut out,
+            &mut hid,
+        );
+        // An interrupt OUT on endpoint 5 is interface 4's, on 3 interface 2's.
+        e.on_command(
+            &submit(3, DIR_OUT, 5, 2, [0; 8]),
+            &[0x80, 1],
+            &mut out,
+            &mut hid,
+        );
+        e.on_command(
+            &submit(4, DIR_OUT, 3, 2, [0; 8]),
+            &[0x81, 1],
+            &mut out,
+            &mut hid,
+        );
+        assert_eq!(
+            hid.calls,
+            [
+                ("get", 3, 1),
+                ("set", 4, 1),
+                ("out", 4, 0x80),
+                ("out", 2, 0x81)
+            ]
+        );
+        // The get is held under interface 3; interface 2's same-numbered ticket is another.
+        assert_eq!(e.held(), 1);
+        assert!(!e.complete_control(2, 31, Ok(vec![1]), &mut Vec::new()));
+        let mut done = Vec::new();
+        assert!(e.complete_control(3, 31, Ok(vec![1, 2]), &mut done));
+        assert_eq!(word(&done, 4), 1);
+        // A class request to a placeholder, or past the list, stalls.
+        let mut out = Vec::new();
+        for wi in [0, 1, 7] {
+            e.on_command(&submit(9, DIR_IN, 0, 64, get(wi)), &[], &mut out, &mut hid);
+            assert_eq!(word(&out, 20) as i32, -EPIPE, "interface {wi}");
+            out.clear();
+        }
+        assert_eq!(
+            hid.calls.len(),
+            4,
+            "the stalled ones never reached the handler"
+        );
+    }
+
+    #[test]
+    fn each_interface_parks_and_receives_its_own_reports() {
+        let mut e = Engine::new(composite());
+        let mut hid = Which::default();
+        let mut out = Vec::new();
+        // IN endpoints 3 and 4 are interfaces 2's and 3's.
+        e.on_command(&submit(10, DIR_IN, 3, 64, [0; 8]), &[], &mut out, &mut hid);
+        e.on_command(&submit(11, DIR_IN, 4, 64, [0; 8]), &[], &mut out, &mut hid);
+        assert!(out.is_empty());
+        assert_eq!((e.parked_on(2), e.parked_on(3), e.parked_on(4)), (1, 1, 0));
+        e.push_report_on(3, &[0x79, 2], &mut out);
+        assert_eq!((word(&out, 4), &out[HEADER_LEN..]), (11, &[0x79u8, 2][..]));
+        assert_eq!((e.parked_on(2), e.parked_on(3)), (1, 0));
+        // A report with no URB of its interface waits there, not elsewhere.
+        out.clear();
+        e.push_report_on(4, &[1], &mut out);
+        assert!(out.is_empty());
+        assert_eq!((e.pending_on(4), e.pending_on(2)), (1, 0));
+        e.on_command(&submit(12, DIR_IN, 5, 64, [0; 8]), &[], &mut out, &mut hid);
+        assert_eq!((word(&out, 4), out[HEADER_LEN]), (12, 1));
+        // Clearing one interface's FIFO leaves another's.
+        e.push_report_on(2, &[7], &mut Vec::new());
+        e.push_report_on(4, &[8], &mut Vec::new());
+        e.clear_pending_on(2);
+        assert_eq!((e.pending_on(2), e.pending_on(4)), (0, 1));
+    }
+
+    #[test]
+    fn placeholder_endpoints_and_unknown_ones_stall_and_unlink_finds_any_interface() {
+        let mut e = Engine::new(composite());
+        let mut hid = Which::default();
+        let mut out = Vec::new();
+        // Interrupt IN of the CDC-like placeholder (ep 1), bulk IN (ep 2) and OUT (ep 2), ep 9.
+        for (seq, dir, ep) in [
+            (1, DIR_IN, 1),
+            (2, DIR_IN, 2),
+            (3, DIR_OUT, 2),
+            (4, DIR_IN, 9),
+        ] {
+            e.on_command(
+                &submit(seq, dir, ep, 16, [0; 8]),
+                &[0; 16],
+                &mut out,
+                &mut hid,
+            );
+            assert_eq!(word(&out, 20) as i32, -EPIPE, "seq {seq}");
+            out.clear();
+        }
+        // A halted HID endpoint stalls; clearing it parks again.
+        assert!(e.device.set_halted(0x84, true));
+        e.on_command(&submit(5, DIR_IN, 4, 64, [0; 8]), &[], &mut out, &mut hid);
+        assert_eq!(word(&out, 20) as i32, -EPIPE);
+        out.clear();
+        e.on_command(&submit(6, DIR_IN, 4, 64, [0; 8]), &[], &mut out, &mut hid);
+        assert_eq!(word(&out, 20) as i32, -EPIPE);
+        out.clear();
+        let unlink = Command::Unlink {
+            seqnum: 7,
+            devid: 0,
+            direction: 0,
+            ep: 0,
+            unlink_seqnum: 6,
+        };
+        // Seq 6 was stalled too (the endpoint was still halted), so nothing is
+        // parked and its unlink finds nothing.
+        assert_eq!(e.parked(), 0);
+        e.on_command(&unlink, &[], &mut out, &mut hid);
+        assert_eq!(word(&out, 20), 0);
+        out.clear();
+        assert!(!e.device.set_halted(0x8f, true), "no such endpoint");
+        assert!(e.device.set_halted(0x84, false));
+        e.on_command(&submit(8, DIR_IN, 4, 64, [0; 8]), &[], &mut out, &mut hid);
+        assert!(out.is_empty());
+        assert_eq!(e.parked_on(3), 1);
+        e.on_command(
+            &Command::Unlink {
+                seqnum: 9,
+                devid: 0,
+                direction: 0,
+                ep: 0,
+                unlink_seqnum: 8,
+            },
+            &[],
+            &mut out,
+            &mut hid,
+        );
+        assert_eq!(word(&out, 20) as i32, -ECONNRESET);
+        assert_eq!(e.parked_on(3), 0);
     }
 }

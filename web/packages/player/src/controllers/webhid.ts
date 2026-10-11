@@ -78,7 +78,7 @@ class HidController implements BackendController {
 
 export interface WebHidOptions {
   /**
-   * The page may pass a Steam Controller on a cable through to the environment (hid-relay.ts): its
+   * The page may pass a Steam Controller on a cable, or one slot of a puck, through to the environment (hid-relay.ts): its
    * driver opens it without claiming it, and the manager decides which of the two takes it.
    */
   deferClaim?: boolean;

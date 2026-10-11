@@ -55,6 +55,8 @@ mod net;
 #[cfg(target_os = "linux")]
 mod overlay;
 #[cfg(target_os = "linux")]
+mod puck;
+#[cfg(target_os = "linux")]
 mod pyro;
 #[cfg(target_os = "linux")]
 mod rate;

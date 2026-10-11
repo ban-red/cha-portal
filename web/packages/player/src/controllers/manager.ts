@@ -5,6 +5,7 @@
 
 import { GamepadApiBackend } from "./gamepad-api";
 import { HidRelay, STEAM_LIZARD_REPORTS, type HidRequest } from "./hid-relay";
+import { PUCK_GET_RETRY, TRITON_PUCK, VALVE_VENDOR_ID } from "./steam-protocol";
 import { WebHidBackend } from "./webhid";
 import {
   hapticAsRumble,
@@ -369,6 +370,8 @@ export class ControllerManager {
       () => this.nextSeq(slot),
       this.now,
       STEAM_LIZARD_REPORTS,
+      // A puck's slot answers a command a few tens of milliseconds late.
+      hid.device.vendorId === VALVE_VENDOR_ID && hid.device.productId === TRITON_PUCK ? PUCK_GET_RETRY : undefined,
     );
     this.relays.set(slot, { relay, pad });
     // Parsed state stops here: the reports are the app's.

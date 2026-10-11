@@ -192,7 +192,8 @@ describe("Steam Controller (2026)", () => {
     test("any other model, and a driver not asked, have no relay hooks and claim as before", async () => {
       for (const [id, options] of [
         [0x1303, { deferClaim: true }],
-        [0x1304, { deferClaim: true }],
+        [0x1305, { deferClaim: true }],
+        [0x1304, {}],
         [0x1302, {}],
       ] as const) {
         const f = fake(id);

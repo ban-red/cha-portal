@@ -17,7 +17,9 @@
 //!   marking them joysticks (Chrome, Firefox and Wine find pads through udev).
 //!
 //! Pads are made ahead (`--gamepads`) and on demand, and kept for the
-//! streamer's life. The evdev nodes of one that joins later are in the shared
+//! streamer's life. Only the pad a state names is made, not the slots before
+//! it: a controller passed through behind a wireless puck has a slot and no
+//! pad ([`crate::puck`]). The evdev nodes of one that joins later are in the shared
 //! volume at once and SDL, told to skip udev, watches `/dev/input` and sees
 //! them. Its `hidraw` node isn't: Docker can't mount anything into the running
 //! app, so the node agent finds it in `/info`, makes it in the app's `/dev`
@@ -53,6 +55,7 @@ use tracing::{debug, info, warn};
 
 use crate::dualsense::{self, DualSense};
 use crate::hid_relay::{RelayStats, Verdict};
+use crate::puck::{self, UsbPuck};
 use crate::steam_controller::{self, SteamController};
 use crate::uhid::{self, Device, Node};
 use crate::usbdev::Identity as UsbIdentity;
@@ -535,6 +538,9 @@ pub enum PadTransport {
 /// The wired 2026 Steam Controller, as the page names it in a relay `open`
 /// and the hello lists it (`rawHid`).
 const RAW_HID_STEAM_WIRED: &str = "28de:1302";
+/// The 2026 Steam Controller's wireless puck: the controllers paired to the
+/// owner's, passed through a virtual puck ([`crate::puck`]).
+const RAW_HID_STEAM_PUCK: &str = "28de:1304";
 
 /// The environment variable choosing the Steam Controller's [`PadTransport`]:
 /// `usbip`, or `uhid` (the default, also for an empty or unknown value).
@@ -584,16 +590,28 @@ pub struct Gamepads {
     /// time's settings instead of meeting a new controller every launch.
     identity: Option<String>,
     pads: Mutex<Vec<Slot>>,
+    /// The virtual puck, made when a session first passes a controller behind
+    /// one through (and kept for the streamer's life, like the pads).
+    puck: Mutex<Option<PuckState>>,
     events: broadcast::Sender<PadEvent>,
     /// The last lightbar, player LEDs and trigger effects, for viewers that
     /// join later.
     memory: Arc<Mutex<PadMemory>>,
 }
 
-/// One pad: a uinput device, or a uhid one.
+/// One pad: a uinput device, or a uhid one; or none yet. A pad is made for
+/// the slot a state names, not for the slots before it: a controller behind
+/// the puck has a slot and no pad.
 enum Slot {
+    Vacant,
     Xbox(Pad),
     Hid(HidPad),
+}
+
+/// The virtual puck and its `hidraw` nodes (interfaces 2 to 6, in order).
+struct PuckState {
+    puck: Arc<UsbPuck>,
+    hidraw: Vec<HidrawNode>,
 }
 
 struct Pad {
@@ -685,6 +703,14 @@ const STEAM_CONTROLLER_USB: Identity = Identity {
     serial: "Valve_Software_Steam_Controller",
 };
 
+/// The wireless puck ([`crate::puck`]).
+const STEAM_CONTROLLER_PUCK: Identity = Identity {
+    bus: "usb",
+    vendor: "28de",
+    product: "1304",
+    serial: "Valve_Software_Steam_Controller_Puck",
+};
+
 /// What a node is, for its udev entry.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Class {
@@ -764,6 +790,7 @@ impl Gamepads {
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
             pads: Mutex::default(),
+            puck: Mutex::default(),
             events: broadcast::channel(64).0,
             memory: Arc::default(),
         };
@@ -793,12 +820,13 @@ impl Gamepads {
 
     /// The physical controllers (`vid:pid`, lowercase hex) whose raw HID a
     /// session may pass through to the app ([`Gamepads::relay_open`]): the
-    /// wired 2026 Steam Controller, when the pads are USB devices. Empty
+    /// wired 2026 Steam Controller and the controllers behind its wireless
+    /// puck, when the pads are USB devices. Empty
     /// otherwise; the streamer's hello says it, and a page that sees nothing
     /// it knows keeps sending parsed pad state.
     pub fn raw_hid(&self) -> Vec<&'static str> {
         if self.kind == GamepadKind::Steam && self.transport == PadTransport::Usbip {
-            vec![RAW_HID_STEAM_WIRED]
+            vec![RAW_HID_STEAM_WIRED, RAW_HID_STEAM_PUCK]
         } else {
             Vec::new()
         }
@@ -830,8 +858,24 @@ impl Gamepads {
             .collect()
     }
 
+    /// The virtual puck, once one has been made.
+    fn puck_handle(&self) -> Option<Arc<UsbPuck>> {
+        self.puck
+            .lock()
+            .expect("puck lock")
+            .as_ref()
+            .map(|state| Arc::clone(&state.puck))
+    }
+
+    /// The puck, if a relay of it carries the controller in `slot`.
+    fn puck_carrying(&self, slot: usize) -> Option<Arc<UsbPuck>> {
+        self.puck_handle().filter(|puck| puck.carries(slot))
+    }
+
     /// Session `owner` passes the real controller `vendor:product` through pad
-    /// `slot`, making the pad if it is not there yet. The refusal says why.
+    /// `slot`, making the pad if it is not there yet (a controller behind a
+    /// puck has the slot but no pad: it is one of the virtual puck's). The
+    /// refusal says why.
     pub fn relay_open(
         &self,
         slot: usize,
@@ -846,6 +890,13 @@ impl Gamepads {
         if slot >= MAX_PADS {
             return Err("no such pad");
         }
+        if id == RAW_HID_STEAM_PUCK {
+            return self.puck_open(slot, owner);
+        }
+        // A controller on a cable takes the slot from one that was behind the puck.
+        if let Some(puck) = self.puck_carrying(slot) {
+            puck.relay_close(slot, None, "a controller on a cable took the slot");
+        }
         if let Err(err) = self.ensure(slot) {
             warn!("gamepad {slot}: {err:#}");
             return Err("the pad could not be made");
@@ -855,8 +906,28 @@ impl Gamepads {
         Ok(())
     }
 
+    fn puck_open(&self, slot: usize, owner: u64) -> Result<(), &'static str> {
+        // A pad already made for the slot (its controller was sent parsed
+        // before) goes to rest: the controller is the puck's from here.
+        if self.is_made(slot) {
+            self.update(&PadState {
+                i: slot,
+                gone: true,
+                ..PadState::default()
+            });
+        }
+        let puck = self.ensure_puck().map_err(|err| {
+            warn!("puck: {err:#}");
+            "the puck could not be made"
+        })?;
+        puck.relay_open(owner, slot).map(drop)
+    }
+
     /// Ends `owner`'s relay on `slot`.
     pub fn relay_close(&self, slot: usize, owner: u64) {
+        if let Some(puck) = self.puck_carrying(slot) {
+            puck.relay_close(slot, Some(owner), "closed by the page");
+        }
         if let Some(pad) = self.usb_pad(slot) {
             pad.relay_close(Some(owner), "closed by the page");
         }
@@ -864,13 +935,20 @@ impl Gamepads {
 
     /// Ends every relay `owner` holds (it left, or lost the controls).
     pub fn relay_close_owned_by(&self, owner: u64) {
+        const WHY: &str = "its session left or lost the controls";
+        if let Some(puck) = self.puck_handle() {
+            puck.relay_close_owned_by(owner, WHY);
+        }
         for pad in self.usb_pads() {
-            pad.relay_close(Some(owner), "its session left or lost the controls");
+            pad.relay_close(Some(owner), WHY);
         }
     }
 
     /// A report of the real controller in `slot` (id first), numbered `q`.
     pub fn relay_input(&self, slot: usize, owner: u64, q: u32, report: &[u8]) -> Verdict {
+        if let Some(puck) = self.puck_carrying(slot) {
+            return puck.relay_input(slot, owner, q, report);
+        }
         match self.usb_pad(slot) {
             Some(pad) => pad.relay_input(owner, q, report),
             None => Verdict::NotRelaying,
@@ -887,7 +965,9 @@ impl Gamepads {
         data: &[u8],
         error: Option<&str>,
     ) {
-        if let Some(pad) = self.usb_pad(slot) {
+        if let Some(puck) = self.puck_carrying(slot) {
+            puck.relay_reply(slot, owner, ticket, ok, data, error);
+        } else if let Some(pad) = self.usb_pad(slot) {
             pad.relay_reply(owner, ticket, ok, data, error);
         }
     }
@@ -897,6 +977,9 @@ impl Gamepads {
         let mut total = RelayStats::default();
         for pad in self.usb_pads() {
             total.merge(&pad.relay_stats());
+        }
+        if let Some(puck) = self.puck_handle() {
+            total.merge(&puck.relay_stats());
         }
         (total != RelayStats::default()).then_some(total)
     }
@@ -930,20 +1013,29 @@ impl Gamepads {
         self.events.subscribe()
     }
 
-    /// The `hidraw` nodes of the pads made so far (uhid kinds only).
+    /// The `hidraw` nodes of the pads made so far (uhid kinds only), then the
+    /// virtual puck's (interfaces 2 to 6) once there is one.
     pub fn hidraw(&self) -> Vec<HidrawNode> {
         let pads = self.pads.lock().expect("pads lock");
-        pads.iter()
+        let mut nodes: Vec<HidrawNode> = pads
+            .iter()
             .filter_map(|slot| match slot {
                 Slot::Hid(pad) => Some(pad.hidraw.clone()),
-                Slot::Xbox(_) => None,
+                Slot::Xbox(_) | Slot::Vacant => None,
             })
             .flatten()
-            .collect()
+            .collect();
+        if let Some(state) = &*self.puck.lock().expect("puck lock") {
+            nodes.extend(state.hidraw.iter().cloned());
+        }
+        nodes
     }
 
     /// Puts every pad made so far back to rest: sticks centered, buttons up.
     pub fn release_all(&self) {
+        if let Some(puck) = self.puck_handle() {
+            puck.relay_close_all("all pads released");
+        }
         let count = self.pads.lock().expect("pads lock").len();
         for i in 0..count {
             self.update(&PadState {
@@ -959,10 +1051,19 @@ impl Gamepads {
         if state.i >= MAX_PADS {
             return;
         }
+        // A controller behind the puck is not a pad: parsed state for its slot
+        // would make a second controller of it. Only `gone` means something,
+        // and it ends the relay.
+        if let Some(puck) = self.puck_carrying(state.i) {
+            if state.gone {
+                puck.relay_close(state.i, None, "the pad is gone");
+            }
+            return;
+        }
         // A pad that was never made has nothing to let go of: making one (a new
         // virtual controller for the app to find) for a `gone` would be a pad
         // out of nothing.
-        if releases_an_unmade_pad(state, self.pads.lock().expect("pads lock").len()) {
+        if releases_an_unmade_pad(state, self.is_made(state.i)) {
             return;
         }
         if let Err(err) = self.ensure(state.i) {
@@ -977,29 +1078,91 @@ impl Gamepads {
                 }
             }
             Slot::Hid(pad) => pad.device.update(state),
+            Slot::Vacant => {}
         }
+    }
+
+    /// Whether a pad exists in `slot`.
+    fn is_made(&self, slot: usize) -> bool {
+        !matches!(
+            self.pads.lock().expect("pads lock").get(slot),
+            None | Some(Slot::Vacant)
+        )
     }
 
     fn ensure(&self, index: usize) -> Result<()> {
         let mut pads = self.pads.lock().expect("pads lock");
+        // Only the pad asked for is made; the slots before it stay vacant
+        // until a state names them.
         while pads.len() <= index {
-            let n = pads.len();
-            pads.push(match self.kind {
-                GamepadKind::Xbox360 => Slot::Xbox(self.create_xbox(n)?),
-                GamepadKind::DualSense | GamepadKind::Steam => Slot::Hid(self.create_hid(n)?),
-            });
+            pads.push(Slot::Vacant);
+        }
+        if matches!(pads[index], Slot::Vacant) {
+            pads[index] = match self.kind {
+                GamepadKind::Xbox360 => Slot::Xbox(self.create_xbox(index)?),
+                GamepadKind::DualSense | GamepadKind::Steam => Slot::Hid(self.create_hid(index)?),
+            };
         }
         Ok(())
+    }
+
+    /// The virtual puck, made on first use: attached to `vhci_hcd`, its five
+    /// HID interfaces' `hidraw` nodes shared with the app (the node agent puts
+    /// them into a running app, as for a pad that joins).
+    fn ensure_puck(&self) -> Result<Arc<UsbPuck>> {
+        let mut state = self.puck.lock().expect("puck lock");
+        if let Some(state) = &*state {
+            return Ok(Arc::clone(&state.puck));
+        }
+        let serial = puck::serial_for(self.serial_hash(PUCK_SERIAL_INDEX));
+        let emulation = puck_emulation(self.identity.clone(), self.seed);
+        let puck = UsbPuck::attach(puck::identity(serial), self.events.clone(), emulation)?;
+        let made = self.share_puck(&puck);
+        match made {
+            Ok(hidraw) => {
+                info!(hidraw = ?hidraw, "gamepad: virtual Steam Controller puck");
+                *state = Some(PuckState {
+                    puck: Arc::clone(&puck),
+                    hidraw,
+                });
+                Ok(puck)
+            }
+            Err(err) => {
+                puck.destroy();
+                Err(err)
+            }
+        }
+    }
+
+    fn share_puck(&self, puck: &UsbPuck) -> Result<Vec<HidrawNode>> {
+        let driver = steam_controller::Variant::TritonUsb.driver();
+        let mut hidraw = Vec::new();
+        for found in puck.wait_for_nodes(driver, BIND_WAIT)? {
+            for node in &found.hidraw {
+                std::fs::create_dir_all(&self.hidraw_dir)?;
+                std::fs::set_permissions(&self.hidraw_dir, std::fs::Permissions::from_mode(0o755))?;
+                self.install(
+                    &self.hidraw_dir,
+                    node,
+                    Class::Hidraw,
+                    &STEAM_CONTROLLER_PUCK,
+                )?;
+                hidraw.push(HidrawNode {
+                    name: node.name.clone(),
+                    major: node.major,
+                    minor: node.minor,
+                    devpath: hidraw_devpath(&node.name),
+                });
+            }
+        }
+        Ok(hidraw)
     }
 
     /// A number for this run's pad `index`, stable for the run.
     /// What a pad's serial is made from: stable per owner, app and slot when
     /// the node said whose pads these are, else the run's.
     fn serial_hash(&self, index: usize) -> u64 {
-        match &self.identity {
-            Some(identity) => stable_hash(&format!("{identity}/pad{index}")),
-            None => self.pad_hash(index),
-        }
+        serial_hash_of(self.identity.as_deref(), self.seed, index)
     }
 
     fn pad_hash(&self, index: usize) -> u64 {
@@ -1088,6 +1251,7 @@ impl Gamepads {
                 product_name: name.to_string(),
                 serial: serial.clone(),
                 report_descriptor: variant.descriptor(),
+                interfaces: Vec::new(),
             };
             let pad = UsbPad::attach(
                 usb_identity,
@@ -1387,8 +1551,36 @@ impl Gamepads {
 /// Whether `state` only lets go of a pad that was never made (`made` pads
 /// exist): there is nothing to release, and making the pad would show the app
 /// a new controller.
-fn releases_an_unmade_pad(state: &PadState, made: usize) -> bool {
-    state.gone && made <= state.i
+fn releases_an_unmade_pad(state: &PadState, made: bool) -> bool {
+    state.gone && !made
+}
+
+/// The number a serial is made from for pad `index`: stable for the same
+/// owner and app when the node said whose pads these are, else the run's.
+fn serial_hash_of(identity: Option<&str>, seed: u64, index: usize) -> u64 {
+    match identity {
+        Some(identity) => stable_hash(&format!("{identity}/pad{index}")),
+        None => {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (seed, index).hash(&mut hasher);
+            hasher.finish()
+        }
+    }
+}
+
+/// The index the puck's own serial is made from (past the pads').
+const PUCK_SERIAL_INDEX: usize = 8;
+
+/// What answers a puck slot's requests when the page can't: an emulated
+/// wired controller for the page slot the real one is in.
+fn puck_emulation(identity: Option<String>, seed: u64) -> puck::Emulation {
+    Box::new(move |page| {
+        let variant = steam_controller::Variant::TritonUsb;
+        // Serials of their own, past the pads' and the puck's.
+        let hash = serial_hash_of(identity.as_deref(), seed, PUCK_SERIAL_INDEX + 1 + page);
+        let serial = steam_controller::serial_for(variant, hash);
+        Box::new(SteamController::new(variant, page, &serial))
+    })
 }
 
 /// Where sysfs has `hidraw<n>`, without the `/sys`.
@@ -1793,15 +1985,15 @@ mod tests {
             ..PadState::default()
         };
         // Pad 0 exists: a release of it, and of nothing past it.
-        assert!(!releases_an_unmade_pad(&gone(0), 1));
-        assert!(releases_an_unmade_pad(&gone(1), 1));
-        assert!(releases_an_unmade_pad(&gone(0), 0));
+        assert!(!releases_an_unmade_pad(&gone(0), true));
+        assert!(releases_an_unmade_pad(&gone(1), false));
+        assert!(releases_an_unmade_pad(&gone(0), false));
         // A state that isn't a release makes the pad it names.
         let state = PadState {
             i: 1,
             ..PadState::default()
         };
-        assert!(!releases_an_unmade_pad(&state, 1));
+        assert!(!releases_an_unmade_pad(&state, false));
     }
 
     #[test]
@@ -2290,7 +2482,7 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(pads.raw_hid(), ["28de:1302"]);
+        assert_eq!(pads.raw_hid(), ["28de:1302", "28de:1304"]);
         const OWNER: u64 = 41;
         pads.relay_open(0, OWNER, 0x28de, 0x1302).unwrap();
         let hidraw = OpenOptions::new()
@@ -2408,5 +2600,237 @@ mod tests {
         leaving.store(true, Ordering::Relaxed);
         page.join().unwrap();
         drop(pads);
+    }
+    /// The virtual wireless puck through the real kernel: its seven
+    /// interfaces, the `hidraw` nodes of interfaces 2 to 6 and nothing else
+    /// on the host, a controller joining and leaving a slot, and what an
+    /// empty slot and the puck's own interface do with a feature request.
+    /// Needs what `live_steam_relay` does.
+    #[test]
+    #[ignore = "needs vhci-hcd and write access to /sys/devices/platform/vhci_hcd.0/attach"]
+    fn live_steam_puck() {
+        use std::sync::mpsc;
+
+        let _ = tracing_subscriber::fmt().try_init();
+        // SAFETY: set before any other thread of this test exists.
+        unsafe { std::env::set_var(PAD_TRANSPORT_ENV, "usbip") };
+        let dir = std::env::temp_dir().join("cha-live-puck");
+        let _ = std::fs::remove_dir_all(&dir);
+        let pads = Arc::new(
+            Gamepads::new(
+                Path::new("/dev/uinput"),
+                Path::new("/dev/uhid"),
+                GamepadKind::Steam,
+                &dir,
+                None,
+                0,
+            )
+            .unwrap(),
+        );
+        assert_eq!(pads.raw_hid(), ["28de:1302", "28de:1304"]);
+        // No puck, no node, until a controller behind one is passed through.
+        assert!(pads.hidraw().is_empty());
+        let tty_before = tty_names();
+        const OWNER: u64 = 43;
+        // The controller is in page slot 2; slots 0 and 1 have no pad at all.
+        pads.relay_open(2, OWNER, 0x28de, 0x1304).unwrap();
+        let nodes = pads.hidraw();
+        println!("the puck's nodes: {nodes:?}");
+        assert_eq!(nodes.len(), 5, "interfaces 2 to 6");
+        assert!(!pads.is_made(0) && !pads.is_made(1) && !pads.is_made(2));
+
+        // The kernel's view: one USB device of seven interfaces, HID on 2 to 6.
+        let mut usb_dir = None;
+        for (n, node) in nodes.iter().enumerate() {
+            let device = std::fs::canonicalize(
+                Path::new("/sys/class/hidraw")
+                    .join(&node.name)
+                    .join("device"),
+            )
+            .unwrap();
+            let interface = device.parent().unwrap();
+            let read = |dir: &Path, file: &str| {
+                std::fs::read_to_string(dir.join(file))
+                    .unwrap()
+                    .trim()
+                    .to_string()
+            };
+            assert_eq!(read(interface, "bInterfaceNumber"), format!("{:02}", n + 2));
+            assert_eq!(read(interface, "bInterfaceClass"), "03");
+            let usb = interface.parent().unwrap();
+            assert_eq!(read(usb, "idVendor"), "28de");
+            assert_eq!(read(usb, "idProduct"), "1304");
+            assert_eq!(read(usb, "bNumInterfaces"), "7");
+            usb_dir = Some(usb.to_path_buf());
+        }
+        let usb = usb_dir.unwrap();
+        let busid = usb.file_name().unwrap().to_string_lossy().into_owned();
+        // Interfaces 0 and 1 are placeholders of vendor class: no host driver,
+        // so no ttyACM.
+        for n in 0..2 {
+            let interface = usb.join(format!("{busid}:1.{n}"));
+            assert_eq!(
+                std::fs::read_to_string(interface.join("bInterfaceClass"))
+                    .unwrap()
+                    .trim(),
+                "ff"
+            );
+            assert!(
+                !interface.join("driver").exists(),
+                "interface {n} has a driver"
+            );
+            let ttys = std::fs::read_dir(&interface)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("tty"))
+                .count();
+            assert_eq!(ttys, 0, "interface {n} made a tty");
+        }
+        assert_eq!(tty_names(), tty_before, "no new tty on the host");
+        match std::process::Command::new("lsusb").arg("-t").output() {
+            Ok(out) => println!("{}", String::from_utf8_lossy(&out.stdout)),
+            Err(err) => println!("no lsusb here: {err}"),
+        }
+        // To look at it from the host (`lsusb -t`) while it is up.
+        if let Some(secs) = std::env::var("CHA_LIVE_HOLD_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            std::thread::sleep(Duration::from_secs(secs));
+        }
+
+        // The controller leaves before Steam looks at the nodes (which exist
+        // only now, when the first one joined): it opens them, and it comes back.
+        pads.relay_close(2, OWNER);
+        // (The disconnect status is on its way to the kernel's URB: let it land.)
+        std::thread::sleep(Duration::from_millis(300));
+        let open = |n: usize| {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(dir.join("dev/hidraw").join(&nodes[n].name))
+                .unwrap()
+        };
+        let read_report = |file: &std::fs::File| -> Option<Vec<u8>> {
+            let until = Instant::now() + Duration::from_secs(2);
+            let mut buf = [0u8; 80];
+            while Instant::now() < until {
+                // SAFETY: a valid descriptor and buffer.
+                let n = unsafe { libc::read(file.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                if n > 0 {
+                    return Some(buf[..n as usize].to_vec());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            None
+        };
+        let feature = |file: &std::fs::File, nr: u64, buf: &mut [u8]| {
+            let request = (3u64 << 30) | ((buf.len() as u64) << 16) | (0x48 << 8) | nr;
+            // SAFETY: HIDIOC[SG]FEATURE on a hidraw descriptor with a buffer of the length asked.
+            unsafe { libc::ioctl(file.as_raw_fd(), request as libc::c_ulong, buf.as_mut_ptr()) }
+        };
+
+        // The page: answers what the app asks of its controller in page slot 2.
+        let (asked_tx, asked) = mpsc::channel();
+        let mut events = pads.events();
+        let leaving = Arc::new(AtomicBool::new(false));
+        let page = {
+            let (pads, leaving) = (Arc::clone(&pads), Arc::clone(&leaving));
+            std::thread::spawn(move || {
+                while !leaving.load(Ordering::Relaxed) {
+                    let Ok(event) = events.try_recv() else {
+                        std::thread::sleep(Duration::from_micros(200));
+                        continue;
+                    };
+                    let PadEvent::Hid(req) = event else { continue };
+                    asked_tx.send((req.slot, req.op, req.report)).ok();
+                    if req.ticket != 0 {
+                        let data: &[u8] = if req.op == HidOp::GetFeature {
+                            &[0x83, 0x07, 0xaa, 0xbb]
+                        } else {
+                            &[]
+                        };
+                        pads.relay_reply(req.slot, req.owner, req.ticket, true, data, None);
+                    }
+                }
+            })
+        };
+
+        // Steam has interface 2's node (the first slot) open when the
+        // controller comes back: it hears the connect status.
+        let slot = open(0);
+        pads.relay_open(2, OWNER, 0x28de, 0x1304).unwrap();
+        assert_eq!(read_report(&slot), Some(vec![0x79, 2]));
+        // A command and its reply go to the page, addressed to page slot 2.
+        let mut set = [0u8; 64];
+        set[..3].copy_from_slice(&[1, 0x83, 0]);
+        assert_eq!(feature(&slot, 0x06, &mut set), 64);
+        let mut get = [0u8; 64];
+        get[0] = 1;
+        assert_eq!(feature(&slot, 0x07, &mut get), 64);
+        assert_eq!(&get[..5], &[1, 0x83, 0x07, 0xaa, 0xbb]);
+        assert_eq!(
+            asked.recv_timeout(Duration::from_secs(1)).unwrap(),
+            (2, HidOp::SetFeature, 1)
+        );
+        assert_eq!(
+            asked.recv_timeout(Duration::from_secs(1)).unwrap(),
+            (2, HidOp::GetFeature, 1)
+        );
+        // The controller's report reaches that interface, verbatim.
+        let mut state = vec![0x42u8];
+        state.extend((0..53u8).map(|i| i ^ 0x5a));
+        assert_eq!(
+            pads.relay_input(2, OWNER, 1, &state),
+            crate::hid_relay::Verdict::Accept
+        );
+        assert_eq!(read_report(&slot), Some(state));
+
+        // An empty slot and the puck's own interface refuse a feature request.
+        for n in [1usize, 4] {
+            let other = open(n);
+            let mut get = [0u8; 64];
+            get[0] = 1;
+            assert!(feature(&other, 0x07, &mut get) < 0, "node {n} answered");
+            assert!(read_report(&other).is_none(), "node {n} sent a report");
+        }
+
+        // A second controller joins in page slot 0: the next interface.
+        let second = open(1);
+        pads.relay_open(0, OWNER, 0x28de, 0x1304).unwrap();
+        assert_eq!(read_report(&second), Some(vec![0x79, 2]));
+        // The first leaves: its node hears the disconnect, the other's stays quiet.
+        pads.relay_close(2, OWNER);
+        assert_eq!(read_report(&slot), Some(vec![0x79, 1]));
+        assert!(read_report(&second).is_none());
+        let mut get = [0u8; 64];
+        get[0] = 1;
+        assert!(
+            feature(&slot, 0x07, &mut get) < 0,
+            "the empty slot answered"
+        );
+
+        let stats = pads.relay_stats().unwrap();
+        println!("{stats:?}");
+        assert!(stats.reports >= 1 && stats.replies == 2);
+        pads.release_all();
+        drop((slot, second));
+        leaving.store(true, Ordering::Relaxed);
+        page.join().unwrap();
+        drop(pads);
+    }
+
+    /// The names under `/sys/class/tty`.
+    fn tty_names() -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir("/sys/class/tty")
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
     }
 }

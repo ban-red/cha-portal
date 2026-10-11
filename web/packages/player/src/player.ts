@@ -158,8 +158,8 @@ export interface PlayerOptions {
    */
   input?: InputMode;
   /**
-   * Pass a wired 2026 Steam Controller (WebHID) through to Steam in the environment, raw, when the
-   * streamer can carry it (its hello says so): Steam then drives the real firmware, and the page
+   * Pass a 2026 Steam Controller (WebHID; on a cable, or behind its wireless puck) through to Steam
+   * in the environment, raw, when the streamer can carry it (its hello says so): Steam then drives the real firmware, and the page
    * sends the controller's reports as they come instead of parsed pad state (docs/controllers.md,
    * "Raw HID relay"). Off by default; anything the streamer can't carry stays parsed.
    */

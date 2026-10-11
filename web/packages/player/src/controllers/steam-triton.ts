@@ -8,7 +8,11 @@
 // On a cable, a page that passes the controller through to the environment (hid-relay.ts) opens it
 // without claiming it (`deferClaim`) and leaves lizard mode and the sensors to the app there, which
 // writes the same feature reports to the real firmware: the driver only reads reports then, and
-// takes the device over after all (`claim()`) when no relay does.
+// takes the device over after all (`claim()`) when no relay does. The same goes for each controller
+// slot of a puck (its HID interfaces 2 to 5; the puck's own interface 6 is not a controller and is
+// never opened, `isPuckMonitor`). The puck's slot says nothing of a controller that is already there
+// while it is left alone, so the driver asks it (`probe`): a read-only command, answered only by a
+// slot with a controller.
 //
 // Ported from SDL3's SDL_hidapi_steam_triton.c (zlib licence; see
 // steam-protocol.ts). Input reports are numbered: 0x42, 0x45 and 0x47 are
@@ -24,7 +28,10 @@ import {
   GYRO_MODE_SEND_RAW_ACCEL,
   GYRO_MODE_SEND_RAW_GYRO,
   GYRO_SCALE,
+  ID_GET_ATTRIBUTES_VALUES,
   LIZARD_MODE_OFF,
+  PUCK_GET_RETRY,
+  receiveReply,
   SETTING_IMU_MODE,
   SETTING_LIZARD_MODE,
   STEAM_TRITON,
@@ -57,6 +64,20 @@ const STATE_BYTES = 45;
 const HAPTIC_PULSE_BYTES = 7;
 const WIRELESS_DISCONNECT = 1;
 const WIRELESS_CONNECT = 2;
+/** A puck slot with nothing known of its controller is asked this often. */
+const PROBE_MS = 2000;
+/** Generic Desktop: the page of a controller slot's mouse and keyboard, which the puck's own interface lacks. */
+const USAGE_PAGE_GENERIC_DESKTOP = 0x01;
+
+/**
+ * The puck's own HID interface (6): a vendor collection and nothing else, where a controller slot's
+ * interface (2 to 5) also has the lizard-mode mouse and keyboard. It carries no controller.
+ * Devices that don't say what they hold (a test's) count as slots.
+ */
+export function isPuckMonitor(device: HidDevice): boolean {
+  const collections = device.collections ?? [];
+  return device.productId === TRITON_PUCK && collections.length > 0 && collections.every((c) => c.usagePage !== USAGE_PAGE_GENERIC_DESKTOP);
+}
 
 // The 32-bit button field.
 const BTN_A = 0x00000001;
@@ -103,7 +124,9 @@ export class SteamTritonDriver implements HidDriver {
   private unclaimed = false;
   private claiming: Promise<void> | null = null;
   private steppedAside = 0;
-  /** Present on a cable's driver opened with `deferClaim`. */
+  private probeTimer: ReturnType<typeof setInterval> | undefined;
+  private probing = false;
+  /** Present on a cable's or a puck slot's driver opened with `deferClaim`. */
   readonly relay?: HidRelayHooks;
 
   constructor(
@@ -111,7 +134,7 @@ export class SteamTritonDriver implements HidDriver {
     options: HidDriverOptions = {},
   ) {
     this.dongle = device.productId === TRITON_PUCK || device.productId === TRITON_RECEIVER;
-    if (options.deferClaim && device.productId === TRITON_WIRED) {
+    if (options.deferClaim && (device.productId === TRITON_WIRED || device.productId === TRITON_PUCK)) {
       this.unclaimed = true;
       this.relay = { waiting: () => this.unclaimed, yield: () => this.stepAside(), claim: () => this.takeOver() };
     }
@@ -129,8 +152,15 @@ export class SteamTritonDriver implements HidDriver {
   }
 
   async open(): Promise<void> {
-    // For a relay to take or `claim()` to: nothing is written yet.
-    if (this.unclaimed) return;
+    // For a relay to take or `claim()` to: nothing is written yet. A puck slot is asked
+    // whether a controller is there, which writes only a read.
+    if (this.unclaimed) {
+      if (this.dongle) {
+        void this.probe();
+        this.probeTimer = setInterval(() => void this.probe(), PROBE_MS);
+      }
+      return;
+    }
     try {
       await this.claim();
     } catch (err) {
@@ -151,6 +181,25 @@ export class SteamTritonDriver implements HidDriver {
     }, LIZARD_RESEND_MS);
   }
 
+  /**
+   * Whether a controller is behind this puck slot while the slot is left alone: a slot answers the
+   * command that reads the controller's attributes only if one is there (the reply comes late, and
+   * is read until it is the command's), and refuses it otherwise.
+   */
+  private async probe(): Promise<void> {
+    if (this.closed || this.connected || !this.unclaimed || this.probing) return;
+    this.probing = true;
+    try {
+      await this.feature([ID_GET_ATTRIBUTES_VALUES, 0]);
+      const reply = await receiveReply(this.device, FEATURE_REPORT, ID_GET_ATTRIBUTES_VALUES, PUCK_GET_RETRY);
+      if (reply[0] === ID_GET_ATTRIBUTES_VALUES || reply[1] === ID_GET_ATTRIBUTES_VALUES) this.setConnected(true);
+    } catch {
+      // Nothing there (yet).
+    } finally {
+      this.probing = false;
+    }
+  }
+
   /** A relay has the device: the app there turns lizard mode off and keeps it so. */
   private stepAside(): void {
     clearInterval(this.lizardTimer);
@@ -165,6 +214,10 @@ export class SteamTritonDriver implements HidDriver {
     if (this.closed) return Promise.resolve();
     const epoch = this.steppedAside;
     this.claiming ??= this.claim()
+      // A puck slot with no controller refuses; one comes later.
+      .catch((err) => {
+        if (!this.dongle) throw err;
+      })
       .then(() => {
         if (epoch !== this.steppedAside) return;
         this.unclaimed = false;
@@ -176,6 +229,7 @@ export class SteamTritonDriver implements HidDriver {
 
   async close(): Promise<void> {
     this.closed = true;
+    clearInterval(this.probeTimer);
     clearInterval(this.lizardTimer);
     clearInterval(this.rumbleTimer);
     clearTimeout(this.rumbleStop);
@@ -201,7 +255,8 @@ export class SteamTritonDriver implements HidDriver {
   private setConnected(connected: boolean): void {
     if (this.connected === connected) return;
     this.connected = connected;
-    if (connected && this.dongle && !this.closed) void this.claim().catch(() => {});
+    // A slot left alone for a relay is not claimed behind its back.
+    if (connected && this.dongle && !this.closed && !this.unclaimed) void this.claim().catch(() => {});
     this.onConnection?.();
   }
 
@@ -338,6 +393,6 @@ export class SteamTritonDriver implements HidDriver {
 
 export const steamTritonFactory: HidDriverFactory = {
   name: "steam-triton",
-  matches: (device) => device.vendorId === VALVE_VENDOR_ID && STEAM_TRITON.includes(device.productId),
+  matches: (device) => device.vendorId === VALVE_VENDOR_ID && STEAM_TRITON.includes(device.productId) && !isPuckMonitor(device),
   create: (device, options) => new SteamTritonDriver(device, options),
 };

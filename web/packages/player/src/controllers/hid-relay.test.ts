@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { HidRelay, RAW_RESEND_MS, RAW_REST_RESENDS, STEAM_LIZARD_REPORTS, fromBase64, parseRawHid, toBase64, type RelayLink } from "./hid-relay";
 import type { HidDevice } from "./hid-types";
-import { NEVER_UPDATE_TIME, RELAYED_COMMANDS, rewriteBuildTimes } from "./steam-protocol";
+import { NEVER_UPDATE_TIME, PUCK_GET_RETRY, RELAYED_COMMANDS, rewriteBuildTimes } from "./steam-protocol";
 
 /** A device that does what it is told, in the order it is told, and can be slow or broken. */
 class FakeDevice {
@@ -16,6 +16,8 @@ class FakeDevice {
   gate: Promise<void> | null = null;
   failing = false;
   feature = new Uint8Array([0x83, 5, 1, 2]);
+  /** Answers of the next reads, in order (an Error fails the read); then `feature` again. */
+  script: (Uint8Array | Error)[] = [];
 
   private async op(name: string) {
     this.log.push(name);
@@ -26,7 +28,9 @@ class FakeDevice {
   }
   async receiveFeatureReport(id: number) {
     await this.op(`get ${id}`);
-    return new DataView(this.feature.buffer.slice(0));
+    const next = this.script.shift();
+    if (next instanceof Error) throw next;
+    return new DataView((next ?? this.feature).buffer.slice(0));
   }
   async sendFeatureReport(id: number, data: BufferSource) {
     await this.op(`set ${id} ${[...new Uint8Array(data as ArrayBuffer)].join(",")}`);
@@ -401,5 +405,86 @@ describe("rewriteBuildTimes", () => {
     expect([...truncated.slice(7)]).toEqual([10, 9, 9]);
     expect(rewriteBuildTimes(new Uint8Array())).toBe(false);
     expect(NEVER_UPDATE_TIME).toBe(2 ** 31 - 1);
+  });
+});
+
+describe("a puck's late feature replies", () => {
+  /** A relay of a puck's controller: reads are repeated, 1 ms apart here. */
+  function puckSetup() {
+    const s = setup();
+    const relay = new HidRelay(
+      2,
+      Object.assign(s.device, { productId: 0x1304 }) as unknown as HidDevice,
+      { send: (m) => void s.sent.push(m), sendReport: () => false },
+      () => 1,
+      () => 0,
+      STEAM_LIZARD_REPORTS,
+      { attempts: PUCK_GET_RETRY.attempts, delayMs: 1 },
+    );
+    relay.open();
+    relay.accepted(true);
+    s.sent.length = 0;
+    return { ...s, relay };
+  }
+  const replies = (sent: Record<string, unknown>[]) => sent.filter((m) => m.op === "reply");
+  const get = (id: number) => ({ id, op: "get_feature", r: 1 });
+  const set = (id: number, cmd: number) => ({ id, op: "set_feature", r: 1, d: toBase64(new Uint8Array([cmd, 0, 0])) });
+
+  test("a read that fails, or is not the command's, is repeated until it is", async () => {
+    const { relay, device, sent } = puckSetup();
+    // The first reads fail (the puck is not ready), then a stale reply, then the command's.
+    device.script = [new Error("not ready"), new Error("not ready"), new Uint8Array([0, 0, 0, 0]), new Uint8Array([0x83, 5, 9, 9])];
+    relay.request(set(1, 0x83));
+    relay.request(get(2));
+    await settle(60);
+    const [ack, answer] = replies(sent);
+    expect(ack).toMatchObject({ id: 1, ok: true });
+    expect(answer).toMatchObject({ id: 2, ok: true });
+    expect([...fromBase64(answer!.d as string)]).toEqual([0x83, 5, 9, 9]);
+    expect(device.log.filter((l) => l === "get 1")).toHaveLength(4);
+  });
+
+  test("a reply that never echoes the command is the last one read, for the streamer to judge", async () => {
+    const { relay, device, sent } = puckSetup();
+    device.feature = new Uint8Array([0xee, 1, 2, 3]);
+    relay.request(set(1, 0x83));
+    relay.request(get(2));
+    await settle(60);
+    const answer = replies(sent)[1]!;
+    expect(answer).toMatchObject({ id: 2, ok: true });
+    expect([...fromBase64(answer.d as string)]).toEqual([0xee, 1, 2, 3]);
+    expect(device.log.filter((l) => l === "get 1")).toHaveLength(PUCK_GET_RETRY.attempts);
+  });
+
+  test("a read that always fails is told no, so the streamer's emulation answers", async () => {
+    const { relay, device, sent } = puckSetup();
+    device.failing = true;
+    relay.request(get(2));
+    await settle(80);
+    expect(replies(sent)).toEqual([expect.objectContaining({ id: 2, ok: false })]);
+  });
+
+  test("a command with no echoing reply is read once, and so is a read of another report", async () => {
+    const { relay, device, sent } = puckSetup();
+    device.feature = new Uint8Array([0xee, 1, 2, 3]);
+    relay.request(set(1, 0x87));
+    relay.request(get(2));
+    relay.request({ id: 3, op: "get_feature", r: 2 });
+    await settle(40);
+    expect(device.log.filter((l) => l === "get 1")).toHaveLength(1);
+    expect(device.log.filter((l) => l === "get 2")).toHaveLength(1);
+    expect(replies(sent).map((m) => m.ok)).toEqual([true, true, true]);
+  });
+
+  test("a cable's relay reads once, as before", async () => {
+    const { relay, device, sent } = setup();
+    relay.open();
+    relay.accepted(true);
+    device.feature = new Uint8Array([0xee, 1, 2, 3]);
+    relay.request(set(1, 0x83));
+    relay.request(get(2));
+    await settle(40);
+    expect(device.log.filter((l) => l === "get 1")).toHaveLength(1);
+    expect(replies(sent.filter((m) => m.k === "hid"))).toHaveLength(2);
   });
 });

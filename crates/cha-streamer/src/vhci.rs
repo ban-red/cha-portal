@@ -112,7 +112,7 @@ fn sysfs_write(file: &str, text: &str) -> io::Result<()> {
 
 /// Attaches `sock` to a free port and says which. A port another streamer
 /// took first gives EBUSY; the next free one is tried.
-fn attach(sock: &UnixStream) -> Result<u32> {
+pub(crate) fn attach(sock: &UnixStream) -> Result<u32> {
     let mut last = None;
     for row in status_rows()?
         .into_iter()
@@ -133,18 +133,18 @@ fn attach(sock: &UnixStream) -> Result<u32> {
     }
 }
 
-fn detach(port: u32) -> io::Result<()> {
+pub(crate) fn detach(port: u32) -> io::Result<()> {
     sysfs_write("detach", &port.to_string())
 }
 
-/// The sysfs directory of the HID device behind `busid` (`9-1`), once the
-/// kernel has made it.
-fn hid_dir(busid: &str) -> Option<PathBuf> {
+/// The sysfs directory of the HID device of interface `number` of the USB
+/// device `busid` (`9-1`), once the kernel has made it.
+fn hid_dir(busid: &str, number: usize) -> Option<PathBuf> {
     for hub in fs::read_dir(VHCI).ok()?.flatten() {
         if !hub.file_name().to_string_lossy().starts_with("usb") {
             continue;
         }
-        let interface = hub.path().join(busid).join(format!("{busid}:1.0"));
+        let interface = hub.path().join(busid).join(format!("{busid}:1.{number}"));
         for entry in fs::read_dir(interface).into_iter().flatten().flatten() {
             if entry.file_name().to_string_lossy().starts_with("0003:") {
                 return Some(entry.path());
@@ -154,9 +154,14 @@ fn hid_dir(busid: &str) -> Option<PathBuf> {
     None
 }
 
-/// Waits for the port to be in use, and then for the HID device's driver to
-/// bind and make its nodes ([`uhid::wait_until`]).
-fn wait_for_nodes(port: u32, driver: &str, within: Duration) -> Result<Found> {
+/// Waits for the port to be in use, and then for the HID device of interface
+/// `number`'s driver to bind and make its nodes ([`uhid::wait_until`]).
+pub(crate) fn wait_for_nodes(
+    port: u32,
+    number: usize,
+    driver: &str,
+    within: Duration,
+) -> Result<Found> {
     let deadline = Instant::now() + within;
     let busid = loop {
         let busid = status_rows()?
@@ -173,9 +178,9 @@ fn wait_for_nodes(port: u32, driver: &str, within: Duration) -> Result<Found> {
     };
     let left = deadline.saturating_duration_since(Instant::now());
     uhid::wait_until(
-        &format!("vhci_hcd port {port} ({busid})"),
+        &format!("vhci_hcd port {port} ({busid}:1.{number})"),
         || {
-            hid_dir(&busid)
+            hid_dir(&busid, number)
                 .map(|p| uhid::scan_hid(&p))
                 .unwrap_or_default()
         },
@@ -202,7 +207,7 @@ fn emit(events: &broadcast::Sender<PadEvent>, emitted: Vec<PadEvent>) {
     }
 }
 
-fn emulated_get(protocol: &mut dyn Protocol, kind: u8, id: u8) -> Result<Vec<u8>, i32> {
+pub(crate) fn emulated_get(protocol: &mut dyn Protocol, kind: u8, id: u8) -> Result<Vec<u8>, i32> {
     let kind = match kind {
         REPORT_FEATURE => FEATURE_REPORT,
         REPORT_OUTPUT => OUTPUT_REPORT,
@@ -212,7 +217,7 @@ fn emulated_get(protocol: &mut dyn Protocol, kind: u8, id: u8) -> Result<Vec<u8>
     protocol.get_report(id, kind)
 }
 
-fn emulated_set(
+pub(crate) fn emulated_set(
     protocol: &mut dyn Protocol,
     events: &broadcast::Sender<PadEvent>,
     kind: u8,
@@ -242,7 +247,7 @@ impl Function<'_> {
 }
 
 impl Hid for Function<'_> {
-    fn get_report(&mut self, kind: u8, id: u8, _w_length: u16) -> Reply<Vec<u8>> {
+    fn get_report(&mut self, _iface: usize, kind: u8, id: u8, _w_length: u16) -> Reply<Vec<u8>> {
         if let Some((ticket, request)) = self.relay.request_get(kind, id, self.now) {
             if self.ask(request) {
                 return Reply::Pending(ticket);
@@ -252,7 +257,7 @@ impl Hid for Function<'_> {
         Reply::Done(emulated_get(self.protocol, kind, id))
     }
 
-    fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Reply<()> {
+    fn set_report(&mut self, _iface: usize, kind: u8, id: u8, data: &[u8]) -> Reply<()> {
         if let Some((ticket, request)) = self.relay.request_set(kind, id, data, self.now) {
             if self.ask(request) {
                 // The emulated device hears it too (its events dropped: the
@@ -269,7 +274,7 @@ impl Hid for Function<'_> {
         Reply::Done(emulated_set(self.protocol, self.events, kind, id, data))
     }
 
-    fn output(&mut self, data: &[u8]) {
+    fn output(&mut self, _iface: usize, data: &[u8]) {
         // The real controller owns its motors and trackpads: an output report
         // it doesn't get (over the rate, or none of the device's) is dropped,
         // not turned into a rumble for the page to play on the same device.
@@ -284,7 +289,7 @@ impl Hid for Function<'_> {
     }
 }
 
-struct Inner {
+pub(crate) struct Inner {
     engine: Engine,
     protocol: Box<dyn Protocol>,
     state: PadState,
@@ -329,7 +334,7 @@ impl Inner {
             now: Instant::now(),
         };
         self.engine.on_command(cmd, body, &mut out, &mut function);
-        for ticket in self.engine.take_cancelled() {
+        for (_, ticket) in self.engine.take_cancelled() {
             self.relay.cancel(ticket);
         }
         self.write(&out);
@@ -350,7 +355,8 @@ impl Inner {
                     }
                 },
             };
-            self.engine.complete_control(held.ticket, result, &mut out);
+            self.engine
+                .complete_control(0, held.ticket, result, &mut out);
         }
         self.write(&out);
     }
@@ -389,9 +395,20 @@ impl Inner {
     }
 }
 
-struct Shared {
-    inner: Mutex<Inner>,
-    stop: AtomicBool,
+/// A device served on a USB/IP socket: where the kernel's URBs go.
+pub(crate) trait Serve {
+    fn serve(&mut self, cmd: &usbip::Command, body: &[u8]);
+}
+
+impl Serve for Inner {
+    fn serve(&mut self, cmd: &usbip::Command, body: &[u8]) {
+        Inner::serve(self, cmd, body);
+    }
+}
+
+pub(crate) struct Shared<T = Inner> {
+    pub(crate) inner: Mutex<T>,
+    pub(crate) stop: AtomicBool,
 }
 
 /// A pad that is a USB device, served from two threads: one reads the kernel's
@@ -483,7 +500,7 @@ impl UsbPad {
     /// its `hidraw` node.
     pub fn wait_for_nodes(&self, driver: &str, within: Duration) -> Result<Found> {
         let port = self.port.context("not attached to vhci_hcd")?;
-        wait_for_nodes(port, driver, within)
+        wait_for_nodes(port, 0, driver, within)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -584,7 +601,7 @@ impl Drop for UsbPad {
 }
 
 /// The kernel's side of the conversation: a header, its body, an answer.
-fn read_urbs(mut sock: UnixStream, shared: &Shared) {
+pub(crate) fn read_urbs<T: Serve>(mut sock: UnixStream, shared: &Shared<T>) {
     loop {
         let mut head = [0u8; HEADER_LEN];
         if sock.read_exact(&mut head).is_err() {
@@ -731,6 +748,7 @@ mod tests {
             product_name: variant.name().into(),
             serial: "FXA0123456789".into(),
             report_descriptor: variant.descriptor(),
+            interfaces: Vec::new(),
         };
         let protocol = Box::new(SteamController::new(variant, 1, "FXA0123456789"));
         let pad = UsbPad::serve(ours, None, identity, protocol, events, "test", 0).unwrap();

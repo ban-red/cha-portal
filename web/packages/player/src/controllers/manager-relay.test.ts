@@ -338,3 +338,79 @@ describe("passing a controller through", () => {
     manager.stop();
   });
 });
+
+describe("passing controllers behind a puck through", () => {
+  const PUCK = [0x28de, 0x1304] as [number, number];
+  const BOTH = ["28de:1302", "28de:1304"];
+
+  test("each controller behind the puck gets a relay in its own slot, naming the puck", () => {
+    const { backend, manager, sent, parsed } = setup();
+    const a = new RawPad("hid:1", PUCK);
+    const b = new RawPad("hid:2", PUCK);
+    backend.add(a);
+    backend.add(b);
+    manager.rawHidOffered(BOTH);
+    expect(sent).toEqual([
+      { k: "hid", op: "open", i: 0, vid: 0x28de, pid: 0x1304 },
+      { k: "hid", op: "open", i: 1, vid: 0x28de, pid: 0x1304 },
+    ]);
+    manager.hidOpened(0, true);
+    manager.hidOpened(1, true);
+    expect([a.calls, b.calls]).toEqual([["yield"], ["yield"]]);
+    // Their reports go up under their slots, and nothing parsed is sent for either.
+    a.sink!(0x42, new DataView(new Uint8Array([1]).buffer));
+    b.sink!(0x42, new DataView(new Uint8Array([2]).buffer));
+    a.s.buttons[0] = 1;
+    b.s.buttons[0] = 1;
+    manager.tick();
+    expect(parsed()).toEqual([]);
+    manager.stop();
+  });
+
+  test("an offer of the cable only leaves puck controllers on the parsed path", () => {
+    const { backend, manager, ops, parsed } = setup();
+    const pad = new RawPad("hid:1", PUCK);
+    backend.add(pad);
+    manager.rawHidOffered(OFFER);
+    expect(pad.calls).toEqual(["claim"]);
+    pad.s.buttons[0] = 1;
+    manager.tick();
+    expect(parsed()).toHaveLength(1);
+    expect(ops()).toEqual([]);
+    manager.stop();
+  });
+
+  test("one controller leaving the puck closes its relay and no other; a new one takes the free slot", () => {
+    const { backend, manager, sent } = setup();
+    const a = new RawPad("hid:1", PUCK);
+    const b = new RawPad("hid:2", PUCK);
+    backend.add(a);
+    backend.add(b);
+    manager.rawHidOffered(BOTH);
+    manager.hidOpened(0, true);
+    manager.hidOpened(1, true);
+    sent.length = 0;
+    backend.remove(a);
+    expect(manager.relaying(0)).toBe(false);
+    expect(manager.relaying(1)).toBe(true);
+    expect(sent.filter((m) => m.op === "close")).toEqual([{ k: "hid", op: "close", i: 0 }]);
+    expect(sent.filter((m) => m.k === "pad")).toEqual([goneMessage(0, 1)]);
+    // The next one to wake behind the puck is slot 0 again.
+    const c = new RawPad("hid:3", PUCK);
+    backend.add(c);
+    expect(sent.at(-1)).toEqual({ k: "hid", op: "open", i: 0, vid: 0x28de, pid: 0x1304 });
+    manager.stop();
+  });
+
+  test("a cable controller and a puck one relay side by side, each under the model it is", () => {
+    const { backend, manager, sent } = setup();
+    backend.add(new RawPad("hid:1"));
+    backend.add(new RawPad("hid:2", PUCK));
+    manager.rawHidOffered(BOTH);
+    expect(sent.map((m) => [m.i, m.pid])).toEqual([
+      [0, 0x1302],
+      [1, 0x1304],
+    ]);
+    manager.stop();
+  });
+});
