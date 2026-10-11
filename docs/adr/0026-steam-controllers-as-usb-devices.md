@@ -1,0 +1,26 @@
+# 0026: Steam controllers as USB devices on the node, and passing the real one through
+
+- **Status:** accepted (2026-10-11). Builds on [research note 10](../research/10-usbip-and-usb-passthrough.md) (designs A and B); the details are in [`docs/controllers.md`](../controllers.md).
+- **Context:**
+  - The virtual Steam Controller was a uhid device: Bluetooth `28de:1303`, with a report descriptor, serial and command replies we reconstructed. Steam accepted it but logged our board serial as invalid. It answered settings and haptics from our emulation, never the real controller's firmware.
+  - SDL takes the wireless puck (`28de:1304`) only on USB interfaces 2–5, which a uhid device can't have.
+  - We looked at USB/IP to forward the user's real controller. A browser can't export a HID device over USB/IP (WebUSB blocks the HID class), and macOS won't let a helper claim one. It also wouldn't lower latency: the network hop stays, and TCP replaces datagrams.
+- **Decision:**
+  - **USB devices served on the node.** With `CHA_STEAM_PAD_TRANSPORT=usbip` on the node (off by default), the streamer presents the Steam Controller as a real USB device. It serves USB/IP on a `socketpair` and hands the other end to the kernel's `vhci_hcd` (`attach`). The kernel enumerates a device with real interface numbers, which `usbhid` binds. Nothing leaves the node, so there's no network round trip per USB request.
+    - The wired controller is `1302`. The puck is `1304`: seven interfaces, a HID interface per controller slot. Both use descriptors and reply formats read from real devices.
+  - **Confined.** The streamer that writes `attach` runs under its own AppArmor profile, `cha-streamer-vhci`: Docker's default with only `vhci_hcd.0/attach` and `detach` left writable. `install.sh` loads `vhci-hcd` and keeps vhci devices off the host's seat.
+  - **The real controller passed through, opt-in.** With "Pass the Steam Controller through to Steam" on, the page forwards a WebHID controller's own input reports, as datagrams. It also performs Steam's feature and output reports on the real firmware, while the virtual device holds Steam's control transfer until the reply arrives.
+    - Replies are checked against the command, and a retry loop is broken.
+    - A slow or failing page falls back on the emulation.
+    - Without the option, or on any other path, the page sends parsed pad state as before.
+  - **Firmware guard.** Only an allowlist of queries, play settings, haptics and rumble ever reaches the real controller, enforced in both the page and the streamer. Bootloader, flash, calibration, pairing and unknown commands never do.
+    - Firmware build times are reported as 2038, so Steam doesn't offer an update through Cha, and the emulation refuses `0x90`.
+    - Firmware updates are done with the controller on a machine running Steam locally.
+  - **Not USB/IP over the network.** Forwarding arbitrary USB devices from a native client (design C) stays future work, for devices that aren't controllers.
+- **Consequences:**
+  - Steam sees a USB controller with the real identity: wired, interface 0, no invalid-serial warning. The puck passes SDL's interface check.
+  - With the pass-through on, Steam talks to the real firmware: its settings, haptics and serial.
+  - A node needs the `vhci-hcd` module and the AppArmor profile (`sudo install.sh`). Proxmox LXC nodes load the module on the outer host.
+  - vhci devices live on the host kernel. Udev rules and the profile keep them from the desk user and from other writes under `/sys`.
+  - The relay depends on Chrome's WebHID: the user grants each device once. Firefox and Safari keep the parsed path.
+  - Feature round trips are about 1.3 ms on a LAN over a cable and 20–40 ms through the puck. Whether Steam's handshake tolerates a WAN round trip is not measured.

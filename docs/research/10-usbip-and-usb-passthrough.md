@@ -1,6 +1,16 @@
 # 10: USB/IP and USB passthrough, October 2026
 
-> Background research ([index](README.md)). Nothing here is built yet. What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+> Background research ([index](README.md)). What Cha Portal actually ported is in [PROVENANCE.md](../PROVENANCE.md).
+>
+> **Since then (2026-10-11):**
+> - **Built:**
+>   - design B, the streamer presenting the Steam Controller as a USB device through a vhci loopback ([ADR 0026](../adr/0026-steam-controllers-as-usb-devices.md));
+>   - design A on top of it, passing the real wired controller and the wireless puck through from WebHID, behind a firmware guard;
+>   - pad input as datagrams.
+> - **Measured:** a decoded-frame probe found no latency change on a wired LAN ([benchmarks](../benchmarks/pad-latency.md)).
+> - **Not built:** design C, remote USB/IP.
+>
+> The live state is in [controllers.md](../controllers.md).
 
 Can USB/IP (the kernel's `vhci_hcd` and the USB/IP protocol) give Cha three things?
 
