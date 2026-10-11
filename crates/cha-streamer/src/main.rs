@@ -47,6 +47,8 @@ mod gamepad;
 #[cfg(all(target_os = "linux", feature = "gamestream"))]
 mod gamestream;
 #[cfg(target_os = "linux")]
+mod hid_relay;
+#[cfg(target_os = "linux")]
 mod media;
 #[cfg(target_os = "linux")]
 mod net;

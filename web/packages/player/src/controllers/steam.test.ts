@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 
 import type { HidDevice } from "./hid-types";
 import { SteamControllerDriver } from "./steam-controller";
@@ -177,6 +177,88 @@ describe("Steam Controller (2026)", () => {
     expect(f.features[0]!.data.slice(0, 5)).toEqual([0x87, 3, 9, 0, 0]);
     // IMU_MODE (48) = raw accel | raw gyro.
     expect(f.features[1]!.data.slice(0, 5)).toEqual([0x87, 3, 48, 0x18, 0]);
+  });
+
+  describe("opened for a raw relay (deferClaim)", () => {
+    test("a controller on a cable is left alone: nothing is written, and its driver says it is waiting", async () => {
+      const f = fake(0x1302);
+      const driver = new SteamTritonDriver(f.device, { deferClaim: true });
+      drivers.push(driver);
+      await driver.open();
+      expect(f.features).toEqual([]);
+      expect(driver.relay!.waiting()).toBe(true);
+    });
+
+    test("any other model, and a driver not asked, have no relay hooks and claim as before", async () => {
+      for (const [id, options] of [
+        [0x1303, { deferClaim: true }],
+        [0x1304, { deferClaim: true }],
+        [0x1302, {}],
+      ] as const) {
+        const f = fake(id);
+        const driver = new SteamTritonDriver(f.device, options);
+        drivers.push(driver);
+        await driver.open();
+        expect(driver.relay).toBeUndefined();
+        expect(f.features.length).toBeGreaterThan(0);
+      }
+    });
+
+    test("claim() takes it over after all: lizard mode off, sensors on, and kept so", async () => {
+      jest.useFakeTimers();
+      try {
+        const f = fake(0x1302);
+        const driver = new SteamTritonDriver(f.device, { deferClaim: true });
+        drivers.push(driver);
+        await driver.open();
+        await driver.relay!.claim();
+        expect(driver.relay!.waiting()).toBe(false);
+        expect(f.features.map((x) => x.data.slice(0, 3))).toEqual([
+          [0x87, 3, 9],
+          [0x87, 3, 48],
+        ]);
+        // The controller's watchdog turns lizard mode back on: the resend goes on.
+        jest.advanceTimersByTime(3000);
+        expect(f.features).toHaveLength(3);
+        jest.advanceTimersByTime(3000);
+        expect(f.features).toHaveLength(4);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("yield() leaves lizard mode to the app: the resend stops, and claim() starts it again", async () => {
+      jest.useFakeTimers();
+      try {
+        const f = fake(0x1302);
+        const driver = new SteamTritonDriver(f.device, { deferClaim: true });
+        drivers.push(driver);
+        await driver.open();
+        await driver.relay!.claim();
+        driver.relay!.yield();
+        expect(driver.relay!.waiting()).toBe(true);
+        const written = f.features.length;
+        jest.advanceTimersByTime(10_000);
+        expect(f.features).toHaveLength(written);
+        await driver.relay!.claim();
+        expect(f.features.length).toBeGreaterThan(written);
+        const after = f.features.length;
+        jest.advanceTimersByTime(3000);
+        expect(f.features).toHaveLength(after + 1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("it still reads reports while it waits or yields (the Controllers page and the parsed fallback)", async () => {
+      const driver = new SteamTritonDriver(fake(0x1302).device, { deferClaim: true });
+      drivers.push(driver);
+      await driver.open();
+      const d = new DataView(new ArrayBuffer(45));
+      d.setUint32(1, 0x1, true);
+      driver.onReport(0x42, d);
+      expect(driver.state().buttons[BTN.south]).toBe(1);
+    });
   });
 
   test("a puck shows no controller until its wireless status says so", () => {

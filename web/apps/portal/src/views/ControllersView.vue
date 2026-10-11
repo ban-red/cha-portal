@@ -2,6 +2,7 @@
 import {
   ControllerManager,
   EXTRA,
+  isSteamOnGamepadApi,
   type ControllerState,
   type ControllerType,
   type ManagedController,
@@ -12,8 +13,10 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import AppControllerKinds from "../components/AppControllerKinds.vue";
 import ControllerDiagram from "../components/ControllerDiagram.vue";
 import FormError from "../components/FormError.vue";
+import SteamWebHidNote from "../components/SteamWebHidNote.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 import WarningNote from "../components/WarningNote.vue";
+import { loadSteamPassthrough, saveSteamPassthrough } from "../controllerPrefs";
 
 // What this browser sees of the controllers, and what it would send to an
 // environment. It only watches: nothing here reaches a session.
@@ -21,6 +24,13 @@ import WarningNote from "../components/WarningNote.vue";
 const manager = new ControllerManager();
 const controllers = ref<ManagedController[]>([]);
 const hidReason = manager.hidUnavailable;
+
+// Takes effect in the next session: a running one keeps what it started with.
+const steamPassthrough = ref(loadSteamPassthrough());
+function setSteamPassthrough(on: boolean) {
+  steamPassthrough.value = on;
+  saveSteamPassthrough(on);
+}
 
 interface Live {
   state: ControllerState;
@@ -240,6 +250,27 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
       </div>
     </div>
 
+    <div class="card flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-5">
+      <div class="min-w-0 text-sm">
+        <p id="steam-passthrough-label" class="text-base font-medium">
+          Pass the Steam Controller through to Steam (experimental)
+        </p>
+        <p id="steam-passthrough-hint" class="mt-0.5 text-xs text-ink-3">
+          For a 2026 Steam Controller on a USB cable. Steam in the environment then talks to the controller itself:
+          its settings, haptics and Steam button come from the real firmware, and this page forwards the controller's
+          reports as they are. Until Steam has started there, the controller acts as a keyboard and mouse here. It
+          needs a node whose Steam controllers are USB devices; otherwise sessions send the controller the usual way.
+          Applies from the next session.
+        </p>
+      </div>
+      <ToggleSwitch
+        :model-value="steamPassthrough"
+        aria-labelledby="steam-passthrough-label"
+        aria-describedby="steam-passthrough-hint"
+        @update:model-value="setSteamPassthrough"
+      />
+    </div>
+
     <div aria-live="polite" class="space-y-2">
       <FormError polite :message="problem" />
       <p v-if="note" class="text-xs text-ink-2">{{ note }}</p>
@@ -315,6 +346,8 @@ const rawHid = (id: string) => (live.value[id]?.raw?.kind === "hid" ? (live.valu
             </button>
           </div>
         </div>
+
+        <SteamWebHidNote v-if="isSteamOnGamepadApi(c.info)" :hid-reason="hidReason" :connecting="connecting" @connect="connect" />
 
         <WarningNote
           v-if="!c.info.mapped"

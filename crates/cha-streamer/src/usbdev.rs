@@ -15,6 +15,12 @@
 //!
 //! [`Engine`] parks the kernel's interrupt-IN `CMD_SUBMIT`s; a report completes
 //! the oldest, or, with none parked, waits in a FIFO of [`PENDING_MAX`].
+//!
+//! A control transfer can also stay pending: [`Hid`] answers a GET/SET_REPORT
+//! with [`Reply::Pending`] and a ticket, the URB is held, and
+//! [`Engine::complete_control`] answers it later (the raw HID relay waits for
+//! the real controller this way; USB/IP lets the device reply whenever it
+//! likes). An unlink of a held URB cancels it.
 
 use std::collections::VecDeque;
 
@@ -89,14 +95,22 @@ const FEATURE_ENDPOINT_HALT: u16 = 0;
 pub const REPORT_OUTPUT: u8 = 2;
 pub const REPORT_FEATURE: u8 = 3;
 
+/// A handler's answer to a HID class request: now (an errno stalls the URB),
+/// or later under a ticket ([`Engine::complete_control`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reply<T> {
+    Done(Result<T, i32>),
+    Pending(u32),
+}
+
 /// What the device does with HID class requests and interrupt OUT data.
-/// Errors are errnos; the URB stalls.
 pub trait Hid {
     /// GET_REPORT: `kind` is input (1), [`REPORT_OUTPUT`] or
-    /// [`REPORT_FEATURE`]; the bytes lead with the report id.
-    fn get_report(&mut self, kind: u8, id: u8) -> Result<Vec<u8>, i32>;
+    /// [`REPORT_FEATURE`]; the bytes lead with the report id. `w_length` is
+    /// what the host asked for.
+    fn get_report(&mut self, kind: u8, id: u8, w_length: u16) -> Reply<Vec<u8>>;
     /// SET_REPORT with its data stage (the report id leads when numbered).
-    fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Result<(), i32>;
+    fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Reply<()>;
     /// Data of an interrupt OUT transfer (the report id leads).
     fn output(&mut self, data: &[u8]);
 }
@@ -179,6 +193,8 @@ pub enum Control {
     Data(Vec<u8>),
     /// STALL (the URB completes with -EPIPE).
     Stall,
+    /// No answer yet: the handler holds a ticket for it.
+    Pending(u32),
 }
 
 #[derive(Debug)]
@@ -308,13 +324,15 @@ impl Device {
     ) -> Control {
         let [id, kind] = value.to_le_bytes();
         match req {
-            HID_GET_REPORT => match hid.get_report(kind, id) {
-                Ok(data) => truncate(data, w_length),
-                Err(_) => Control::Stall,
+            HID_GET_REPORT => match hid.get_report(kind, id, w_length) {
+                Reply::Done(Ok(data)) => truncate(data, w_length),
+                Reply::Done(Err(_)) => Control::Stall,
+                Reply::Pending(ticket) => Control::Pending(ticket),
             },
             HID_SET_REPORT => match hid.set_report(kind, id, out) {
-                Ok(()) => Control::Data(Vec::new()),
-                Err(_) => Control::Stall,
+                Reply::Done(Ok(())) => Control::Data(Vec::new()),
+                Reply::Done(Err(_)) => Control::Stall,
+                Reply::Pending(ticket) => Control::Pending(ticket),
             },
             HID_GET_IDLE => truncate(vec![self.idle], w_length),
             HID_SET_IDLE => {
@@ -337,11 +355,23 @@ struct Parked {
     length: u32,
 }
 
+/// A control URB waiting for its handler's answer.
+#[derive(Debug)]
+struct Held {
+    seqnum: u32,
+    ticket: u32,
+    /// An IN transfer (GET_REPORT): the answer carries data.
+    input: bool,
+    length: u32,
+}
+
 #[derive(Debug)]
 pub struct Engine {
     pub device: Device,
     parked: VecDeque<Parked>,
     pending: VecDeque<Vec<u8>>,
+    held: Vec<Held>,
+    cancelled: Vec<u32>,
     /// Reports dropped because the FIFO was full.
     pub dropped: u64,
 }
@@ -357,6 +387,8 @@ impl Engine {
             device: Device::new(identity),
             parked: VecDeque::new(),
             pending: VecDeque::new(),
+            held: Vec::new(),
+            cancelled: Vec::new(),
             dropped: 0,
         }
     }
@@ -369,6 +401,48 @@ impl Engine {
     #[cfg(test)]
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Forgets the reports waiting for a URB (a relay starting or ending:
+    /// what the other source made is stale).
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
+    }
+
+    /// Control URBs waiting for an answer.
+    #[cfg(test)]
+    pub fn held(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Tickets of held URBs the kernel gave up on (unlinked) since the last
+    /// call: nobody should answer them any more.
+    pub fn take_cancelled(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.cancelled)
+    }
+
+    /// Answers the URB held under `ticket`: the data of a GET_REPORT, nothing
+    /// for a SET_REPORT, or an errno that stalls it. False if the kernel
+    /// unlinked it meanwhile.
+    pub fn complete_control(
+        &mut self,
+        ticket: u32,
+        result: Result<Vec<u8>, i32>,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let Some(at) = self.held.iter().position(|h| h.ticket == ticket) else {
+            return false;
+        };
+        let held = self.held.remove(at);
+        match result {
+            Ok(data) if held.input => {
+                let n = data.len().min(held.length as usize);
+                encode_ret_submit(out, held.seqnum, 0, n as u32, &data[..n]);
+            }
+            Ok(_) => encode_ret_submit(out, held.seqnum, 0, held.length, &[]),
+            Err(_) => encode_ret_submit(out, held.seqnum, -EPIPE, 0, &[]),
+        }
+        true
     }
 
     /// Handle one command and its body; reply bytes are appended to `out`.
@@ -399,8 +473,12 @@ impl Engine {
                 ..
             } => {
                 let found = self.parked.iter().position(|p| p.seqnum == *unlink_seqnum);
+                let held = self.held.iter().position(|h| h.seqnum == *unlink_seqnum);
                 let status = if let Some(at) = found {
                     self.parked.remove(at);
+                    -ECONNRESET
+                } else if let Some(at) = held {
+                    self.cancelled.push(self.held.remove(at).ticket);
                     -ECONNRESET
                 } else {
                     0
@@ -420,6 +498,12 @@ impl Engine {
                 }
             }
             Control::Stall => encode_ret_submit(out, s.seqnum, -EPIPE, 0, &[]),
+            Control::Pending(ticket) => self.held.push(Held {
+                seqnum: s.seqnum,
+                ticket,
+                input: s.setup[0] & 0x80 != 0,
+                length: s.length,
+            }),
         }
     }
 
@@ -469,18 +553,24 @@ mod tests {
     }
 
     impl Hid for Recorder {
-        fn get_report(&mut self, kind: u8, id: u8) -> Result<Vec<u8>, i32> {
+        fn get_report(&mut self, kind: u8, id: u8, _w_length: u16) -> Reply<Vec<u8>> {
             if kind == REPORT_FEATURE && id == 1 {
                 let mut v = vec![0; 64];
                 v[0] = 1;
-                Ok(v)
+                Reply::Done(Ok(v))
+            } else if kind == REPORT_FEATURE && id == 0x70 {
+                Reply::Pending(7)
             } else {
-                Err(libc::EINVAL)
+                Reply::Done(Err(libc::EINVAL))
             }
         }
-        fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Result<(), i32> {
+        fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Reply<()> {
             self.sets.push((kind, id, data.to_vec()));
-            Ok(())
+            if id == 0x70 {
+                Reply::Pending(8)
+            } else {
+                Reply::Done(Ok(()))
+            }
         }
         fn output(&mut self, data: &[u8]) {
             self.outs.push(data.to_vec());
@@ -499,6 +589,7 @@ mod tests {
         match c {
             Control::Data(d) => d,
             Control::Stall => panic!("stalled"),
+            Control::Pending(t) => panic!("pending under ticket {t}"),
         }
     }
 
@@ -873,6 +964,88 @@ mod tests {
         e.push_report(&[1], &mut out);
         assert_eq!(out.len(), HEADER_LEN);
         assert_eq!(e.pending(), 1);
+    }
+
+    #[test]
+    fn a_pending_get_report_is_answered_later_and_cut_to_the_urb_length() {
+        let mut e = Engine::new(identity());
+        let mut out = Vec::new();
+        // GET_REPORT(feature 0x70), 64 bytes: the handler holds it.
+        let get = [0xa1, 1, 0x70, 3, 0, 0, 64, 0];
+        run(&mut e, &submit(30, DIR_IN, 0, 64, get), &[], &mut out);
+        assert!(out.is_empty(), "no answer yet");
+        assert_eq!(e.held(), 1);
+        // A different ticket is nobody's.
+        assert!(!e.complete_control(99, Ok(vec![1]), &mut out));
+        assert!(out.is_empty());
+        let mut reply = vec![0x70];
+        reply.resize(100, 5);
+        assert!(e.complete_control(7, Ok(reply), &mut out));
+        assert_eq!(word(&out, 0), RET_SUBMIT);
+        assert_eq!(word(&out, 4), 30);
+        assert_eq!(word(&out, 20), 0);
+        assert_eq!(word(&out, 24), 64, "cut to what the URB asked for");
+        assert_eq!(out.len(), HEADER_LEN + 64);
+        assert_eq!(e.held(), 0);
+        // Answered once only.
+        let mut again = Vec::new();
+        assert!(!e.complete_control(7, Ok(vec![1]), &mut again));
+    }
+
+    #[test]
+    fn a_pending_set_report_acks_with_its_length_or_stalls() {
+        let mut e = Engine::new(identity());
+        let mut out = Vec::new();
+        let set = [0x21, 9, 0x70, 3, 0, 0, 4, 0];
+        let hid = run(
+            &mut e,
+            &submit(31, DIR_OUT, 0, 4, set),
+            &[0x70, 1, 2, 3],
+            &mut out,
+        );
+        assert_eq!(hid.sets, [(REPORT_FEATURE, 0x70, vec![0x70, 1, 2, 3])]);
+        assert!(out.is_empty());
+        assert!(e.complete_control(8, Ok(Vec::new()), &mut out));
+        assert_eq!((word(&out, 4), word(&out, 20), word(&out, 24)), (31, 0, 4));
+        assert_eq!(out.len(), HEADER_LEN, "an OUT answer has no data");
+        // And a failure stalls.
+        out.clear();
+        run(
+            &mut e,
+            &submit(32, DIR_OUT, 0, 4, set),
+            &[0x70, 1, 2, 3],
+            &mut out,
+        );
+        assert!(e.complete_control(8, Err(libc::EIO), &mut out));
+        assert_eq!(word(&out, 20) as i32, -EPIPE);
+    }
+
+    #[test]
+    fn unlinking_a_held_control_urb_cancels_its_ticket() {
+        let mut e = Engine::new(identity());
+        let mut out = Vec::new();
+        run(
+            &mut e,
+            &submit(40, DIR_IN, 0, 64, [0xa1, 1, 0x70, 3, 0, 0, 64, 0]),
+            &[],
+            &mut out,
+        );
+        let unlink = Command::Unlink {
+            seqnum: 41,
+            devid: 0,
+            direction: 0,
+            ep: 0,
+            unlink_seqnum: 40,
+        };
+        run(&mut e, &unlink, &[], &mut out);
+        assert_eq!(word(&out, 0), RET_UNLINK);
+        assert_eq!(word(&out, 20) as i32, -ECONNRESET);
+        assert_eq!(e.held(), 0);
+        assert_eq!(e.take_cancelled(), [7]);
+        assert!(e.take_cancelled().is_empty());
+        let mut late = Vec::new();
+        assert!(!e.complete_control(7, Ok(vec![]), &mut late));
+        assert!(late.is_empty());
     }
 
     #[test]

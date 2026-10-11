@@ -17,7 +17,8 @@ use tokio::sync::broadcast;
 
 use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorShape, CursorWatch, PointerSpot, PointerWatch};
-use crate::gamepad::{EVENT_CLASSES, Gamepads, MAX_PADS, PadEvent, PadMemory, PadState};
+use crate::gamepad::{EVENT_CLASSES, Gamepads, HidOp, MAX_PADS, PadEvent, PadMemory, PadState};
+use crate::hid_relay::RelayStats;
 use crate::input::BrowserInput;
 use crate::media::Media;
 use crate::overlay::Level;
@@ -111,6 +112,31 @@ pub enum ServerMsg {
         i: usize,
         side: &'static str,
         effect: [u8; 11],
+    },
+    /// A raw HID relay request (docs/controllers.md, "Raw HID relay"): the app
+    /// wants the real controller in pad `i` to do something. `op` is
+    /// `get_feature` (answer with the data of feature report `r`),
+    /// `set_feature` or `set_output` (write `d`, the report's data without its
+    /// id, base64, then answer) or `output` (write `d`; `id` is 0, nobody
+    /// waits). `n` is how many bytes a feature report has. Answer with
+    /// `{"t":"input","k":"hid","op":"reply","i":i,"id":id,"ok":bool,"d":base64}`.
+    Hid {
+        i: usize,
+        id: u32,
+        op: &'static str,
+        r: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        n: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        d: Option<String>,
+    },
+    /// The answer to a page's `{"k":"hid","op":"open"}`: whether this session
+    /// now passes pad `i`'s real controller through (`reason` if not).
+    HidOpen {
+        i: usize,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<&'static str>,
     },
     /// An app copied this text (P2.6).
     Clipboard {
@@ -219,6 +245,10 @@ pub struct StreamerStats {
     pub pad_datagrams: u64,
     #[serde(skip_serializing_if = "is_zero")]
     pub pad_stale: u64,
+    /// What the raw HID relay carried (input reports, feature round trips,
+    /// timeouts); only once it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hid_relay: Option<RelayStats>,
     pub resizes: u64,
     pub audio_packets: u64,
     pub audio_bytes: u64,
@@ -244,9 +274,13 @@ pub struct Control {
 }
 
 impl Drop for Control {
-    /// A player who leaves puts its slot's pad back to rest.
+    /// A player who leaves puts its slot's pad back to rest, and a session
+    /// that passed its controller through lets go of it.
     fn drop(&mut self) {
         self.release_pad();
+        if let Some(pads) = &self.gamepads {
+            pads.relay_close_owned_by(self.seat.id);
+        }
     }
 }
 
@@ -281,6 +315,22 @@ impl Control {
         }
     }
 
+    /// Call when the floor may have moved: a session that no longer holds the
+    /// controls stops passing its controller through (the emulated device
+    /// answers the app until the next holder opens its own).
+    pub fn floor_changed(&self) {
+        if !self.seat.has_control()
+            && let Some(pads) = &self.gamepads
+        {
+            pads.relay_close_owned_by(self.seat.id);
+        }
+    }
+
+    /// What the raw HID relays carried, for the stats.
+    pub fn relay_stats(&self) -> Option<RelayStats> {
+        self.gamepads.as_ref().and_then(|pads| pads.relay_stats())
+    }
+
     /// Whether `state` is news: pad states travel in datagrams that can be
     /// lost, duplicated and reordered (and `gone` on the reliable channel,
     /// which can overtake them), so one is applied only if its `q` is newer
@@ -312,18 +362,114 @@ impl Control {
         stats: &mut StreamerStats,
         reply: &mut dyn FnMut(ServerMsg),
     ) {
-        let Some((cha_proto::input::PAD_JSON, payload)) = cha_proto::input::decode_input(datagram)
+        let Some((format, payload)) = cha_proto::input::decode_input(datagram) else {
+            return;
+        };
+        match format {
+            cha_proto::input::PAD_JSON => {
+                let Ok(line) = std::str::from_utf8(payload) else {
+                    return;
+                };
+                if !is_pad_input(line) {
+                    return;
+                }
+                stats.pad_datagrams += 1;
+                self.handle_line(line, stats, reply);
+            }
+            cha_proto::input::HID_REPORT => self.handle_hid_datagram(payload),
+            _ => {}
+        }
+    }
+
+    /// Whether this session may pass a controller through pad `slot`.
+    fn may_relay(&self, slot: usize) -> bool {
+        may_relay(
+            self.seat.role(),
+            self.seat.has_control(),
+            self.seat.player_pads(),
+            slot,
+        )
+    }
+
+    /// A raw HID input report of the controller this session passes through.
+    fn handle_hid_datagram(&self, payload: &[u8]) {
+        let (Some(pads), Some((slot, q, report))) =
+            (&self.gamepads, cha_proto::input::decode_hid_report(payload))
         else {
             return;
         };
-        let Ok(line) = std::str::from_utf8(payload) else {
-            return;
-        };
-        if !is_pad_input(line) {
+        let slot = usize::from(slot);
+        if !self.may_relay(slot) {
             return;
         }
-        stats.pad_datagrams += 1;
-        self.handle_line(line, stats, reply);
+        pads.relay_input(slot, self.seat.id, q, report);
+    }
+
+    /// `{"t":"input","k":"hid",...}`: the page passing a controller through
+    /// (`open`, `rep`, `reply`, `close`; docs/controllers.md). The caller has
+    /// checked that this session has the controls and is not a player.
+    fn handle_hid(&self, msg: &serde_json::Value, reply: &mut dyn FnMut(ServerMsg)) {
+        let Some(pads) = &self.gamepads else {
+            return;
+        };
+        let Some(i) = msg
+            .get("i")
+            .and_then(|i| i.as_u64())
+            .and_then(|i| usize::try_from(i).ok())
+            .filter(|i| *i < MAX_PADS)
+        else {
+            return;
+        };
+        let op = msg.get("op").and_then(|o| o.as_str());
+        let owner = self.seat.id;
+        if !self.may_relay(i) {
+            if op == Some("open") {
+                reply(ServerMsg::HidOpen {
+                    i,
+                    ok: false,
+                    reason: Some("this session can't pass a controller through that pad"),
+                });
+            }
+            return;
+        }
+        let number = |k: &str| msg.get(k).and_then(|v| v.as_u64());
+        let bytes = || {
+            msg.get("d")
+                .and_then(|d| d.as_str())
+                .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+        };
+        match op {
+            Some("open") => {
+                let result = pads.relay_open(
+                    i,
+                    owner,
+                    number("vid").unwrap_or(0),
+                    number("pid").unwrap_or(0),
+                );
+                reply(ServerMsg::HidOpen {
+                    i,
+                    ok: result.is_ok(),
+                    reason: result.err(),
+                });
+            }
+            Some("close") => pads.relay_close(i, owner),
+            // The reliable copy of a report (no datagram path, or one too big).
+            Some("rep") => {
+                if let (Some(q), Some(report)) =
+                    (number("q").and_then(|q| u32::try_from(q).ok()), bytes())
+                {
+                    pads.relay_input(i, owner, q, &report);
+                }
+            }
+            Some("reply") => {
+                if let Some(ticket) = number("id").and_then(|t| u32::try_from(t).ok()) {
+                    let ok = msg.get("ok").and_then(|o| o.as_bool()).unwrap_or(false);
+                    let error = msg.get("e").and_then(|e| e.as_str());
+                    pads.relay_reply(i, owner, ticket, ok, &bytes().unwrap_or_default(), error);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Handles one line from the page; replies go through `reply`.
@@ -460,6 +606,10 @@ impl Control {
                 self.media.request_keyframe(self.codec);
             }
             Some("input") => {
+                if msg.get("k").and_then(|k| k.as_str()) == Some("hid") {
+                    self.handle_hid(&msg, reply);
+                    return;
+                }
                 let received_us = self.now_us();
                 stats.inputs += 1;
                 if msg.get("k").and_then(|k| k.as_str()) == Some("pad") {
@@ -561,6 +711,17 @@ pub fn player_pad(slot: u8, msg: &serde_json::Value) -> Option<PadState> {
     }
     state.i = usize::from(slot);
     Some(state)
+}
+
+/// Whether a session may pass its real controller through pad `slot` (raw
+/// HID, docs/controllers.md): it must hold the controls, must not be a share
+/// link's player (who stays on parsed pad state, on its own slot), and no
+/// player may hold the pad. `reserved`: the pads players hold, one bit each.
+pub fn may_relay(role: Role, has_control: bool, reserved: u8, slot: usize) -> bool {
+    slot < MAX_PADS
+        && has_control
+        && !matches!(role, Role::Player(_))
+        && pad_is_free(reserved, slot)
 }
 
 /// Whether the floor's pad `i` may be applied: not if a player session holds
@@ -734,6 +895,10 @@ struct PadSlot {
 impl PadLimit {
     /// The message to send now, if any.
     fn push(&mut self, event: PadEvent, now: Instant) -> Option<PadEvent> {
+        // A relay request is an answer somebody waits for: never held back or replaced.
+        if matches!(event, PadEvent::Hid(_)) {
+            return Some(event);
+        }
         let slot = self.slots.get_mut(event.slot())?.get_mut(event.class())?;
         if event.is_stop() {
             *slot = PadSlot::default();
@@ -798,6 +963,7 @@ impl PadFeed {
             player: None,
             has_control,
             reserved: 0,
+            session: 0,
         })
     }
 
@@ -857,6 +1023,9 @@ pub struct PadAudience {
     pub has_control: bool,
     /// The pad indices live player sessions hold, one bit each.
     pub reserved: u8,
+    /// This session's seat id: a raw HID relay request goes to the session
+    /// that opened the relay and to no other.
+    pub session: u64,
 }
 
 impl PadAudience {
@@ -871,6 +1040,10 @@ impl PadAudience {
 
     /// The message for the page, if it hears the event.
     pub fn message(&self, event: &PadEvent) -> Option<ServerMsg> {
+        if let PadEvent::Hid(request) = event {
+            let mine = request.owner == self.session && self.has_control && self.player.is_none();
+            return mine.then(|| pad_msg(*event, request.slot));
+        }
         Some(pad_msg(*event, self.index(event.slot())?))
     }
 }
@@ -904,6 +1077,15 @@ fn pad_msg(event: PadEvent, i: usize) -> ServerMsg {
             side: t.side.name(),
             effect: t.effect,
         },
+        PadEvent::Hid(h) => ServerMsg::Hid {
+            i,
+            id: h.ticket,
+            op: h.op.name(),
+            r: h.report,
+            n: (h.op == HidOp::GetFeature).then_some(h.len),
+            d: (h.op != HidOp::GetFeature)
+                .then(|| base64::engine::general_purpose::STANDARD.encode(h.data())),
+        },
     }
 }
 
@@ -916,6 +1098,7 @@ pub fn pad_audience(seat: &Seat) -> PadAudience {
         },
         has_control: seat.has_control(),
         reserved: seat.player_pads(),
+        session: seat.id,
     }
 }
 
@@ -1443,6 +1626,7 @@ mod tests {
             player: Some(1),
             has_control: false,
             reserved: 0b0010,
+            session: 0,
         };
         assert_eq!(
             text(&player, &rumble(1)).as_deref(),
@@ -1460,6 +1644,7 @@ mod tests {
             player: None,
             has_control: true,
             reserved: 0b0010,
+            session: 0,
         };
         assert!(text(&floor, &rumble(0)).unwrap().contains(r#""i":0"#));
         assert!(text(&floor, &rumble(1)).is_none(), "a player's slot");
@@ -1470,6 +1655,7 @@ mod tests {
             player: None,
             has_control: false,
             reserved: 0,
+            session: 0,
         };
         assert!(text(&watcher, &rumble(0)).is_none());
     }
@@ -1500,6 +1686,7 @@ mod tests {
             player: Some(2),
             has_control: false,
             reserved: 0b0100,
+            session: 0,
         };
         let heard: Vec<_> = feed.replay_for(&player).iter().map(line).collect();
         assert_eq!(
@@ -1522,6 +1709,7 @@ mod tests {
             player: None,
             has_control: true,
             reserved: 0b0100,
+            session: 0,
         };
         let heard: Vec<_> = floor_feed.replay_for(&floor).iter().map(line).collect();
         assert_eq!(heard.len(), 2);
@@ -1641,5 +1829,113 @@ mod tests {
             lines(&owner),
             [r#"{"t":"floor","control":false,"viewers":2,"can_take":true}"#]
         );
+    }
+
+    fn hid_request(op: HidOp, owner: u64, ticket: u32, report: u8, data: &[u8]) -> PadEvent {
+        let mut buf = [0u8; crate::gamepad::HID_MAX_DATA];
+        buf[..data.len()].copy_from_slice(data);
+        PadEvent::Hid(crate::gamepad::HidRequest {
+            slot: 1,
+            owner,
+            ticket,
+            op,
+            report,
+            len: data.len() as u8,
+            data: buf,
+        })
+    }
+
+    #[test]
+    fn a_relay_request_serializes_for_the_page() {
+        let message = |event: PadEvent, i| line(&pad_msg(event, i));
+        assert_eq!(
+            message(hid_request(HidOp::GetFeature, 3, 41, 1, &[0; 63]), 1),
+            r#"{"t":"hid","i":1,"id":41,"op":"get_feature","r":1,"n":63}"#
+        );
+        // The data goes as base64, without the report id.
+        assert_eq!(
+            message(hid_request(HidOp::SetFeature, 3, 42, 1, &[0x87, 3, 9]), 1),
+            r#"{"t":"hid","i":1,"id":42,"op":"set_feature","r":1,"d":"hwMJ"}"#
+        );
+        assert_eq!(
+            message(hid_request(HidOp::Output, 3, 0, 0x80, &[0, 1]), 2),
+            r#"{"t":"hid","i":2,"id":0,"op":"output","r":128,"d":"AAE="}"#
+        );
+        assert_eq!(
+            message(hid_request(HidOp::SetOutput, 3, 7, 0x81, &[]), 0),
+            r#"{"t":"hid","i":0,"id":7,"op":"set_output","r":129,"d":""}"#
+        );
+        assert_eq!(
+            line(&ServerMsg::HidOpen {
+                i: 0,
+                ok: false,
+                reason: Some("no such pad")
+            }),
+            r#"{"t":"hid_open","i":0,"ok":false,"reason":"no such pad"}"#
+        );
+        assert_eq!(
+            line(&ServerMsg::HidOpen {
+                i: 2,
+                ok: true,
+                reason: None
+            }),
+            r#"{"t":"hid_open","i":2,"ok":true}"#
+        );
+    }
+
+    #[test]
+    fn relay_requests_go_to_the_session_that_opened_the_relay_and_no_other() {
+        let event = hid_request(HidOp::GetFeature, 3, 1, 1, &[0; 63]);
+        let audience = |player, has_control, session| PadAudience {
+            player,
+            has_control,
+            reserved: 0,
+            session,
+        };
+        let text = |a: &PadAudience| a.message(&event).map(|m| line(&m));
+        // The owner, with the controls: on the pad's own index.
+        assert!(text(&audience(None, true, 3)).unwrap().contains(r#""i":1"#));
+        // Another session with the controls, a viewer, the owner after it
+        // lost the controls, and a player: nothing.
+        assert!(text(&audience(None, true, 4)).is_none());
+        assert!(text(&audience(None, false, 4)).is_none());
+        assert!(text(&audience(None, false, 3)).is_none());
+        assert!(text(&audience(Some(1), false, 3)).is_none());
+    }
+
+    #[test]
+    fn relay_requests_are_never_held_back_or_replaced() {
+        let mut limit = PadLimit::default();
+        let now = Instant::now();
+        // Many in the same instant, on the same pad: every one goes out, in order.
+        for ticket in 1..=50 {
+            let event = hid_request(HidOp::SetFeature, 3, ticket, 1, &[ticket as u8]);
+            assert_eq!(limit.push(event, now), Some(event));
+        }
+        assert!(limit.due().is_none(), "nothing waits");
+        // They are not remembered for late viewers either.
+        let mut memory = PadMemory::default();
+        memory.remember(hid_request(HidOp::SetFeature, 3, 1, 1, &[1]));
+        assert!(memory.replay().is_empty());
+    }
+
+    #[test]
+    fn only_the_floor_holder_may_pass_a_controller_through_a_free_pad() {
+        for role in [Role::Owner, Role::Admin, Role::Member, Role::Controller] {
+            assert!(may_relay(role, true, 0, 0), "{role:?}");
+            assert!(
+                !may_relay(role, false, 0, 0),
+                "{role:?} without the controls"
+            );
+        }
+        // A share link's player, with or without the floor, and a viewer.
+        assert!(!may_relay(Role::Player(1), true, 0b0010, 0));
+        assert!(!may_relay(Role::Player(1), false, 0b0010, 1));
+        assert!(!may_relay(Role::Viewer, false, 0, 0));
+        assert!(!may_relay(Role::Guest, false, 0, 0));
+        // A pad a player holds is theirs; so is a pad past the end.
+        assert!(!may_relay(Role::Owner, true, 0b0010, 1));
+        assert!(may_relay(Role::Owner, true, 0b0010, 2));
+        assert!(!may_relay(Role::Owner, true, 0, MAX_PADS));
     }
 }

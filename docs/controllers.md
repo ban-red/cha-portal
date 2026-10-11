@@ -50,10 +50,16 @@ digits, made from the owner, app and slot; a real controller's have those
 shapes), and the controller's behaviour: which state report it sends on a
 cable (we send `0x42` and `0x43`), the battery values, the pad pressure and
 touch thresholds. The replies to `0x83` (attributes: the product, a revision
-of 0, the bootloader's and firmware's build times, hardware id `0x48`) and the
-serials' formats were read from a real wired controller (2026-10-10). Steam
+of 0, hardware id `0x48`) and the serials' formats were read from a real wired
+controller (2026-10-10); the build times are not its own (see
+[Firmware updates](#firmware-updates)). Steam
 called the board serial invalid while it was answered with the unit's `FXA`
 one.
+
+With the [raw HID relay](#raw-hid-relay-the-wired-steam-controller-on-usb) on, none of the above
+"still ours" matters for that session: the descriptor and USB identity are still
+ours, but the reports, the feature replies, the serials and the haptics are the
+real controller's.
 
 The keyboard and mouse the descriptor brings are made input devices by the
 host's `hid-generic`. They never send anything, so they are not shared into
@@ -73,6 +79,29 @@ more pads of that kind can join while it runs ([More players](#more-players-pads
 Any physical controller can drive any kind (a Steam Controller's
 trackpads become the DualSense's touchpad, and so on); what the physical one
 lacks stays at rest.
+
+### Why a Valve controller needs WebHID
+
+In Chrome on macOS a Steam Controller (2026: `28de:1302` cable, `1303`
+Bluetooth, `1304` puck, `1305` receiver; and the 2015 model's ids) shows up in
+the Gamepad API on its own, but through macOS's GameController framework: the
+gyro and trackpads are hidden and the Steam button arrives as A. WebHID reads
+the controller itself, which brings back the gyro, both trackpads, the grips,
+the Steam button and the haptics. The browser only lets a page use WebHID after
+the user picks the device (`requestDevice`, from a click), and the grant is per
+device, so the cable and the puck each need their own.
+
+So when the manager's list holds a Valve controller that only the Gamepad API
+shows (`steamNeedingWebHid`: backend `gamepad`, and type `steam`, Valve's
+vendor id or a "Steam Controller" name), the Controllers page puts a notice
+and a "Connect with WebHID" button on its card, and a session opens the
+toolbar's controllers menu once, with the same words and button (spec items
+`steam-webhid`, `connect-steam`, `steam-no-webhid` in `toolbar.json`; web
+only, since Cha Player reads the controller through HIDAPI). Where there is no
+`navigator.hid` (Firefox, Safari) it says so in one line and offers no button.
+The notice goes away when WebHID has the controller: the manager hides the
+Gamepad API copy then (the twin rule), so one grant also hides the notice for a
+second Valve controller still on the Gamepad API.
 
 ## Page → streamer: `pad`
 
@@ -110,6 +139,7 @@ channel, so pad state, which is latest-wins, doesn't need one. What goes where:
 | Message | Channel |
 |---|---|
 | `pad` state | An unreliable datagram when the session offers them (below), else the control channel |
+| Raw HID input reports ([relay](#raw-hid-relay-the-wired-steam-controller-on-usb)) | An unreliable datagram (format 1), else the control channel |
 | `pad` with `gone:true`, rumble, haptic, LED, trigger, feature traffic, floor and pad grants | Control channel (reliable, ordered) |
 | Keyboard, mouse, clipboard, everything else | Control channel |
 
@@ -159,6 +189,196 @@ channel, so pad state, which is latest-wins, doesn't need one. What goes where:
   have no events, on the page's 4 ms poll. The native client
   (`cha-client-stream`) still sends pad state on the control stream, without `q`.
 
+### Raw HID relay: the wired Steam Controller on USB
+
+For a 2026 Steam Controller (`28de:1302`) on a USB-C cable and driven through
+WebHID, the page can pass the controller's HID traffic through instead of
+parsing it, so Steam on the node drives the real firmware (research note 10,
+design A on design B). Steam sees the same `28de:1302` USB device as with the
+USB transport above; what changes is who answers it.
+
+**Opt-in, and negotiated.** All of these must hold, else the parsed path above
+is used unchanged:
+
+- The user turned on "Pass the Steam Controller through to Steam
+  (experimental)" on the Controllers page (`localStorage` key
+  `cha.player.steamPassthrough`, read when a session starts; the `Player`
+  option `rawSteam`). A share link's player or viewer never relays.
+- The streamer's hello has `"rawHid": ["28de:1302"]`. It does when the
+  environment's kind is `steam` and the pads are USB devices
+  (`CHA_STEAM_PAD_TRANSPORT=usbip`, and the attach worked); otherwise it is
+  `[]`, and an older streamer has no such key.
+- The controller is a WebHID `28de:1302` (the puck and Bluetooth are not
+  relayed yet), the page has the controls and the focus, and the streamer
+  answers its `open` with yes.
+
+A pad is only ever made by a state; a `gone` for a pad that was never made
+makes none (it used to make a virtual controller for the app to find). The Gamepad
+API's copy of a Steam Controller that WebHID has opened, whatever ids and name it
+shows, is the same controller and gets no slot of its own.
+
+A page that sees no offer for the controller claims it itself (lizard mode off,
+sensors on) and sends parsed state, as before. Opened for a relay, the driver
+writes nothing until the offer is known (at most 3 s, then it assumes none).
+
+**Page → streamer** (all `{"t":"input","k":"hid", ...}`, `i` the slot):
+
+| Message | Channel |
+|---|---|
+| `{"op":"open","vid":10462,"pid":4866}`: pass this controller through pad `i` | control (reliable) |
+| `{"op":"rep","q":N,"d":base64}`: one input report, the report id first | datagram format 1 when the session has datagrams; this message otherwise |
+| `{"op":"reply","id":N,"ok":bool,"d":base64}`: the answer to a streamer request (`d`: the report's data without its id, for a get) | control |
+| `{"op":"close"}` | control |
+
+The datagram is `0x12`, format byte `1`, the slot (1 byte), `q` (4 bytes, big
+endian), then the report as the device sent it, id first
+(`cha-proto`'s `input::HID_REPORT`, `input-datagram.ts`). The page sends every
+input report as it arrives (no poll), except the lizard-mode mouse and keyboard
+reports (`0x40`, `0x41`), numbered per slot. Reports are state, so latest wins:
+the streamer keeps the newest `q` per slot and report id and drops older and
+repeated ones. A report that went by datagram and then went quiet is sent again
+50 ms apart, 3 more times, with the same `q` (a controller that reports
+continuously replaces its reports sooner; one that reports on change has its last
+report, a button's release, as sure as a pad's state is). While the relay is
+open the page sends **no** parsed `pad` state for the slot, and it ends with a
+`gone`, the focus leaving, the controls moving, or the controller leaving.
+
+**Streamer → page:**
+
+- `{"t":"hid_open","i","ok","reason"?}`: the answer to `open`.
+- `{"t":"hid","i","id","op","r","d"?,"n"?}`: the app wants the controller to do
+  something, to the session that opened the relay only. `r` is the report id,
+  `d` the data without it (base64). `op` is `get_feature` (`n`: its size; answer
+  with the data), `set_feature` or `set_output` (write `d`, answer when done), or
+  `output` (an interrupt OUT transfer; `id` is 0 and nobody answers). The page
+  performs them with WebHID's `receiveFeatureReport`, `sendFeatureReport` and
+  `sendReport`, **one at a time in the order they came** (Steam's handshake
+  depends on it), and replies on the control channel.
+
+**What the streamer does** (`hid_relay.rs`, `vhci.rs`, `usbdev.rs`):
+
+- *Input.* A report passes only if its id is an input report of the device's
+  descriptor (parsed at start), its length is exactly that report's size,
+  and it is newer than the last of its id; it then completes the kernel's oldest
+  parked interrupt-IN URB, verbatim (or waits in the FIFO of 4). Anything else
+  is dropped and counted (the first few are logged with the id and lengths).
+  The emulated state report **stops** while the relay is open: the repeat thread
+  that otherwise answers the kernel every period only watches request deadlines,
+  because the real controller's reports are the device's reports.
+- *Feature and output reports from Steam.* A GET_REPORT or SET_REPORT of a
+  feature report, a SET_REPORT of an output report (EP0) and an interrupt OUT
+  transfer of the descriptor's reports are turned into `hid` messages (an
+  output report is padded with zeros to the descriptor's size; a longer or
+  unknown one is not relayed). **The control URB stays pending** (USB/IP lets
+  the device complete a URB whenever it likes: `Engine::complete_control`)
+  until the page's reply, which completes it with the real controller's data;
+  the kernel unlinking it (its own timeout) forgets it. An interrupt OUT
+  completes at once.
+- *Timeouts.* The page has 1 s per request (`REQUEST_TIMEOUT`). Past that, or
+  on `ok:false`, the request is answered by the emulated device, as without a
+  relay, and a warning is logged with the wait. Three failures in a row end the
+  relay (emulation again, at rest, until the page opens it anew), as do the
+  controller leaving, the session leaving or losing the controls, and a `gone`.
+  A reply after its request was answered is dropped. 1 s is a fifth of the
+  kernel's own wait for a control transfer (`USB_CTRL_GET_TIMEOUT`, 5 s). Steam's
+  own timeouts are not known (it is closed); on a LAN a request is one control
+  message each way and one WebHID transfer, a few milliseconds. The streamer
+  logs every reply's round trip at `debug`, and keeps the last 128: the
+  stats and the log line every 10 s show their median and largest.
+- *Who.* Only the session with the controls, not a share link's player, on a
+  pad no player holds (`may_relay`, the pad rules above); the relay belongs to
+  that session (its seat id), requests go to it alone, and its replies and reports
+  are taken from it alone. Writes go to the user's own controller, so they are
+  their call; but whatever the page sends is validated against the descriptor
+  before the kernel's `vhci_hcd` sees it.
+- *Replies are checked.* A reply on the command channel (feature report 1)
+  to a command with a reply (`0x83` attributes, `0xae` string attribute, `0x89`
+  settings) must start with that command. One that starts with the report id
+  and then the command is repaired (the id taken off). Any other (zeros, a
+  stale buffer, a shifted one) is asked for again, up to 3 times in all, 5 ms
+  apart, before the emulated device answers. The emulated device hears every
+  relayed feature write too (its events dropped), so its answer is the
+  command's. Found with a real controller (2026-10-11): Steam's
+  `GetControllerInfo` failed with "Read failure" 20 times a second for 30 s
+  and then gave up, until the relay was closed and the emulation answered.
+  The same command written 30 times within 3 s is a loop (logged); its replies
+  then come from the emulation until Steam moves on.
+- *Logs that show it.* The first 24 requests of a relay are logged at `info`
+  with the op, report id and first 16 bytes, and the page's first replies with
+  theirs; a reply that isn't the command's, a repair, a retry, a failed page
+  request (with the page's error text) and a loop each log a warning; the
+  10 s summary and the closing line list how many times each command was
+  written (`commands=0x83:12 0xae:3 ...`). The page logs the first 12 feature
+  reads it did (bytes) to its console, and any failed transfer.
+- *Rate limits.* Input reports 1500 a second per pad (burst 256); requests to
+  the page 400 a second (burst 64), at most 16 waiting at once. Beyond them a
+  get or set is answered by the emulation and an output is dropped (counted in
+  `limited`).
+- *Stats.* `hid_relay` in the streamer's `stats` messages, once used:
+  `reports`, `reports_dropped`, `requests`, `outputs`, `replies`, `timeouts`,
+  `errors`, `limited`, `reply_mismatches`, `reply_repaired`, `reply_retries`,
+  `loops_broken`, `rtt_p50_us`, `rtt_max_us`.
+
+**Tested** (2026-10-10, iolinux, kernel 6.17) with the real kernel and no
+controller: `gamepad::tests::live_steam_relay` (ignored; run it in a container
+with the `cha-streamer-vhci` profile, the vhci directory bound in and a cgroup
+rule for the `hidraw` major) makes the USB pad, plays the page in a thread and
+Steam on the `hidraw` node. `HIDIOCSFEATURE` and `HIDIOCGFEATURE` of feature
+report 1 waited for the page's replies and got its data (a set and a get in
+0.2 to 0.6 ms with the page on the same machine), a write to `hidraw` arrived as
+an `output` request, input reports came out of a `read` unchanged, and a page
+that stayed silent got the emulated answer after 1.000 s. What no test has done
+is a Steam client or the real controller.
+
+**Fallbacks and limits.** The relay takes effect for what Steam asks after it
+opens: Steam's start-up handshake with the device (serial, attributes, settings)
+was answered by the emulation if the device was made before the page connected,
+so relaunch Steam in the environment after turning the option on. Until Steam
+has switched lizard mode off on the real controller, it acts as a keyboard and
+mouse on the computer it is plugged into. When the page loses the focus or the
+controls the relay closes and the page turns lizard mode off itself again
+(so the controller stays quiet), and when they come back it opens again; Steam
+then finds the emulated device had been answering in between. Not relayed yet:
+the puck, Bluetooth, other models, other kinds, the uhid transport.
+
+### Firmware updates
+
+A virtual controller cannot be updated, and a real one must not be updated
+through Cha. **Update a controller's firmware with it plugged into a computer
+running Steam locally.**
+
+What happened (2026-10-10): the emulated 2026 controller reported the real
+controller's firmware and bootloader build times. Steam's environment then
+showed "Updating Steam Controller, please keep it plugged in" and stayed there:
+Steam sent command `0x90` (not named in SDL; taken to be the reboot into the
+bootloader), the emulation acknowledged it like any unknown command, and Steam
+waited for a device that never came back. What Cha does now:
+
+- *Steam is told there is nothing to update.* Every emulated variant (the 2015
+  wired and Bluetooth controller, the 2026 Bluetooth and USB one) and every
+  relayed `0x83` reply report the firmware, radio, dongle and bootloader build
+  times as `0x7fffffff` (2038-01-19, the largest positive 32-bit time), newer
+  than any firmware Steam bundles. That Steam decides by comparing these times
+  is a guess (Steam is closed); the stuck update followed the change from the
+  old value. The cost: Steam never offers an update for these devices, and shows
+  the 2038 date.
+- *The emulation refuses what would flash.* `0x90`, `0xa9` (set serial number),
+  `0xaf` and `0xb0` (radio erase and write records) and `0xb7` to `0xb9` (audio
+  update) fail the write (a USB stall, `EPIPE`) with a warning in the log,
+  instead of an acknowledgement. Whether Steam gives up cleanly on a refused
+  `0x90` has not been seen; an acknowledgement is known to leave it stuck.
+- *The relay passes only an allowlist to the real controller.* On feature
+  report 1 (the command channel): `0x81`, `0x85` (mappings off or default),
+  `0x82`, `0x83`, `0x89`, `0xae`, `0xb4` (reads), `0x87`, `0x8e` (settings) and
+  `0x8f` (haptic pulse). Of the output reports only `0x80` to `0x85` (rumble and
+  haptics). Everything else, including every id nothing names (`0x90`, `0xc1`,
+  `0xdc`, `0xe2`, `0xf2`), is not sent to the controller: the emulation answers
+  it, and the streamer logs a warning once per id (`blocked` in the relay's
+  stats). The page checks the same list before every write and refuses the rest
+  (`RELAYED_COMMANDS` in `steam-protocol.ts`, `RELAYED_COMMANDS` in
+  `hid_relay.rs`; SDL's `controller_constants.h` names the ids). The page
+  and the streamer both rewrite the build times in `0x83` replies.
+
 ## Streamer → page
 
 JSON lines on the control channel, to the session holding the controls; the
@@ -174,6 +394,8 @@ ignores them otherwise.
 - `{t:"players", i, mask}`: the player LEDs, bits 0–4 (DualSense).
 - `{t:"trigger", i, side:"left"|"right", effect: [11 bytes]}`: an adaptive
   trigger effect, the DualSense output report's block as the game wrote it.
+- `{t:"hid", ...}` and `{t:"hid_open", ...}`: the raw HID relay's
+  requests and its answer to `open` ([above](#raw-hid-relay-the-wired-steam-controller-on-usb)).
 
 ## Choosing the kind
 

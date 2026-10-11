@@ -77,8 +77,37 @@ export function hidUnavailableReason(): string | null {
   return null;
 }
 
+/** What a driver offers a raw HID relay (Steam Controller, wired): see `hid-relay.ts`. */
+export interface HidRelayHooks {
+  /**
+   * The driver left the device alone when it opened it, to see whether a relay takes it (lizard
+   * mode is still on and no input reports come); `claim()` takes it over after all.
+   */
+  waiting(): boolean;
+  /** Steps aside while a relay passes the device through: no more lizard-mode resends, the app does that. */
+  yield(): void;
+  /** Takes the device over (lizard mode off, sensors on), and keeps it so. */
+  claim(): Promise<void>;
+}
+
+/** A WebHID pad as the relay sees it. */
+export interface RawHidPad {
+  readonly device: HidDevice;
+  readonly hooks: HidRelayHooks;
+  /** Every input report as it arrives (the id apart from the data); null stops it. */
+  setSink(sink: ((reportId: number, data: DataView) => void) | null): void;
+}
+
+/** What a manager asks of the drivers it makes. */
+export interface HidDriverOptions {
+  /** Open the device without claiming it, for a relay to take it or `claim()` to (drivers that can relay). */
+  deferClaim?: boolean;
+}
+
 /** A driver for one opened HID device. */
 export interface HidDriver {
+  /** Present when this driver can step aside for a raw relay. */
+  readonly relay?: HidRelayHooks;
   /** Dongles: false until a controller is paired and awake behind them. */
   readonly connected: boolean;
   readonly info: ControllerInfo;
@@ -100,5 +129,5 @@ export interface HidDriver {
 export interface HidDriverFactory {
   name: string;
   matches(device: HidDevice): boolean;
-  create(device: HidDevice): HidDriver;
+  create(device: HidDevice, options?: HidDriverOptions): HidDriver;
 }

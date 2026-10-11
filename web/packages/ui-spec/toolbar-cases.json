@@ -49,7 +49,8 @@
       "recapture": false,
       "audio_blocked": false,
       "hid_reason": "",
-      "note": ""
+      "note": "",
+      "steam_webhid": false
     },
     "native": { "codec": "HEVC", "transport_name": "Cha Portal", "transport_tag": "WT", "input_denied": false }
   },
@@ -880,6 +881,69 @@
               "tone": "faint"
             },
             "connect-note": { "text": "No controller was added.", "role": "status", "tone": "warn" }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: a Steam Controller seen only through the Gamepad API offers WebHID",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": {
+        "menu_open": "controllers",
+        "steam_webhid": true,
+        "controllers": [{ "name": "Steam Controller", "slot": 0 }]
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "pin": {
+          "controllers": {
+            "aria_label": "Controllers: the Steam Controller needs WebHID",
+            "tooltip": "The Steam Controller is read as a basic gamepad: open to connect it with WebHID",
+            "tone": "warn"
+          }
+        },
+        "menu": {
+          "control": "controllers",
+          "rows": ["list", "connect", "steam-webhid", "connect-steam", "controllers-page"],
+          "pin": {
+            "steam-webhid": {
+              "text": "Chrome is reading your Steam Controller as a basic gamepad: the Steam button, trackpads and gyro don't come through. Connect it here to use all of it.",
+              "tone": "warn"
+            },
+            "connect-steam": { "label": "Connect with WebHID", "disabled": false, "group": "actions" }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: a Steam Controller on a browser without WebHID gets one line and no button",
+      "platforms": ["web"],
+      "caps": "web-portal",
+      "state": {
+        "menu_open": "controllers",
+        "steam_webhid": true,
+        "hid_reason": "This browser has no WebHID. Use Chrome or Edge.",
+        "controllers": [{ "name": "Steam Controller", "slot": 0 }]
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back", "power", "share", "name", "gpu", "stream", "capture", "mouse", "sound", "controllers",
+          "fullscreen", "stats"
+        ],
+        "menu": {
+          "control": "controllers",
+          "rows": ["list", "connect", "steam-no-webhid", "controllers-page", "hid-reason"],
+          "pin": {
+            "steam-no-webhid": {
+              "text": "This browser reads your Steam Controller as a basic gamepad, so the Steam button, trackpads and gyro don't come through. Chrome or Edge can use all of it.",
+              "tone": "dim"
+            }
           }
         }
       }

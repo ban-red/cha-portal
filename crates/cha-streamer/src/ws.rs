@@ -443,6 +443,7 @@ pub async fn run(
             "overlay": sessions.media.overlay(),
             "transport": "websocket",
             "maxDatagram": MAX_FRAGMENT,
+            "rawHid": sessions.gamepads.as_ref().map(|g| g.raw_hid()).unwrap_or_default(),
         }),
     });
 
@@ -527,6 +528,7 @@ pub async fn run(
                 }
             }
             () = handler.seat.changed() => {
+                handler.floor_changed();
                 for msg in floor_msgs(&handler.seat) {
                     let _ = out.send(msg);
                 }
@@ -597,6 +599,7 @@ pub async fn run(
             }
             _ = report.tick() => {
                 video.report(&mut stats);
+                stats.hid_relay = handler.relay_stats();
                 stats.fps = Some(sessions.media.fps());
                 stats.overlay = sessions.media.overlay();
                 let _ = out.send(ServerMsg::Stats {

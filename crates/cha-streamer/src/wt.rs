@@ -270,6 +270,7 @@ async fn run(
             "maxDatagram": max_datagram,
             // The page may send pad state as input datagrams (cha-proto's `input`).
             "padDatagrams": true,
+            "rawHid": sessions.gamepads.as_ref().map(|g| g.raw_hid()).unwrap_or_default(),
         }),
     });
 
@@ -355,6 +356,7 @@ async fn run(
                 }
             }
             () = handler.seat.changed() => {
+                handler.floor_changed();
                 for msg in floor_msgs(&handler.seat) {
                     let _ = out.send(msg);
                 }
@@ -423,6 +425,7 @@ async fn run(
             }
             _ = report.tick() => {
                 video.report(&mut stats);
+                stats.hid_relay = handler.relay_stats();
                 stats.fps = Some(sessions.media.fps());
                 stats.overlay = sessions.media.overlay();
                 let _ = out.send(ServerMsg::Stats {

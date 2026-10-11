@@ -1,4 +1,4 @@
-export { ControllerManager, MAX_SLOTS, goneMessage, padMessage, type ManagedController, type ManagerOptions } from "./manager";
+export { ControllerManager, MAX_SLOTS, goneMessage, padMessage, type ManagedController, type ManagerOptions, type RelayOptions } from "./manager";
 export { hidUnavailableReason } from "./hid-types";
 export { GamepadApiBackend, parseGamepadId } from "./gamepad-api";
 export { WebHidBackend } from "./webhid";
@@ -17,3 +17,4 @@ export {
   type Side,
   type TouchPoint,
 } from "./types";
+export { isSteamOnGamepadApi, steamNeedingWebHid } from "./steam-webhid";

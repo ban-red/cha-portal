@@ -180,6 +180,27 @@ describe("dedupe", () => {
     manager.stop();
   });
 
+  test("a Steam Controller the Gamepad API shows under other ids and a name of its own is the HID one's twin", () => {
+    const { gamepad, hid, manager, sent } = setup();
+    const h = new FakePad("h0", "webhid", [0x28de, 0x1302], "steam");
+    Object.assign(h.info, { name: "Steam Controller" });
+    hid.add(h);
+    // After a replug macOS shows it in lizard mode: other product id, other name.
+    const api = new FakePad("g0", "gamepad", [0x28de, 0x1303], "steam");
+    Object.assign(api.info, { name: "Valve Steam Controller (2026)" });
+    gamepad.add(api);
+    manager.tick();
+    expect(manager.controllers().map((x) => [x.id, x.slot])).toEqual([["h0", 0]]);
+    // Nothing was sent for a slot 1, whatever the twin does.
+    api.s.buttons[0] = 1;
+    manager.tick();
+    expect(sent.every((m) => m.i === 0)).toBe(true);
+    // Two Steam Controllers through WebHID are two.
+    hid.add(new FakePad("h1", "webhid", [0x28de, 0x1302], "steam"));
+    expect(manager.controllers().map((x) => x.id)).toEqual(["h0", "h1"]);
+    manager.stop();
+  });
+
   test("a Gamepad API pad without ids and another name stays", () => {
     const { gamepad, hid, manager } = setup();
     gamepad.add(new FakePad("Wireless Controller", "gamepad"));

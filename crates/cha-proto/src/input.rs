@@ -21,6 +21,12 @@
 //! message only if it is newer than the newest it applied for that pad, which
 //! is what makes a lost, duplicated or reordered datagram harmless
 //! ([`seq_newer`]). A receiver ignores formats it doesn't know.
+//!
+//! Format [`HID_REPORT`] is one raw HID input report from a controller the
+//! streamer passes through to the app (docs/controllers.md, "Raw HID relay"):
+//! the pad's slot (1 byte), the report's sequence number `q` (4 bytes, big
+//! endian; the receiver keeps the newest per slot and report id, as for pad
+//! state), then the report as the device sent it, its id first.
 
 use crate::{Kind, WIRE_VERSION};
 
@@ -29,6 +35,12 @@ pub const INPUT_BYTE0: u8 = (WIRE_VERSION << 4) | Kind::Input as u8;
 
 /// Payload format: one pad message as JSON (the control channel's line, without the newline).
 pub const PAD_JSON: u8 = 0;
+
+/// Payload format: one raw HID input report (`slot`, `q`, then the report, id first).
+pub const HID_REPORT: u8 = 1;
+
+/// Bytes of a [`HID_REPORT`] payload before the report: the slot and `q`.
+pub const HID_REPORT_HEADER_LEN: usize = 5;
 
 /// Bytes before the payload.
 pub const INPUT_PREFIX_LEN: usize = 2;
@@ -51,6 +63,26 @@ pub fn decode_input(datagram: &[u8]) -> Option<(u8, &[u8])> {
     }
 }
 
+/// The payload of a [`HID_REPORT`] datagram: `report` leads with its id.
+pub fn encode_hid_report(slot: u8, q: u32, report: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HID_REPORT_HEADER_LEN + report.len());
+    out.push(slot);
+    out.extend_from_slice(&q.to_be_bytes());
+    out.extend_from_slice(report);
+    out
+}
+
+/// The slot, sequence number and report (id first, never empty) of a
+/// [`HID_REPORT`] payload, or `None` if it is too short.
+pub fn decode_hid_report(payload: &[u8]) -> Option<(u8, u32, &[u8])> {
+    match payload {
+        [slot, q0, q1, q2, q3, report @ ..] if !report.is_empty() => {
+            Some((*slot, u32::from_be_bytes([*q0, *q1, *q2, *q3]), report))
+        }
+        _ => None,
+    }
+}
+
 /// Whether sequence number `new` is newer than `last`, comparing modulo 2^32
 /// (a number up to 2^31 ahead is newer; equal and behind are not).
 pub fn seq_newer(new: u32, last: u32) -> bool {
@@ -67,6 +99,24 @@ mod tests {
         let d = encode_input(PAD_JSON, br#"{"k":"pad"}"#);
         assert_eq!(d[0], 0x12);
         assert_eq!(decode_input(&d), Some((PAD_JSON, &br#"{"k":"pad"}"#[..])));
+    }
+
+    #[test]
+    fn a_hid_report_round_trips() {
+        let payload = encode_hid_report(2, 0x0102_0304, &[0x42, 9, 8, 7]);
+        assert_eq!(payload, [2, 1, 2, 3, 4, 0x42, 9, 8, 7]);
+        assert_eq!(
+            decode_hid_report(&payload),
+            Some((2, 0x0102_0304, &[0x42, 9, 8, 7][..]))
+        );
+        // Inside a datagram, behind the format byte.
+        let d = encode_input(HID_REPORT, &payload);
+        let (format, inner) = decode_input(&d).unwrap();
+        assert_eq!(format, HID_REPORT);
+        assert_eq!(decode_hid_report(inner).map(|(s, _, _)| s), Some(2));
+        // Too short, or no report at all.
+        assert_eq!(decode_hid_report(&[]), None);
+        assert_eq!(decode_hid_report(&[1, 0, 0, 0, 1]), None);
     }
 
     #[test]

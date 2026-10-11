@@ -104,9 +104,10 @@
 
 use std::time::{Duration, Instant};
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::gamepad::{ENDLESS_MS, Haptic, PadEvent, PadState, Rumble, Side};
+use crate::hid_relay::NEVER_UPDATE_TIME;
 use crate::uhid::{BUS_BLUETOOTH, BUS_USB, FEATURE_REPORT, OUTPUT_REPORT, Protocol};
 
 pub const VENDOR: u16 = 0x28de;
@@ -619,6 +620,17 @@ const LOAD_DEFAULT_SETTINGS: u8 = 0x8e;
 const HAPTIC_PULSE: u8 = 0x8f;
 const GET_STRING_ATTRIBUTE: u8 = 0xae;
 
+/// Commands that start or carry a firmware (or audio, radio or serial) write.
+/// The emulated controller has no firmware to update, so it refuses them with
+/// a stall rather than acknowledging, which would leave Steam waiting for a
+/// device that comes back in its bootloader and shows "Updating Steam
+/// Controller" for good (seen 2026-10-10 with `0x90`). SDL names `0xa9` (set
+/// serial number), `0xaf` and `0xb0` (radio erase and write records) and
+/// `0xb7` to `0xb9` (audio update start, data, complete). SDL does not name
+/// `0x90`; it is the command Steam sent right before the stuck update, and is
+/// taken to be the reboot into the bootloader (a guess).
+const FIRMWARE_COMMANDS: &[u8] = &[0x90, 0xa9, 0xaf, 0xb0, 0xb7, 0xb8, 0xb9];
+
 // Attribute tags.
 const ATTRIB_UNIQUE_ID: u8 = 0;
 const ATTRIB_PRODUCT_ID: u8 = 1;
@@ -717,7 +729,7 @@ impl SteamController {
         })
     }
 
-    fn command(&mut self, payload: &[u8]) -> Vec<PadEvent> {
+    fn command(&mut self, payload: &[u8]) -> Result<Vec<PadEvent>, i32> {
         let mut events = Vec::new();
         let mut reply = Vec::new();
         let cmd = payload[0];
@@ -755,16 +767,29 @@ impl SteamController {
                 "steam controller: first command of its kind"
             );
         }
+        if FIRMWARE_COMMANDS.contains(&cmd) {
+            warn!(
+                slot = self.slot,
+                cmd = format_args!("{cmd:#04x}"),
+                body = format_args!("{:02x?}", &body[..body.len().min(16)]),
+                "steam controller: a firmware update command; refused (a virtual controller has no firmware to update)"
+            );
+            self.clear_reply();
+            return Err(libc::EPIPE);
+        }
         match cmd {
             GET_ATTRIBUTES if self.variant.is_triton() => {
                 // A wired 2026 controller's answer (read from one, 2026-10-10):
-                // no unique id, a product revision of 0, and its firmware's and
-                // bootloader's build times and hardware id as they are.
+                // no unique id, a product revision of 0 and hardware id 0x48.
+                // The real firmware's and bootloader's build times (0x6aa43b55,
+                // 0x68d2f92e) made Steam offer its bundled firmware to this
+                // virtual device, which cannot take one: they are reported as
+                // newer than anything bundled.
                 for (tag, value) in [
                     (ATTRIB_PRODUCT_ID, u32::from(self.variant.product())),
                     (ATTRIB_PRODUCT_REVISION, 0),
-                    (ATTRIB_BOOTLOADER_BUILD_TIME, 0x68d2_f92e),
-                    (ATTRIB_FIRMWARE_BUILD_TIME, 0x6aa4_3b55),
+                    (ATTRIB_BOOTLOADER_BUILD_TIME, NEVER_UPDATE_TIME),
+                    (ATTRIB_FIRMWARE_BUILD_TIME, NEVER_UPDATE_TIME),
                     (ATTRIB_HW_ID, 0x48),
                     (
                         ATTRIB_CONNECTION_INTERVAL_US,
@@ -779,9 +804,9 @@ impl SteamController {
                 for (tag, value) in [
                     (ATTRIB_UNIQUE_ID, self.id()),
                     (ATTRIB_PRODUCT_ID, u32::from(self.variant.product())),
-                    (ATTRIB_FIRMWARE_BUILD_TIME, 1_600_000_000),
+                    (ATTRIB_FIRMWARE_BUILD_TIME, NEVER_UPDATE_TIME),
                     (ATTRIB_HW_ID, 0x0000_0010),
-                    (ATTRIB_BOOTLOADER_BUILD_TIME, 1_550_000_000),
+                    (ATTRIB_BOOTLOADER_BUILD_TIME, NEVER_UPDATE_TIME),
                     (
                         ATTRIB_CONNECTION_INTERVAL_US,
                         self.variant.period().as_micros() as u32,
@@ -843,7 +868,13 @@ impl SteamController {
             n as u8
         };
         self.reply[2..2 + n].copy_from_slice(&reply[..n]);
-        events
+        Ok(events)
+    }
+
+    /// The reply to a refused command: nothing, not the last command's.
+    fn clear_reply(&mut self) {
+        self.reply = [0; REPORT_SIZE];
+        self.read = 0;
     }
 
     /// A haptic pulse: the pad (0 right, 1 left, 2 both, the kernel's legacy
@@ -911,7 +942,7 @@ impl SteamController {
         }
         self.expected = 0;
         let message = std::mem::take(&mut self.incoming);
-        Ok(self.command(&message))
+        self.command(&message)
     }
 }
 
@@ -1035,7 +1066,7 @@ impl Protocol for SteamController {
                 if payload.is_empty() {
                     return Err(libc::EINVAL);
                 }
-                Ok(self.command(payload))
+                self.command(payload)
             }
             Variant::Wired => {
                 if number != 0 {
@@ -1050,7 +1081,7 @@ impl Protocol for SteamController {
                 if payload.is_empty() {
                     return Err(libc::EINVAL);
                 }
-                Ok(self.command(payload))
+                self.command(payload)
             }
             Variant::Ble => {
                 if number != BLE_REPORT {
@@ -1601,6 +1632,93 @@ mod tests {
         assert_eq!(&board[17..25], &[0; 8]);
         let (_, unit) = triton_exchange(&mut sc, &[GET_STRING_ATTRIBUTE, 21, 1]);
         assert_eq!(&unit[4..17], b"FXA0123456789");
+    }
+
+    /// The build-time attributes in a 0x83 reply's payload (tag, u32 pairs).
+    fn build_times(reply: &[u8], at: usize) -> Vec<(u8, u32)> {
+        let len = usize::from(reply[at + 1]);
+        reply[at + 2..at + 2 + len]
+            .chunks_exact(5)
+            .filter(|a| a[0] == ATTRIB_FIRMWARE_BUILD_TIME || a[0] == ATTRIB_BOOTLOADER_BUILD_TIME)
+            .map(|a| (a[0], u32::from_le_bytes([a[1], a[2], a[3], a[4]])))
+            .collect()
+    }
+
+    #[test]
+    fn every_variant_reports_firmware_newer_than_any_bundled_so_steam_never_updates() {
+        for variant in [
+            Variant::Wired,
+            Variant::Ble,
+            Variant::Triton,
+            Variant::TritonUsb,
+        ] {
+            let mut sc = SteamController::new(variant, 0, "FXA0123456789");
+            let times = match variant {
+                Variant::Wired => {
+                    let (_, reply) = exchange(&mut sc, &[GET_ATTRIBUTES, 0]);
+                    build_times(&reply, 1)
+                }
+                Variant::Ble => {
+                    let (_, reply) = ble_exchange(&mut sc, &[GET_ATTRIBUTES, 0]);
+                    build_times(&reply, 0)
+                }
+                _ => {
+                    let (_, reply) = triton_exchange(&mut sc, &[GET_ATTRIBUTES, 0]);
+                    build_times(&reply, 1)
+                }
+            };
+            assert_eq!(times.len(), 2, "{variant:?}: {times:?}");
+            assert!(
+                times.iter().all(|(_, t)| *t == NEVER_UPDATE_TIME),
+                "{variant:?}: {times:x?}"
+            );
+        }
+        assert_eq!(NEVER_UPDATE_TIME, i32::MAX as u32);
+    }
+
+    #[test]
+    fn a_firmware_update_command_is_refused_not_acknowledged() {
+        for variant in [
+            Variant::Wired,
+            Variant::Ble,
+            Variant::Triton,
+            Variant::TritonUsb,
+        ] {
+            for cmd in FIRMWARE_COMMANDS {
+                let mut sc = SteamController::new(variant, 0, "FXA0123456789");
+                // The previous command's reply must not be left to be read as this one's.
+                let _ = match variant {
+                    Variant::Wired => exchange(&mut sc, &[GET_ATTRIBUTES, 0]).0,
+                    Variant::Ble => ble_exchange(&mut sc, &[GET_ATTRIBUTES, 0]).0,
+                    _ => triton_exchange(&mut sc, &[GET_ATTRIBUTES, 0]).0,
+                };
+                let msg = [*cmd, 0];
+                let err = match variant {
+                    Variant::Wired => {
+                        let mut data = vec![0u8; 65];
+                        data[1..=msg.len()].copy_from_slice(&msg);
+                        sc.set_report(0, FEATURE_REPORT, &data)
+                    }
+                    Variant::Ble => sc.set_report(BLE_REPORT, FEATURE_REPORT, &segments(&msg)[0]),
+                    _ => {
+                        let mut data = vec![0u8; 64];
+                        data[0] = TRITON_FEATURE;
+                        data[1..=msg.len()].copy_from_slice(&msg);
+                        sc.set_report(TRITON_FEATURE, FEATURE_REPORT, &data)
+                    }
+                };
+                assert_eq!(err.unwrap_err(), libc::EPIPE, "{variant:?} {cmd:#04x}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_commands_steam_sent_before_the_stuck_update_are_still_acked() {
+        let mut sc = SteamController::new(Variant::TritonUsb, 0, "FXA0123456789");
+        for cmd in [0x81, 0xc1, 0xdc, 0xe2, 0xf2] {
+            let (_, reply) = triton_exchange(&mut sc, &[cmd, 0]);
+            assert_eq!(&reply[1..3], &[cmd, 0], "{cmd:#04x}");
+        }
     }
 
     #[test]

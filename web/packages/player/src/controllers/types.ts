@@ -2,6 +2,8 @@
 // standard-mapping layout, whatever the physical pad is) and a small interface
 // to read, rumble and watch them come and go.
 
+import type { RawHidPad } from "./hid-types";
+
 export type ControllerType = "xbox" | "playstation" | "switch" | "steam" | "generic";
 export type BackendName = "gamepad" | "webhid";
 
@@ -114,6 +116,8 @@ export interface BackendController {
   players?(mask: number): void;
   /** An adaptive trigger effect: the 11 bytes of the DualSense output report's block. */
   trigger?(side: Side, effect: number[]): void;
+  /** A WebHID pad whose driver can step aside for a raw relay (`hid-relay.ts`). */
+  readonly rawHid?: RawHidPad;
 }
 
 export interface BackendListener {

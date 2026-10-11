@@ -63,6 +63,15 @@ describe("SessionToolbar draws the model", () => {
       if (menu) expect(model.controls.find((c) => c.id === menu)?.menu?.rows.length).toBeGreaterThan(0);
     });
   }
+  test("a Steam Controller seen only as a gamepad shows its note and the WebHID button", async () => {
+    const model = buildToolbar(TOOLBAR, { ...stateOf(base, "web"), menu_open: "controllers", steam_webhid: true, controllers: [{ name: "Steam Controller", slot: 0 }] }, capsOf(base), "web");
+    const out = await html(model);
+    const rows = model.controls.find((c) => c.id === "controllers")!.menu!.rows;
+    for (const id of ["steam-webhid", "connect-steam"]) {
+      const r = rows.find((x) => x.id === id)!;
+      expect(out).toContain(esc((r.text ?? r.label)!));
+    }
+  });
   test("the folded bar and the hide tab say what the spec says", async () => {
     const out = await html(full(""));
     expect(out).toContain(esc(TOOLBAR.folded.bar.tooltip));

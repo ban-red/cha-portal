@@ -2,10 +2,15 @@
 // the wire version and kind (0x12: version 1, `Input`), byte 1 the payload's
 // format (0: a pad message as JSON, the control channel's line without its
 // newline), then the payload. It goes in a WebTransport datagram or on the
-// unordered WebRTC "input" channel.
+// unordered WebRTC "input" channel. Format 1 is a raw HID input report of a
+// controller passed through to the app (controllers/hid-relay.ts): the slot (1 byte), the
+// report's sequence number (4 bytes, big endian), then the report as the device sent it, id first.
 
 export const INPUT_BYTE0 = 0x12;
 export const PAD_JSON = 0;
+export const HID_REPORT = 1;
+/** Bytes before the report in a `HID_REPORT` payload: the slot and the sequence number. */
+const HID_REPORT_HEADER = 5;
 /**
  * Largest datagram we send. WebTransport's limit is about 1200 bytes (the path MTU less QUIC's
  * overhead); a pad message is 150 to 400, so a bigger one is a surprise and goes reliably.
@@ -33,6 +38,28 @@ export function decodePadDatagram(data: Uint8Array): Record<string, unknown> | n
   } catch {
     return null;
   }
+}
+
+/** The datagram for a raw HID input report (`report` leads with its id), or null if it won't fit one. */
+export function encodeHidDatagram(slot: number, q: number, report: Uint8Array): Uint8Array | null {
+  if (report.length === 0 || 2 + HID_REPORT_HEADER + report.length > MAX_INPUT_DATAGRAM) return null;
+  const out = new Uint8Array(2 + HID_REPORT_HEADER + report.length);
+  out[0] = INPUT_BYTE0;
+  out[1] = HID_REPORT;
+  out[2] = slot & 0xff;
+  new DataView(out.buffer).setUint32(3, q >>> 0, false);
+  out.set(report, 2 + HID_REPORT_HEADER);
+  return out;
+}
+
+/** The slot, sequence number and report in a raw HID datagram, or null if it isn't one. */
+export function decodeHidDatagram(data: Uint8Array): { slot: number; q: number; report: Uint8Array } | null {
+  if (data.length < 2 + HID_REPORT_HEADER + 1 || data[0] !== INPUT_BYTE0 || data[1] !== HID_REPORT) return null;
+  return {
+    slot: data[2]!,
+    q: new DataView(data.buffer, data.byteOffset).getUint32(3, false),
+    report: data.subarray(2 + HID_REPORT_HEADER),
+  };
 }
 
 /** Where input datagrams go on the current transport. */
@@ -64,6 +91,17 @@ export class PadDatagrams {
     const sink = this.sink();
     if (!sink) return false;
     const data = encodePadDatagram(msg);
+    if (!data || !sink.send(data as Uint8Array<ArrayBuffer>)) return false;
+    this.sent++;
+    return true;
+  }
+
+  /** True if a raw HID report went as a datagram; false to send it reliably. */
+  sendHid(slot: number, q: number, report: Uint8Array): boolean {
+    if (!this.accepted) return false;
+    const sink = this.sink();
+    if (!sink) return false;
+    const data = encodeHidDatagram(slot, q, report);
     if (!data || !sink.send(data as Uint8Array<ArrayBuffer>)) return false;
     this.sent++;
     return true;

@@ -6,6 +6,14 @@
 //! The protocol and the device model are [`crate::usbip`] and [`crate::usbdev`];
 //! what the reports mean is a [`Protocol`]'s business, as with [`crate::uhid`].
 //!
+//! A session can also **relay** the real controller through the device
+//! ([`UsbPad::relay_open`], [`crate::hid_relay`]): its input reports complete
+//! the parked interrupt-IN URBs verbatim, the app's feature and output
+//! reports go to the page, and the control URBs wait for the page's reply
+//! (a timeout, an error or a lost page falls back on the emulation that
+//! answers when nothing is relayed). While it is open the emulated state is
+//! not sent: the repeat thread only watches the requests' deadlines.
+//!
 //! - **Attach.** `"<port> <sockfd> <devid> <speed>"`, a free port of the `hs`
 //!   hub (full speed goes there). The kernel keeps its own reference to the
 //!   socket. The attach file is mode 0200, root: the streamer needs write
@@ -34,8 +42,11 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use crate::gamepad::{PadEvent, PadState};
+use crate::hid_relay::{
+    Answer, InFlight, Relay, RelayStats, Request, STEAM_LIZARD_REPORTS, Verdict,
+};
 use crate::uhid::{self, FEATURE_REPORT, Found, OUTPUT_REPORT, Protocol};
-use crate::usbdev::{Engine, Hid, Identity, REPORT_FEATURE, REPORT_OUTPUT};
+use crate::usbdev::{Engine, Hid, Identity, REPORT_FEATURE, REPORT_OUTPUT, Reply};
 use crate::usbip::{self, HEADER_LEN};
 
 pub const VHCI: &str = "/sys/devices/platform/vhci_hcd.0";
@@ -176,51 +187,100 @@ fn wait_for_nodes(port: u32, driver: &str, within: Duration) -> Result<Found> {
 
 /// What the device model asks of the pad's protocol: HID class requests and
 /// interrupt OUT data, as the uhid thread answers `GET_REPORT`, `SET_REPORT`
-/// and `OUTPUT`.
+/// and `OUTPUT`. With a relay open they go to the page first.
 struct Function<'a> {
     protocol: &'a mut dyn Protocol,
     events: &'a broadcast::Sender<PadEvent>,
+    relay: &'a mut Relay,
+    now: Instant,
+}
+
+fn emit(events: &broadcast::Sender<PadEvent>, emitted: Vec<PadEvent>) {
+    for event in emitted {
+        // Nobody listening is fine.
+        let _ = events.send(event);
+    }
+}
+
+fn emulated_get(protocol: &mut dyn Protocol, kind: u8, id: u8) -> Result<Vec<u8>, i32> {
+    let kind = match kind {
+        REPORT_FEATURE => FEATURE_REPORT,
+        REPORT_OUTPUT => OUTPUT_REPORT,
+        // An input report asked for: the protocols answer feature reports only.
+        _ => return Err(libc::EINVAL),
+    };
+    protocol.get_report(id, kind)
+}
+
+fn emulated_set(
+    protocol: &mut dyn Protocol,
+    events: &broadcast::Sender<PadEvent>,
+    kind: u8,
+    id: u8,
+    data: &[u8],
+) -> Result<(), i32> {
+    match kind {
+        REPORT_FEATURE => {
+            let emitted = protocol.set_report(id, FEATURE_REPORT, data)?;
+            emit(events, emitted);
+            Ok(())
+        }
+        REPORT_OUTPUT => {
+            let emitted = protocol.output(OUTPUT_REPORT, data);
+            emit(events, emitted);
+            Ok(())
+        }
+        _ => Err(libc::EINVAL),
+    }
 }
 
 impl Function<'_> {
-    fn emit(&self, emitted: Vec<PadEvent>) {
-        for event in emitted {
-            // Nobody listening is fine.
-            let _ = self.events.send(event);
-        }
+    /// Sends `request` to the sessions; false if nobody is there to hear it.
+    fn ask(&self, request: crate::gamepad::HidRequest) -> bool {
+        self.events.send(PadEvent::Hid(request)).is_ok()
     }
 }
 
 impl Hid for Function<'_> {
-    fn get_report(&mut self, kind: u8, id: u8) -> Result<Vec<u8>, i32> {
-        let kind = match kind {
-            REPORT_FEATURE => FEATURE_REPORT,
-            REPORT_OUTPUT => OUTPUT_REPORT,
-            // An input report asked for: the protocols answer feature reports only.
-            _ => return Err(libc::EINVAL),
-        };
-        self.protocol.get_report(id, kind)
+    fn get_report(&mut self, kind: u8, id: u8, _w_length: u16) -> Reply<Vec<u8>> {
+        if let Some((ticket, request)) = self.relay.request_get(kind, id, self.now) {
+            if self.ask(request) {
+                return Reply::Pending(ticket);
+            }
+            self.relay.cancel(ticket);
+        }
+        Reply::Done(emulated_get(self.protocol, kind, id))
     }
 
-    fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Result<(), i32> {
-        match kind {
-            REPORT_FEATURE => {
-                let emitted = self.protocol.set_report(id, FEATURE_REPORT, data)?;
-                self.emit(emitted);
-                Ok(())
+    fn set_report(&mut self, kind: u8, id: u8, data: &[u8]) -> Reply<()> {
+        if let Some((ticket, request)) = self.relay.request_set(kind, id, data, self.now) {
+            if self.ask(request) {
+                // The emulated device hears it too (its events dropped: the
+                // real controller does the work), so that if the page fails to
+                // answer, the emulation's reply to the following get is this
+                // command's and not a stale one.
+                if kind == REPORT_FEATURE {
+                    let _ = self.protocol.set_report(id, FEATURE_REPORT, data);
+                }
+                return Reply::Pending(ticket);
             }
-            REPORT_OUTPUT => {
-                let emitted = self.protocol.output(OUTPUT_REPORT, data);
-                self.emit(emitted);
-                Ok(())
-            }
-            _ => Err(libc::EINVAL),
+            self.relay.cancel(ticket);
         }
+        Reply::Done(emulated_set(self.protocol, self.events, kind, id, data))
     }
 
     fn output(&mut self, data: &[u8]) {
+        // The real controller owns its motors and trackpads: an output report
+        // it doesn't get (over the rate, or none of the device's) is dropped,
+        // not turned into a rumble for the page to play on the same device.
+        if self.relay.is_active() {
+            if let Some(request) = self.relay.request_output(data, self.now) {
+                self.ask(request);
+            }
+            return;
+        }
         let emitted = self.protocol.output(OUTPUT_REPORT, data);
-        self.emit(emitted);
+        emit(self.events, emitted);
     }
 }
 
@@ -231,11 +291,16 @@ struct Inner {
     last_sent: Instant,
     sock: UnixStream,
     events: broadcast::Sender<PadEvent>,
+    relay: Relay,
 }
 
 impl Inner {
-    /// The protocol's reports for the current state, to the parked URBs.
+    /// The protocol's reports for the current state, to the parked URBs. Not
+    /// while the real controller's own are relayed.
     fn send_state(&mut self) {
+        if self.relay.is_active() {
+            return;
+        }
         let now = Instant::now();
         let reports = self.protocol.report(&self.state, now);
         self.last_sent = now;
@@ -254,15 +319,73 @@ impl Inner {
         }
     }
 
-    /// One command from the kernel, answered.
+    /// One command from the kernel, answered (or held, for the relay).
     fn serve(&mut self, cmd: &usbip::Command, body: &[u8]) {
         let mut out = Vec::new();
         let mut function = Function {
             protocol: &mut *self.protocol,
             events: &self.events,
+            relay: &mut self.relay,
+            now: Instant::now(),
         };
         self.engine.on_command(cmd, body, &mut out, &mut function);
+        for ticket in self.engine.take_cancelled() {
+            self.relay.cancel(ticket);
+        }
         self.write(&out);
+    }
+
+    /// Completes held control URBs: with the page's answer, or the emulated
+    /// device's.
+    fn answer(&mut self, answers: Vec<(InFlight, Answer)>) {
+        let mut out = Vec::new();
+        for (held, answer) in answers {
+            let result = match answer {
+                Answer::Relayed(data) => Ok(data),
+                Answer::Emulate => match &held.req {
+                    Request::Get { kind, id } => emulated_get(&mut *self.protocol, *kind, *id),
+                    Request::Set { kind, id, data } => {
+                        emulated_set(&mut *self.protocol, &self.events, *kind, *id, data)
+                            .map(|()| Vec::new())
+                    }
+                },
+            };
+            self.engine.complete_control(held.ticket, result, &mut out);
+        }
+        self.write(&out);
+    }
+
+    /// The device is the emulated one again after a relay that was `was`
+    /// active: at rest, until the page sends a state.
+    fn after_relay(&mut self, was_active: bool) {
+        if was_active && !self.relay.is_active() {
+            self.state = PadState::default();
+            self.send_state();
+        }
+    }
+
+    fn close_relay(&mut self, owner: Option<u64>, why: &str) {
+        let was = self.relay.is_active();
+        let left = self.relay.close(owner, why);
+        self.answer(left.into_iter().map(|f| (f, Answer::Emulate)).collect());
+        if was && !self.relay.is_active() {
+            self.engine.clear_pending();
+        }
+        self.after_relay(was);
+    }
+
+    /// Answers the requests whose time is up.
+    fn expire(&mut self, now: Instant) {
+        let was = self.relay.is_active();
+        let due = self.relay.expire(now);
+        for request in due.resend {
+            // A reply that wasn't the command's is asked for again.
+            let _ = self.events.send(PadEvent::Hid(request));
+        }
+        if !due.answers.is_empty() {
+            self.answer(due.answers);
+        }
+        self.after_relay(was);
     }
 }
 
@@ -290,12 +413,13 @@ impl UsbPad {
         protocol: Box<dyn Protocol>,
         events: broadcast::Sender<PadEvent>,
         name: &str,
+        slot: usize,
     ) -> Result<Arc<Self>> {
         let (ours, theirs) = UnixStream::pair().context("making the socketpair")?;
         let port = attach(&theirs)?;
         // The kernel holds its own reference now.
         drop(theirs);
-        match Self::serve(ours, Some(port), identity, protocol, events, name) {
+        match Self::serve(ours, Some(port), identity, protocol, events, name, slot) {
             Ok(pad) => Ok(pad),
             Err(err) => {
                 let _ = detach(port);
@@ -312,8 +436,15 @@ impl UsbPad {
         protocol: Box<dyn Protocol>,
         events: broadcast::Sender<PadEvent>,
         name: &str,
+        slot: usize,
     ) -> Result<Arc<Self>> {
         let reader = sock.try_clone()?;
+        let relay = Relay::new(
+            slot,
+            identity.report_descriptor,
+            STEAM_LIZARD_REPORTS,
+            Instant::now(),
+        );
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 engine: Engine::new(identity),
@@ -322,6 +453,7 @@ impl UsbPad {
                 last_sent: Instant::now(),
                 sock: sock.try_clone()?,
                 events,
+                relay,
             }),
             stop: AtomicBool::new(false),
         });
@@ -354,11 +486,72 @@ impl UsbPad {
         wait_for_nodes(port, driver, within)
     }
 
-    /// A new state from the page: the report goes out at once.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.shared.inner.lock().expect("usb pad lock")
+    }
+
+    /// A new state from the page: the report goes out at once. While the real
+    /// controller is relayed the page's parsed state is ignored (the reports
+    /// are the controller's own), except `gone`, which ends the relay.
     pub fn update(&self, state: &PadState) {
-        let mut inner = self.shared.inner.lock().expect("usb pad lock");
+        let mut inner = self.lock();
+        if state.gone {
+            inner.close_relay(None, "the pad is gone");
+        } else if inner.relay.is_active() {
+            return;
+        }
         inner.state = state.clone();
         inner.send_state();
+    }
+
+    /// `owner`'s session passes its real controller through this device from
+    /// now on.
+    pub fn relay_open(&self, owner: u64) {
+        let mut inner = self.lock();
+        let left = inner.relay.open(owner, Instant::now());
+        inner.answer(left.into_iter().map(|f| (f, Answer::Emulate)).collect());
+        // Reports the emulation queued while no URB waited are not the controller's.
+        inner.engine.clear_pending();
+    }
+
+    /// Ends the relay (`owner`'s only, if given) and goes back to the
+    /// emulated device at rest.
+    pub fn relay_close(&self, owner: Option<u64>, why: &str) {
+        self.lock().close_relay(owner, why);
+    }
+
+    /// The session that holds the relay.
+    #[cfg(test)]
+    pub fn relay_owner(&self) -> Option<u64> {
+        self.lock().relay.owner()
+    }
+
+    /// A report of the real controller (id first), numbered `q`: if it
+    /// passes, it completes the oldest parked interrupt-IN URB.
+    pub fn relay_input(&self, owner: u64, q: u32, report: &[u8]) -> Verdict {
+        let mut inner = self.lock();
+        let verdict = inner.relay.input(owner, q, report, Instant::now());
+        if verdict == Verdict::Accept {
+            let mut out = Vec::with_capacity(HEADER_LEN + report.len());
+            inner.engine.push_report(report, &mut out);
+            inner.write(&out);
+        }
+        verdict
+    }
+
+    /// The page's answer to the request under `ticket`.
+    pub fn relay_reply(&self, owner: u64, ticket: u32, ok: bool, data: &[u8], error: Option<&str>) {
+        let mut inner = self.lock();
+        let was = inner.relay.is_active();
+        let answers = inner
+            .relay
+            .reply(owner, ticket, ok, data, error, Instant::now());
+        inner.answer(answers);
+        inner.after_relay(was);
+    }
+
+    pub fn relay_stats(&self) -> RelayStats {
+        self.lock().relay.stats()
     }
 
     /// Takes the device away: detaches the port (the kernel disconnects the
@@ -419,20 +612,32 @@ fn read_urbs(mut sock: UnixStream, shared: &Shared) {
     }
 }
 
-/// Sends the state again whenever a period passes without a report.
+/// Sends the state again whenever a period passes without a report. While the
+/// real controller is relayed it sends nothing (the controller's own reports
+/// are the device's) and only watches the page's deadlines.
 fn repeat_reports(shared: &Shared) {
+    const IDLE: Duration = Duration::from_millis(50);
     while !shared.stop.load(Ordering::Relaxed) {
         let wait = {
             let mut inner = shared.inner.lock().expect("usb pad lock");
-            let period = inner.protocol.period();
-            if inner.last_sent.elapsed() >= period {
-                inner.send_state();
+            let now = Instant::now();
+            inner.expire(now);
+            let mut wait = IDLE;
+            if inner.relay.is_active() {
+                if let Some(deadline) = inner.relay.next_deadline() {
+                    wait = wait.min(deadline.saturating_duration_since(now));
+                }
+            } else {
+                let period = inner.protocol.period();
+                if inner.last_sent.elapsed() >= period {
+                    inner.send_state();
+                }
+                wait =
+                    wait.min((inner.last_sent + period).saturating_duration_since(Instant::now()));
             }
-            (inner.last_sent + period)
-                .saturating_duration_since(Instant::now())
-                .max(Duration::from_millis(1))
+            wait.max(Duration::from_millis(1))
         };
-        thread::sleep(wait.min(Duration::from_millis(50)));
+        thread::sleep(wait);
     }
 }
 
@@ -528,7 +733,7 @@ mod tests {
             report_descriptor: variant.descriptor(),
         };
         let protocol = Box::new(SteamController::new(variant, 1, "FXA0123456789"));
-        let pad = UsbPad::serve(ours, None, identity, protocol, events, "test").unwrap();
+        let pad = UsbPad::serve(ours, None, identity, protocol, events, "test", 0).unwrap();
         (pad, Kernel(theirs), rx)
     }
 
@@ -624,6 +829,294 @@ mod tests {
             }
         }
         pad.destroy();
+        pad.destroy();
+    }
+
+    // ---- the raw HID relay ----
+
+    use crate::gamepad::{HidOp, HidRequest};
+
+    const OWNER: u64 = 5;
+
+    /// The next relay request the pad asked the sessions for.
+    fn request(events: &mut broadcast::Receiver<PadEvent>) -> HidRequest {
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match events.try_recv() {
+                Ok(PadEvent::Hid(r)) => return r,
+                Ok(_) => {}
+                Err(_) if Instant::now() < until => thread::sleep(Duration::from_millis(2)),
+                Err(err) => panic!("no relay request: {err:?}"),
+            }
+        }
+    }
+
+    /// Whether the kernel hears anything within `ms`.
+    fn silent(kernel: &mut Kernel, ms: u64) -> bool {
+        kernel
+            .0
+            .set_read_timeout(Some(Duration::from_millis(ms)))
+            .unwrap();
+        let mut head = [0u8; 1];
+        let silent = kernel.0.read_exact(&mut head).is_err();
+        kernel
+            .0
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        silent
+    }
+
+    const GET_FEATURE_1: [u8; 8] = [0xa1, 1, 1, 3, 0, 0, 64, 0];
+    const SET_FEATURE_1: [u8; 8] = [0x21, 9, 1, 3, 0, 0, 64, 0];
+
+    #[test]
+    fn a_relayed_feature_get_waits_for_the_pages_reply() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.relay_open(OWNER);
+        kernel.send(&submit(1, DIR_IN, 0, 64, GET_FEATURE_1), &[]);
+        let req = request(&mut events);
+        assert_eq!(
+            (req.op, req.report, req.owner, req.slot),
+            (HidOp::GetFeature, 1, OWNER, 0)
+        );
+        // The control URB stays pending: no early, emulated answer.
+        assert!(silent(&mut kernel, 150));
+        pad.relay_reply(OWNER, req.ticket, true, &[0x83, 3, 9, 8], None);
+        let (_, seq, status, data) = kernel.reply_in();
+        assert_eq!((seq, status, data.len()), (1, 0, 64));
+        assert_eq!(&data[..5], &[1, 0x83, 3, 9, 8]);
+        let stats = pad.relay_stats();
+        assert_eq!((stats.requests, stats.replies, stats.timeouts), (1, 1, 0));
+        assert!(stats.rtt_p50_us.is_some());
+        pad.destroy();
+    }
+
+    #[test]
+    fn a_silent_page_gets_the_emulated_answer_after_the_timeout() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.shared
+            .inner
+            .lock()
+            .unwrap()
+            .relay
+            .set_timeout(Duration::from_millis(60));
+        pad.relay_open(OWNER);
+        // Command 0x83 (get attributes): the emulation answers with its own.
+        let mut set = vec![1u8, 0x83];
+        set.resize(64, 0);
+        kernel.send(&submit(1, DIR_OUT, 0, 64, SET_FEATURE_1), &set);
+        let req = request(&mut events);
+        assert_eq!(req.op, HidOp::SetFeature);
+        // The emulated device acks once the deadline passes.
+        let (_, seq, status) = kernel.reply();
+        assert_eq!((seq, status), (1, 0));
+        // And a read of the reply is the emulation's, the page still silent.
+        kernel.send(&submit(2, DIR_IN, 0, 64, GET_FEATURE_1), &[]);
+        let req = request(&mut events);
+        let (_, seq, status, feature) = kernel.reply_in();
+        assert_eq!((seq, status), (2, 0));
+        assert_eq!(&feature[..2], &[1, 0x83], "the emulated attributes");
+        // A reply after the deadline is dropped.
+        pad.relay_reply(OWNER, req.ticket, true, &[0xee], None);
+        assert!(silent(&mut kernel, 100));
+        let stats = pad.relay_stats();
+        assert_eq!((stats.timeouts, stats.replies), (2, 0));
+        pad.destroy();
+    }
+
+    #[test]
+    fn a_page_that_cannot_perform_a_request_gets_the_emulated_answer_at_once() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.relay_open(OWNER);
+        kernel.send(&submit(1, DIR_IN, 0, 64, GET_FEATURE_1), &[]);
+        let req = request(&mut events);
+        pad.relay_reply(OWNER, req.ticket, false, &[], Some("gone"));
+        let (_, seq, status, feature) = kernel.reply_in();
+        assert_eq!((seq, status, feature[0]), (1, 0, 1));
+        assert_eq!(pad.relay_stats().errors, 1);
+        pad.destroy();
+    }
+
+    #[test]
+    fn a_relayed_feature_set_is_acked_by_the_page_and_not_emulated() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.relay_open(OWNER);
+        // A haptic pulse command: the emulation would make a Haptic event.
+        let mut pulse = vec![1u8, 0x8f, 7, 1, 0x10, 0, 0x10, 0, 3, 0, 0];
+        pulse.resize(64, 0);
+        kernel.send(&submit(1, DIR_OUT, 0, 64, SET_FEATURE_1), &pulse);
+        let req = request(&mut events);
+        assert_eq!((req.op, req.report, req.len), (HidOp::SetFeature, 1, 63));
+        assert_eq!(&req.data()[..4], &[0x8f, 7, 1, 0x10]);
+        assert!(silent(&mut kernel, 100));
+        pad.relay_reply(OWNER, req.ticket, true, &[], None);
+        let (_, seq, status) = kernel.reply();
+        assert_eq!((seq, status), (1, 0));
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(event, PadEvent::Haptic(_)), "{event:?}");
+        }
+        pad.destroy();
+    }
+
+    #[test]
+    fn interrupt_out_is_relayed_not_emulated() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.relay_open(OWNER);
+        let mut rumble = vec![0x80u8, 0, 1, 0, 0xff, 0xff];
+        rumble.resize(10, 0);
+        kernel.send(&submit(1, DIR_OUT, 1, 10, [0; 8]), &rumble);
+        // The transfer completes at once, whatever the page does.
+        assert_eq!(kernel.reply().2, 0);
+        let req = request(&mut events);
+        assert_eq!(
+            (req.op, req.ticket, req.report, req.len),
+            (HidOp::Output, 0, 0x80, 9)
+        );
+        assert_eq!(&req.data()[..5], &[0, 1, 0, 0xff, 0xff]);
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(event, PadEvent::Rumble(_)), "{event:?}");
+        }
+        pad.destroy();
+    }
+
+    #[test]
+    fn relayed_input_completes_urbs_and_the_emulation_stays_quiet() {
+        let (pad, mut kernel, _events) = pad();
+        pad.relay_open(OWNER);
+        kernel.send(&submit(1, DIR_IN, 1, 64, [0; 8]), &[]);
+        // The repeat thread would have answered within a few periods.
+        assert!(silent(&mut kernel, 150));
+        let mut state = vec![0x42u8];
+        state.resize(54, 7);
+        assert_eq!(pad.relay_input(OWNER, 1, &state), Verdict::Accept);
+        let (_, seq, status, report) = kernel.reply_in();
+        assert_eq!((seq, status), (1, 0));
+        assert_eq!(report, state, "verbatim");
+        // The wrong length, a lizard report, a stranger: nothing reaches the URB.
+        kernel.send(&submit(2, DIR_IN, 1, 64, [0; 8]), &[]);
+        let mut short = state.clone();
+        short.pop();
+        assert_eq!(pad.relay_input(OWNER, 2, &short), Verdict::Invalid);
+        assert_eq!(
+            pad.relay_input(OWNER, 3, &[0x40, 0, 0, 0, 0, 0]),
+            Verdict::Denied
+        );
+        assert_eq!(pad.relay_input(9, 4, &state), Verdict::NotRelaying);
+        assert!(silent(&mut kernel, 100));
+        assert_eq!(pad.relay_input(OWNER, 5, &state), Verdict::Accept);
+        assert_eq!(kernel.reply_in().1, 2);
+        pad.destroy();
+    }
+
+    #[test]
+    fn parsed_state_is_ignored_while_relaying_and_gone_ends_the_relay() {
+        let (pad, mut kernel, _events) = pad();
+        pad.relay_open(OWNER);
+        kernel.send(&submit(1, DIR_IN, 1, 64, [0; 8]), &[]);
+        let held = PadState {
+            b: vec![1.0],
+            ..PadState::default()
+        };
+        pad.update(&held);
+        assert!(silent(&mut kernel, 150), "no parsed report reaches the URB");
+        assert_eq!(pad.relay_owner(), Some(OWNER));
+        // gone: the emulated device is back, at rest, and answers the URB.
+        pad.update(&PadState {
+            gone: true,
+            ..PadState::default()
+        });
+        assert_eq!(pad.relay_owner(), None);
+        let (_, seq, status, report) = kernel.reply_in();
+        assert_eq!((seq, status), (1, 0));
+        assert!(matches!(report[0], 0x42 | 0x43), "{report:02x?}");
+        // Parsed state works again.
+        pad.update(&held);
+        pad.destroy();
+    }
+
+    #[test]
+    fn closing_the_relay_answers_held_requests_with_the_emulation() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.relay_open(OWNER);
+        kernel.send(&submit(1, DIR_IN, 0, 64, GET_FEATURE_1), &[]);
+        request(&mut events);
+        // Another session cannot close it.
+        pad.relay_close(Some(9), "test");
+        assert!(silent(&mut kernel, 100));
+        pad.relay_close(Some(OWNER), "test");
+        let (_, seq, status, feature) = kernel.reply_in();
+        assert_eq!((seq, status, feature[0]), (1, 0, 1));
+        pad.destroy();
+    }
+
+    #[test]
+    fn unlinking_a_held_request_forgets_it() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.relay_open(OWNER);
+        kernel.send(&submit(1, DIR_IN, 0, 64, GET_FEATURE_1), &[]);
+        let req = request(&mut events);
+        let mut wire = Vec::new();
+        encode_cmd_unlink(&mut wire, 2, DEVID, 1);
+        kernel.0.write_all(&wire).unwrap();
+        let (cmd, seq, status) = kernel.reply();
+        assert_eq!(
+            (cmd, seq, status),
+            (usbip::RET_UNLINK, 2, -usbip::ECONNRESET)
+        );
+        assert_eq!(pad.shared.inner.lock().unwrap().relay.in_flight(), 0);
+        pad.relay_reply(OWNER, req.ticket, true, &[1], None);
+        assert!(silent(&mut kernel, 100));
+        pad.destroy();
+    }
+
+    #[test]
+    fn a_reply_that_is_not_the_commands_is_asked_for_again_then_the_emulation_answers() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.relay_open(OWNER);
+        // Command 0x83 (get attributes), acked by the page.
+        let mut set = vec![1u8, 0x83];
+        set.resize(64, 0);
+        kernel.send(&submit(1, DIR_OUT, 0, 64, SET_FEATURE_1), &set);
+        let req = request(&mut events);
+        pad.relay_reply(OWNER, req.ticket, true, &[], None);
+        assert_eq!(kernel.reply().2, 0);
+        // The get: the page gives zeros, three times (asked again each time).
+        kernel.send(&submit(2, DIR_IN, 0, 64, GET_FEATURE_1), &[]);
+        for _ in 0..3 {
+            let req = request(&mut events);
+            assert_eq!((req.op, req.report), (HidOp::GetFeature, 1));
+            pad.relay_reply(OWNER, req.ticket, true, &[0; 63], None);
+        }
+        // The emulated device, which heard the command too, answers with the
+        // attributes the command asks for.
+        let (_, seq, status, feature) = kernel.reply_in();
+        assert_eq!((seq, status), (2, 0));
+        assert_eq!(&feature[..2], &[1, 0x83]);
+        assert!(feature[2] > 0, "the attributes have a length");
+        assert_eq!(pad.relay_stats().reply_mismatches, 3);
+        assert_eq!(pad.relay_owner(), Some(OWNER));
+        pad.destroy();
+    }
+
+    #[test]
+    fn a_get_that_gets_the_right_reply_on_the_second_try_is_relayed() {
+        let (pad, mut kernel, mut events) = pad();
+        pad.relay_open(OWNER);
+        let mut set = vec![1u8, 0x83];
+        set.resize(64, 0);
+        kernel.send(&submit(1, DIR_OUT, 0, 64, SET_FEATURE_1), &set);
+        let req = request(&mut events);
+        pad.relay_reply(OWNER, req.ticket, true, &[], None);
+        assert_eq!(kernel.reply().2, 0);
+        kernel.send(&submit(2, DIR_IN, 0, 64, GET_FEATURE_1), &[]);
+        let req = request(&mut events);
+        pad.relay_reply(OWNER, req.ticket, true, &[0; 63], None);
+        let again = request(&mut events);
+        assert_eq!(again.ticket, req.ticket);
+        pad.relay_reply(OWNER, again.ticket, true, &[0x83, 5, 7, 7, 7], None);
+        let (_, _, status, feature) = kernel.reply_in();
+        assert_eq!(status, 0);
+        assert_eq!(&feature[..5], &[1, 0x83, 5, 7, 7]);
         pad.destroy();
     }
 }

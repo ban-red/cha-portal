@@ -46,6 +46,8 @@ export {
   ControllerManager,
   EXTRA,
   hidUnavailableReason,
+  isSteamOnGamepadApi,
+  steamNeedingWebHid,
   type BackendController,
   type BackendName,
   type Capabilities,

@@ -14,6 +14,7 @@ import {
   type HidDriver,
   type HidDriverFactory,
   type HidInputReportEvent,
+  type RawHidPad,
 } from "./hid-types";
 import { DUALSENSE, DUALSENSE_EDGE, SONY_VENDOR_ID, dualSenseFactory } from "./dualsense";
 import { steamControllerFactory } from "./steam-controller";
@@ -42,6 +43,8 @@ class HidController implements BackendController {
   readonly led?: BackendController["led"];
   readonly players?: BackendController["players"];
   readonly trigger?: BackendController["trigger"];
+  readonly rawHid?: RawHidPad;
+  private rawSink: ((reportId: number, data: DataView) => void) | null = null;
 
   constructor(
     readonly key: string,
@@ -49,6 +52,7 @@ class HidController implements BackendController {
     readonly driver: HidDriver,
   ) {
     this.info = driver.info;
+    if (driver.relay) this.rawHid = { device, hooks: driver.relay, setSink: (sink) => void (this.rawSink = sink) };
     this.rumble = (lo, hi, ms) => driver.rumble?.(lo, hi, ms);
     // Only what the driver can do: the manager looks at what is there.
     if (driver.haptic) this.haptic = (...a) => driver.haptic!(...a);
@@ -60,6 +64,7 @@ class HidController implements BackendController {
   report(reportId: number, data: DataView): void {
     this.lastReport = { reportId, bytes: new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)) };
     this.driver.onReport(reportId, data);
+    this.rawSink?.(reportId, data);
   }
 
   state(): ControllerState {
@@ -69,6 +74,14 @@ class HidController implements BackendController {
   raw(): RawReport | null {
     return this.lastReport ? { kind: "hid", ...this.lastReport } : null;
   }
+}
+
+export interface WebHidOptions {
+  /**
+   * The page may pass a Steam Controller on a cable through to the environment (hid-relay.ts): its
+   * driver opens it without claiming it, and the manager decides which of the two takes it.
+   */
+  deferClaim?: boolean;
 }
 
 export class WebHidBackend implements ControllerBackend {
@@ -83,6 +96,8 @@ export class WebHidBackend implements ControllerBackend {
   private readonly opening = new Set<HidDevice>();
   private nextKey = 1;
   private readonly keys = new WeakMap<HidDevice, string>();
+
+  constructor(private readonly options: WebHidOptions = {}) {}
 
   private readonly onConnect = (e: Event) => void this.adopt((e as Event & { device: HidDevice }).device);
   private readonly onDisconnect = (e: Event) => void this.drop((e as Event & { device: HidDevice }).device);
@@ -129,7 +144,7 @@ export class WebHidBackend implements ControllerBackend {
     const factory = FACTORIES.find((f) => f.matches(device));
     if (!factory) return;
     this.opening.add(device);
-    const driver = factory.create(device);
+    const driver = factory.create(device, { deferClaim: this.options.deferClaim });
     try {
       if (!device.opened) {
         try {

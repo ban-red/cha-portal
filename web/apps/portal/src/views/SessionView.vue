@@ -16,6 +16,7 @@ import {
   type HealthAssessment,
   type CaptureView,
   type ManagedController,
+  steamNeedingWebHid,
   type PlayerState,
   type ProbeResult,
   type RecordingSummary,
@@ -32,6 +33,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import { api, type JoinableEnvironment } from "../api";
 import { backoffDelay, classifyConnectError } from "../reconnect";
+import { loadSteamPassthrough } from "../controllerPrefs";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import PowerOffDialog from "../components/PowerOffDialog.vue";
 import SessionAccessPanel from "../components/SessionAccessPanel.vue";
@@ -238,6 +240,8 @@ async function setOverlay(level: OverlayLevel, select: HTMLSelectElement) {
 }
 /** The controllers this page sends, and the menu to add one (WebHID needs a click). */
 const controllers = ref<ManagedController[]>([]);
+/** A Valve controller only the Gamepad API shows: no Steam button, trackpads or gyro until WebHID has it. */
+const steamWebHid = computed(() => steamNeedingWebHid(controllers.value).length > 0);
 /** Mouse capture after the browser let go (Esc): clicks recapture, and a hint says so. */
 const capture = ref<CaptureView>({ state: "idle", recapture: false, hint: false });
 /** Esc held with the mouse captured: the progress towards letting go, or null while no hint shows. */
@@ -289,6 +293,14 @@ function onDocPointerDown(e: PointerEvent) {
   if (menu.value && !(e.target as Element | null)?.closest("[data-menu]")) closeMenu();
 }
 const controllerNote = ref<string | null>(null);
+// The first time such a controller shows up in this session, the controllers menu opens to say so (and,
+// where WebHID exists, to offer the button); after that the controllers icon stays warm until it is connected.
+let steamHinted = false;
+watch(steamWebHid, (on) => {
+  if (!on || steamHinted) return;
+  steamHinted = true;
+  menu.value = "controllers";
+});
 const hidReason = hidUnavailableReason();
 async function connectController() {
   controllerNote.value = null;
@@ -522,6 +534,7 @@ async function connect() {
     codec: codec.value,
     iceServers,
     transport: transportChoice.value,
+    rawSteam: loadSteamPassthrough(),
     webTransport: async (c) => {
       const r = await api.connect(id.value, { codec: c, transport: "webtransport" });
       return { urls: r.urls ?? [], certHash: r.certHash ?? "" };
@@ -823,6 +836,7 @@ const toolbarState = computed<ToolbarState>(() => ({
   audio_blocked: audioBlocked.value,
   controllers: controllers.value.map((c) => ({ name: c.info.name, slot: c.slot })),
   hid_reason: hidReason ?? "",
+  steam_webhid: steamWebHid.value,
   note: controllerNote.value ?? "",
   fullscreen: fullscreen.value,
   stats_open: overlay.value.open,
@@ -914,6 +928,7 @@ function onRow(menuId: string, rowId: string, value?: string | Event, el?: HTMLS
       player?.restartAudio();
       break;
     case "controllers/connect":
+    case "controllers/connect-steam":
       void connectController();
       break;
   }

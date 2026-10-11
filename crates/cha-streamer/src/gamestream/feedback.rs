@@ -32,7 +32,8 @@ enum Class {
 }
 
 /// What Moonlight is told for `event`; nothing for what it has no message for
-/// (Steam Controller haptics, the player LEDs).
+/// (Steam Controller haptics, the player LEDs, raw HID relay requests, which only
+/// a browser page opens).
 fn feedback(event: &PadEvent) -> Option<(u16, Class, Feedback)> {
     let motor = |v: f32| (v.clamp(0.0, 1.0) * f32::from(u16::MAX)).round() as u16;
     Some(match *event {
@@ -79,7 +80,7 @@ fn feedback(event: &PadEvent) -> Option<(u16, Class, Feedback)> {
                 },
             )
         }
-        PadEvent::Haptic(_) | PadEvent::Players(_) => return None,
+        PadEvent::Haptic(_) | PadEvent::Players(_) | PadEvent::Hid(_) => return None,
     })
 }
 

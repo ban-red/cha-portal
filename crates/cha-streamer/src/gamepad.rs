@@ -52,6 +52,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use crate::dualsense::{self, DualSense};
+use crate::hid_relay::{RelayStats, Verdict};
 use crate::steam_controller::{self, SteamController};
 use crate::uhid::{self, Device, Node};
 use crate::usbdev::Identity as UsbIdentity;
@@ -361,6 +362,58 @@ pub struct Trigger {
     pub effect: [u8; 11],
 }
 
+/// What a raw HID relay asks of the real controller (`crate::hid_relay`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HidOp {
+    /// `receiveFeatureReport`; the page answers with the report's data.
+    GetFeature,
+    /// `sendFeatureReport`; the page answers when it is done.
+    SetFeature,
+    /// `sendReport` for a SET_REPORT of an output report; the page answers when it is done.
+    SetOutput,
+    /// `sendReport` for an interrupt OUT transfer; nobody answers.
+    Output,
+}
+
+impl HidOp {
+    /// As the control channel spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            HidOp::GetFeature => "get_feature",
+            HidOp::SetFeature => "set_feature",
+            HidOp::SetOutput => "set_output",
+            HidOp::Output => "output",
+        }
+    }
+}
+
+/// The most data bytes of a relayed report (Steam's largest is 63).
+pub const HID_MAX_DATA: usize = 64;
+
+/// A request for the real controller behind pad `slot`, for the session
+/// `owner` that opened the relay. Unlike the other events it is never
+/// coalesced or dropped for rate: each one is an answer somebody waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HidRequest {
+    pub slot: usize,
+    pub owner: u64,
+    /// What the page's reply names; 0 when none is expected.
+    pub ticket: u32,
+    pub op: HidOp,
+    /// The report id.
+    pub report: u8,
+    /// Bytes of `data` that count (for a get: how many the report has).
+    pub len: u8,
+    /// The report's data, without its id.
+    pub data: [u8; HID_MAX_DATA],
+}
+
+impl HidRequest {
+    pub fn data(&self) -> &[u8] {
+        &self.data[..usize::from(self.len)]
+    }
+}
+
 /// What an app does to a pad that the person holding the controller should
 /// feel or see.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -370,6 +423,8 @@ pub enum PadEvent {
     Led(Led),
     Players(Players),
     Trigger(Trigger),
+    /// A raw HID relay request for the real controller.
+    Hid(HidRequest),
 }
 
 /// The last value of each state-like pad event (lightbar, player LEDs,
@@ -414,6 +469,7 @@ impl PadEvent {
             PadEvent::Led(e) => e.slot,
             PadEvent::Players(e) => e.slot,
             PadEvent::Trigger(e) => e.slot,
+            PadEvent::Hid(e) => e.slot,
         }
     }
 
@@ -426,6 +482,8 @@ impl PadEvent {
             PadEvent::Led(_) => 3,
             PadEvent::Players(_) => 4,
             PadEvent::Trigger(e) => 5 + usize::from(e.side == Side::Right),
+            // Never replaced by a newer one: the rate limit lets it through.
+            PadEvent::Hid(_) => 0,
         }
     }
 
@@ -473,6 +531,10 @@ pub enum PadTransport {
     Uhid,
     Usbip,
 }
+
+/// The wired 2026 Steam Controller, as the page names it in a relay `open`
+/// and the hello lists it (`rawHid`).
+const RAW_HID_STEAM_WIRED: &str = "28de:1302";
 
 /// The environment variable choosing the Steam Controller's [`PadTransport`]:
 /// `usbip`, or `uhid` (the default, also for an empty or unknown value).
@@ -729,6 +791,116 @@ impl Gamepads {
         self.kind
     }
 
+    /// The physical controllers (`vid:pid`, lowercase hex) whose raw HID a
+    /// session may pass through to the app ([`Gamepads::relay_open`]): the
+    /// wired 2026 Steam Controller, when the pads are USB devices. Empty
+    /// otherwise; the streamer's hello says it, and a page that sees nothing
+    /// it knows keeps sending parsed pad state.
+    pub fn raw_hid(&self) -> Vec<&'static str> {
+        if self.kind == GamepadKind::Steam && self.transport == PadTransport::Usbip {
+            vec![RAW_HID_STEAM_WIRED]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The USB device in pad `slot`, if that pad exists and is one.
+    fn usb_pad(&self, slot: usize) -> Option<Arc<UsbPad>> {
+        match self.pads.lock().expect("pads lock").get(slot)? {
+            Slot::Hid(HidPad {
+                device: PadDevice::Usb(pad),
+                ..
+            }) => Some(Arc::clone(pad)),
+            _ => None,
+        }
+    }
+
+    fn usb_pads(&self) -> Vec<Arc<UsbPad>> {
+        self.pads
+            .lock()
+            .expect("pads lock")
+            .iter()
+            .filter_map(|slot| match slot {
+                Slot::Hid(HidPad {
+                    device: PadDevice::Usb(pad),
+                    ..
+                }) => Some(Arc::clone(pad)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Session `owner` passes the real controller `vendor:product` through pad
+    /// `slot`, making the pad if it is not there yet. The refusal says why.
+    pub fn relay_open(
+        &self,
+        slot: usize,
+        owner: u64,
+        vendor: u64,
+        product: u64,
+    ) -> Result<(), &'static str> {
+        let id = format!("{vendor:04x}:{product:04x}");
+        if !self.raw_hid().contains(&id.as_str()) {
+            return Err("this environment's pads can't carry that controller");
+        }
+        if slot >= MAX_PADS {
+            return Err("no such pad");
+        }
+        if let Err(err) = self.ensure(slot) {
+            warn!("gamepad {slot}: {err:#}");
+            return Err("the pad could not be made");
+        }
+        let pad = self.usb_pad(slot).ok_or("the pad is not a USB device")?;
+        pad.relay_open(owner);
+        Ok(())
+    }
+
+    /// Ends `owner`'s relay on `slot`.
+    pub fn relay_close(&self, slot: usize, owner: u64) {
+        if let Some(pad) = self.usb_pad(slot) {
+            pad.relay_close(Some(owner), "closed by the page");
+        }
+    }
+
+    /// Ends every relay `owner` holds (it left, or lost the controls).
+    pub fn relay_close_owned_by(&self, owner: u64) {
+        for pad in self.usb_pads() {
+            pad.relay_close(Some(owner), "its session left or lost the controls");
+        }
+    }
+
+    /// A report of the real controller in `slot` (id first), numbered `q`.
+    pub fn relay_input(&self, slot: usize, owner: u64, q: u32, report: &[u8]) -> Verdict {
+        match self.usb_pad(slot) {
+            Some(pad) => pad.relay_input(owner, q, report),
+            None => Verdict::NotRelaying,
+        }
+    }
+
+    /// The page's answer to a relay request of `slot`'s pad.
+    pub fn relay_reply(
+        &self,
+        slot: usize,
+        owner: u64,
+        ticket: u32,
+        ok: bool,
+        data: &[u8],
+        error: Option<&str>,
+    ) {
+        if let Some(pad) = self.usb_pad(slot) {
+            pad.relay_reply(owner, ticket, ok, data, error);
+        }
+    }
+
+    /// What the relays carried, for the stats; `None` if nothing ever did.
+    pub fn relay_stats(&self) -> Option<RelayStats> {
+        let mut total = RelayStats::default();
+        for pad in self.usb_pads() {
+            total.merge(&pad.relay_stats());
+        }
+        (total != RelayStats::default()).then_some(total)
+    }
+
     /// Keeps `memory` current from the event stream; ends with the pads.
     fn remember_events(&self) {
         let mut rx = self.events.subscribe();
@@ -785,6 +957,12 @@ impl Gamepads {
     /// Applies one state message from the page, making the pad if needed.
     pub fn update(&self, state: &PadState) {
         if state.i >= MAX_PADS {
+            return;
+        }
+        // A pad that was never made has nothing to let go of: making one (a new
+        // virtual controller for the app to find) for a `gone` would be a pad
+        // out of nothing.
+        if releases_an_unmade_pad(state, self.pads.lock().expect("pads lock").len()) {
             return;
         }
         if let Err(err) = self.ensure(state.i) {
@@ -916,6 +1094,7 @@ impl Gamepads {
                 protocol,
                 self.events.clone(),
                 &format!("pad{index}"),
+                index,
             )?;
             let found = match pad.wait_for_nodes(driver, BIND_WAIT) {
                 Ok(found) => found,
@@ -1203,6 +1382,13 @@ impl Gamepads {
         )?;
         Ok(())
     }
+}
+
+/// Whether `state` only lets go of a pad that was never made (`made` pads
+/// exist): there is nothing to release, and making the pad would show the app
+/// a new controller.
+fn releases_an_unmade_pad(state: &PadState, made: usize) -> bool {
+    state.gone && made <= state.i
 }
 
 /// Where sysfs has `hidraw<n>`, without the `/sys`.
@@ -1597,6 +1783,25 @@ mod tests {
         assert_eq!(serial("u1/steam/pad0"), serial("u1/steam/pad0"));
         assert_ne!(serial("u1/steam/pad0"), serial("u1/steam/pad1"));
         assert_ne!(serial("u1/steam/pad0"), serial("u2/steam/pad0"));
+    }
+
+    #[test]
+    fn letting_go_of_a_pad_that_was_never_made_makes_none() {
+        let gone = |i| PadState {
+            i,
+            gone: true,
+            ..PadState::default()
+        };
+        // Pad 0 exists: a release of it, and of nothing past it.
+        assert!(!releases_an_unmade_pad(&gone(0), 1));
+        assert!(releases_an_unmade_pad(&gone(1), 1));
+        assert!(releases_an_unmade_pad(&gone(0), 0));
+        // A state that isn't a release makes the pad it names.
+        let state = PadState {
+            i: 1,
+            ..PadState::default()
+        };
+        assert!(!releases_an_unmade_pad(&state, 1));
     }
 
     #[test]
@@ -2058,5 +2263,150 @@ mod tests {
     #[ignore = "needs /dev/uhid"]
     fn live_steam_controller() {
         live(GamepadKind::Steam);
+    }
+
+    /// The raw HID relay through the real kernel: a Steam Controller as a USB
+    /// device (vhci_hcd), a thread playing the page, and this thread playing
+    /// Steam on the `hidraw` node. Needs `vhci-hcd` loaded and its `attach`
+    /// file writable (root; in the node's AppArmor profile or without one).
+    #[test]
+    #[ignore = "needs vhci-hcd and write access to /sys/devices/platform/vhci_hcd.0/attach"]
+    fn live_steam_relay() {
+        use std::sync::mpsc;
+
+        let _ = tracing_subscriber::fmt().try_init();
+        // SAFETY: set before any other thread of this test exists.
+        unsafe { std::env::set_var(PAD_TRANSPORT_ENV, "usbip") };
+        let dir = std::env::temp_dir().join("cha-live-relay");
+        let _ = std::fs::remove_dir_all(&dir);
+        let pads = Arc::new(
+            Gamepads::new(
+                Path::new("/dev/uinput"),
+                Path::new("/dev/uhid"),
+                GamepadKind::Steam,
+                &dir,
+                None,
+                0,
+            )
+            .unwrap(),
+        );
+        assert_eq!(pads.raw_hid(), ["28de:1302"]);
+        const OWNER: u64 = 41;
+        pads.relay_open(0, OWNER, 0x28de, 0x1302).unwrap();
+        let hidraw = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join("dev/hidraw").join(&pads.hidraw()[0].name))
+            .unwrap();
+        let fd = hidraw.as_raw_fd();
+        let hid_ioctl = |nr: u64, buf: &mut [u8]| {
+            let request = (3u64 << 30) | ((buf.len() as u64) << 16) | (0x48 << 8) | nr;
+            // SAFETY: HIDIOC[SG]FEATURE on a hidraw descriptor with a buffer of the length asked.
+            unsafe { libc::ioctl(fd, request as libc::c_ulong, buf.as_mut_ptr()) }
+        };
+
+        // The page: answers a get with the "real controller's" data, a set
+        // with success, and tells this thread what it was asked.
+        let answering = Arc::new(AtomicBool::new(true));
+        let (asked_tx, asked) = mpsc::channel();
+        let mut events = pads.events();
+        let leaving = Arc::new(AtomicBool::new(false));
+        let page = {
+            let (pads, answering, leaving) = (
+                Arc::clone(&pads),
+                Arc::clone(&answering),
+                Arc::clone(&leaving),
+            );
+            std::thread::spawn(move || {
+                while !leaving.load(Ordering::Relaxed) {
+                    let Ok(event) = events.try_recv() else {
+                        std::thread::sleep(Duration::from_micros(200));
+                        continue;
+                    };
+                    let PadEvent::Hid(req) = event else { continue };
+                    asked_tx
+                        .send((req.op, req.report, req.data().to_vec()))
+                        .ok();
+                    if req.ticket != 0 && answering.load(Ordering::Relaxed) {
+                        let data: &[u8] = if req.op == HidOp::GetFeature {
+                            &[0x83, 0x07, 0xaa, 0xbb]
+                        } else {
+                            &[]
+                        };
+                        pads.relay_reply(req.slot, req.owner, req.ticket, true, data, None);
+                    }
+                }
+            })
+        };
+
+        // Steam writes a command and reads the reply: both go to the page.
+        let started = Instant::now();
+        let mut set = [0u8; 64];
+        set[..3].copy_from_slice(&[1, 0x83, 0]);
+        assert_eq!(hid_ioctl(0x06, &mut set), 64);
+        let mut get = [0u8; 64];
+        get[0] = 1;
+        assert_eq!(hid_ioctl(0x07, &mut get), 64);
+        println!("a set and a get through the page: {:?}", started.elapsed());
+        assert_eq!(&get[..5], &[1, 0x83, 0x07, 0xaa, 0xbb]);
+        let (op, report, data) = asked.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!((op, report, data.len()), (HidOp::SetFeature, 1, 63));
+        assert_eq!(&data[..2], &[0x83, 0]);
+        assert_eq!(
+            asked.recv_timeout(Duration::from_secs(1)).unwrap().0,
+            HidOp::GetFeature
+        );
+
+        // An output report (rumble) is written, not answered.
+        let rumble = [0x80u8, 0, 1, 0, 0xff, 0xff, 0, 0, 0, 0];
+        // SAFETY: a valid descriptor and buffer.
+        assert_eq!(
+            unsafe { libc::write(fd, rumble.as_ptr().cast(), rumble.len()) },
+            10
+        );
+        let (op, report, data) = asked.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!((op, report), (HidOp::Output, 0x80));
+        assert_eq!(&data[..5], &[0, 1, 0, 0xff, 0xff]);
+
+        // The controller's input reports reach what reads hidraw, verbatim.
+        let mut state = vec![0x42u8];
+        state.extend((0..53u8).map(|i| i ^ 0x5a));
+        let reader = std::thread::spawn(move || {
+            let mut buf = [0u8; 80];
+            // SAFETY: a valid descriptor and buffer.
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+            buf[..n.max(0) as usize].to_vec()
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        for q in 1..=5 {
+            assert_eq!(
+                pads.relay_input(0, OWNER, q, &state),
+                crate::hid_relay::Verdict::Accept
+            );
+        }
+        assert_eq!(reader.join().unwrap(), state);
+
+        // A page that doesn't answer: the emulated device does, after the timeout.
+        answering.store(false, Ordering::Relaxed);
+        let started = Instant::now();
+        let mut get = [0u8; 64];
+        get[0] = 1;
+        assert_eq!(hid_ioctl(0x07, &mut get), 64);
+        let waited = started.elapsed();
+        println!("a get the page ignored: {waited:?}");
+        assert!(waited >= Duration::from_millis(900), "{waited:?}");
+        assert!(waited < Duration::from_secs(3), "{waited:?}");
+        // The emulation's reply to the command the page was sent: attributes.
+        assert_eq!(get[0], 1);
+
+        let stats = pads.relay_stats().unwrap();
+        println!("{stats:?}");
+        assert!(stats.reports >= 1 && stats.replies == 2 && stats.timeouts == 1);
+        pads.release_all();
+        drop(hidraw);
+        // The page thread holds the pads too: let it go before they are dropped.
+        leaving.store(true, Ordering::Relaxed);
+        page.join().unwrap();
+        drop(pads);
     }
 }

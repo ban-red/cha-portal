@@ -15,6 +15,7 @@ import { AudioJitter } from "./audio-jitter";
 import { AudioOut } from "./audio-out";
 import { presenceActive } from "./presence";
 import { ControllerManager, type ManagedController } from "./controllers";
+import { parseRawHid } from "./controllers/hid-relay";
 import { PadDatagrams, type DatagramSink } from "./input-datagram";
 import type { CaptureView } from "./captureMode";
 import { installHarness } from "./harness";
@@ -157,6 +158,13 @@ export interface PlayerOptions {
    */
   input?: InputMode;
   /**
+   * Pass a wired 2026 Steam Controller (WebHID) through to Steam in the environment, raw, when the
+   * streamer can carry it (its hello says so): Steam then drives the real firmware, and the page
+   * sends the controller's reports as they come instead of parsed pad state (docs/controllers.md,
+   * "Raw HID relay"). Off by default; anything the streamer can't carry stays parsed.
+   */
+  rawSteam?: boolean;
+  /**
    * What the app's long setup is doing while its picture may still be black
    * (a first-run download), or `null` once there is nothing to show. Every
    * session gets it, watching ones too; a late joiner is told at once.
@@ -245,6 +253,11 @@ interface ServerMessage {
   b?: number;
   mask?: number;
   effect?: unknown;
+  /** Hid (a raw relay request): its `id`, `op`, report id (`r`) and base64 data; hid_open: the answer. */
+  op?: string;
+  d?: string;
+  ok?: boolean;
+  reason?: string;
   /** Fps: the frame rate now; stats carry it too. */
   fps?: number;
   /** Overlay: the level now, in an answer; stats and the hello carry it as `overlay`. */
@@ -320,6 +333,8 @@ export class Player {
   private readonly padDatagrams = new PadDatagrams(() => this.datagramSink());
   /** WebTransport: the worker has a way to send datagrams (its `ready` says so). */
   private wtDatagrams = false;
+  /** The controllers (`vid:pid`) the streamer's hello says it can carry raw; null before the hello. */
+  private rawHidOffer: string[] | null = null;
   private input: InputCapture | null = null;
   private pads: ControllerManager | null = null;
   private probe: ClickProbe | null = null;
@@ -685,6 +700,7 @@ export class Player {
     this.pc = this.control = this.inputChannel = null;
     this.padDatagrams.accepted = false;
     this.wtDatagrams = false;
+    this.rawHidOffer = null;
     this.audio.srcObject = null;
     this.audioTrack = null;
     this.sentAt.clear();
@@ -929,6 +945,12 @@ export class Player {
     return this.padDatagrams.send({ t: "input", ...msg });
   }
 
+  /** A raw HID report by datagram: true if it went (or is dropped like any input the page may not send), false to send it reliably. */
+  private sendHidDatagram(slot: number, q: number, report: Uint8Array): boolean {
+    if (!inputAllowed(this.inputMode, this.hasControl, { k: "hid" })) return true;
+    return this.padDatagrams.sendHid(slot, q, report);
+  }
+
   /** The way to send an input datagram on this transport, if there is one now. */
   private datagramSink(): DatagramSink | null {
     if (this.wt) {
@@ -1019,10 +1041,17 @@ export class Player {
       const pads = new ControllerManager({
         send: (m) => this.sendInput(m),
         sendUnreliable: (m) => this.sendPadDatagram(m),
+        // Only a page that sends everything (not a share link's guest) passes a controller through.
+        relay:
+          this.options.rawSteam && this.inputMode === "all"
+            ? { sendReport: (slot, q, report) => this.sendHidDatagram(slot, q, report), hasControl: () => this.hasControl }
+            : undefined,
       });
       pads.onChange((list) => this.options.onControllers?.(list));
       pads.start();
       this.pads = pads;
+      // The hello may have come first.
+      if (this.rawHidOffer) pads.rawHidOffered(this.rawHidOffer);
     }
     video.focus();
     // Desktop mode draws the cursor here, with no stream delay; a locked
@@ -1213,7 +1242,9 @@ export class Player {
         break;
       case "floor": {
         const gained = !!msg.control && !this.hasControl;
+        const lost = !msg.control && this.hasControl;
         this.hasControl = !!msg.control;
+        if (lost) this.pads?.floorLost();
         if (gained) {
           // Our turn: our size and cursor mode.
           this.lastSize = "";
@@ -1258,6 +1289,16 @@ export class Player {
       case "led":
         if (typeof msg.i === "number") this.pads?.led(msg.i, msg.r ?? 0, msg.g ?? 0, msg.b ?? 0);
         break;
+      // A controller passed through raw (docs/controllers.md): what the app asks of it, and the
+      // streamer's answer to our asking to pass it through.
+      case "hid":
+        if (typeof msg.i === "number" && typeof msg.op === "string" && typeof msg.r === "number") {
+          this.pads?.hidRequest(msg.i, { id: typeof msg.id === "number" ? msg.id : 0, op: msg.op, r: msg.r, d: msg.d });
+        }
+        break;
+      case "hid_open":
+        if (typeof msg.i === "number") this.pads?.hidOpened(msg.i, msg.ok === true, msg.reason);
+        break;
       case "players":
         if (typeof msg.i === "number") this.pads?.players(msg.i, msg.mask ?? 0);
         break;
@@ -1277,6 +1318,9 @@ export class Player {
         this.noteOverlay(parseOverlay((msg.stream as unknown as { overlay?: unknown } | undefined)?.overlay));
         // A streamer that takes pad state as datagrams says so (WebTransport, WebRTC "input" channel); others don't.
         this.padDatagrams.accepted = (msg.stream as unknown as { padDatagrams?: unknown } | undefined)?.padDatagrams === true;
+        // The controllers it can carry raw (older streamers say nothing: none).
+        this.rawHidOffer = parseRawHid((msg.stream as unknown as { rawHid?: unknown } | undefined)?.rawHid);
+        this.pads?.rawHidOffered(this.rawHidOffer);
         break;
       }
       case "resized":

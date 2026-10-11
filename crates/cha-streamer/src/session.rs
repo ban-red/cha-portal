@@ -347,6 +347,7 @@ impl Session {
                     }
                 }
                 () = self.handler.seat.changed() => {
+                    self.handler.floor_changed();
                     for msg in floor_msgs(&self.handler.seat) {
                         self.send_control(&msg);
                     }
@@ -529,6 +530,7 @@ impl Session {
 
     fn summary(&self) -> StreamerStats {
         let mut stats = self.stats.clone();
+        stats.hid_relay = self.handler.relay_stats();
         stats.fps = Some(self.params.media.fps());
         stats.overlay = self.params.media.overlay();
         let mut encode = self.encode_ms.clone();
@@ -594,6 +596,9 @@ impl Session {
                     // channel with no retransmits (it falls back on `control`
                     // if it didn't open one).
                     "padDatagrams": true,
+                    // Physical controllers (vid:pid) whose raw HID this
+                    // environment's pads can carry (docs/controllers.md).
+                    "rawHid": self.params.gamepads.as_ref().map(|g| g.raw_hid()).unwrap_or_default(),
                 });
                 self.send_control(&ServerMsg::Hello { stream });
                 for msg in floor_msgs(&self.handler.seat) {

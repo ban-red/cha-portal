@@ -5,6 +5,11 @@
 // which the controller's watchdog undoes after a few seconds, so it is sent
 // again every 3 s; closing just stops sending it.
 //
+// On a cable, a page that passes the controller through to the environment (hid-relay.ts) opens it
+// without claiming it (`deferClaim`) and leaves lizard mode and the sensors to the app there, which
+// writes the same feature reports to the real firmware: the driver only reads reports then, and
+// takes the device over after all (`claim()`) when no relay does.
+//
 // Ported from SDL3's SDL_hidapi_steam_triton.c (zlib licence; see
 // steam-protocol.ts). Input reports are numbered: 0x42, 0x45 and 0x47 are
 // state (buttons, sticks, triggers, both pads, gyro and accelerometer), 0x43
@@ -13,7 +18,7 @@
 // safety timeout is about 50 ms. A trackpad pulse is output report 0x81
 // (SDL's MsgHapticPulse).
 
-import type { HidDevice, HidDriver, HidDriverFactory } from "./hid-types";
+import type { HidDevice, HidDriver, HidDriverFactory, HidDriverOptions, HidRelayHooks } from "./hid-types";
 import {
   ACCEL_SCALE,
   GYRO_MODE_SEND_RAW_ACCEL,
@@ -25,6 +30,7 @@ import {
   STEAM_TRITON,
   TRITON_PUCK,
   TRITON_RECEIVER,
+  TRITON_WIRED,
   VALVE_VENDOR_ID,
   axis16,
   settingsMessage,
@@ -93,9 +99,22 @@ export class SteamTritonDriver implements HidDriver {
   private rumbleStop: ReturnType<typeof setTimeout> | undefined;
   private motors: [number, number] = [0, 0];
   private closed = false;
+  /** Not claimed: opened for a relay (see the top of the file), until `claim()`. */
+  private unclaimed = false;
+  private claiming: Promise<void> | null = null;
+  private steppedAside = 0;
+  /** Present on a cable's driver opened with `deferClaim`. */
+  readonly relay?: HidRelayHooks;
 
-  constructor(private readonly device: HidDevice) {
+  constructor(
+    private readonly device: HidDevice,
+    options: HidDriverOptions = {},
+  ) {
     this.dongle = device.productId === TRITON_PUCK || device.productId === TRITON_RECEIVER;
+    if (options.deferClaim && device.productId === TRITON_WIRED) {
+      this.unclaimed = true;
+      this.relay = { waiting: () => this.unclaimed, yield: () => this.stepAside(), claim: () => this.takeOver() };
+    }
     // A puck or receiver has no controller until one wakes up behind it.
     this.connected = !this.dongle;
     this.info = {
@@ -110,6 +129,8 @@ export class SteamTritonDriver implements HidDriver {
   }
 
   async open(): Promise<void> {
+    // For a relay to take or `claim()` to: nothing is written yet.
+    if (this.unclaimed) return;
     try {
       await this.claim();
     } catch (err) {
@@ -120,9 +141,37 @@ export class SteamTritonDriver implements HidDriver {
         );
       }
     }
+    this.startLizardResend();
+  }
+
+  private startLizardResend(): void {
+    clearInterval(this.lizardTimer);
     this.lizardTimer = setInterval(() => {
       if (this.connected) void this.lizardOff().catch(() => {});
     }, LIZARD_RESEND_MS);
+  }
+
+  /** A relay has the device: the app there turns lizard mode off and keeps it so. */
+  private stepAside(): void {
+    clearInterval(this.lizardTimer);
+    this.lizardTimer = undefined;
+    this.unclaimed = true;
+    // A claim still in flight is overtaken.
+    this.steppedAside++;
+  }
+
+  /** Claims a device that was opened for a relay (or let go of for one), and keeps it claimed. */
+  private takeOver(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    const epoch = this.steppedAside;
+    this.claiming ??= this.claim()
+      .then(() => {
+        if (epoch !== this.steppedAside) return;
+        this.unclaimed = false;
+        if (!this.closed) this.startLizardResend();
+      })
+      .finally(() => void (this.claiming = null));
+    return this.claiming;
   }
 
   async close(): Promise<void> {
@@ -290,5 +339,5 @@ export class SteamTritonDriver implements HidDriver {
 export const steamTritonFactory: HidDriverFactory = {
   name: "steam-triton",
   matches: (device) => device.vendorId === VALVE_VENDOR_ID && STEAM_TRITON.includes(device.productId),
-  create: (device) => new SteamTritonDriver(device),
+  create: (device, options) => new SteamTritonDriver(device, options),
 };

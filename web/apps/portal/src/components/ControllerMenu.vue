@@ -22,7 +22,17 @@ const reason = computed(() => rowOf("hid-reason"));
       </li>
     </ul>
     <p v-else-if="rowOf('empty-note')" class="mb-3 text-ink-2">{{ rowOf("empty-note")!.text }}</p>
+    <p v-if="rowOf('steam-webhid')" class="mb-3 text-warn">{{ rowOf("steam-webhid")!.text }}</p>
+    <p v-if="rowOf('steam-no-webhid')" class="mb-3 text-ink-2">{{ rowOf("steam-no-webhid")!.text }}</p>
     <div class="flex flex-wrap items-center gap-2">
+      <button
+        v-if="rowOf('connect-steam')"
+        class="btn-primary px-3 py-1 text-xs"
+        :disabled="rowOf('connect-steam')!.disabled"
+        @click="emit('row', 'connect-steam')"
+      >
+        {{ rowOf("connect-steam")!.label }}
+      </button>
       <button
         v-if="rowOf('connect')"
         class="btn-ghost px-3 py-1 text-xs"
