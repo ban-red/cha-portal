@@ -13,8 +13,8 @@ WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-control \
- && cp target/release/cha-control /usr/local/bin/cha-control
+    cargo build --profile dist --locked -p cha-control \
+ && cp target/dist/cha-control /usr/local/bin/cha-control
 
 # cloudflared, for internet share links (ADR 0022): a pinned release from
 # GitHub, checked against its SHA-256 (the digests are on the release page).

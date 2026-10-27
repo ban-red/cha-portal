@@ -8,8 +8,8 @@ WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-gateway \
- && cp target/release/cha-gateway /usr/local/bin/cha-gateway
+    cargo build --profile dist --locked -p cha-gateway \
+ && cp target/dist/cha-gateway /usr/local/bin/cha-gateway
 
 FROM ubuntu:26.04
 RUN apt-get update \

@@ -69,8 +69,8 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/target \
-    cargo build --release --locked -p cha-streamer --features gamestream \
- && cp /target/release/cha-streamer /usr/local/bin/cha-streamer
+    cargo build --profile dist --locked -p cha-streamer --features gamestream \
+ && cp /target/dist/cha-streamer /usr/local/bin/cha-streamer
 
 FROM base AS runtime
 COPY --from=pyrowave /usr/local/lib/libpyrowave-shared.so.0 /usr/local/lib/

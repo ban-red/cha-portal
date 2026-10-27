@@ -8,8 +8,8 @@ COPY spikes/ spikes/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-testpattern \
- && cp target/release/cha-testpattern /usr/local/bin/
+    cargo build --profile dist --locked -p cha-testpattern \
+ && cp target/dist/cha-testpattern /usr/local/bin/
 
 FROM base
 COPY --from=build /usr/local/bin/cha-testpattern /usr/local/bin/

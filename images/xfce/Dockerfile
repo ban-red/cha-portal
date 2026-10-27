@@ -9,8 +9,8 @@ COPY spikes/ spikes/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-x11-clipboard \
- && cp target/release/cha-x11-clipboard /usr/local/bin/
+    cargo build --profile dist --locked -p cha-x11-clipboard \
+ && cp target/dist/cha-x11-clipboard /usr/local/bin/
 
 FROM base
 USER root

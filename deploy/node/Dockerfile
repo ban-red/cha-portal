@@ -6,8 +6,8 @@ WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-node \
- && cp target/release/cha-node /usr/local/bin/cha-node
+    cargo build --profile dist --locked -p cha-node \
+ && cp target/dist/cha-node /usr/local/bin/cha-node
 
 FROM ubuntu:26.04
 RUN apt-get update \
