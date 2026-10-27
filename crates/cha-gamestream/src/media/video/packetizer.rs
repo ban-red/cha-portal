@@ -51,11 +51,7 @@ impl ShardBatch {
     }
     #[cfg(test)]
     pub fn shard_count(&self) -> usize {
-        if self.shard_size == 0 {
-            0
-        } else {
-            self.data.len() / self.shard_size
-        }
+        self.data.len().checked_div(self.shard_size).unwrap_or(0)
     }
     #[cfg(test)]
     pub fn shards(&self) -> impl Iterator<Item = &[u8]> {

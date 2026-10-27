@@ -1,7 +1,7 @@
 # The Cha Node agent. Build context: the repository root.
 #   docker compose -f deploy/node/compose.yaml build
 
-FROM rust:1.93-trixie AS build
+FROM rust:1.99.1-trixie AS build
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

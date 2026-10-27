@@ -321,8 +321,10 @@ fn clips_decode_match_reference_and_timing() {
 
 fn bytemuck_u64(bytes: &[u8]) -> Vec<u64> {
     bytes
-        .chunks_exact(8)
-        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&c| u64::from_le_bytes(c))
         .collect()
 }
 

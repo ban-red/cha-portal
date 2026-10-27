@@ -6,7 +6,7 @@ Security problems don't go in issues: see [SECURITY.md](SECURITY.md).
 
 ## Getting set up
 
-You need Rust ≥ 1.93, [`cargo-hakari`](https://docs.rs/cargo-hakari) and [`cargo-deny`](https://embarkstudios.github.io/cargo-deny/) (`cargo install cargo-hakari cargo-deny --locked`) and [Bun](https://bun.sh) ≥ 1.4. The JS tooling is Bun only: use `bun install` and `bun run`, never npm or pnpm.
+You need Rust 1.99 (rustup installs the exact release `rust-toolchain.toml` pins on first use), [`cargo-hakari`](https://docs.rs/cargo-hakari) and [`cargo-deny`](https://embarkstudios.github.io/cargo-deny/) (`cargo install cargo-hakari cargo-deny --locked`) and [Bun](https://bun.sh) ≥ 1.4. The JS tooling is Bun only: use `bun install` and `bun run`, never npm or pnpm.
 
 ```bash
 bun install

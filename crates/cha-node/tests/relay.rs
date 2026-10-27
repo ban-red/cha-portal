@@ -60,6 +60,10 @@ async fn fake_streamer(uris: Arc<Mutex<Vec<String>>>) -> u16 {
             let (tcp, _) = listener.accept().await.unwrap();
             let uris = uris.clone();
             tokio::spawn(async move {
+                #[expect(
+                    clippy::result_large_err,
+                    reason = "tungstenite's handshake callback returns its ErrorResponse"
+                )]
                 let check = |req: &Request, res: Response| -> Result<Response, ErrorResponse> {
                     uris.lock().unwrap().push(req.uri().to_string());
                     if req.uri().query().is_some_and(|q| q.contains("token=bad")) {
@@ -166,6 +170,10 @@ fn open_relay(relay_id: &str, environment_id: &str, token: &str) -> NodeRequest 
 }
 
 /// Accepts one relay dial-back on `listener`.
+#[expect(
+    clippy::result_large_err,
+    reason = "tungstenite's handshake callback returns its ErrorResponse"
+)]
 async fn accept_relay(listener: &TcpListener) -> Dialled {
     let (tcp, _) = listener.accept().await.unwrap();
     let seen = Arc::new(Mutex::new((String::new(), String::new(), String::new())));

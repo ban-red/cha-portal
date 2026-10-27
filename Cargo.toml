@@ -9,7 +9,7 @@ members = ["crates/*", "spikes/*/server"]
 version = "0.5.2"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-rust-version = "1.93"
+rust-version = "1.99"
 
 # One place for a dependency's version. A third-party crate that two or more
 # members use is declared here with its version, and `default-features = false`

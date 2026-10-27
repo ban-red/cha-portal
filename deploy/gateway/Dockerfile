@@ -3,7 +3,7 @@
 #   docker build -f deploy/gateway/Dockerfile -t cha/gateway:dev .
 # The node agent starts it; it needs no GPU.
 
-FROM rust:1.93-trixie AS build
+FROM rust:1.99.1-trixie AS build
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

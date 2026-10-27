@@ -1,0 +1,7 @@
+# The Rust release every build uses: rustup installs it on first use, CI pins
+# the same (.github/workflows/), and so do the Dockerfiles' builder stages
+# (rust:<version>-trixie). Cargo.toml's rust-version follows it.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

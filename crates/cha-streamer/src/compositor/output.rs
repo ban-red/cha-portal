@@ -762,7 +762,7 @@ mod tests {
                     // Video-like content: a moving gradient with noise on
                     // every pixel (made outside the timed stages).
                     let mut seed = 0x9E37_79B9u32 ^ n as u32;
-                    for (i, p) in pixels.chunks_exact_mut(4).enumerate() {
+                    for (i, p) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                         seed ^= seed << 13;
                         seed ^= seed >> 17;
                         seed ^= seed << 5;

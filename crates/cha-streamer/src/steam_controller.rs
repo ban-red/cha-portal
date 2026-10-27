@@ -519,7 +519,7 @@ impl SteamController {
                 reply.resize(STRING_ATTRIBUTE_LEN, 0);
             }
             SET_SETTINGS => {
-                for setting in body.chunks_exact(3) {
+                for setting in body.as_chunks::<3>().0 {
                     let value = u16::from_le_bytes([setting[1], setting[2]]);
                     match self.settings.iter_mut().find(|(reg, _)| *reg == setting[0]) {
                         Some((_, v)) => *v = value,

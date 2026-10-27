@@ -1,6 +1,6 @@
 # The XFCE desktop in rootful Xwayland, and the helper that bridges its
 # clipboard to the streamer (crates/cha-x11-clipboard).
-FROM rust:1.93-trixie AS build
+FROM rust:1.99.1-trixie AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/

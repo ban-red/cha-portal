@@ -207,7 +207,7 @@ impl Tap {
     pub fn publish_rgba(&self, rgba: &[u8]) {
         let pixels = self.width as usize * self.height as usize;
         let mut rgb = Vec::with_capacity(pixels * 3);
-        for px in rgba[..pixels * 4].chunks_exact(4) {
+        for px in rgba[..pixels * 4].as_chunks::<4>().0 {
             rgb.extend_from_slice(&px[..3]);
         }
         self.store(rgb);
@@ -270,7 +270,10 @@ fn box_downscale(src: &[u8], src_w: usize, src_h: usize, w: usize, h: usize) -> 
             let x1 = ((x + 1) * src_w / w).clamp(x0 + 1, src_w);
             let mut sum = [0u32; 3];
             for sy in y0..y1 {
-                for px in src[(sy * src_w + x0) * 4..(sy * src_w + x1) * 4].chunks_exact(4) {
+                for px in src[(sy * src_w + x0) * 4..(sy * src_w + x1) * 4]
+                    .as_chunks::<4>()
+                    .0
+                {
                     sum[0] += u32::from(px[0]);
                     sum[1] += u32::from(px[1]);
                     sum[2] += u32::from(px[2]);
