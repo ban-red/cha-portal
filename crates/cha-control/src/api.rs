@@ -99,7 +99,7 @@ async fn setup(
         &state.db,
         username,
         display_name,
-        &hash_password(&req.password)?,
+        &hash_password(&req.password).await?,
         Role::Admin,
     )
     .await?;
@@ -130,19 +130,11 @@ async fn login(
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<(CookieJar, Json<User>)> {
     let found = db::user_for_login_or_email(&state.db, req.username.trim()).await?;
+    let hash = found.as_ref().and_then(|row| row.password_hash.clone());
+    let matches = auth::password_matches(&req.password, hash).await;
     let user = match found {
-        Some(row)
-            if row
-                .password_hash
-                .as_deref()
-                .is_some_and(|h| auth::verify_password(&req.password, h)) =>
-        {
-            row.user
-        }
-        other => {
-            if other.is_none() {
-                auth::verify_dummy(&req.password);
-            }
+        Some(row) if matches => row.user,
+        _ => {
             db::audit(
                 &state.db,
                 None,
@@ -279,7 +271,7 @@ async fn dev_login(
                 &state.db,
                 DEV_USERNAME,
                 "Local Dev",
-                &hash_password(&auth::random_token()?)?,
+                &hash_password(&auth::random_token()?).await?,
                 Role::Admin,
             )
             .await?;
@@ -507,7 +499,7 @@ async fn create_user(
         username,
         email.as_deref(),
         display_name,
-        &hash_password(&req.password)?,
+        &hash_password(&req.password).await?,
         req.role,
     )
     .await
