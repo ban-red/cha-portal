@@ -1,0 +1,29 @@
+name: Feature request
+description: Something Cha Portal should do that it doesn't.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [roadmap](https://github.com/ban-red/cha-portal/blob/main/docs/PLAN.md#9-roadmap) and the [decisions that stand](https://github.com/ban-red/cha-portal/blob/main/CONTRIBUTING.md#decisions-that-stand) first: a request that undoes one needs a new ADR.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The situation and what gets in the way, before any solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you picture it working, and what you've tried meanwhile.
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to build this myself (CONTRIBUTING.md asks for an issue first on anything larger than a fix).

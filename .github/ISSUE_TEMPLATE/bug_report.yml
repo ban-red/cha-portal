@@ -1,0 +1,74 @@
+name: Bug report
+description: Something doesn't work as the docs say it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Security problems don't go here: see [SECURITY.md](https://github.com/ban-red/cha-portal/blob/main/SECURITY.md).
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Portal (the web app or cha-control)
+        - Node agent (cha-node, install.sh, --doctor)
+        - Streaming (cha-streamer, the browser player)
+        - Cha Player (the native client)
+        - An environment image (Chrome, Firefox, XFCE, KDE, Steam)
+        - Moonlight (adopted hosts, cha-gateway, the GameStream host)
+        - Deployment (compose, Proxmox, TURN, Tailscale)
+        - Docs
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      placeholder: |
+        1. Launch Steam on a node with …
+        2. Connect from Chrome over …
+        3. …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release (Admin → Nodes shows each agent's) or the commit you built.
+      placeholder: 0.5.2
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: The parts that apply.
+      placeholder: |
+        Node: GPU and driver (e.g. RTX 4090, NVIDIA 590.44), CPU-only, or Intel/AMD with VA-API; bare metal, Proxmox LXC or VM
+        Client: browser and version, OS (or Cha Player and macOS version)
+        Network: wired LAN, Wi-Fi, tailnet, port-forward, TURN
+        Codec and transport, if streaming: H.264/HEVC/AV1/PyroWave over WebRTC/WebTransport
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Reports and logs
+      description: |
+        Whatever you have: the stats panel's **Copy report**, `cha-node --doctor` output, the environment's log from the portal, or the agent's and portal's container logs. Remove anything private (addresses, tokens, account names).
+      render: text
