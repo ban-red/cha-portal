@@ -2,13 +2,87 @@
 resolver = "3"
 members = ["crates/*", "spikes/*/server"]
 
+# Every product crate shares the release's version (CONTRIBUTING.md,
+# Releasing): set it here, and in web/apps/portal/package.json. cha-proto and
+# cha-workspace-hack keep their own.
 [workspace.package]
+version = "0.5.2"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 rust-version = "1.93"
 
+# One place for a dependency's version. A third-party crate that two or more
+# members use is declared here with its version, and `default-features = false`
+# when no member wants its defaults; each member names the features it uses
+# (`features = ["default", …]` where it wants the defaults of one declared
+# without them). A crate only one member uses stays in that member's manifest.
+# The spikes keep their own.
 [workspace.dependencies]
+# Our crates.
+cha-client = { path = "crates/cha-client" }
+cha-client-gamestream = { path = "crates/cha-client-gamestream" }
+cha-client-portal = { path = "crates/cha-client-portal" }
+cha-client-stream = { path = "crates/cha-client-stream" }
+cha-control = { path = "crates/cha-control" }
+cha-gamestream = { path = "crates/cha-gamestream" }
+cha-moonlight-input = { path = "crates/cha-moonlight-input" }
+cha-nvenc = { path = "crates/cha-nvenc" }
 cha-proto = { path = "crates/cha-proto" }
+cha-pyrowave = { path = "crates/cha-pyrowave" }
+cha-pyrowave-wgpu = { path = "crates/cha-pyrowave-wgpu" }
+cha-sysinfo = { path = "crates/cha-sysinfo" }
+cha-ui-spec = { path = "crates/cha-ui-spec" }
+cha-wire = { path = "crates/cha-wire" }
+cha-workspace-hack = { version = "0.1", path = "crates/cha-workspace-hack" }
+
+# Third-party crates shared by two or more members.
+anyhow = "1"
+axum = { version = "0.8", default-features = false }
+base64 = "0.22"
+bytemuck = "1"
+bytes = "1"
+clap = "4"
+futures-util = { version = "0.3", default-features = false }
+getrandom = "0.3"
+hmac = "0.12"
+http-body-util = "0.1"
+hyper = "1"
+hyper-util = "0.1"
+libc = "0.2"
+mdns-sd = "0.21"
+pollster = "0.4"
+pulseaudio = "0.3"
+quinn-udp = "0.5"
+reqwest = { version = "0.13", default-features = false }
+rustix = { version = "1", default-features = false }
+# The crypto provider (ring or aws_lc_rs) is each member's choice.
+rustls = { version = "0.23", default-features = false }
+serde = "1"
+serde_json = "1"
+sha2 = "0.10"
+socket2 = "0.6"
+str0m = { version = "0.24", default-features = false }
+tempfile = "3"
+thiserror = "2"
+tokio = "1"
+# The version axum uses, so the two share one copy.
+tokio-tungstenite = "0.29"
+tower = "0.5"
+tower-http = "0.6"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2"
+uuid = "1"
+wgpu = "29"
+wtransport = "0.7"
+
+# Lints every member opts into with `[lints] workspace = true`, so rust-analyzer
+# and a plain `cargo clippy` show what CI enforces. CI also runs clippy with
+# `-D warnings` (scripts/check.sh).
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
 
 [profile.release]
 debug = 1

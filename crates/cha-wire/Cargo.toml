@@ -1,6 +1,6 @@
 [package]
 name = "cha-wire"
-version = "0.5.2"
+version.workspace = true
 description = "Cha Portal node <-> portal messages (ADR 0001: JSON over one WebSocket)"
 edition.workspace = true
 license.workspace = true
@@ -8,13 +8,16 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-base64 = "0.22"
+base64.workspace = true
 ed25519-dalek = "2"
-getrandom = "0.3"
-hmac = "0.12"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
+getrandom.workspace = true
+hmac.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
 spake2 = "0.4"
-thiserror = "2"
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+thiserror.workspace = true
+cha-workspace-hack.workspace = true
+
+[lints]
+workspace = true

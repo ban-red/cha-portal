@@ -1,6 +1,6 @@
 [package]
 name = "cha-streamer"
-version = "0.5.2"
+version.workspace = true
 description = "One environment's media engine: our headless Wayland compositor, zero-copy NVENC, WebRTC"
 edition.workspace = true
 license.workspace = true
@@ -14,34 +14,34 @@ publish = false
 gamestream = ["dep:cha-gamestream"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+serde = { workspace = true, features = ["derive"] }
+cha-workspace-hack.workspace = true
 
 # The engine is Linux-only (Wayland, GBM, EGL, NVENC); elsewhere the binary
 # only explains that.
 [target.'cfg(target_os = "linux")'.dependencies]
-anyhow = "1"
-axum = { version = "0.8", features = ["ws"] }
-base64 = "0.22"
-bytes = "1"
-cha-nvenc = { path = "../cha-nvenc" }
-cha-pyrowave = { path = "../cha-pyrowave" }
-cha-sysinfo = { path = "../cha-sysinfo" }
-cha-gamestream = { path = "../cha-gamestream", optional = true }
+anyhow.workspace = true
+axum = { workspace = true, features = ["default", "ws"] }
+base64.workspace = true
+bytes.workspace = true
+cha-nvenc.workspace = true
+cha-pyrowave.workspace = true
+cha-sysinfo.workspace = true
+cha-gamestream = { workspace = true, optional = true }
 cha-proto.workspace = true
-cha-wire = { path = "../cha-wire" }
-clap = { version = "4", features = ["derive", "env"] }
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-libc = "0.2"
+cha-wire.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+futures-util = { workspace = true, features = ["sink", "std"] }
+libc.workspace = true
 # The PulseAudio wire format (commands, tagstructs); the server is ours.
-pulseaudio = "0.3"
-serde_json = "1"
-str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
-tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wtransport = { version = "0.7", features = ["quinn"] }
+pulseaudio.workspace = true
+serde_json.workspace = true
+str0m = { workspace = true, features = ["aws-lc-rs"] }
+tokio = { workspace = true, features = ["full"] }
+tower-http = { workspace = true, features = ["cors"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+wtransport = { workspace = true, features = ["quinn"] }
 
 # Smithay's master (no release since 0.7.0 in June 2025), pinned.
 [target.'cfg(target_os = "linux")'.dependencies.smithay]
@@ -51,7 +51,10 @@ default-features = false
 features = ["backend_egl", "backend_gbm", "renderer_gl", "desktop", "wayland_frontend"]
 
 [dev-dependencies]
-serde_json = "1"
+serde_json.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

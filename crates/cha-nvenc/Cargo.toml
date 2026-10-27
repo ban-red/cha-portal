@@ -1,6 +1,6 @@
 [package]
 name = "cha-nvenc"
-version = "0.5.2"
+version.workspace = true
 description = "Our NVENC + CUDA binding: the driver's libraries loaded at runtime, zero-copy input from EGL images"
 edition.workspace = true
 license.workspace = true
@@ -8,5 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-libc = "0.2"
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+libc.workspace = true
+cha-workspace-hack.workspace = true
+
+[lints]
+workspace = true

@@ -93,7 +93,7 @@ A release rebuilds only the images whose inputs changed. [`scripts/image-inputs.
 
 1. **Check `main` is green.** The `check` workflow passed on the commit you'll tag, and it ran on the node you test with.
 2. **Try the images first** (optional, worth it for a large change): **Actions → publish → Run workflow** on `main` builds and pushes `:sha-<commit>` without a release. A node runs those with `CHA_VERSION=sha-<commit>`.
-3. **Set the version** in every crate's `Cargo.toml` (not `cha-workspace-hack`, which stays at 0.1.0) and in `web/apps/portal/package.json`, then build once so `Cargo.lock` follows. The agent fills `{version}` in the catalog's image names with its own crate version, so an agent left at the old version pulls the old images.
+3. **Set the version** in the root `Cargo.toml` (`[workspace.package]`, which every crate but `cha-proto` and `cha-workspace-hack` inherits) and in `web/apps/portal/package.json`, then build once so `Cargo.lock` follows. The agent fills `{version}` in the catalog's image names with its own crate version, so an agent left at the old version pulls the old images.
 4. **Update the docs that name a version or the release state:** the examples in `SETUP.md` (`v0.2.0`, `--version 0.2.0`), [`deploy/proxmox/README.md`](deploy/proxmox/README.md) and the upgrade notes in `SETUP.md` (*Upgrading to a new release*), with a short *From x to y* list.
 5. **Tag and push:**
 
@@ -128,5 +128,7 @@ A new image name (a new environment) starts out private on GitHub's registry: se
 ## Dependencies and licence
 
 Cha Portal is under the [AGPL-3.0-or-later](LICENSE). New dependencies must have a compatible licence (MIT, Apache-2.0, BSD, ISC, MPL-2.0, LGPL, GPL-3.0 or AGPL-3.0 are fine), and should be lean: say why a new one is worth it.
+
+- **Where a Rust dependency goes:** a crate two or more members use is declared once, with its version, in the root `Cargo.toml`'s `[workspace.dependencies]`, and each member names it with `workspace = true` and the features it uses. A crate only one member uses stays in that member's manifest. Our own crates are named the same way.
 
 By contributing, you agree that your contribution is licensed under the AGPL-3.0-or-later, the same as the project. You keep the copyright in your contribution; the project's notice is "Alex Red and the Cha Portal contributors", and the git history records who wrote what.

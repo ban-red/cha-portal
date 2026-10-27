@@ -1,6 +1,6 @@
 [package]
 name = "cha-x11-clipboard"
-version = "0.5.2"
+version.workspace = true
 description = "Bridges an X11 desktop's CLIPBOARD to the streamer (and so the browser), inside the environment's app container"
 edition.workspace = true
 license.workspace = true
@@ -9,5 +9,8 @@ publish = false
 
 [dependencies]
 cha-proto.workspace = true
-rustix = { version = "1", features = ["event"] }
+rustix = { workspace = true, features = ["default", "event"] }
 x11rb = { version = "0.14", features = ["xfixes"] }
+
+[lints]
+workspace = true

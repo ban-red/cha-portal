@@ -1,6 +1,6 @@
 [package]
 name = "cha-gateway"
-version = "0.5.2"
+version.workspace = true
 description = "Streams a Moonlight host (Sunshine, Apollo) to the browser player, standing in for cha-streamer"
 edition.workspace = true
 license.workspace = true
@@ -8,24 +8,27 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-anyhow = "1"
-axum = "0.8"
-bytes = "1"
-cha-client = { path = "../cha-client" }
-cha-gamestream = { path = "../cha-gamestream" }
-cha-moonlight-input = { path = "../cha-moonlight-input" }
+anyhow.workspace = true
+axum = { workspace = true, features = ["default"] }
+bytes.workspace = true
+cha-client.workspace = true
+cha-gamestream.workspace = true
+cha-moonlight-input.workspace = true
 cha-proto.workspace = true
-cha-wire = { path = "../cha-wire" }
-clap = { version = "4", features = ["derive"] }
-libc = "0.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
-tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+cha-wire.workspace = true
+clap = { workspace = true, features = ["derive"] }
+libc.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+str0m = { workspace = true, features = ["aws-lc-rs"] }
+tokio = { workspace = true, features = ["full"] }
+tower-http = { workspace = true, features = ["cors"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+cha-workspace-hack.workspace = true
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

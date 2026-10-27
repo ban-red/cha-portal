@@ -12,6 +12,9 @@
 hakari-package = "cha-workspace-hack"
 dep-format-version = "4"
 resolver = "3"
+# Members name it `cha-workspace-hack.workspace = true`, like every other
+# workspace crate (the root Cargo.toml's [workspace.dependencies]).
+workspace-hack-line-style = "workspace-dotted"
 
 # The Mac (portal, player, client crates) and the node (streamer, images).
 platforms = [

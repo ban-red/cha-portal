@@ -1,6 +1,6 @@
 [package]
 name = "cha-client-gamestream"
-version = "0.5.2"
+version.workspace = true
 description = "The native client's GameStream transport: finds, pairs with and plays Sunshine, Apollo and Cha nodes (ADR 0010)"
 edition.workspace = true
 license.workspace = true
@@ -8,19 +8,22 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-anyhow = "1"
-cha-client = { path = "../cha-client" }
-cha-gamestream = { path = "../cha-gamestream" }
-cha-moonlight-input = { path = "../cha-moonlight-input" }
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
-mdns-sd = "0.21"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["net", "rt", "sync", "time", "macros"] }
-tracing = "0.1"
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+anyhow.workspace = true
+cha-client.workspace = true
+cha-gamestream.workspace = true
+cha-moonlight-input.workspace = true
+futures-util = { workspace = true, features = ["std"] }
+mdns-sd.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros"] }
+tracing.workspace = true
+cha-workspace-hack.workspace = true
 
 [dev-dependencies]
 # Our own GameStream host and its fakes (its tests' rig is shared by path).
-bytes = "1"
-tokio = { version = "1", features = ["full", "test-util"] }
+bytes.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true
