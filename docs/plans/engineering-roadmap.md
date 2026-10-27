@@ -2,7 +2,7 @@
 
 A review of the repository as it stands at 0.5.2, measured against how the strongest open-source projects of a similar shape run in 2026, and a plan in four phases. [`docs/PLAN.md`](../PLAN.md) stays the product roadmap: this plan is about the engineering that carries it (supply chain, security, correctness at the seams, tests, CI, operations, releases, contributors). Where it touches the product, it points at PLAN's phases rather than restating them.
 
-Phase A is done, in the change that adds this file. Phases B to D are proposals; the decisions they need from the owner are collected in [§5](#5-decisions-for-the-owner).
+Phase A is done, in the change that adds this file, and so is an optimisation pass that followed it ([§3a](#3a-optimisation-pass-done)). Phases B to D are proposals; the decisions they need from the owner are collected in [§5](#5-decisions-for-the-owner).
 
 ---
 
@@ -53,7 +53,7 @@ Each finding was checked against the code or a tool's output, not inferred.
 | F15 | No software bill of materials on the images | `publish.yml` attests provenance only | Open (B5) |
 | F16 | 53 `unsafe` sites outside bindgen output fail `clippy::undocumented_unsafe_blocks`, almost all because the `SAFETY:` comment sits above a wrapping call rather than the block; 24 `#[allow]`s have no reason | clippy run for this review | Open (C5) |
 | F17 | `SECURITY.md` said there were no tagged releases | | **Fixed** (A8) |
-| F18 | The toolchain is six releases behind | CI, `rust-version` and the Dockerfiles' builders are 1.93 (2026-01-22); Rust is at 1.99.1 (2026-10-15) | Open (C6) |
+| F18 | The toolchain is six releases behind | CI, `rust-version` and the Dockerfiles' builders are 1.93 (2026-01-22); Rust is at 1.99.1 (2026-10-15) | **Fixed** (§3a) |
 
 ---
 
@@ -125,6 +125,35 @@ Each item was verified locally on the CI toolchain (Rust 1.93, Bun 1.4) with eve
 
 ---
 
+## 3a. Optimisation pass: done
+
+Measured before and after on this review's machine (Intel Xeon with AVX-512 and GFNI, 4 cores), each figure the median of repeated runs.
+
+| What | Before | After | How |
+|---|---|---|---|
+| FEC encode, a 1440p WAN frame (35 shards + 6 parity) | 124 µs | 6.6 µs (**19×**) | GF(2⁸) multiply with SIMD nibble tables (SSSE3, AVX2, NEON) or GFNI's affine instruction, chosen at first use; tables built at compile time |
+| FEC encode, a keyframe block (128 + 32 parity) | 2.35 ms | 0.13 ms (**18×**) | same |
+| FEC recovery, 128 shards with 32 lost | 2.49 ms | 0.15 ms (**17×**) | same, and the pivot row no longer cloned per elimination step |
+| The same on a CPU without GFNI | | AVX2 13×, SSSE3 9.6× | every x86-64 CPU since 2006 has SSSE3; ARM always has NEON |
+| Browser worker, one PyroWave frame (1,275 datagrams) | 1.42 ms | 0.68 ms (**2.1×**) | payloads kept as views of their datagrams instead of copied; no per-packet arrays when joining |
+| Browser FEC recovery (128 shards, 32 lost, in Bun) | 5.0 ms | 3.6 ms (1.4×) | one 64 KiB product table: one lookup per byte |
+| Native client CPU at 732 Mbit/s | 64.5% of a core | 59.5% (**−8%**) | images built with `--profile dist` (fat LTO, one codegen unit) |
+| The portal's web app over the wire, first visit | 775 KiB | 237 KiB (**−69%**) | Brotli 11 and gzip 9 copies written at build time and served by `ServeDir`; no compression per request |
+| The portal's web app, later visits | revalidated per file | one `index.html` check | hashed `assets/` sent `immutable` for a year; everything else `no-cache` with `Last-Modified` (304s); `Vary: Accept-Encoding` |
+| `@cha/player` typecheck | 1.9 s (TypeScript 6) | 0.28 s (**6.7×**) | TypeScript 7's native compiler (no Vue in that package) |
+
+Also in this pass: Rust 1.93 → 1.99.1 everywhere (fourteen `chunks_exact` sites became `as_chunks`, whose fixed-size chunks drop bounds checks; the I420 converter's output is byte-identical and its speed unchanged, its loops were already vectorised), every semver-compatible crate update (66, among them tokio 1.54.1, hyper 1.12, aws-lc-rs 1.18.2), Bun 1.4.4, Vite 8.3.5, Vue 3.5.44, Vue Router 5.4, Pinia 4.1. The FEC kernels are tested against the reference arithmetic for every coefficient, length and alignment, the NEON one under QEMU for aarch64 and clippy-checked for `aarch64-apple-darwin`. The browser's FEC and intra (PyroWave) reassembly have tests now (`fec.test.ts`, the intra cases in `reassembly.test.ts`), which pass on the code from before and after.
+
+Measured and left alone, with the numbers for whoever picks them up:
+
+- **The native client's receive path is transport-bound.** At 732 Mbit/s, quinn and wtransport take 36% of the client's CPU and tokio's scheduling and wake-ups 28%; `cha-client-stream`'s own code 7%, its copies and allocations a few percent more. Draining queued datagrams in a batch per wake does nothing: the queue held 1.001 datagrams per wake, as the connection driver, on another thread, wakes the session once per datagram. The way to cut it is the connection's driver and the session on one thread (a current-thread runtime for the stream), a change to Cha Player's runtime to make and measure on a Mac.
+- **The macOS player isn't built with `dist` yet.** `crates/cha-player/macos/bundle.sh` reads `target/release`; building it with `--profile dist` should save it the same 8% on the receive path. Untested here (no Mac).
+- **Majors that would duplicate crates or need their own review:** `tower-http` 0.7 (strong ETags in `ServeDir`) waits for `reqwest` to leave 0.6, or the tree builds both; the RustCrypto 2026 wave (`ed25519-dalek` 3, `sha2` 0.11, `hmac` 0.13, `aes-gcm` 0.11) waits for `spake2`, still on `curve25519-dalek` 4 and `sha2` 0.10; `sqlx` 0.9 (no SQLite speed-ups in its changelog) wraps every runtime-built query in `AssertSqlSafe`, which deserves its own change; `wgpu` 30 and `egui` 0.37 (0.36 needed Rust 1.95, now there) for Cha Player need a Mac to build.
+- **The browser still has its own FEC and reassembly**, in TypeScript, kept in step with `cha-proto` by tests. `cha-proto` compiled to WebAssembly with `simd128` (whose `i8x16.swizzle` is the nibble lookup) would give the worker the 17× kernel and one implementation of both: `cha-proto`'s own docs already plan it.
+- **An AVX-512 GFNI kernel** (64 bytes per instruction) measured no faster than AVX2 GFNI on 1,180-byte shards (159 µs against 133 µs for 128 + 32), so there is none.
+
+---
+
 ## 4. Phases B to D
 
 Sizes are relative (S, M, L), as in PLAN.
@@ -150,7 +179,7 @@ Sizes are relative (S, M, L), as in PLAN.
 - **C3. Lint the web code.** ESLint 10 (flat config) with `eslint-plugin-vue` and `typescript-eslint`, because it is the only linter that reads Vue templates. Start with correctness rules only, since the code already has a style, and put oxlint in front later if ESLint is slow. Give the extension-less imports in `vite.config.ts` and `dev-mcp/` their extensions, which Vite 8's build now warns about ahead of its native config loader. **TypeScript:** stay on 6.0 for the Vue packages until vue-tsc supports 7.1 (its language core's alpha appeared 2026-10-23; revisit in December). `@cha/pyrowave-webgpu` can keep 7 for its own check, but the portal's vue-tsc reads its sources too, under 6.0, so its code has to suit both until the switch.
 - **C4. A faster, clearer CI.** Split `check.yml` into parallel jobs (format and lints; Rust tests; web; Python) so a failure names its area and a run takes the longest job, not the sum. Use `cargo-nextest` for the Rust tests (a process per test, so one hanging test can't hold the run; retries reported as flaky, not passed). Take the spikes out of the default build: Phase 2 is closed, and S2 is kept as an A/B baseline, which `cargo build -p s2-streamer` still gives without GStreamer in every CI run. Keeping the spikes as workspace members with `default-members` set to the product crates is the smallest step.
 - **C5. Two more workspace lints**: `clippy::undocumented_unsafe_blocks` (53 sites, nearly all a comment to move next to its block) and `clippy::allow_attributes_without_reason` (24 sites outside bindgen output).
-- **C6. A current toolchain.** Add a `rust-toolchain.toml` pinning the development and CI toolchain (1.99 today) for every contributor and CI alike, and keep `rust-version` as the oldest release the code builds on, raising it only when a feature needs it. Moving from 1.93 brings six releases of compiler and clippy improvements, and new lints to fix once. The `rust:` builder images in the Dockerfiles follow the toolchain file, and Dependabot's comment about them changes with it.
+- **C6. A current toolchain.** *Done* (§3a): `rust-toolchain.toml` pins 1.99.1 for contributors, CI and the Dockerfiles' builders, and `rust-version` is 1.99.
 - **C7. Dependency hygiene:** `cargo shear` in `check.sh` for dependencies no code uses, and a `[bans.build]` allowlist in `deny.toml` of the crates allowed a build script, seeded from today's graph, as uv does.
 - **C8. End-to-end tests in a browser.** Playwright against `bun run dev`'s portal with a fake node (the test rigs in `cha-control/tests` already speak the node channel): sign in, launch, the share-link guest page, the session toolbar. That covers the portal flows `api.rs`'s tests can't see, such as a route the SPA calls that no longer exists.
 
