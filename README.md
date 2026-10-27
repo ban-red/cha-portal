@@ -142,6 +142,7 @@ To point a real node at a dev portal on your LAN, start the portal with `bun run
 - [`docs/controllers.md`](docs/controllers.md), [`docs/devices.md`](docs/devices.md): gamepads; GPUs and placement
 - [`crates/cha-streamer/README.md`](crates/cha-streamer/README.md), [`web/packages/player/README.md`](web/packages/player/README.md), [`web/apps/portal/README.md`](web/apps/portal/README.md), [`crates/cha-player/README.md`](crates/cha-player/README.md): the engine, the browser player, the web app and its themes, Cha Player
 - [`docs/PLAN.md`](docs/PLAN.md): architecture and roadmap
+- [`docs/plans/engineering-roadmap.md`](docs/plans/engineering-roadmap.md): a review of the repository and the engineering plan (supply chain, security, tests, CI, operations, releases)
 - [`docs/adr/`](docs/adr/README.md): architecture decisions
 - [`docs/PROVENANCE.md`](docs/PROVENANCE.md): ported code, its licences, and the main dependencies
 - [`docs/research/`](docs/research/README.md): background survey from planning, October 2026
