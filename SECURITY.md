@@ -8,7 +8,7 @@ Say what is affected, how to reproduce it, and what an attacker gains. You'll ge
 
 ## Supported versions
 
-Cha Portal is pre-release and has no tagged releases. Fixes go to `main` only: run a recent `main`.
+Cha Portal is in early releases (0.x). Fixes go to `main` and ship in the next patch release; only the latest release gets them, so upgrade to it ([Upgrading](SETUP.md#upgrading-to-a-new-release)). Dependencies are checked against published advisories every week ([`audit.yml`](.github/workflows/audit.yml)).
 
 ## What Cha Portal trusts
 

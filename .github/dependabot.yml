@@ -10,6 +10,36 @@ updates:
       actions:
         patterns: ["*"]
 
+  # The Rust workspace: Cargo.lock only, within the versions the manifests
+  # already allow, so crates/cha-workspace-hack stays current (scripts/check.sh
+  # fails if a new feature set needs `cargo hakari generate`). Moving to a new
+  # major or 0.x minor is done by hand, in the root Cargo.toml. A week's wait
+  # gives a bad release time to be yanked. Advisories don't wait for this:
+  # .github/workflows/audit.yml reports them every week.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    versioning-strategy: lockfile-only
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # The web workspace (bun.lock and the package.json files): minor and patch
+  # updates in one pull request; a major version comes on its own.
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      web:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
   # The environments' base image is pinned by digest (images/base/Dockerfile).
   # The digest moves when Canonical rebuilds ubuntu:26.04; the PR changes the
   # Dockerfile, which changes the base's inputs hash and so rebuilds every

@@ -1,10 +1,14 @@
 #!/usr/bin/env sh
 # Everything CI would run: Rust formatting, the workspace-hack's freshness,
-# lints and tests across the workspace, the Steam image's scripts' tests (the
-# status watcher, the library registration), the node's host installer's
-# tests, and the portal's colour guard, theme contrast tests, the browser
-# player's tests (including the shared health cases), the player themes'
-# freshness, the UI spec's check, typecheck and production build.
+# the dependencies' licences and sources (deny.toml), lints and tests across
+# the workspace, the Steam image's scripts' tests (the status watcher, the
+# library registration), the node's host installer's tests, and the portal's
+# colour guard, theme contrast tests, the browser player's tests (including
+# the shared health cases) and typecheck, the PyroWave decoder's typecheck,
+# the player themes' freshness, the UI spec's check, the portal's typecheck
+# and production build. Security advisories are checked apart, weekly and on
+# every lockfile change, since a newly published one shouldn't fail an
+# unrelated change (.github/workflows/audit.yml).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -23,6 +27,12 @@ cargo hakari manage-deps --dry-run >/dev/null || {
   echo "a crate lacks the workspace-hack dependency: cargo hakari manage-deps" >&2
   exit 1
 }
+echo "==> cargo deny (licences, banned crates, sources: deny.toml)"
+if ! command -v cargo-deny >/dev/null 2>&1; then
+  echo "cargo-deny is missing: cargo install cargo-deny --locked" >&2
+  exit 1
+fi
+cargo deny --log-level error --locked check --hide-inclusion-graph licenses bans sources
 echo "==> cargo clippy"
 cargo clippy --workspace --all-targets -- -D warnings
 echo "==> cargo test"
@@ -38,8 +48,11 @@ python3 scripts/image-inputs.py >/dev/null
 echo "==> portal: raw-colour guard + theme contrast tests"
 sh scripts/check-portal-colors.sh
 bun run --cwd web/apps/portal test
-echo "==> browser player tests (the shared health cases among them)"
+echo "==> browser player tests (the shared health cases among them) + typecheck"
 bun run --cwd web/packages/player test
+bun run --cwd web/packages/player typecheck
+echo "==> PyroWave decoder typecheck"
+bun run --cwd web/packages/pyrowave-webgpu typecheck
 echo "==> player themes (web/packages/ui-spec/themes up to date)"
 bun scripts/export-player-themes.ts --check
 echo "==> ui spec (icons, health issues and cases valid, every <Icon> exists)"
