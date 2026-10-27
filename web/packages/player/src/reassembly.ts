@@ -260,18 +260,21 @@ export class Reassembler {
       this.partials.set(id, f);
     }
     f.lastAt = now();
+    // A view, not a copy: each datagram arrives in its own buffer (the
+    // WebTransport reader's chunks, a WebSocket message's ArrayBuffer), which
+    // nothing writes to again; the frame is copied out once, whole.
     const payload = d.subarray(HEADER_LEN);
     if (isParity) {
       const p = index - total;
       if (p >= f.parity.length || f.parity[p] || payload.byteLength < 5) return;
       f.frameLen = new DataView(payload.buffer, payload.byteOffset, 4).getUint32(0, true);
-      f.parity[p] = payload.slice(4);
+      f.parity[p] = payload.subarray(4);
       f.shardLen = payload.byteLength - 4;
       if (this.rebuild(f)) this.completeFrame(id, f, true);
       return;
     }
     if (f.parts[index]) return;
-    f.parts[index] = payload.slice();
+    f.parts[index] = payload;
     f.continues[index] = (v.getUint8(1) & FLAG_CONTINUES) !== 0;
     f.continued[index] = (v.getUint8(1) & FLAG_CONTINUED) !== 0;
     f.bytes += payload.byteLength;
@@ -451,22 +454,25 @@ export class Reassembler {
     // A packet starts at a part not CONTINUED and runs through parts that
     // CONTINUE; any part missing, and the packet is dropped.
     const units: Uint8Array[] = [];
+    let size = 0;
     for (let i = 0; i < f.total; i++) {
-      const first = f.parts[i];
-      if (!first || f.continued[i]) continue;
-      const unit = [first];
+      if (!f.parts[i] || f.continued[i]) continue;
+      // The packet runs from part i through `last`.
+      let last = i;
       let whole = true;
-      for (let j = i; f.continues[j]; j++) {
-        const next = f.parts[j + 1];
-        if (!next || !f.continued[j + 1]) {
+      while (f.continues[last]) {
+        if (!f.parts[last + 1] || !f.continued[last + 1]) {
           whole = false;
           break;
         }
-        unit.push(next);
+        last++;
       }
-      if (whole) units.push(...unit);
+      if (!whole) continue;
+      for (let j = i; j <= last; j++) {
+        units.push(f.parts[j]!);
+        size += f.parts[j]!.byteLength;
+      }
     }
-    const size = units.reduce((n, u) => n + u.byteLength, 0);
     if (!size) return false;
     const data = new Uint8Array(size);
     let at = 0;

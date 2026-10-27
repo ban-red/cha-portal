@@ -68,3 +68,67 @@ describe("Reassembler", () => {
     expect(before(2, 2)).toBe(false);
   });
 });
+
+// PyroWave: frames flagged INTRA stand alone; a packet split over datagrams is
+// flagged CONTINUES on all but its last part and CONTINUED on all but its first.
+const KEY_INTRA = 1 | (1 << 5);
+const CONTINUES = 1 << 3;
+const CONTINUED = 1 << 4;
+
+describe("Reassembler, intra (PyroWave)", () => {
+  /** Runs `f` with the worker's clock at `ms`, then puts the clock back. */
+  function at(ms: number, f: () => void): void {
+    const real = performance.now;
+    performance.now = () => ms;
+    try {
+      f();
+    } finally {
+      performance.now = real;
+    }
+  }
+  const expire = (rx: InstanceType<typeof Reassembler>) => (rx as unknown as { expire(): void }).expire();
+  const videos = () => out.flatMap((m) => (m.type === "video" ? [m] : []));
+
+  test("a frame goes out complete, in part order, as soon as its last part comes", () => {
+    out.length = 0;
+    const rx = new Reassembler(() => {});
+    at(1000, () => {
+      // Packet A whole in part 0; packet B split over parts 1 and 2.
+      rx.datagram(datagram({ flags: KEY_INTRA | CONTINUED, id: 4, index: 2, total: 3, payload: [5, 6] }));
+      rx.datagram(datagram({ flags: KEY_INTRA, id: 4, index: 0, total: 3, payload: [1, 2] }));
+      expect(videos()).toHaveLength(0);
+      rx.datagram(datagram({ flags: KEY_INTRA | CONTINUES, id: 4, index: 1, total: 3, payload: [3, 4] }));
+    });
+    const [f] = videos();
+    expect(f?.id).toBe(4);
+    expect(f?.partial).toBe(false);
+    expect([...new Uint8Array(f!.data)]).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  test("at its deadline, a frame goes out with its whole packets; a split one missing a part is left out", () => {
+    out.length = 0;
+    const rx = new Reassembler(() => {});
+    at(1000, () => {
+      rx.datagram(datagram({ flags: KEY_INTRA, id: 9, index: 0, total: 4, payload: [1] }));
+      // Packet B: parts 1 and 2, part 2 lost.
+      rx.datagram(datagram({ flags: KEY_INTRA | CONTINUES, id: 9, index: 1, total: 4, payload: [2] }));
+      rx.datagram(datagram({ flags: KEY_INTRA, id: 9, index: 3, total: 4, payload: [4] }));
+    });
+    at(1059, () => expire(rx));
+    expect(videos()).toHaveLength(0);
+    at(1060, () => expire(rx));
+    const [f] = videos();
+    expect(f?.partial).toBe(true);
+    expect([...new Uint8Array(f!.data)]).toEqual([1, 4]);
+    expect(out.some((m) => m.type === "partial")).toBe(true);
+  });
+
+  test("a frame with no whole packet by its deadline is lost", () => {
+    out.length = 0;
+    const rx = new Reassembler(() => {});
+    at(1000, () => rx.datagram(datagram({ flags: KEY_INTRA | CONTINUES, id: 2, index: 0, total: 2, payload: [7] })));
+    at(1060, () => expire(rx));
+    expect(videos()).toHaveLength(0);
+    expect(out.some((m) => m.type === "lost")).toBe(true);
+  });
+});
