@@ -2,7 +2,7 @@
 # SPA. Build context: the repository root.
 #   docker compose -f deploy/portal/compose.yaml build
 
-FROM oven/bun:1.4.2 AS web
+FROM oven/bun:1.4.4 AS web
 WORKDIR /src
 COPY . .
 # Type checking is the checks' job (scripts/check.sh); this only bundles.
