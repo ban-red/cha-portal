@@ -229,8 +229,10 @@ impl PyroPresenter {
                     let ts: Vec<u64> = buffer
                         .slice(..)
                         .get_mapped_range()
-                        .chunks_exact(8)
-                        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| u64::from_le_bytes(*c))
                         .collect();
                     buffer.unmap();
                     if let [d0, d1, i0, i1] = ts[..] {

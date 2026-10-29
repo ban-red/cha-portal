@@ -533,7 +533,7 @@ fn draw(
     let shift = (number * 3) as usize;
     for (y, row) in pixels.chunks_mut(stride).take(h).enumerate() {
         let g = (y * 255 / h) as u8;
-        for (x, px) in row[..w * 4].chunks_exact_mut(4).enumerate() {
+        for (x, px) in row[..w * 4].as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let r = ((x + shift) * 255 / w) as u8;
             px.copy_from_slice(&[255 - g, g / 2 + 40, r / 2 + 30, 255]);
         }
