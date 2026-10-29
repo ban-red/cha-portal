@@ -142,7 +142,7 @@ pub fn rewrite_build_times(reply: &mut [u8]) -> bool {
     };
     let len = usize::from(length).min(attrs.len());
     let mut changed = false;
-    for attr in attrs[..len].chunks_exact_mut(5) {
+    for attr in attrs[..len].as_chunks_mut::<5>().0 {
         if BUILD_TIME_ATTRIBUTES.contains(&attr[0]) {
             attr[1..].copy_from_slice(&NEVER_UPDATE_TIME.to_le_bytes());
             changed = true;

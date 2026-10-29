@@ -1638,7 +1638,9 @@ mod tests {
     fn build_times(reply: &[u8], at: usize) -> Vec<(u8, u32)> {
         let len = usize::from(reply[at + 1]);
         reply[at + 2..at + 2 + len]
-            .chunks_exact(5)
+            .as_chunks::<5>()
+            .0
+            .iter()
             .filter(|a| a[0] == ATTRIB_FIRMWARE_BUILD_TIME || a[0] == ATTRIB_BOOTLOADER_BUILD_TIME)
             .map(|a| (a[0], u32::from_le_bytes([a[1], a[2], a[3], a[4]])))
             .collect()

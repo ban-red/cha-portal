@@ -32,15 +32,14 @@ fn string_hash32(text: &str) -> u32 {
     const M: u32 = 0x5bd1_e995;
     let data = text.as_bytes();
     let mut hash = data.len() as u32;
-    let mut chunks = data.chunks_exact(4);
-    for chunk in &mut chunks {
-        let mut k = u32::from_le_bytes(chunk.try_into().expect("4 bytes"));
+    let (chunks, rest) = data.as_chunks::<4>();
+    for chunk in chunks {
+        let mut k = u32::from_le_bytes(*chunk);
         k = k.wrapping_mul(M);
         k ^= k >> 24;
         k = k.wrapping_mul(M);
         hash = hash.wrapping_mul(M) ^ k;
     }
-    let rest = chunks.remainder();
     if !rest.is_empty() {
         for (i, byte) in rest.iter().enumerate().rev() {
             hash ^= u32::from(*byte) << (8 * i);
