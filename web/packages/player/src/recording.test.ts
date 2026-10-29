@@ -122,4 +122,9 @@ describe("summarizeRecording", () => {
     expect(md).toContain("| Decoded size | 2560×1440 |");
     expect(md).toContain("p50 12 ms, p95 12 ms, p99 12 ms");
   });
+
+  test("a value's pipes and backslashes stay inside its cell", () => {
+    const md = recordingMarkdown(summarizeRecording([snap()], [], { ...meta, userAgent: "a|b\\" }));
+    expect(md).toContain("| Browser | a\\|b\\\\ |");
+  });
 });

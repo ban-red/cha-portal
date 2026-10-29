@@ -204,7 +204,7 @@ export function recordingMarkdown(r: RecordingSummary): string {
     ["Audio buffer", `mean ${n(r.audioBufferMs.mean, " ms")}, max ${n(r.audioBufferMs.max, " ms")}`],
     ["Health", `worst ${r.health.worstGrade ?? "n/a"}, final ${r.health.finalGrade ?? "n/a"} (${r.health.summary})`],
   ];
-  const lines = ["| | |", "|---|---|", ...rows.map(([k, v]) => `| ${k} | ${v.replace(/\|/g, "\\|")} |`)];
+  const lines = ["| | |", "|---|---|", ...rows.map(([k, v]) => `| ${k} | ${v.replace(/[\\|]/g, "\\$&")} |`)];
   if (r.health.reasons.length) lines.push("", "Health reasons:", ...r.health.reasons.map((x) => `- ${x}`));
   return lines.join("\n");
 }
