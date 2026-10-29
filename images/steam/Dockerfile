@@ -29,7 +29,7 @@
 # it): libcha-uinput.so, loaded into Steam by steam-gaming's and
 # steam-desktop-client's LD_PRELOAD, fakes that file and asks the streamer's
 # broker for the device (uinput-shim/).
-FROM rust:1.93-trixie AS build
+FROM rust:1.99.1-trixie AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
@@ -38,8 +38,8 @@ COPY spikes/ spikes/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-x11-clipboard \
- && cp target/release/cha-x11-clipboard /usr/local/bin/
+    cargo build --profile dist --locked -p cha-x11-clipboard \
+ && cp target/dist/cha-x11-clipboard /usr/local/bin/
 
 # Ubuntu's gamescope with the patch, as a package that replaces the stock one.
 FROM base AS gamescope

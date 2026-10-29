@@ -37,11 +37,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use axum::http::header::{CACHE_CONTROL, VARY};
+use axum::http::{HeaderValue, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Router};
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeader;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
@@ -171,17 +174,57 @@ pub fn guest_app(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Vite names every file under `assets/` by a hash of its content, so a
+/// browser keeps those for good; everything else (`index.html`, which names
+/// them, and the files from `public/`) it checks on each load, a 304 while
+/// unchanged. A file goes out as the `.br` or `.gz` the build wrote beside it
+/// (vite.config.ts) when the browser takes that encoding, so nothing is
+/// compressed per request. A missing asset is a 404, not `index.html`.
 fn serve_spa(router: Router<AppState>, state: &AppState) -> Router<AppState> {
-    match state
+    let Some(dir) = state
         .config
         .web_dir
         .clone()
         .filter(|d| d.join("index.html").exists())
-    {
-        Some(dir) => router
-            .fallback_service(ServeDir::new(&dir).fallback(ServeFile::new(dir.join("index.html")))),
-        None => router,
-    }
+    else {
+        return router;
+    };
+    let index = ServeFile::new(dir.join("index.html"))
+        .precompressed_br()
+        .precompressed_gzip();
+    let rest = ServeDir::new(&dir)
+        .precompressed_br()
+        .precompressed_gzip()
+        .fallback(index);
+    let assets = ServeDir::new(dir.join("assets"))
+        .precompressed_br()
+        .precompressed_gzip();
+    let vary = HeaderValue::from_static("accept-encoding");
+    router
+        .nest_service(
+            "/assets",
+            SetResponseHeader::appending(
+                SetResponseHeader::overriding(assets, CACHE_CONTROL, immutable_when_found),
+                VARY,
+                vary.clone(),
+            ),
+        )
+        .fallback_service(SetResponseHeader::appending(
+            SetResponseHeader::overriding(
+                rest,
+                CACHE_CONTROL,
+                HeaderValue::from_static("no-cache"),
+            ),
+            VARY,
+            vary,
+        ))
+}
+
+fn immutable_when_found<B>(response: &Response<B>) -> Option<HeaderValue> {
+    response
+        .status()
+        .is_success()
+        .then(|| HeaderValue::from_static("public, max-age=31536000, immutable"))
 }
 
 pub async fn run(mut config: Config) -> Result<()> {

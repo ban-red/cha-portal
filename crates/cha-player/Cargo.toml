@@ -1,6 +1,6 @@
 [package]
 name = "cha-player"
-version = "0.5.2"
+version.workspace = true
 description = "The native game-streaming client, macOS first: winit, wgpu on Metal, VideoToolbox, CoreAudio, SDL3 gamepads (ADR 0010)"
 edition.workspace = true
 license.workspace = true
@@ -18,28 +18,28 @@ portal = ["dep:cha-client-portal"]
 demo = []
 
 [dependencies]
-anyhow = "1"
-bytes = "1"
-cha-client = { path = "../cha-client" }
-cha-ui-spec = { path = "../cha-ui-spec" }
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+anyhow.workspace = true
+bytes.workspace = true
+cha-client.workspace = true
+cha-ui-spec.workspace = true
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+cha-workspace-hack.workspace = true
 
 [dev-dependencies]
-cha-ui-spec = { path = "../cha-ui-spec", features = ["cases"] }
+cha-ui-spec = { workspace = true, features = ["cases"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-bytemuck = { version = "1", features = ["derive"] }
-cha-client-gamestream = { path = "../cha-client-gamestream", optional = true }
-cha-client-portal = { path = "../cha-client-portal", optional = true }
-cha-pyrowave-wgpu = { path = "../cha-pyrowave-wgpu" }
+bytemuck = { workspace = true, features = ["derive"] }
+cha-client-gamestream = { workspace = true, optional = true }
+cha-client-portal = { workspace = true, optional = true }
+cha-pyrowave-wgpu.workspace = true
 cpal = "0.18"
-libc = "0.2"
+libc.workspace = true
 egui = "0.35"
 egui-wgpu = "0.35"
 egui-winit = "0.35"
@@ -53,7 +53,10 @@ objc2-foundation = { version = "0.3", features = ["objc2-core-services"] }
 objc2-metal = "0.3"
 objc2-video-toolbox = "0.3"
 opus = "0.4"
-pollster = "0.4"
+pollster.workspace = true
 sdl3 = { version = "0.20", features = ["build-from-source-static"] }
-wgpu = "29"
+wgpu.workspace = true
 winit = "0.30"
+
+[lints]
+workspace = true

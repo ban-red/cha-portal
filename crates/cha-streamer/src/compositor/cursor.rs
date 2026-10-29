@@ -235,7 +235,7 @@ fn surface_image(surface: &WlSurface) -> Option<CursorShape> {
         let mut rgba = Vec::with_capacity(w * h * 4);
         for row in pixels.chunks_exact(stride) {
             // Little-endian ARGB8888 is B, G, R, A in memory, premultiplied.
-            for px in row[..w * 4].chunks_exact(4) {
+            for px in row[..w * 4].as_chunks::<4>().0 {
                 let a = if opaque { 255 } else { px[3] };
                 let straight = |c: u8| match a {
                     0 => 0,

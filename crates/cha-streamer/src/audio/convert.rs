@@ -57,7 +57,7 @@ impl Converter {
         let frames = match &mut self.resampler {
             None => {
                 let mut n = 0;
-                for o in out.chunks_exact_mut(2) {
+                for o in out.as_chunks_mut::<2>().0 {
                     let Some([l, r]) = decoder.next() else { break };
                     o[0] += l * gain[0];
                     o[1] += r * gain[1];
@@ -236,7 +236,7 @@ impl Resampler {
 
     fn mix(&mut self, decoder: &mut Decoder<'_>, out: &mut [f32], gain: [f32; 2]) -> usize {
         let mut n = 0;
-        for o in out.chunks_exact_mut(2) {
+        for o in out.as_chunks_mut::<2>().0 {
             let base = self.pos as usize;
             // Taps reach from base - (HALF - 1) to base + HALF.
             while self.history.len() <= base + HALF {

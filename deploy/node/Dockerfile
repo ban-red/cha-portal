@@ -1,13 +1,13 @@
 # The Cha Node agent. Build context: the repository root.
 #   docker compose -f deploy/node/compose.yaml build
 
-FROM rust:1.93-trixie AS build
+FROM rust:1.99.1-trixie AS build
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-node \
- && cp target/release/cha-node /usr/local/bin/cha-node
+    cargo build --profile dist --locked -p cha-node \
+ && cp target/dist/cha-node /usr/local/bin/cha-node
 
 FROM ubuntu:26.04
 RUN apt-get update \

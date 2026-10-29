@@ -1,6 +1,6 @@
 [package]
 name = "cha-client-stream"
-version = "0.5.2"
+version.workspace = true
 description = "The native client's cha-stream/1 receiver: WebTransport to a Cha streamer, as the browser player speaks it (ADR 0013)"
 edition.workspace = true
 license.workspace = true
@@ -8,28 +8,31 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-anyhow = "1"
-bytes = "1"
-cha-client = { path = "../cha-client" }
+anyhow.workspace = true
+bytes.workspace = true
+cha-client.workspace = true
 cha-proto.workspace = true
 # TLS is rustls with the ring provider, as in wtransport's own default.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-serde_json = "1"
-sha2 = "0.10"
-socket2 = { version = "0.6", features = ["all"] }
-tokio = { version = "1", features = ["rt", "sync", "time", "macros", "net"] }
-tracing = "0.1"
-url = "2"
-wtransport = { version = "0.7", features = ["quinn"] }
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+serde_json.workspace = true
+sha2.workspace = true
+socket2 = { workspace = true, features = ["all"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "net"] }
+tracing.workspace = true
+url.workspace = true
+wtransport = { workspace = true, features = ["quinn"] }
+cha-workspace-hack.workspace = true
 
 # macOS's batched recvmsg_x/sendmsg_x instead of one system call per
 # datagram: PyroWave 4:4:4 is ~76,000 datagrams a second, and one call each
 # capped the receiver near 300 Mbit/s (Chrome, batching, took 600).
 [target.'cfg(target_os = "macos")'.dependencies]
-quinn-udp = { version = "0.5", features = ["fast-apple-datapath"] }
+quinn-udp = { workspace = true, features = ["fast-apple-datapath"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full", "test-util"] }
-libc = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
+libc.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true

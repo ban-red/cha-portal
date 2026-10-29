@@ -238,7 +238,13 @@ impl Request {
                 if body.len() % EVENT_LEN != 0 {
                     return Err(DecodeError::BadLength(op));
                 }
-                Self::Events(body.chunks_exact(EVENT_LEN).map(decode_event).collect())
+                Self::Events(
+                    body.as_chunks::<EVENT_LEN>()
+                        .0
+                        .iter()
+                        .map(decode_event)
+                        .collect(),
+                )
             }
             OP_FF_DONE => {
                 want(8)?;
@@ -295,7 +301,7 @@ impl Request {
     }
 }
 
-fn decode_event(b: &[u8]) -> Event {
+fn decode_event(b: &[u8; EVENT_LEN]) -> Event {
     Event {
         kind: u16_at(b, 0),
         code: u16_at(b, 2),
@@ -463,8 +469,8 @@ impl Message {
                 }
             }
             OP_EVENT => {
-                want(EVENT_LEN)?;
-                Self::Event(decode_event(body))
+                let event = body.try_into().map_err(|_| DecodeError::BadLength(op))?;
+                Self::Event(decode_event(event))
             }
             other => return Err(DecodeError::UnknownOp(other)),
         })

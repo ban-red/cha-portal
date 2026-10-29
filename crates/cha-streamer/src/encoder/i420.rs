@@ -135,7 +135,7 @@ impl Job<'_> {
 /// 219 steps of limited range; white is 235.
 #[inline(always)]
 fn luma<const R: usize, const B: usize>(pixels: &[u8], out: &mut [u8]) {
-    for (y, p) in out.iter_mut().zip(pixels.chunks_exact(4)) {
+    for (y, p) in out.iter_mut().zip(pixels.as_chunks::<4>().0) {
         let (r, g, b) = (u32::from(p[R]), u32::from(p[1]), u32::from(p[B]));
         *y = (((47 * r + 157 * g + 16 * b + 128) >> 8) + 16) as u8;
     }
@@ -146,7 +146,7 @@ fn luma<const R: usize, const B: usize>(pixels: &[u8], out: &mut [u8]) {
 /// zero so greys stay at 128.
 #[inline(always)]
 fn chroma<const R: usize, const B: usize>(top: &[u8], bottom: &[u8], u: &mut [u8], v: &mut [u8]) {
-    let blocks = top.chunks_exact(8).zip(bottom.chunks_exact(8));
+    let blocks = top.as_chunks::<8>().0.iter().zip(bottom.as_chunks::<8>().0);
     for ((u, v), (a, b)) in u.iter_mut().zip(v.iter_mut()).zip(blocks) {
         let sum = |c: usize| (a[c] as i32) + (a[4 + c] as i32) + (b[c] as i32) + (b[4 + c] as i32);
         let (r, g, bl) = (sum(R), sum(1), sum(B));

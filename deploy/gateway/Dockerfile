@@ -3,13 +3,13 @@
 #   docker build -f deploy/gateway/Dockerfile -t cha/gateway:dev .
 # The node agent starts it; it needs no GPU.
 
-FROM rust:1.93-trixie AS build
+FROM rust:1.99.1-trixie AS build
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-gateway \
- && cp target/release/cha-gateway /usr/local/bin/cha-gateway
+    cargo build --profile dist --locked -p cha-gateway \
+ && cp target/dist/cha-gateway /usr/local/bin/cha-gateway
 
 FROM ubuntu:26.04
 RUN apt-get update \

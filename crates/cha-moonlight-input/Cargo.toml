@@ -1,6 +1,6 @@
 [package]
 name = "cha-moonlight-input"
-version = "0.5.2"
+version.workspace = true
 description = "The browser input model (W3C key codes, standard-mapping pads) to Moonlight input events, shared by cha-gateway and the native client"
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,9 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-cha-client = { path = "../cha-client" }
-cha-gamestream = { path = "../cha-gamestream" }
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+cha-client.workspace = true
+cha-gamestream.workspace = true
+cha-workspace-hack.workspace = true
+
+[lints]
+workspace = true

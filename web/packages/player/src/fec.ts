@@ -22,6 +22,15 @@ const LOG = new Uint8Array(256);
   for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255]!;
 }
 
+/**
+ * Every product, row `a` at `a << 8`: the hot loop's one lookup per byte, in
+ * place of two logarithms, an exponent and a zero test (64 KiB, built once).
+ */
+const PRODUCT = new Uint8Array(256 * 256);
+for (let a = 1; a < 256; a++) {
+  for (let b = 1; b < 256; b++) PRODUCT[(a << 8) | b] = EXP[LOG[a]! + LOG[b]!]!;
+}
+
 function mul(a: number, b: number): number {
   return a === 0 || b === 0 ? 0 : EXP[LOG[a]! + LOG[b]!]!;
 }
@@ -38,12 +47,13 @@ function coefficient(r: number, i: number, m: number): number {
 /** acc ^= c · src (src shorter: zeros after it). */
 function mulAdd(acc: Uint8Array, src: Uint8Array, c: number): void {
   if (c === 0) return;
-  const lc = LOG[c]!;
   const n = Math.min(acc.length, src.length);
-  for (let j = 0; j < n; j++) {
-    const s = src[j]!;
-    if (s !== 0) acc[j]! ^= EXP[lc + LOG[s]!]!;
+  if (c === 1) {
+    for (let j = 0; j < n; j++) acc[j]! ^= src[j]!;
+    return;
   }
+  const row = PRODUCT.subarray(c << 8, (c + 1) << 8);
+  for (let j = 0; j < n; j++) acc[j]! ^= row[src[j]!]!;
 }
 
 /** The `m` parity shards of one block (for checks; the streamer encodes). */
@@ -91,7 +101,9 @@ export function recover(data: (Uint8Array | undefined)[], parity: (Uint8Array | 
     [syndromes[col], syndromes[pivot]] = [syndromes[pivot]!, syndromes[col]!];
     const scale = inv(a[col]![col]!);
     a[col] = a[col]!.map((v) => mul(v, scale));
-    syndromes[col] = syndromes[col]!.map((v) => mul(v, scale));
+    const scaled = new Uint8Array(shardLen);
+    mulAdd(scaled, syndromes[col]!, scale);
+    syndromes[col] = scaled;
     for (let other = 0; other < e; other++) {
       const factor = a[other]![col]!;
       if (other === col || factor === 0) continue;

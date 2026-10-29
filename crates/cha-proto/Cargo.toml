@@ -7,3 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "fec"
+harness = false

@@ -1,6 +1,6 @@
 [package]
 name = "cha-client-portal"
-version = "0.5.2"
+version.workspace = true
 description = "The native client's portal transport: signs in to a Cha Portal with a device token and lists its apps (ADR 0013)"
 edition.workspace = true
 license.workspace = true
@@ -8,26 +8,29 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-anyhow = "1"
-cha-client = { path = "../cha-client" }
-cha-client-stream = { path = "../cha-client-stream" }
+anyhow.workspace = true
+cha-client.workspace = true
+cha-client-stream.workspace = true
 # TLS is rustls with the ring provider, trusting the system's roots, as in cha-node.
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["rt", "sync", "time"] }
-tracing = "0.1"
-url = "2"
-uuid = { version = "1", features = ["v4"] }
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+url.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+cha-workspace-hack.workspace = true
 
 [dev-dependencies]
-axum = "0.8"
+axum = { workspace = true, features = ["default"] }
 # The real portal, for the end-to-end sign-in tests.
-cha-control = { path = "../cha-control" }
-tempfile = "3"
-sha2 = "0.10"
-wtransport = { version = "0.7", features = ["quinn"] }
-tokio = { version = "1", features = ["full"] }
+cha-control.workspace = true
+tempfile.workspace = true
+sha2.workspace = true
+wtransport = { workspace = true, features = ["quinn"] }
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

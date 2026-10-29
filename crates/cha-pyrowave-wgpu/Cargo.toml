@@ -1,6 +1,6 @@
 [package]
 name = "cha-pyrowave-wgpu"
-version = "0.5.2"
+version.workspace = true
 description = "PyroWave decoding on wgpu: packets to packed 8-bit YCbCr planes in a GPU buffer, plus a pass that draws them (port of @cha/pyrowave-webgpu)"
 edition.workspace = true
 license.workspace = true
@@ -8,8 +8,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-bytemuck = { version = "1", features = ["derive"] }
-pollster = "0.4"
-thiserror = "2"
-wgpu = "29"
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+bytemuck = { workspace = true, features = ["derive"] }
+pollster.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+cha-workspace-hack.workspace = true
+
+[lints]
+workspace = true

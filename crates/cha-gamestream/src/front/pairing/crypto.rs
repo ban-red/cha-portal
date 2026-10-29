@@ -55,7 +55,7 @@ fn ecb(key: &[u8; 16], data: &[u8], encrypt: bool) -> Result<Vec<u8>, PairError>
     }
     let cipher = Aes128::new(GenericArray::from_slice(key));
     let mut out = data.to_vec();
-    for block in out.chunks_exact_mut(16) {
+    for block in out.as_chunks_mut::<16>().0 {
         let block = GenericArray::from_mut_slice(block);
         if encrypt {
             cipher.encrypt_block(block);

@@ -7,9 +7,9 @@ the existing image gets the new tags instead. So a release rebuilds only the
 images whose inputs changed.
 
 An image's inputs are its Dockerfile (and, for an environment, its folder
-under images/), the workspace's Cargo.toml, Cargo.lock and .dockerignore, every
-file of the crates it builds and of their path dependencies (from
-`cargo metadata`), and every file those crates compile in with
+under images/), the workspace's Cargo.toml, Cargo.lock, rust-toolchain.toml
+and .dockerignore, every file of the crates it builds and of their path
+dependencies (from `cargo metadata`), and every file those crates compile in with
 `include_str!`, `include_bytes!` or `include!`. The portal adds the web
 workspace. An environment adds its base's hash. Files that never reach an
 image are left out: Markdown, crates' tests/, benches/ and examples/ (a
@@ -39,7 +39,7 @@ import sys
 REBUILD_EPOCH = 2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUST = ["Cargo.toml", "Cargo.lock", ".dockerignore"]
+RUST = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".dockerignore"]
 WEB = ["web", "package.json", "bun.lock"]
 
 # name: (paths, crates, base image or None)

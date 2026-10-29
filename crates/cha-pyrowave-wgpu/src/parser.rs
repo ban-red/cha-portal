@@ -233,8 +233,10 @@ impl BitstreamParser {
                 self.dequant_offsets[block_index as usize] = self.payload.len() as u32;
                 self.payload.extend(
                     data[pos * 4..(pos + payload_words) * 4]
-                        .chunks_exact(4)
-                        .map(|c| u32::from_le_bytes(c.try_into().unwrap())),
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|&c| u32::from_le_bytes(c)),
                 );
             }
 

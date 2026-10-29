@@ -2417,7 +2417,7 @@ mod tests {
             for (name, file) in &mut evdevs {
                 let mut buf = [0u8; 24 * 32];
                 while let Ok(n) = std::io::Read::read(file, &mut buf) {
-                    for ev in buf[..n].chunks_exact(24) {
+                    for ev in buf[..n].as_chunks::<24>().0 {
                         let (t, c) = (
                             u16::from_ne_bytes([ev[16], ev[17]]),
                             u16::from_ne_bytes([ev[18], ev[19]]),

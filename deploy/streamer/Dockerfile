@@ -59,7 +59,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
       > /etc/apt/sources.list.d/google-chrome.list \
  && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
  && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.93 --component clippy,rustfmt
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.1 --component clippy,rustfmt
 ENV PATH=/root/.cargo/bin:$PATH \
     CARGO_TARGET_DIR=/target
 WORKDIR /src
@@ -69,8 +69,8 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/target \
-    cargo build --release --locked -p cha-streamer --features gamestream \
- && cp /target/release/cha-streamer /usr/local/bin/cha-streamer
+    cargo build --profile dist --locked -p cha-streamer --features gamestream \
+ && cp /target/dist/cha-streamer /usr/local/bin/cha-streamer
 
 FROM base AS runtime
 COPY --from=pyrowave /usr/local/lib/libpyrowave-shared.so.0 /usr/local/lib/

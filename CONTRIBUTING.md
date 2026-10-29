@@ -6,7 +6,7 @@ Security problems don't go in issues: see [SECURITY.md](SECURITY.md).
 
 ## Getting set up
 
-You need Rust ≥ 1.93, [`cargo-hakari`](https://docs.rs/cargo-hakari) (`cargo install cargo-hakari --locked`) and [Bun](https://bun.sh) ≥ 1.4. The JS tooling is Bun only: use `bun install` and `bun run`, never npm or pnpm.
+You need Rust 1.99 (rustup installs the exact release `rust-toolchain.toml` pins on first use), [`cargo-hakari`](https://docs.rs/cargo-hakari) and [`cargo-deny`](https://embarkstudios.github.io/cargo-deny/) (`cargo install cargo-hakari cargo-deny --locked`) and [Bun](https://bun.sh) ≥ 1.4. The JS tooling is Bun only: use `bun install` and `bun run`, never npm or pnpm.
 
 ```bash
 bun install
@@ -16,7 +16,7 @@ bun install
 ./scripts/check.sh
 ```
 
-`check.sh` is what CI would run, and a pull request should pass it: `cargo fmt --check`, the workspace-hack check, clippy with `-D warnings`, the workspace tests, the Python tests for the Steam image's scripts and the node's host installer, the portal's colour guard and theme tests, its typecheck and its build. If you add, remove or change a dependency, run `cargo hakari generate && cargo hakari manage-deps` and commit the result ([README](README.md#development) explains why).
+`check.sh` is what CI would run, and a pull request should pass it: `cargo fmt --check`, the workspace-hack check, `cargo deny` (licences, banned crates and sources, from [`deny.toml`](deny.toml)), clippy with `-D warnings`, the workspace tests, the Python tests for the Steam image's scripts and the node's host installer, the portal's colour guard and theme tests, the browser player's and PyroWave decoder's typechecks, the portal's typecheck and its build. CI also runs [zizmor](https://docs.zizmor.sh) over the workflows. If you add, remove or change a dependency, run `cargo hakari generate && cargo hakari manage-deps` and commit the result ([README](README.md#development) explains why).
 
 `bun run dev` starts a portal with hot reload and a passwordless dev login; the [README](README.md#development) explains it. Faster loops while you work:
 
@@ -93,7 +93,7 @@ A release rebuilds only the images whose inputs changed. [`scripts/image-inputs.
 
 1. **Check `main` is green.** The `check` workflow passed on the commit you'll tag, and it ran on the node you test with.
 2. **Try the images first** (optional, worth it for a large change): **Actions → publish → Run workflow** on `main` builds and pushes `:sha-<commit>` without a release. A node runs those with `CHA_VERSION=sha-<commit>`.
-3. **Set the version** in every crate's `Cargo.toml` (not `cha-workspace-hack`, which stays at 0.1.0) and in `web/apps/portal/package.json`, then build once so `Cargo.lock` follows. The agent fills `{version}` in the catalog's image names with its own crate version, so an agent left at the old version pulls the old images.
+3. **Set the version** in the root `Cargo.toml` (`[workspace.package]`, which every crate but `cha-proto` and `cha-workspace-hack` inherits) and in `web/apps/portal/package.json`, then build once so `Cargo.lock` follows. The agent fills `{version}` in the catalog's image names with its own crate version, so an agent left at the old version pulls the old images.
 4. **Update the docs that name a version or the release state:** the examples in `SETUP.md` (`v0.2.0`, `--version 0.2.0`), [`deploy/proxmox/README.md`](deploy/proxmox/README.md) and the upgrade notes in `SETUP.md` (*Upgrading to a new release*), with a short *From x to y* list.
 5. **Tag and push:**
 
@@ -127,6 +127,9 @@ A new image name (a new environment) starts out private on GitHub's registry: se
 
 ## Dependencies and licence
 
-Cha Portal is under the [AGPL-3.0-or-later](LICENSE). New dependencies must have a compatible licence (MIT, Apache-2.0, BSD, ISC, MPL-2.0, LGPL, GPL-3.0 or AGPL-3.0 are fine), and should be lean: say why a new one is worth it.
+Cha Portal is under the [AGPL-3.0-or-later](LICENSE). New dependencies must have a compatible licence (MIT, Apache-2.0, BSD, ISC, MPL-2.0, LGPL, GPL-3.0 or AGPL-3.0 are fine; [`deny.toml`](deny.toml) holds the exact list, and `check.sh` enforces it), and should be lean: say why a new one is worth it.
+
+- **Where a Rust dependency goes:** a crate two or more members use is declared once, with its version, in the root `Cargo.toml`'s `[workspace.dependencies]`, and each member names it with `workspace = true` and the features it uses. A crate only one member uses stays in that member's manifest. Our own crates are named the same way.
+- **Advisories:** [`audit.yml`](.github/workflows/audit.yml) checks `Cargo.lock` against RustSec and `bun.lock` against GitHub's advisories, weekly and on every lockfile change. When it reports one, take the fixed release (`cargo update -p <crate> --precise <version>`, `bun audit fix`) in its own pull request. An advisory that can't reach anything we ship gets an ignore in `deny.toml` with its reason.
 
 By contributing, you agree that your contribution is licensed under the AGPL-3.0-or-later, the same as the project. You keep the copyright in your contribution; the project's notice is "Alex Red and the Cha Portal contributors", and the git history records who wrote what.

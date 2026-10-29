@@ -544,7 +544,7 @@ portal.cha.sh/
 
 ## 9. Roadmap
 
-Each phase has exit criteria. Sizes are relative (S/M/L/XL), not calendar promises.
+Each phase has exit criteria. Sizes are relative (S/M/L/XL), not calendar promises. The engineering work that carries these phases (supply chain, sign-in hardening, API types, fuzzing, CI, metrics, releases) is planned in [plans/engineering-roadmap.md](plans/engineering-roadmap.md), from a review on 2026-10-27.
 
 ### Phase 0: spikes and gates (M)
 

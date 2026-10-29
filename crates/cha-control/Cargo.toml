@@ -1,6 +1,6 @@
 [package]
 name = "cha-control"
-version = "0.5.2"
+version.workspace = true
 description = "Cha Portal control plane: accounts, nodes, catalog, environments, session brokering"
 edition.workspace = true
 license.workspace = true
@@ -8,45 +8,48 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-anyhow = "1"
+anyhow.workspace = true
 argon2 = "0.5"
-axum = { version = "0.8", features = ["ws"] }
+axum = { workspace = true, features = ["default", "ws"] }
 axum-extra = { version = "0.12", features = ["cookie"] }
-base64 = "0.22"
-cha-wire = { path = "../cha-wire" }
-clap = { version = "4", features = ["derive", "env"] }
+base64.workspace = true
+cha-wire.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
 # Splits the WebSocket sockets of a media relay.
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-getrandom = "0.3"
+futures-util = { workspace = true, features = ["sink", "std"] }
+getrandom.workspace = true
 # TURN credentials (coturn's shared-secret scheme).
-hmac = "0.12"
+hmac.workspace = true
 # The claim exchange with a node on the LAN (plain HTTP, one request each).
-http-body-util = "0.1"
-hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
 # Browses the LAN for unclaimed nodes (ADR 0007).
-mdns-sd = "0.21"
+mdns-sd.workspace = true
 # Fetches admin-loaded catalogs and their icons (ADR 0019). TLS is rustls with
 # the ring provider, trusting the system's roots, as in cha-node.
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 sha1 = "0.10"
-sha2 = "0.10"
+sha2.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
-thiserror = "2"
+thiserror.workspace = true
 # The session cookie's max-age (the cookie crate's time type).
 time = "0.3"
-tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs", "trace"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v7"] }
-cha-workspace-hack = { version = "0.1", path = "../cha-workspace-hack" }
+tokio = { workspace = true, features = ["full"] }
+tower-http = { workspace = true, features = ["fs", "set-header", "trace"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { workspace = true, features = ["v7"] }
+cha-workspace-hack.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-# A hand-driven node connection (tests/gamestream.rs); 0.29 is what axum and cha-node use.
-tokio-tungstenite = "0.29"
-tower = { version = "0.5", features = ["util"] }
+tempfile.workspace = true
+# A hand-driven node connection (tests/gamestream.rs).
+tokio-tungstenite.workspace = true
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

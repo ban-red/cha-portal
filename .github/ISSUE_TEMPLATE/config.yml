@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/ban-red/cha-portal/security/advisories/new
+    about: Privately, through GitHub's advisory form, never in a public issue (SECURITY.md).
+  - name: Setting up a portal or a node
+    url: https://github.com/ban-red/cha-portal/blob/main/SETUP.md
+    about: The quick start, every setting, and the doctor's checks.

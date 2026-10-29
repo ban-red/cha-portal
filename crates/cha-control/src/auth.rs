@@ -25,7 +25,32 @@ use crate::error::{ApiError, ApiResult};
 pub const SESSION_COOKIE: &str = "cha_session";
 pub const MIN_PASSWORD_LEN: usize = 3;
 
-pub fn hash_password(password: &str) -> anyhow::Result<String> {
+/// Argon2 spends tens of milliseconds of CPU by design, so hashing and
+/// checking run on the blocking pool: on a runtime worker they would stall the
+/// requests and node channels that worker also serves, a burst of sign-ins
+/// most of all.
+pub async fn hash_password(password: &str) -> anyhow::Result<String> {
+    let password = password.to_owned();
+    tokio::task::spawn_blocking(move || hash_password_now(&password)).await?
+}
+
+/// Whether `password` matches a user's stored hash, checked on the blocking
+/// pool. Without a hash (no such user, or one with no password) it spends as
+/// long on a dummy, so the answer doesn't say which.
+pub async fn password_matches(password: &str, hash: Option<String>) -> bool {
+    let password = password.to_owned();
+    tokio::task::spawn_blocking(move || match hash {
+        Some(hash) => verify_password(&password, &hash),
+        None => {
+            verify_dummy(&password);
+            false
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn hash_password_now(password: &str) -> anyhow::Result<String> {
     let mut salt = [0u8; 16];
     getrandom::fill(&mut salt).map_err(|e| anyhow::anyhow!("random source: {e}"))?;
     let salt =
@@ -36,7 +61,7 @@ pub fn hash_password(password: &str) -> anyhow::Result<String> {
         .map_err(|e| anyhow::anyhow!("hashing a password: {e}"))
 }
 
-pub fn verify_password(password: &str, hash: &str) -> bool {
+fn verify_password(password: &str, hash: &str) -> bool {
     PasswordHash::new(hash)
         .map(|parsed| {
             Argon2::default()
@@ -48,9 +73,9 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 
 /// Spends about as long as a real verification, so a missing user doesn't
 /// answer faster than a wrong password.
-pub fn verify_dummy(password: &str) {
+fn verify_dummy(password: &str) {
     static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let hash = DUMMY.get_or_init(|| hash_password("not-a-real-password").unwrap_or_default());
+    let hash = DUMMY.get_or_init(|| hash_password_now("not-a-real-password").unwrap_or_default());
     let _ = verify_password(password, hash);
 }
 
@@ -305,13 +330,14 @@ impl FromRequestParts<AppState> for AdminUser {
 mod tests {
     use super::*;
 
-    #[test]
-    fn passwords_round_trip() {
-        let hash = hash_password("correct horse battery").unwrap();
+    #[tokio::test]
+    async fn passwords_round_trip() {
+        let hash = hash_password("correct horse battery").await.unwrap();
         assert!(hash.starts_with("$argon2id$"));
-        assert!(verify_password("correct horse battery", &hash));
-        assert!(!verify_password("wrong", &hash));
-        assert!(!verify_password("anything", "not a hash"));
+        assert!(password_matches("correct horse battery", Some(hash.clone())).await);
+        assert!(!password_matches("wrong", Some(hash)).await);
+        assert!(!password_matches("anything", Some("not a hash".into())).await);
+        assert!(!password_matches("anything", None).await);
     }
 
     #[test]

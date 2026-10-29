@@ -2,19 +2,19 @@
 # SPA. Build context: the repository root.
 #   docker compose -f deploy/portal/compose.yaml build
 
-FROM oven/bun:1.4.2 AS web
+FROM oven/bun:1.4.4 AS web
 WORKDIR /src
 COPY . .
 # Type checking is the checks' job (scripts/check.sh); this only bundles.
 RUN bun install --frozen-lockfile && cd web/apps/portal && bunx --bun vite build
 
-FROM rust:1.93-trixie AS build
+FROM rust:1.99.1-trixie AS build
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cha-control \
- && cp target/release/cha-control /usr/local/bin/cha-control
+    cargo build --profile dist --locked -p cha-control \
+ && cp target/dist/cha-control /usr/local/bin/cha-control
 
 # cloudflared, for internet share links (ADR 0022): a pinned release from
 # GitHub, checked against its SHA-256 (the digests are on the release page).
