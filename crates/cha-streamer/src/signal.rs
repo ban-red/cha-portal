@@ -647,6 +647,7 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "height": height,
         "resize": true,
         "fps": state.media.fps(),
+        "pacing": state.media.pacing(),
         // Sessions now, and how many are in use (a browser's hidden, silent tab
         // isn't; see `presence`), and for how long none have been: the portal
         // stops an idle environment (`settings.rs` in cha-control).

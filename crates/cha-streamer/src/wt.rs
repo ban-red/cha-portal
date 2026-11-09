@@ -265,6 +265,7 @@ async fn run(
             "audio": sessions.audio.is_some(),
             "gamepads": sessions.gamepads.is_some(),
             "fps": sessions.media.fps(),
+            "pacing": sessions.media.pacing(),
             "overlay": sessions.media.overlay(),
             "transport": "webtransport",
             "maxDatagram": max_datagram,

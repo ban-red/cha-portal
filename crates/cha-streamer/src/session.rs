@@ -596,6 +596,7 @@ impl Session {
                     "audio": self.audio_mid.is_some() && self.params.audio.is_some(),
                     "gamepads": self.params.gamepads.is_some(),
                     "fps": media.fps(),
+                    "pacing": media.pacing(),
                     "overlay": media.overlay(),
                     // The page may send pad state on an unordered "input"
                     // channel with no retransmits (it falls back on `control`
