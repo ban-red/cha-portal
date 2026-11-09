@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { codecDepth, colourText, displayText, pyroColour, videoFrameColour } from "./colour";
+import { codecDepth, colourText, displayLine, displayText, pyroColour, videoFrameColour } from "./colour";
 
 describe("a picture's colour", () => {
   test("today's hardware streams are 8-bit sRGB with BT.709 primaries", () => {
@@ -51,5 +51,17 @@ describe("the screen", () => {
     expect(displayText(false, 60)).toBe("60 Hz, SDR");
     expect(displayText(null, 120)).toBe("120 Hz");
     expect(displayText(null, null)).toBeNull();
+  });
+});
+
+describe("the display line the streamer hears", () => {
+  test("what a browser can tell", () => {
+    expect(displayLine(true, 120)).toEqual({ t: "display", hdr: true, refreshHz: 120 });
+    expect(displayLine(false, null)).toEqual({ t: "display", hdr: false });
+    expect(displayLine(null, 60)).toEqual({ t: "display", refreshHz: 60 });
+  });
+
+  test("nothing to tell, nothing sent", () => {
+    expect(displayLine(null, null)).toBeNull();
   });
 });

@@ -280,6 +280,8 @@ pub struct Control {
     /// The pad slot this session has sent a pad on as a player, 0 for none
     /// (so its slot has something to release).
     player_pad_slot: AtomicU8,
+    /// What this viewer's screen can show, as its page last said.
+    display: Mutex<Option<DisplayInfo>>,
     /// The newest sequence number applied for each pad index the page names.
     pad_seq: Mutex<PadSeqs>,
 }
@@ -322,6 +324,7 @@ impl Control {
             gamepads,
             seat,
             player_pad_slot: AtomicU8::new(0),
+            display: Mutex::default(),
             pad_seq: Mutex::new(PadSeqs::default()),
         }
     }
@@ -516,7 +519,7 @@ impl Control {
                     }
                     return;
                 }
-                Some("ping" | "presence" | "keyframe") => {}
+                Some("ping" | "presence" | "keyframe" | "display") => {}
                 _ => return,
             }
         }
@@ -596,6 +599,17 @@ impl Control {
             }
             // The frame rate, for every viewer: 60, 90 or 120.
             Some("fps") => reply(fps_reply(&self.media, &msg)),
+            // What this viewer's screen can show: nothing uses it yet (it
+            // will set what HDR means for the viewer, plan step 10), so it
+            // is kept and logged when it changes.
+            Some("display") => {
+                let screen = DisplayInfo::parse(&msg);
+                let mut last = self.display.lock().expect("display lock");
+                if last.as_ref() != Some(&screen) {
+                    tracing::info!(codec = self.codec.name(), ?screen, "the viewer's display");
+                    *last = Some(screen);
+                }
+            }
             // The app's performance overlay, for every viewer: 0 to 4.
             Some("overlay") => reply(overlay_reply(&self.media, &msg)),
             // The page draws the cursor (desktop) or wants it in the picture.
@@ -1167,6 +1181,39 @@ pub async fn next_clipboard(watch: &mut Option<ClipboardWatch>) -> Option<Arc<st
     }
 }
 
+/// What a viewer's screen can show (`{"t":"display"}`, docs/plans/hdr-and-vrr.md
+/// decision 5), as far as its player can tell: a browser knows whether the
+/// screen is HDR and its refresh rate, a native player its peak, SDR white and
+/// headroom too. Anything left out is unknown.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DisplayInfo {
+    pub hdr: Option<bool>,
+    pub refresh_hz: Option<u32>,
+    pub vrr: Option<bool>,
+    pub peak_nits: Option<f32>,
+    pub sdr_white_nits: Option<f32>,
+    pub headroom: Option<f32>,
+}
+
+impl DisplayInfo {
+    pub fn parse(msg: &serde_json::Value) -> Self {
+        let num = |k: &str| {
+            msg.get(k)
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite() && *v > 0.0)
+        };
+        let flag = |k: &str| msg.get(k).and_then(|v| v.as_bool());
+        Self {
+            hdr: flag("hdr"),
+            refresh_hz: num("refreshHz").map(|v| v.round().min(1000.0) as u32),
+            vrr: flag("vrr"),
+            peak_nits: num("peakNits").map(|v| v.min(10_000.0) as f32),
+            sdr_white_nits: num("sdrWhiteNits").map(|v| v.min(10_000.0) as f32),
+            headroom: num("headroom").map(|v| v.min(100.0) as f32),
+        }
+    }
+}
+
 /// How long the app's pictures waited on the node, for the frames a session
 /// sent: from the app's commit to the composite, and to the end of encoding.
 /// Frames without a commit (re-encodes of an old picture) don't count.
@@ -1495,6 +1542,36 @@ mod tests {
             ..StreamerStats::default()
         };
         assert_eq!(line(known)["fps"], 90);
+    }
+
+    #[test]
+    fn a_display_line_says_what_it_can_and_nothing_else() {
+        let parse = |line: &str| DisplayInfo::parse(&serde_json::from_str(line).unwrap());
+        // A browser on a 120 Hz XDR Mac.
+        assert_eq!(
+            parse(r#"{"t":"display","hdr":true,"refreshHz":120}"#),
+            DisplayInfo {
+                hdr: Some(true),
+                refresh_hz: Some(120),
+                ..DisplayInfo::default()
+            }
+        );
+        // A native player knows more.
+        let native = parse(
+            r#"{"t":"display","hdr":true,"refreshHz":119.8,"vrr":true,"peakNits":1600,"sdrWhiteNits":500,"headroom":3.2}"#,
+        );
+        assert_eq!(native.refresh_hz, Some(120));
+        assert_eq!(
+            (native.peak_nits, native.headroom),
+            (Some(1600.0), Some(3.2))
+        );
+        // Nonsense is unknown, not trusted.
+        let bad =
+            parse(r#"{"t":"display","hdr":"yes","refreshHz":-1,"peakNits":1e30,"headroom":"x"}"#);
+        assert_eq!(bad.hdr, None);
+        assert_eq!(bad.refresh_hz, None);
+        assert_eq!(bad.peak_nits, Some(10_000.0));
+        assert_eq!(bad.headroom, None);
     }
 
     #[test]
