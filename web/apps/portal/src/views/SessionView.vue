@@ -25,6 +25,8 @@ import {
   type Transport,
   type Watcher,
   watcherLabel,
+  fitOf,
+  measureRefresh,
 } from "@cha/player";
 import { buildToolbar, pickText, TOOLBAR, type ToolbarState } from "@cha/ui-spec";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
@@ -188,6 +190,8 @@ function noteClipboard(written: boolean) {
  */
 const fps = ref<number | null>(null);
 const fpsSwitching = ref(false);
+/** The screen's refresh rate (measured once per page): the frame-rate menu marks rates that don't fit it. */
+const displayHz = ref<number | null>(null);
 const fixedSize = ref(false);
 async function setFps(rate: FrameRate, select: HTMLSelectElement) {
   if (!player || fpsSwitching.value) return;
@@ -832,6 +836,10 @@ const toolbarState = computed<ToolbarState>(() => ({
   fps: fps.value,
   fixed_size: fixedSize.value,
   fps_switching: fpsSwitching.value,
+  display_hz: displayHz.value ?? 0,
+  fit_60: fitOf(60, displayHz.value),
+  fit_90: fitOf(90, displayHz.value),
+  fit_120: fitOf(120, displayHz.value),
   overlay: perfOverlay.value === null ? null : String(perfOverlay.value),
   overlay_switching: overlaySwitching.value,
   transport_choice: transportChoice.value,
@@ -945,6 +953,7 @@ function onRow(menuId: string, rowId: string, value?: string | Event, el?: HTMLS
 onMounted(() => {
   // The stream view stays dark and theme-neutral, whatever appearance the user picked.
   setForcedDark(true);
+  void measureRefresh().then((hz) => (displayHz.value = hz));
   document.addEventListener("fullscreenchange", onFullscreen);
   document.addEventListener("pointerdown", onDocPointerDown);
   window.addEventListener("online", onOnline);

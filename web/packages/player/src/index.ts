@@ -19,6 +19,7 @@ export {
 } from "./player";
 export { transportOrder, DEFAULT_TRANSPORTS } from "./transports";
 export { resolveWsUrl } from "./ws-url";
+export { fitOf, measureRefresh, type Fit } from "./refresh";
 export { OVERLAY_LEVELS, type OverlayLevel, type OverlayState } from "./overlay";
 export { CaptureMode, type CaptureState, type CaptureView } from "./captureMode";
 export type { InputMode } from "./inputMode";

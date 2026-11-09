@@ -26,15 +26,8 @@ import { overlayAnswer, parseOverlay, type OverlayLevel, type OverlayState } fro
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
 import { PyroPresenter } from "./pyro";
-import {
-  codecDepth,
-  colourText,
-  displayText,
-  dynamicRangeHigh,
-  refreshFromIntervals,
-  videoFrameColour,
-  type PictureColour,
-} from "./colour";
+import { codecDepth, colourText, displayText, dynamicRangeHigh, videoFrameColour, type PictureColour } from "./colour";
+import { measureRefresh } from "./refresh";
 import type { FromWorker, ToWorker } from "./reassembly";
 import { transportOrder } from "./transports";
 import { resolveWsUrl } from "./ws-url";
@@ -480,7 +473,7 @@ export class Player {
 
   constructor(private readonly options: PlayerOptions) {
     this.codec = options.codec ?? supportedCodecs()[0] ?? "h264";
-    this.measureRefresh();
+    void measureRefresh().then((hz) => (this.refreshHz = hz));
     this.muted = options.muted ?? false;
     this.audio = document.createElement("audio");
     this.audio.muted = this.muted;
@@ -834,20 +827,6 @@ export class Player {
     snapshot.node = this.nodeStats && ageMs <= NODE_STATS_FRESH_MS ? { ...this.nodeStats.stats, ageMs } : null;
     Object.assign(snapshot, this.scaling(snapshot));
     return snapshot;
-  }
-
-  /** Samples `requestAnimationFrame` for about a second and a half to learn the screen's refresh rate. */
-  private measureRefresh(): void {
-    if (typeof requestAnimationFrame !== "function") return;
-    const intervals: number[] = [];
-    let last: number | null = null;
-    const tick = (now: number) => {
-      if (last !== null) intervals.push(now - last);
-      last = now;
-      if (intervals.length < 90) requestAnimationFrame(tick);
-      else this.refreshHz = refreshFromIntervals(intervals);
-    };
-    requestAnimationFrame(tick);
   }
 
   /** The size the picture is drawn at on screen and what stretches it there, for the stats. */
