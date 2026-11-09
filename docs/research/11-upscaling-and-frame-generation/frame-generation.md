@@ -1,5 +1,7 @@
 # Frame generation for latency-critical remote streaming (cloud gaming and remote desktop), state as of 2026-11-09
 
+> Evidence for [research note 11](README.md).
+
 Scope: interpolation vs extrapolation vs input-driven reprojection, where each runs (server or client), what each costs in latency, and how each fits Cha Portal's pipeline. That pipeline is a generic Wayland compositor with nested gamescope, NVENC/VA-API/PyroWave, no B-frames, per-frame IDs and timestamps, client-reported arrival/decode/present, about 5 ms median send→shown on a wired LAN, a Mac client at ProMotion 120 Hz, and browsers. Notation used throughout: T = source (real) frame interval in ms, C = compute time to synthesize one frame, N = output/source frame-rate multiplier, RTT = network round trip.
 
 ## 1. Latency arithmetic: interpolation vs extrapolation vs reprojection, client vs server, vs streaming more real frames

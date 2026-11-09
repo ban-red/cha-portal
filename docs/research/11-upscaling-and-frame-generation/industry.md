@@ -1,5 +1,7 @@
 # Industry practice: upscaling and frame generation in shipping game/desktop streaming products (state as of 2026-11-09)
 
+> Evidence for [research note 11](README.md).
+
 Scope note: product and practice inventory only. Each finding is dated. "(unverified)" marks claims from secondary sites, forum posts, or search snippets I could not open in full. Reddit/Steam forum material is a community-practice signal, not evidence of product behaviour. GitHub's API was not reachable from this session, so PR/release states come from rendered GitHub pages read on 2026-11-09.
 
 ## 1. NVIDIA GeForce NOW (2025–2026): Blackwell tier, DLSS 4/4.5 frame generation in the cloud, streamed frame rates, Cloud G-Sync, Reflex, Cinematic Quality Streaming, client-side upscaling

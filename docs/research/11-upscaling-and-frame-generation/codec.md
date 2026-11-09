@@ -1,5 +1,7 @@
 # Codec-level and network-adaptive resolution scaling for low-latency interactive streaming (state as of 2026-11-09)
 
+> Evidence for [research note 11](README.md).
+
 Scope: sending fewer pixels and getting them back on the client, at the bitstream, protocol and codec level, with what encoders and browser or hardware decoders support. Primary sources were checked where possible: the AV1 spec, nv-codec-headers (NVENC API 13.1), libva, intel/media-driver, Mesa, Chromium and libwebrtc `main` source as fetched on 2026-11-09. Items I could not confirm are tagged (unverified).
 
 ## 1. AV1 super-resolution (superres + loop restoration): normative status, decoder support, encoder support, measured gains

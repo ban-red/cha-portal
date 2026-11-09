@@ -1,5 +1,7 @@
 # Node-side (render-side) upscaling and frame generation on Linux GPU hosts, late 2026
 
+> Evidence for [research note 11](README.md).
+
 Scope: what can upscale or generate frames on the GPU node, inside a headless container, for games running under Proton inside gamescope (`--backend wayland`, nested in Cha Portal's Smithay compositor), before frames reach NVENC / VA-API / PyroWave. Research date: 2026-11-09. Test node: RTX 4090 (Ada, AD102), driver >=580.
 
 Note on dates: GitHub release pages for dxvk-nvapi and vkd3d-proton show day/month without a year. Years below come from release order plus the driver/header versions each release cites, so they are inferred.

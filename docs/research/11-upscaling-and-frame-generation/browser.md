@@ -1,5 +1,7 @@
 # Browser-client upscaling and frame interpolation on live, low-latency video (state as of 2026-11-09)
 
+> Evidence for [research note 11](README.md).
+
 Scope: in-browser only (Chrome first, Safari 26 and Firefox second) on decoded live video for Cha Portal's three render paths: (1) WebRTC `<video>`, (2) WebTransport + WebCodecs `VideoDecoder` → `VideoTrackGenerator` → `<video>`, (3) PyroWave WebGPU compute → OffscreenCanvas. Baseline client: MacBook Pro M4 driving a 3024×1964 panel from a stream capped at 2560×1440, at 60/90/120 fps, with a ~5 ms median send→shown budget.
 
 Date and confidence labels: [2026] = source dated or measured in 2026. [older: YYYY] = an older source still in effect. (unverified) = claim I could not confirm from a primary source. "Estimate" = my own arithmetic. No source measures it.

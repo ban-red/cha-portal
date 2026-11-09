@@ -1,5 +1,7 @@
 # Native-client upscaling and frame interpolation APIs for live low-latency streamed video (state as of 2026-11-09)
 
+> Evidence for [research note 11](README.md).
+
 Scope: what the Cha Player (Rust, winit, wgpu-on-Metal, VideoToolbox decode to IOSurface-backed CVPixelBuffers, PyroWave compute decode) could call on the client to upscale or interpolate decoded frames. macOS first, then Windows and Linux/Steam Deck. Browser paths, node-side game upscalers and codec-level scaling are out of scope. Budget reference: at 120 Hz one display frame is 8.33 ms, and the glass-to-glass target is ≤12 ms. Dates are given for sources where known. "(unverified)" marks claims I could not confirm from a primary source.
 
 ## 1. Apple VideoToolbox `VTFrameProcessor` (macOS 26 / macOS 27)
