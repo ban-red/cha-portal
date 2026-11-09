@@ -70,6 +70,15 @@ export function codecDepth(codec: string): 8 | 10 {
   return codec.endsWith("-10") ? 10 : 8;
 }
 
+/**
+ * The `display` line a page sends the streamer (docs/plans/hdr-and-vrr.md, decision 5): what
+ * this screen can show, as far as a browser can tell. Null when it can tell nothing.
+ */
+export function displayLine(hdr: boolean | null, refreshHz: number | null): Record<string, unknown> | null {
+  if (hdr === null && !refreshHz) return null;
+  return { t: "display", ...(hdr === null ? {} : { hdr }), ...(refreshHz ? { refreshHz } : {}) };
+}
+
 /** Whether the screen can show HDR (`dynamic-range: high`); null where the browser can't say. */
 export function dynamicRangeHigh(): boolean | null {
   if (typeof matchMedia !== "function") return null;

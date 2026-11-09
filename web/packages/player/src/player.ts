@@ -26,7 +26,7 @@ import { overlayAnswer, parseOverlay, type OverlayLevel, type OverlayState } fro
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
 import { PyroPresenter } from "./pyro";
-import { codecDepth, colourText, displayText, dynamicRangeHigh, videoFrameColour, type PictureColour } from "./colour";
+import { codecDepth, colourText, displayLine, displayText, dynamicRangeHigh, videoFrameColour, type PictureColour } from "./colour";
 import { measureRefresh } from "./refresh";
 import { isTenBit, WEBCODECS, type HwCodec } from "./codecs";
 import type { FromWorker, ToWorker } from "./reassembly";
@@ -475,7 +475,12 @@ export class Player {
 
   constructor(private readonly options: PlayerOptions) {
     this.codec = options.codec ?? supportedCodecs()[0] ?? "h264";
-    void measureRefresh().then((hz) => (this.refreshHz = hz));
+    void measureRefresh().then((hz) => {
+      this.refreshHz = hz;
+      this.sendDisplay();
+    });
+    // The window moved to a screen that does (or doesn't) show HDR.
+    if (typeof matchMedia === "function") matchMedia("(dynamic-range: high)").addEventListener?.("change", () => this.sendDisplay());
     this.muted = options.muted ?? false;
     this.audio = document.createElement("audio");
     this.audio.muted = this.muted;
@@ -968,6 +973,12 @@ export class Player {
     });
   }
 
+  /** Tells the streamer what this screen can show, once it can tell anything (a fresh session hears it after its hello). */
+  private sendDisplay(): void {
+    const line = displayLine(dynamicRangeHigh(), this.refreshHz);
+    if (line) this.send(line);
+  }
+
   private send(msg: Record<string, unknown>): void {
     if (this.wt) this.wt.worker.postMessage({ type: "send", line: JSON.stringify(msg) } satisfies ToWorker);
     else if (this.control?.readyState === "open") this.control.send(JSON.stringify(msg) + "\n");
@@ -1390,6 +1401,7 @@ export class Player {
         this.placePointer();
         break;
       case "hello": {
+        this.sendDisplay();
         const s = msg.stream as unknown as { width?: number; height?: number } | undefined;
         this.noteStreamSize(typeof s?.width === "number" && typeof s?.height === "number" ? { w: s.width, h: s.height } : null);
         this.noteFps((msg.stream as unknown as { fps?: number } | undefined)?.fps);

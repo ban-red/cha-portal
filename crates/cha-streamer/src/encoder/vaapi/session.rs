@@ -1377,7 +1377,9 @@ pub struct SelfTest {
 /// unit with a sequence header and a key frame), P pictures after it, another
 /// IDR on request, and the stream still coding after a bitrate change.
 /// `CHA_ENCODE_TEST_SIZE=<w>x<h>` picks another picture size (default
-/// 1280x720). For `CHA_ENCODE_TEST=<frames> cha-streamer --probe-device
+/// 1280x720), and `CHA_ENCODE_TEST_PATTERN=patches` still colour patches
+/// instead of the moving picture, for `scripts/color-check.py` on a dump
+/// ([`crate::encoder::patches`]). For `CHA_ENCODE_TEST=<frames> cha-streamer --probe-device
 /// vaapi:<node>` and the ignored test below.
 pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
     use smithay::backend::allocator::dmabuf::{AsDmabuf, DmabufMappingMode, DmabufSyncFlags};
@@ -1479,6 +1481,11 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
     // which fill the buffer) and after it has settled.
     let (mut before, mut after) = ((0usize, 0usize), (0usize, 0usize));
     let mut key_bytes = 0;
+    let patches = match std::env::var("CHA_ENCODE_TEST_PATTERN").as_deref() {
+        Ok("patches") => true,
+        Ok("") | Ok("moving") | Err(_) => false,
+        Ok(other) => bail!("CHA_ENCODE_TEST_PATTERN is patches or moving, not {other:?}"),
+    };
     let expected_size = encoder.expected_size();
     for n in 0..frames {
         {
@@ -1497,7 +1504,11 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
                         width as usize * 4,
                     )
                 };
-                paint_row(row, y, n, width, height);
+                if patches {
+                    crate::encoder::patches::paint_row(row, y, width, height);
+                } else {
+                    paint_row(row, y, n, width, height);
+                }
             }
             if let Some(src) = &mut source {
                 use std::io::Write;

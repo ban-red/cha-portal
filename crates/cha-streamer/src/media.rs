@@ -317,6 +317,7 @@ pub struct Media {
     x11_clipboard: Option<Arc<X11Clipboard>>,
     cursor: CursorWatch,
     pointer: PointerWatch,
+    commit_paced: Arc<AtomicBool>,
     /// The app's setup status, if there's a file to follow.
     setup_status: SetupStatus,
     /// The app's performance overlay config, if the app has one.
@@ -348,6 +349,7 @@ impl Media {
             x11_clipboard: None,
             cursor: compositor.cursor.clone(),
             pointer: compositor.pointer.clone(),
+            commit_paced: Arc::clone(&compositor.commit_paced),
             setup_status: SetupStatus::default(),
             overlay: Overlay::default(),
         }
@@ -378,6 +380,16 @@ impl Media {
     }
 
     /// The current frame rate.
+    /// How the compositor paces frames now: `"commit"` (on the driving
+    /// window's commits, a Steam session) or `"fixed"` (the encode tick).
+    pub fn pacing(&self) -> &'static str {
+        if self.commit_paced.load(Ordering::Relaxed) {
+            "commit"
+        } else {
+            "fixed"
+        }
+    }
+
     pub fn fps(&self) -> u32 {
         self.fps.load(Ordering::Relaxed)
     }

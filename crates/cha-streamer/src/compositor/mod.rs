@@ -25,6 +25,7 @@ mod tap;
 use std::ffi::OsString;
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
@@ -186,6 +187,9 @@ pub struct Handle {
     pub cursor: CursorWatch,
     /// Where the pointer is, for viewers.
     pub pointer: PointerWatch,
+    /// Whether compositing follows the driving window's commits (`--pacing`)
+    /// rather than the encode tick, now.
+    pub commit_paced: Arc<AtomicBool>,
 }
 
 /// Starts the compositor thread; returns once its socket is listening.
@@ -269,6 +273,7 @@ fn run(config: Config, hub: Arc<FrameHub>, ready: &std_mpsc::Sender<Result<Handl
         "compositor up"
     );
     let _ = ready.send(Ok(Handle {
+        commit_paced: Arc::clone(&state.commit_paced),
         commands,
         socket_name: state.socket_name.clone(),
         clipboard: clipboard_watch,
@@ -472,6 +477,8 @@ pub struct State {
     pub driver: Option<WlSurface>,
     /// Wakes the compositor when a commit-paced composite is due.
     alarm: Ticker,
+    /// The pacing, for the sessions' hello and `/info`.
+    commit_paced: Arc<AtomicBool>,
     tick_period: Duration,
     /// `--compositor-fps`: the tick rate is the lowest multiple of the
     /// encode rate at or above it.
@@ -702,6 +709,7 @@ impl State {
             pacing_choice: config.pacing,
             driver: None,
             alarm,
+            commit_paced: Arc::default(),
             tick_period: Duration::from_secs(1) / tick_hz,
             min_tick_hz: config.compositor_fps,
             ticker,
@@ -1011,6 +1019,8 @@ impl State {
         };
         if pacing != self.schedule.pacing() {
             info!(?pacing, "compositing pacing");
+            self.commit_paced
+                .store(pacing == Pacing::Commit, Ordering::Relaxed);
             self.schedule.set_pacing(pacing, now);
             if pacing == Pacing::Fixed {
                 self.alarm.disarm();
