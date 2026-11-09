@@ -1434,6 +1434,7 @@ pub fn self_test(render_node: &Path, frames: u32) -> Result<SelfTest> {
             height,
             fps: 60,
             bitrate_bps: 20_000_000,
+            ten_bit: false,
         },
     )?;
     let (mut keyframes, mut bytes) = (0u32, 0u64);

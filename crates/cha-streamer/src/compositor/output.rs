@@ -839,6 +839,7 @@ mod tests {
                         height: height as u32,
                         fps,
                         bitrate_bps: bps as u32,
+                        ten_bit: false,
                     })
                     .unwrap();
                 let (mut encode, mut bytes, mut keys) = (Vec::new(), 0usize, 0);
@@ -902,6 +903,7 @@ mod tests {
                 height: height as u32,
                 fps,
                 bitrate_bps: 20_000_000,
+                ten_bit: false,
             })
             .unwrap();
         let (mut all, mut from_key, mut keys, mut sizes) = (Vec::new(), Vec::new(), 0, Vec::new());

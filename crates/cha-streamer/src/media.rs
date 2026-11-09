@@ -550,10 +550,12 @@ impl Media {
         let mailbox = Arc::new(Mailbox::default());
         let subscribers: Subscribers = Arc::default();
         let builder = std::thread::Builder::new().name(format!("encode-{}", codec.name()));
+        let codec_of = codec;
         let thread = match (codec, self.pyrowave.clone()) {
-            (VideoCodec::Hw(codec), _) => {
+            (VideoCodec::Hw(codec), _) | (VideoCodec::Hw10(codec), _) => {
                 let worker = EncoderWorker {
                     codec,
+                    ten_bit: codec_of.ten_bit(),
                     device: Arc::clone(&self.device),
                     fps: Arc::clone(&self.fps),
                     mailbox: Arc::clone(&mailbox),
@@ -585,6 +587,8 @@ impl Media {
 
 struct EncoderWorker {
     codec: Codec,
+    /// 10 bits a sample (`VideoCodec::Hw10`).
+    ten_bit: bool,
     device: Arc<Device>,
     fps: Arc<AtomicU32>,
     mailbox: Arc<Mailbox>,
@@ -817,6 +821,7 @@ impl EncoderWorker {
                     height: frame.height,
                     fps,
                     bitrate_bps: target_bps,
+                    ten_bit: self.ten_bit,
                 })?;
                 info!(
                     codec = self.codec.name(),

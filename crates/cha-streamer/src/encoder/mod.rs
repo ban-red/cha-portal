@@ -38,6 +38,8 @@ pub struct Params {
     pub height: u32,
     pub fps: u32,
     pub bitrate_bps: u32,
+    /// 10 bits a sample (`hevc-10`, `av1-10`): NVENC only, for now.
+    pub ten_bit: bool,
 }
 
 /// One encoded stream.
@@ -136,6 +138,7 @@ mod tests {
                 height: 64,
                 fps: 60,
                 bitrate_bps: 1,
+                ten_bit: false,
             },
             next: 0,
         };

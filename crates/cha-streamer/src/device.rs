@@ -79,6 +79,9 @@ pub fn intersect(
         .copied()
         .filter(|codec| match codec {
             VideoCodec::Hw(c) => device.contains(c),
+            // Only NVENC encodes 10 bits so far (the VA-API video processor
+            // doesn't write P010 yet, and the CPU encoders stay 8-bit).
+            VideoCodec::Hw10(c) => kind == DeviceKind::Nvidia && device.contains(c),
             VideoCodec::PyroWave(_) => kind == DeviceKind::Nvidia && pyrowave,
         })
         .collect()
@@ -177,7 +180,13 @@ impl Device {
 
     /// A new encoder for `params.codec`.
     pub fn encoder(&self, params: Params) -> Result<Box<dyn VideoEncoder>> {
-        match backend(self.kind, params.codec)? {
+        let backend = backend(self.kind, params.codec)?;
+        anyhow::ensure!(
+            !params.ten_bit || backend == Backend::Nvenc,
+            "10-bit {} isn't encoded on this device yet",
+            params.codec.name()
+        );
+        match backend {
             Backend::Nvenc => {
                 let cuda = self.cuda.clone().context("no CUDA context")?;
                 Ok(Box::new(Nvenc::new(cuda, params)?))
@@ -225,6 +234,7 @@ impl Device {
                         height: 720,
                         fps: 60,
                         bitrate_bps: 10_000_000,
+                        ten_bit: false,
                     },
                 )
                 .is_ok()
@@ -392,6 +402,35 @@ mod tests {
         // Nothing on the CPU makes HEVC.
         let err = backend(DeviceKind::Cpu, Codec::Hevc).unwrap_err();
         assert!(err.to_string().contains("H.264 and AV1 only"), "{err}");
+    }
+
+    #[test]
+    fn ten_bit_codecs_are_offered_only_where_asked_for_and_only_by_nvenc() {
+        let all = [Codec::H264, Codec::Hevc, Codec::Av1];
+        let hevc10 = VideoCodec::from_name("hevc-10").unwrap();
+        let av110 = VideoCodec::from_name("av1-10").unwrap();
+        let wanted = [VideoCodec::Hw(Codec::Hevc), hevc10, av110];
+        assert_eq!(
+            intersect(DeviceKind::Nvidia, &all, &wanted, false),
+            wanted.to_vec()
+        );
+        // Not without the codec at 8 bits, and not off NVIDIA yet.
+        assert_eq!(
+            intersect(
+                DeviceKind::Nvidia,
+                &[Codec::H264, Codec::Hevc],
+                &wanted,
+                false
+            ),
+            vec![VideoCodec::Hw(Codec::Hevc), hevc10]
+        );
+        for kind in [DeviceKind::Vaapi, DeviceKind::Cpu] {
+            assert_eq!(
+                intersect(kind, &all, &wanted, false),
+                vec![VideoCodec::Hw(Codec::Hevc)],
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
