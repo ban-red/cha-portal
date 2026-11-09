@@ -1,5 +1,7 @@
 # Codec-side HDR for Cha Portal: 10-bit encode, colour signalling and tone mapping on NVENC, VA-API, SVT-AV1 and PyroWave (as of 2026-11-09)
 
+> Evidence for [research note 12](README.md).
+
 Scope: low-delay real-time encoding only (no B-frames, no lookahead, one-frame VBV). VOD figures are context only. Labels used: **[vendor]** = vendor docs or headers, **[source]** = read directly in open-source code, **[single-dev]** = one developer's report, **[independent]** = third-party measurement, **[arith]** = my own arithmetic, **(unverified)** = not confirmed from a primary source. Code was read on 2026-11-09 from each project's default branch, so line numbers may drift.
 
 ## 1. NVENC (Video Codec SDK 12.x/13.x, Ada RTX 4090): 10-bit input, RGB→YUV matrix, latency, HDR metadata, 4:4:4

@@ -1,5 +1,7 @@
 # HDR and VRR in shipping game-streaming and remote-desktop products (state as of 2026-11-09), and the evidence on VRR vs fixed-refresh presentation
 
+> Evidence for [research note 12](README.md).
+
 Scope: industry slice only. It builds on, and does not repeat, `docs/research/03-moonlight-sunshine-ecosystem.md` (GameStream HDR wire format: `hdrMode`/`dynamicRangeMode`, the 0x010e HDR metadata packet, Vibepollo `clientVrrRequested`), `08-adjacent-platforms-2026.md` (Steam PyroWave beta, Punktfunk, Polaris, Nestri) and `11-upscaling-and-frame-generation/industry.md` (GFN Blackwell/CQS, cloud FG guidance, Nonary VRR client presets, NSDI 2025 headline).
 
 Labels used: **[vendor]** = the company's own page or release notes; **[dev]** = a project's own code, docs or maintainer; **[user]** = a single user's issue or forum post; **[press]** = journalism repeating vendor material; **[independent]** = third-party measurement or peer-reviewed work; **(via search summary)** = I saw only a search-engine extract, not the page; **(unverified)** = not confirmed by a second source.

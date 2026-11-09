@@ -1,6 +1,8 @@
 # Node-side HDR on a headless Linux streaming node: from "an app draws HDR" to "a 10-bit/FP16 buffer reaches the encoder" (November 2026)
 
-Scope: what has to happen on a Cha Portal GPU node (RTX 4090 with driver 580+ and R615 tracked, plus Intel/AMD VA-API nodes) for HDR from containerised clients to reach the encoder. The clients are Steam Big Picture in nested gamescope with Proton games, Chrome, Firefox, KDE Plasma 6 and XFCE. In between sit `cha-streamer`'s own headless Smithay compositor, its output pool, and the CUDA/NVENC and VA-API paths. Research date: 2026-11-09. Encoder-side bitstream signalling, browser decode and the macOS player are covered in sibling notes (`codec_hdr.md`, `browser.md`, `native_client.md`) and are only touched on here.
+> Evidence for [research note 12](README.md).
+
+Scope: what has to happen on a Cha Portal GPU node (RTX 4090 with driver 580+ and R615 tracked, plus Intel/AMD VA-API nodes) for HDR from containerised clients to reach the encoder. The clients are Steam Big Picture in nested gamescope with Proton games, Chrome, Firefox, KDE Plasma 6 and XFCE. In between sit `cha-streamer`'s own headless Smithay compositor, its output pool, and the CUDA/NVENC and VA-API paths. Research date: 2026-11-09. Encoder-side bitstream signalling, browser decode and the macOS player are covered in sibling notes (`codec.md`, `browser.md`, `native-client.md`) and are only touched on here.
 
 Method: most claims below were read directly from source at these revisions:
 - gamescope `master` at `ecc518b` (2026-10-28), plus the `3.16.20` tag that Ubuntu 26.04 ships.
@@ -13,12 +15,12 @@ Method: most claims below were read directly from source at these revisions:
 Tag dates are the dates of the tagged commits, so they are approximate. Anything secondary or unconfirmed is marked as such.
 
 Cha's current state (from the repo):
-- The output pool picks only `[Xrgb8888, Argb8888]` from the renderer's formats ([output.rs](../../crates/cha-streamer/src/compositor/output.rs), `formats` closure near line 330).
+- The output pool picks only `[Xrgb8888, Argb8888]` from the renderer's formats ([output.rs](../../../crates/cha-streamer/src/compositor/output.rs), `formats` closure near line 330).
 - Each GBM buffer is registered with CUDA as an EGL image.
-- NVENC and VA-API signal BT.709 limited, 8-bit ([README](../../crates/cha-streamer/README.md)).
-- `steam-gaming` runs gamescope without `--hdr-enabled` ([steam-gaming](../../images/steam/steam-gaming)).
+- NVENC and VA-API signal BT.709 limited, 8-bit ([README](../../../crates/cha-streamer/README.md)).
+- `steam-gaming` runs gamescope without `--hdr-enabled` ([steam-gaming](../../../images/steam/steam-gaming)).
 - The compositor advertises no colour-management protocol.
-- The gamestream handoff already returns 422 for HDR requests ([README](../../crates/cha-streamer/README.md)).
+- The gamestream handoff already returns 422 for HDR requests ([README](../../../crates/cha-streamer/README.md)).
 
 ## 1. Games under Proton: how DXVK/vkd3d-proton, Wine and gamescope's WSI layer produce HDR, and what Steam Big Picture needs before it shows its HDR toggle
 
@@ -227,7 +229,7 @@ The reusable code is in MIT-licensed forks, chiefly `dividebysandwich/smithay` b
   - `st2084_pq` default luminances are min 0.005, max 10000 and reference 203 cd/m². The `set_luminances` defaults (from the sRGB spec) are 0.2/80/80.
   - `windows_scrgb`: "R=G=B=1.0 corresponds to ... 80 cd/m²", max 125.0 = 10k, and the reference white "should be R=G=B=2.5375 corresponding to 203 cd/m² of Report ITU-R BT.2408-7".
   - `windows_bt2100` is BT.2020/PQ with an assumed 203 cd/m² reference.
-- The Rust `wayland-protocols` crate is 0.32.13 in Cha's lockfile. Another project's Oct 2026 notes say the colour-management XML is vendored there as staging — [Cha Cargo.lock](../../Cargo.lock); [scoot PR #564](https://github.com/scoot-sh/scoot/pull/564)
+- The Rust `wayland-protocols` crate is 0.32.13 in Cha's lockfile. Another project's Oct 2026 notes say the colour-management XML is vendored there as staging — [Cha Cargo.lock](../../../Cargo.lock); [scoot PR #564](https://github.com/scoot-sh/scoot/pull/564)
 
 **Compositor implementations**
 - **KWin** ([KWin colormanagement_v1.cpp](https://invent.kde.org/plasma/kwin/-/blob/master/src/wayland/colormanagement_v1.cpp); [KWin cc49de8f](https://invent.kde.org/plasma/kwin/-/commit/cc49de8f)):
@@ -269,7 +271,7 @@ The reusable code is in MIT-licensed forks, chiefly `dividebysandwich/smithay` b
   - Validated 2026-08-31 on an RTX 5090 with open modules 610.57.04, and 2026-09-02 on a Radeon 680M.
   - Community report: RTX 4090 on 595.104.02 running Cyberpunk 2077 in HDR10/PQ under GE-Proton.
   - Says it is "not an upstream-ready pull request". A community rebase exists at `Liquidmasl/smithay` `hdr`.
-- Cha pins Smithay `118e34ff` (2026-09-28, "drm: allow disabling VRR on legacy surfaces"), which is later than `ds-hdr-master`'s base (2026-07-06) — [Cha cha-streamer Cargo.toml](../../crates/cha-streamer/Cargo.toml); [Smithay 118e34ff](https://github.com/Smithay/smithay/commit/118e34ff)
+- Cha pins Smithay `118e34ff` (2026-09-28, "drm: allow disabling VRR on legacy surfaces"), which is later than `ds-hdr-master`'s base (2026-07-06) — [Cha cha-streamer Cargo.toml](../../../crates/cha-streamer/Cargo.toml); [Smithay 118e34ff](https://github.com/Smithay/smithay/commit/118e34ff)
 
 ### Inferences
 - **The reusable MIT code for Cha** is the protocol and state plumbing in `ds-hdr-master` (`src/wayland/color/management/mod.rs`, `src/wayland/color/representation/*`). Cha needs neither the DRM/KMS parts (`drm/color.rs`, atomic connector state) nor most of cosmic-hdr-reference's output code. The rebase onto `118e34ff` is about three months of upstream drift. Alternatively, vendor the module into `cha-streamer` the way gst-wayland-display was told it could ("move the code into gst-wayland-comp"), avoiding a Smithay fork pin.
@@ -378,7 +380,7 @@ The zero-copy encoder hand-off is the hard part. CUDA 13's `CUeglColorFormat` ha
   - `format.rs` maps `Fourcc::Abgr2101010 => (RGB10_A2, RGBA, UNSIGNED_INT_2_10_10_10_REV)` and `Fourcc::Abgr16161616f => (RGBA16F, RGBA, HALF_FLOAT)`.
   - `SUPPORTED_MEM_FORMATS_3` (GLES3) adds `Abgr2101010`, `Xbgr2101010`, `Abgr16161616f` and `Xbgr16161616f` to the 8-bit set.
   - The allocator defines `Argb/Xrgb/Abgr/Xbgr2101010` and the `16161616f` variants.
-- Cha's output pool currently filters the renderer's dmabuf render formats to `[Xrgb8888, Argb8888]` only — [Cha output.rs](../../crates/cha-streamer/src/compositor/output.rs)
+- Cha's output pool currently filters the renderer's dmabuf render formats to `[Xrgb8888, Argb8888]` only — [Cha output.rs](../../../crates/cha-streamer/src/compositor/output.rs)
 - gamescope's Vulkan code notes NVIDIA does not support `XRGB2101010` linear storage images, and that "imageStore lands in XBGR order there", so it uses `XBGR2101010` — [gamescope rendervulkan.cpp](https://github.com/ValveSoftware/gamescope/blob/master/src/rendervulkan.cpp)
 - cosmic-hdr-reference drives "10-bit scanout state" on NVIDIA 610.57.04. Its SDR desktop is rendered "into an 8-bit intermediate, then ... SDR-to-BT.2020/PQ conversion into a 10-bit scanout buffer". It says "A production design should composite all surfaces in a linear, high-precision intermediate (for example F16) ... and encode only at the output boundary". HDR clients that do not cover the output (for example windowed scRGB Blender) "are currently composited as SDR" — [cosmic-hdr-reference](https://github.com/franzjeger/cosmic-hdr-reference)
 - Drakulix's requirements for a Smithay streaming compositor ([Wolf #222](https://github.com/games-on-whales/wolf/issues/222)):
@@ -415,13 +417,13 @@ The zero-copy encoder hand-off is the hard part. CUDA 13's `CUeglColorFormat` ha
   - Its 10/12-bit entries are YUV (for example `Y10V10U10_420_SEMIPLANAR`, `_709`, `_2020`, `Y10_ER`, `Y12V12U12_*`) and Bayer.
   - It has no packed 10-bit RGB and no FP16 entry.
   - By contrast, `CUarray_format` does have `CU_AD_FORMAT_UNORM_INT_101010_2` ("4 channel unorm R10G10B10A2 RGB format") and `CU_AD_FORMAT_HALF`.
-- Cha's README already found that "CUDA's EGL interop won't import an R8 image". It plans a Vulkan compute pass that writes NV12 into a CUDA-imported buffer that NVENC reads as `CUDADEVICEPTR` — [Cha README](../../crates/cha-streamer/README.md)
-- Cha's NVENC bindings are SDK 13.0 (`NVENCAPI_MAJOR_VERSION = 13`). They include `NV_ENC_BUFFER_FORMAT_ARGB10`, `ABGR10`, `YUV420_10BIT` and `YUV444_10BIT`, `NV_ENC_CAPS_SUPPORT_10BIT_ENCODE`, `inputBitDepth`/`outputBitDepth`, BT.2020 VUI enums, and `pMaxCll: *mut CONTENT_LIGHT_LEVEL` / `pMasteringDisplay: *mut MASTERING_DISPLAY_INFO` in both `NV_ENC_PIC_PARAMS_HEVC` and `NV_ENC_PIC_PARAMS_AV1`. `nvenc.rs` currently sets BT.709 primaries and transfer — [cha-nvenc sys.rs](../../crates/cha-nvenc/src/sys.rs); [cha-nvenc nvenc.rs](../../crates/cha-nvenc/src/nvenc.rs)
+- Cha's README already found that "CUDA's EGL interop won't import an R8 image". It plans a Vulkan compute pass that writes NV12 into a CUDA-imported buffer that NVENC reads as `CUDADEVICEPTR` — [Cha README](../../../crates/cha-streamer/README.md)
+- Cha's NVENC bindings are SDK 13.0 (`NVENCAPI_MAJOR_VERSION = 13`). They include `NV_ENC_BUFFER_FORMAT_ARGB10`, `ABGR10`, `YUV420_10BIT` and `YUV444_10BIT`, `NV_ENC_CAPS_SUPPORT_10BIT_ENCODE`, `inputBitDepth`/`outputBitDepth`, BT.2020 VUI enums, and `pMaxCll: *mut CONTENT_LIGHT_LEVEL` / `pMasteringDisplay: *mut MASTERING_DISPLAY_INFO` in both `NV_ENC_PIC_PARAMS_HEVC` and `NV_ENC_PIC_PARAMS_AV1`. `nvenc.rs` currently sets BT.709 primaries and transfer — [cha-nvenc sys.rs](../../../crates/cha-nvenc/src/sys.rs); [cha-nvenc nvenc.rs](../../../crates/cha-nvenc/src/nvenc.rs)
 - NVIDIA's docs list ABGR10 as an input format and 10-bit H.264/HEVC/AV1 encode. A developer-forum user got correct HDR from ABGR10 + HEVC Main10 only after setting VUI to BT.2020 / SMPTE 2084 / BT.2020-NCL (anecdotal) — [Video Codec SDK 13.0 read-me](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/read-me/index.html); [NVENC Application Note 13.0](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvenc-application-note/index.html); [NVIDIA forum "Nvenc & HDR10"](https://forums.developer.nvidia.com/t/nvenc-hdr10/351194)
 - Mesa VA frontend ([Mesa va_private.h](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/gallium/frontends/va/va_private.h); [Mesa va surface.c](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/gallium/frontends/va/surface.c)):
   - `VaFourccToPipeFormat` maps `AR30`→`B10G10R10A2_UNORM`, `AB30`→`R10G10B10A2_UNORM`, `XR30`→`B10G10R10X2_UNORM` and `XB30`→`R10G10B10X2_UNORM`.
   - `surface.c` maps `VA_RT_FORMAT_RGB32_10` to `X2R10G10B10` and `YUV420_10` to `P010`.
-- Cha's VA-API path offers only HEVC Main 8-bit and AV1 Profile 0 8-bit today, and its video processor converts to NV12 BT.709 — [Cha README](../../crates/cha-streamer/README.md)
+- Cha's VA-API path offers only HEVC Main 8-bit and AV1 Profile 0 8-bit today, and its video processor converts to NV12 BT.709 — [Cha README](../../../crates/cha-streamer/README.md)
 - Sunshine's CUDA path accepts `P010LE` frames as well as NV12 and 4:4:4 variants — [Sunshine cuda.cpp](https://github.com/LizardByte/Sunshine/blob/master/src/platform/linux/cuda.cpp)
 
 ### Inferences

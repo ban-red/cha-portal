@@ -1,5 +1,7 @@
 # HDR video and variable refresh in web browsers for Cha Portal's low-latency player (as of November 2026)
 
+> Evidence for [research note 12](README.md).
+
 Scope: Cha Portal's three browser video paths, which are (1) WebRTC → `<video>`, (2) WebTransport → WebCodecs `VideoDecoder` → `MediaStreamTrackGenerator` → `<video>` and (3) PyroWave → WebGPU canvas. The baseline is Chrome 154 on an M4 MacBook Pro (ProMotion/XDR). This builds on `docs/research/05-web-transport-and-input.md` and `docs/research/11-upscaling-and-frame-generation/browser.md` without repeating them.
 
 Method notes:
@@ -204,7 +206,7 @@ Method notes:
 
 **Present cost**
 - I found no published measurement of FP16 versus 8-bit WebGPU canvas present cost.
-- Cha's measured canvas path is 7.3–8.9 ms, against 2.7–3.4 ms for `<video>` with SDR 8-bit. — [Cha note 11 §5](/home/user/cha-portal/docs/research/11-upscaling-and-frame-generation/browser.md)
+- Cha's measured canvas path is 7.3–8.9 ms, against 2.7–3.4 ms for `<video>` with SDR 8-bit. — [Cha note 11 §5](../../../docs/research/11-upscaling-and-frame-generation/browser.md)
 
 ### Inferences
 **PyroWave HDR recipe (path 3, Chrome macOS/Windows)**
@@ -392,7 +394,7 @@ Without a headroom API, assume the XDR panel's headroom varies (about 1× to 16�
 I found **no published independent measurement** of browser HDR decode or present latency, of FP16 canvas present cost, or of browser judder or latency with versus without VRR. The only hard numbers available are Cha's own SDR measurements, single-blog throughput figures and anecdotal forum reports. Cha will have to produce these numbers itself.
 
 ### Cited Findings
-- Cha's own SDR measurements: about 3 ms send→compositor on the WebCodecs → `MediaStreamTrackGenerator` → `<video>` path, and 7.3–8.9 ms for the WebGPU canvas present path versus 2.7–3.4 ms for `<video>`. — [Cha note 11 §5](/home/user/cha-portal/docs/research/11-upscaling-and-frame-generation/browser.md) (internal measurement)
+- Cha's own SDR measurements: about 3 ms send→compositor on the WebCodecs → `MediaStreamTrackGenerator` → `<video>` path, and 7.3–8.9 ms for the WebGPU canvas present path versus 2.7–3.4 ms for `<video>`. — [Cha note 11 §5](../../../docs/research/11-upscaling-and-frame-generation/browser.md) (internal measurement)
 - [2025–2026] Chrome on an M4 MacBook Pro draws about 1230 fps via `importExternalTexture` versus about 1120 fps via `ImageBitmapRenderingContext` (single-blog throughput, 8-bit). — [WebCodecs Fundamentals: Rendering](https://webcodecsfundamentals.org/basics/rendering/) (via Cha note 11)
 - [older: 2025-10] Constructing a `VideoFrame` from an OffscreenCanvas in Safari costs far more CPU than from a regular canvas. — [WebKit bug 300579](https://bugs.webkit.org/show_bug.cgi?id=300579) (via Cha note 11)
 - TestUFO's G-SYNC page is a software interpolation simulation of VRR, not a measurement of browser VRR. — [TestUFO G-SYNC](https://www.testufo.com/gsync?embed=1)

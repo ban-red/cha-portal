@@ -18,6 +18,7 @@ Eight parallel research slices, each with sources inline and claims we could not
 | 09 | Technology for the native client, October 2026 (Game Mode, AWDL, MetalFX, iroh 1.0, L4S, MoQ) | [09-native-client-tech-2026-10.md](09-native-client-tech-2026-10.md) |
 | 10 | USB/IP and USB passthrough: controllers in Steam, latency, any device in any image | [10-usbip-and-usb-passthrough.md](10-usbip-and-usb-passthrough.md) |
 | 11 | Upscaling and frame generation, November 2026 (DLSS/FSR 4 on the node, client upscalers, AV1 scaling, frame generation's latency) | [11-upscaling-and-frame-generation/](11-upscaling-and-frame-generation/README.md) |
+| 12 | HDR and variable refresh, November 2026 (the node's two clocks, gamescope's VRR and HDR, 10-bit encoders, colour management, HDR and refresh in Chrome, EDR in Cha Player) | [12-hdr-and-vrr/](12-hdr-and-vrr/README.md) |
 
 ---
 
