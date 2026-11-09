@@ -38,6 +38,7 @@ bytemuck = { workspace = true, features = ["derive"] }
 cha-client-gamestream = { workspace = true, optional = true }
 cha-client-portal = { workspace = true, optional = true }
 cha-pyrowave-wgpu.workspace = true
+cha-upscale.workspace = true
 cpal = "0.18"
 libc.workspace = true
 egui = "0.35"

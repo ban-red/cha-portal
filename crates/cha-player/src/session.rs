@@ -3,7 +3,7 @@
 //! own thread, so a slow decode never holds up audio.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -44,6 +44,62 @@ pub struct Stats {
     pub reconnects: AtomicU64,
     /// The longest wait between two frames' arrivals since last read.
     gap_max_ms: AtomicU64,
+    /// Where the window last drew the picture (`Shared::drew`): its size in
+    /// pixels packed `w << 32 | h`, or 0 when that was the picture's own size.
+    drawn: AtomicU64,
+    /// The [`Scaler`] that drew it there, as `Scaler::id`.
+    scaler: AtomicU8,
+    /// The upscaler's measured GPU time, and the frames it was measured on, since last read.
+    upscale_ns: AtomicU64,
+    upscale_frames: AtomicU64,
+}
+
+/// What stretches the picture to the size the window draws it at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scaler {
+    /// The nearest sample (PyroWave's renderer).
+    Nearest,
+    /// The GPU's bilinear filter (VideoToolbox frames).
+    Bilinear,
+    /// Snapdragon Game Super Resolution 1 (`cha-upscale`).
+    Sgsr,
+}
+
+impl Scaler {
+    /// What the stats panel calls it (`upscaler`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Scaler::Nearest => "nearest",
+            Scaler::Bilinear => "bilinear",
+            Scaler::Sgsr => "SGSR 1",
+        }
+    }
+
+    fn id(self) -> u8 {
+        match self {
+            Scaler::Nearest => 1,
+            Scaler::Bilinear => 2,
+            Scaler::Sgsr => 3,
+        }
+    }
+
+    fn from_id(id: u8) -> Option<Self> {
+        match id {
+            1 => Some(Scaler::Nearest),
+            2 => Some(Scaler::Bilinear),
+            3 => Some(Scaler::Sgsr),
+            _ => None,
+        }
+    }
+}
+
+/// How the window drew the picture over the last second, for the stats.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Scaling {
+    /// The size it was drawn at, when that isn't the picture's own size.
+    pub shown: Option<(u32, u32)>,
+    pub upscaler: Option<&'static str>,
+    pub upscale_ms: Option<f32>,
 }
 
 /// What the video thread and the window share.
@@ -132,6 +188,47 @@ impl Shared {
         let log: Vec<u64> = self.arrivals.lock().unwrap().iter().copied().collect();
         // The timing alone isn't enough: only with AWDL actually up.
         crate::awdl::looks_like_awdl(&log) && crate::awdl::interface_active()
+    }
+
+    /// The window drew a `picture`-sized frame `drawn` pixels big with `scaler`, in
+    /// `gpu_ns` of GPU time when that was measured. A size within a pixel of the
+    /// picture's own is rounding, not scaling.
+    pub fn drew(
+        &self,
+        picture: (u32, u32),
+        drawn: (u32, u32),
+        scaler: Scaler,
+        gpu_ns: Option<u64>,
+    ) {
+        let s = &self.stats;
+        let scaled = picture.0.abs_diff(drawn.0) > 1 || picture.1.abs_diff(drawn.1) > 1;
+        let packed = if scaled {
+            (u64::from(drawn.0) << 32) | u64::from(drawn.1)
+        } else {
+            0
+        };
+        s.drawn.store(packed, Ordering::Relaxed);
+        s.scaler.store(scaler.id(), Ordering::Relaxed);
+        if let Some(ns) = gpu_ns {
+            s.upscale_ns.fetch_add(ns, Ordering::Relaxed);
+            s.upscale_frames.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// How the picture was drawn, with the mean upscaler time since the last call.
+    fn take_scaling(&self) -> Scaling {
+        let s = &self.stats;
+        let packed = s.drawn.load(Ordering::Relaxed);
+        let ns = s.upscale_ns.swap(0, Ordering::Relaxed);
+        let frames = s.upscale_frames.swap(0, Ordering::Relaxed);
+        if packed == 0 {
+            return Scaling::default();
+        }
+        Scaling {
+            shown: Some(((packed >> 32) as u32, packed as u32)),
+            upscaler: Scaler::from_id(s.scaler.load(Ordering::Relaxed)).map(Scaler::name),
+            upscale_ms: (frames > 0).then(|| ns as f32 / frames as f32 / 1e6),
+        }
     }
 
     /// The window is about to draw: the next frame may wake it again.
@@ -402,6 +499,10 @@ impl Rates {
             self.shown.mbps =
                 Some((now.video_bytes - self.last.video_bytes) as f32 * 8.0 / secs / 1e6);
             self.shown.frame_gap_ms = shared.take_frame_gap_ms();
+            let scaling = shared.take_scaling();
+            self.shown.shown = scaling.shown;
+            self.shown.upscaler = scaling.upscaler;
+            self.shown.upscale_ms = scaling.upscale_ms;
             self.last = now;
             self.shown.awdl_suspected = shared.awdl_suspected();
             self.since = Instant::now();

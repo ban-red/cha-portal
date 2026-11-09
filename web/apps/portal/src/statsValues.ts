@@ -47,6 +47,11 @@ export function statsValues({ stats: s, codec, transport, reconnects }: StatsVal
     codec_tag: codecTag(name, transport) || undefined,
     width: s?.width,
     height: s?.height,
+    // Only a picture drawn at another size than it is decoded has these (crop.ts `shownSize`).
+    shown_width: s?.shownWidth ?? undefined,
+    shown_height: s?.shownHeight ?? undefined,
+    upscaler: s?.upscaler ?? undefined,
+    upscale_ms: s?.upscaleMs ?? undefined,
     reconnects: positive(reconnects),
     latency_ms: s?.latencyMs,
     decode_ms: s?.decodeMs,

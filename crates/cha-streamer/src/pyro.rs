@@ -361,3 +361,41 @@ impl PyroWorker {
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The streamer's default budget: 290 Mbit/s for 4:2:0 at 1440p60.
+    fn settings() -> PyroSettings {
+        PyroSettings::new(0x10de, 0x2684, 290)
+    }
+
+    #[test]
+    fn a_frame_gets_what_rate_control_allows_between_a_floor_and_the_full_budget() {
+        let s = settings();
+        let full = s.frame_budget(Chroma::Yuv420, 2560, 1440);
+        assert_eq!(s.paced_budget(Chroma::Yuv420, 2560, 1440, u32::MAX), full);
+        // 100 Mbit/s at 60 fps.
+        let paced = s.paced_budget(Chroma::Yuv420, 2560, 1440, 100_000_000);
+        assert_eq!(paced, 100_000_000 / 8 / 60);
+        assert!(paced < full);
+        assert_eq!(
+            s.paced_budget(Chroma::Yuv420, 2560, 1440, 1_000_000),
+            MIN_FRAME_BYTES
+        );
+    }
+
+    #[test]
+    fn a_desktop_at_a_panels_own_size_is_still_held_to_the_link() {
+        // A MacBook Pro 14" panel (3024×1960) has 1.6 times 1440p's pixels: a
+        // bigger full budget, which rate control cuts to the same link.
+        let s = settings();
+        let big = s.frame_budget(Chroma::Yuv444, 3024, 1960);
+        assert!(big > s.frame_budget(Chroma::Yuv444, 2560, 1440));
+        assert_eq!(
+            s.paced_budget(Chroma::Yuv444, 3024, 1960, 600_000_000),
+            600_000_000 / 8 / 60
+        );
+    }
+}

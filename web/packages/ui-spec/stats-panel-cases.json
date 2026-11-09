@@ -1824,6 +1824,152 @@
     }
   },
   {
+    "name": "a picture drawn larger than it is decoded shows both sizes and the upscaler",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2216,
+      "height": 1440,
+      "shown_width": 3024,
+      "shown_height": 1964,
+      "upscaler": "SGSR 1",
+      "upscale_ms": 0.842,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s",
+            "row_ids": ["codec","size","scaling","fps","bitrate"],
+            "rows": [
+              {"id":"size","label":"Size","value":"2216×1440 → 3024×1964"},
+              {"id":"scaling","label":"Scaling","value":"SGSR 1, 0.84 ms"}
+            ]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2216×1440, shown at 3024×1964 (SGSR 1), scaling 0.84 ms, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s",
+            "row_ids": ["codec","size","scaling","fps","bitrate"],
+            "rows": [
+              {"id":"size","label":"Size","value":"2216×1440 → 3024×1964"},
+              {"id":"scaling","label":"Scaling","value":"SGSR 1, 0.84 ms"}
+            ]
+          },
+          {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+          {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2216×1440, shown at 3024×1964 (SGSR 1), scaling 0.84 ms, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nPlayer: Test Agent/1.0"
+      }
+    }
+  },
+  {
+    "name": "the browser's own scaling has no measured time",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/RTC",
+      "width": 2216,
+      "height": 1440,
+      "shown_width": 3024,
+      "shown_height": 1964,
+      "upscaler": "browser",
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "grade_tone": "ok",
+      "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/RTC",
+      "sections": [
+        {
+          "id": "stream",
+          "summary": "HEVC/RTC · 60 fps · 58.2 Mbit/s",
+          "row_ids": ["codec","size","scaling","fps","bitrate"],
+          "rows": [
+            {"id":"size","label":"Size","value":"2216×1440 → 3024×1964"},
+            {"id":"scaling","label":"Scaling","value":"browser"}
+          ]
+        },
+        {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","jitter-buffer","audio-buffer","audio-underruns"]},
+        {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped"]}
+      ],
+      "report": "Health: A (100/100), Smooth\nStream: HEVC/RTC, 2216×1440, shown at 3024×1964 (browser), 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nBrowser: Test Agent/1.0"
+    },
+    "platforms": ["web"]
+  },
+  {
+    "name": "an upscaler at the picture's own size has no scaling row",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "upscaler": "bilinear",
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "grade_tone": "ok",
+      "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+      "sections": [
+        {
+          "id": "stream",
+          "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s",
+          "row_ids": ["codec","size","fps","bitrate"],
+          "rows": [{"id":"size","label":"Size","value":"2560×1440"}]
+        },
+        {"id":"latency","summary":"11.6 ms · decode 3.2 ms","row_ids":["latency","decode","audio-buffer","audio-underruns","audio-dropped"]},
+        {"id":"network","summary":"2.4 ms · 0 lost · 0 dropped","row_ids":["rtt","lost","recovered","dropped","decode-errors"]}
+      ],
+      "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nPlayer: Test Agent/1.0"
+    },
+    "platforms": ["native"]
+  },
+  {
     "name": "a missing size reads dashes",
     "values": {
       "shown_fps": 60,

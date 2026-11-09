@@ -2,12 +2,21 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 import SegmentedControl from "../components/SegmentedControl.vue";
+import ToggleSwitch from "../components/ToggleSwitch.vue";
+import { loadUpscaler, saveUpscaler } from "../streamPrefs";
 import { THEMES, type ThemePrefs } from "../themes";
 import { readSystemEnv, resolvePrefs, useTheme } from "../themes/runtime";
 import { usePrefsSync } from "../themes/sync";
 
 const { prefs, resolved, setPrefs } = useTheme();
 const sync = usePrefsSync();
+
+// Kept in this browser, not synced with the theme; the next session reads it.
+const upscaler = ref(!!loadUpscaler());
+function setUpscaler(on: boolean) {
+  upscaler.value = on;
+  saveUpscaler(on);
+}
 
 // What "System" means right now, from the OS alone (not from the user's other choices).
 const env = ref(readSystemEnv());
@@ -180,6 +189,20 @@ function onTileKey(e: KeyboardEvent, i: number) {
         :options="transparencyOptions"
         @update:model-value="set('transparency', $event)"
       />
+    </section>
+
+    <section class="card flex flex-wrap items-center justify-between gap-x-6 gap-y-3 p-5" aria-labelledby="upscaler-h">
+      <div class="min-w-0">
+        <h2 id="upscaler-h" class="text-lg font-semibold tracking-tight">Sharpen games (experimental)</h2>
+        <p id="upscaler-hint" class="mt-1 text-sm text-ink-2">
+          When a game streamed with PyroWave is smaller than your screen, stretch it with SGSR 1, which sharpens edges,
+          instead of the browser's softer scaling. It takes some of the graphics card's time each frame (the stats panel's
+          Scaling row shows which filter runs and how long it takes), and steps back to the plain stretch if it slows frames
+          down. Desktops and browsers are never sharpened: they stream at your screen's own size. Kept in this browser;
+          applies from the next session.
+        </p>
+      </div>
+      <ToggleSwitch :model-value="upscaler" aria-labelledby="upscaler-h" aria-describedby="upscaler-hint" @update:model-value="setUpscaler" />
     </section>
 
     <p aria-live="polite" class="min-h-5 text-sm" :class="sync.status.value === 'error' ? 'text-danger' : 'text-ink-3'">

@@ -39,6 +39,10 @@ export interface RecordingSummary {
   /** The decoded picture size at the end. */
   width: number | null;
   height: number | null;
+  /** The size it was drawn at on screen at the end, and what stretched it there; null when shown at its own size. */
+  shown: { width: number; height: number; upscaler: string | null } | null;
+  /** The upscaler's GPU time per frame (per-second means), ms; nulls when it wasn't measured. */
+  upscaleMs: { p50: number | null; p95: number | null };
   /** Seconds covered, and snapshots taken (fewer than the seconds if the tab was hidden). */
   durationS: number;
   snapshots: number;
@@ -118,6 +122,7 @@ export function summarizeRecording(
   const busy = snapshots.filter((s) => s.sentFps !== null && s.sentFps >= BUSY_SENT_FPS);
   const fps = sortedOf(busy.map((s) => s.shownSentFps ?? s.fps));
   const decode = sortedOf(snapshots.map((s) => s.decodeMs));
+  const upscale = sortedOf(snapshots.map((s) => s.upscaleMs));
   const frames = meta.latencySamples?.length ? sortedOf(meta.latencySamples) : null;
   const perSecond = sortedOf(snapshots.map((s) => s.latencyMs));
   const lat = frames ?? perSecond;
@@ -140,6 +145,11 @@ export function summarizeRecording(
     codec: lastWith("codec"),
     width: last?.width ?? null,
     height: last?.height ?? null,
+    shown:
+      last?.shownWidth && last.shownHeight
+        ? { width: last.shownWidth, height: last.shownHeight, upscaler: last.upscaler ?? null }
+        : null,
+    upscaleMs: { p50: round(pct(upscale, 0.5)), p95: round(pct(upscale, 0.95)) },
     durationS: meta.durationS,
     snapshots: snapshots.length,
     fps: {
@@ -188,6 +198,7 @@ export function recordingMarkdown(r: RecordingSummary): string {
     ["Transport", r.transport ?? "n/a"],
     ["Codec", r.codec ?? "n/a"],
     ["Decoded size", r.width && r.height ? `${r.width}×${r.height}` : "n/a"],
+    ["Shown at", r.shown ? `${r.shown.width}×${r.shown.height}${r.shown.upscaler ? ` (${r.shown.upscaler})` : ""}` : "its own size"],
     ["Run", `${r.durationS} s, ${r.snapshots} snapshots`],
     ["FPS shown vs target", `p50 ${n(r.fps.shownP50)}, min ${n(r.fps.shownMin)} of ${n(r.fps.target)} (streamer sent ${n(r.fps.sentMean)}/s on average)`],
     [
@@ -195,6 +206,9 @@ export function recordingMarkdown(r: RecordingSummary): string {
       `p50 ${n(r.latencyMs.p50, " ms")}, p95 ${n(r.latencyMs.p95, " ms")}, p99 ${n(r.latencyMs.p99, " ms")}`,
     ],
     ["Decode (per-second mean)", `p50 ${n(r.decodeMs.p50, " ms")}, p95 ${n(r.decodeMs.p95, " ms")}`],
+    ...(r.upscaleMs.p50 === null
+      ? []
+      : ([["Upscale (per-second mean)", `p50 ${n(r.upscaleMs.p50, " ms")}, p95 ${n(r.upscaleMs.p95, " ms")}`]] as [string, string][])),
     ["Send → decoded p95", n(r.deliveryP95Ms, " ms")],
     ["RTT p50", n(r.rttMsP50, " ms")],
     ["Bitrate (mean)", n(r.bitrateMbpsAvg, " Mbit/s")],

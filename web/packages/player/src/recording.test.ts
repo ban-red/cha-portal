@@ -120,7 +120,20 @@ describe("summarizeRecording", () => {
     const md = recordingMarkdown(summarizeRecording([snap(), snap()], [], meta));
     expect(md).toContain("| Browser | Mozilla/5.0 Chrome/150 |");
     expect(md).toContain("| Decoded size | 2560×1440 |");
+    expect(md).toContain("| Shown at | its own size |");
     expect(md).toContain("p50 12 ms, p95 12 ms, p99 12 ms");
+    expect(md).not.toContain("Upscale");
+  });
+
+  test("a stretched picture records where it was shown, by what, and the upscaler's time", () => {
+    const scaled = (ms: number | null) =>
+      snap({ width: 2216, height: 1440, shownWidth: 3022, shownHeight: 1964, upscaler: "SGSR 1", upscaleMs: ms });
+    const r = summarizeRecording([scaled(0.8), scaled(null), scaled(1.2), scaled(0.9)], [], meta);
+    expect(r.shown).toEqual({ width: 3022, height: 1964, upscaler: "SGSR 1" });
+    expect(r.upscaleMs).toEqual({ p50: 0.9, p95: 1.2 });
+    const md = recordingMarkdown(r);
+    expect(md).toContain("| Shown at | 3022×1964 (SGSR 1) |");
+    expect(md).toContain("| Upscale (per-second mean) | p50 0.9 ms, p95 1.2 ms |");
   });
 
   test("a value's pipes and backslashes stay inside its cell", () => {

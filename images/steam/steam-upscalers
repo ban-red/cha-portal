@@ -1,0 +1,33 @@
+#!/bin/sh
+# Prints the environment that turns on games' own upscalers and Reflex, as
+# `export` lines for start-steam to eval (research 11, step 3). On NVIDIA nodes:
+# - PROTON_ENABLE_NGX_UPDATER: Proton lets NVIDIA's NGX fetch the newest DLSS
+#   libraries into the prefix, in place of the ones a game shipped with;
+# - DXVK_NVAPI_DRS_NGX_DLSS_{SR,RR}_OVERRIDE with render_preset_latest: when a
+#   game runs DLSS Super Resolution or Ray Reconstruction (the player turns it
+#   on in the game), it gets the newest model, as the NVIDIA app's override
+#   does on Windows;
+# - DXVK_NVAPI_VKREFLEX: Reflex for Vulkan games too (D3D games have it
+#   already), which shortens the game's render queue when it asks for Reflex.
+# Frame generation is never forced (DXVK_NVAPI_DRS_NGX_DLSS_FG_OVERRIDE): it
+# holds back a real frame, more latency than the stream's whole path on a LAN.
+# A game's launch options still win (`DXVK_NVAPI_VKREFLEX=0 %command%`): a
+# variable already set is left alone, and CHA_GAME_UPSCALERS=0 sets none.
+# AMD nodes get FSR 4 (RDNA 4) and FSR 4.1 (RDNA 3) from Proton Experimental
+# itself; nothing is set for them here.
+set -eu
+[ "${CHA_GAME_UPSCALERS:-1}" = 0 ] && exit 0
+# CDI gives an NVIDIA app container the driver's control device.
+[ -e "${CHA_NVIDIA_CTL:-/dev/nvidiactl}" ] || exit 0
+# Prints an export of $1=$2 unless $1 is set (even empty).
+default() {
+  eval "given=\${$1+x}"
+  # shellcheck disable=SC2154 # `given` is assigned by the eval above
+  [ -n "$given" ] || printf "export %s='%s'\n" "$1" "$2"
+}
+default PROTON_ENABLE_NGX_UPDATER 1
+default DXVK_NVAPI_DRS_NGX_DLSS_SR_OVERRIDE on
+default DXVK_NVAPI_DRS_NGX_DLSS_SR_OVERRIDE_RENDER_PRESET_SELECTION render_preset_latest
+default DXVK_NVAPI_DRS_NGX_DLSS_RR_OVERRIDE on
+default DXVK_NVAPI_DRS_NGX_DLSS_RR_OVERRIDE_RENDER_PRESET_SELECTION render_preset_latest
+default DXVK_NVAPI_VKREFLEX 1

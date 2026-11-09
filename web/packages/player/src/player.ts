@@ -31,7 +31,18 @@ import { transportOrder } from "./transports";
 import { resolveWsUrl } from "./ws-url";
 import { capturesDevices, inputAllowed, readsPads, sendsControls, type InputMode } from "./inputMode";
 import { parseWatchers, type Watcher } from "./watchers";
-import { cropFrame, cropSize, pictureSize, setStreamSize, viewBox, type Size } from "./crop";
+import {
+  DESKTOP_CAP,
+  STREAM_CAP,
+  cropFrame,
+  cropSize,
+  pictureSize,
+  requestedSize,
+  setStreamSize,
+  shownSize,
+  viewBox,
+  type Size,
+} from "./crop";
 
 /** Hardware codecs (every transport) and PyroWave (WebTransport only). */
 export type Codec = "hevc" | "h264" | "av1" | "pyrowave420" | "pyrowave444";
@@ -105,8 +116,23 @@ export interface PlayerOptions {
   /** STUN/TURN servers (the portal mints TURN credentials). Without them,
    *  only direct paths: LAN, mesh, or a port-forwarded node. */
   iceServers?: RTCIceServer[];
-  /** The largest picture to ask for (default 2560×1440, the baseline). */
+  /**
+   * The largest picture to ask for. Default: 2560×1440 (the baseline), or for a `desktop` up to
+   * 3840×2160, what a node composes.
+   */
   maxSize?: { width: number; height: number };
+  /**
+   * The app is a desktop or a browser: text, which no filter sharpens back once it is stretched. The
+   * page asks for the screen's own size, up to what a node composes, instead of 2560×1440; PyroWave
+   * keeps the 1440p cap until its cost at that size (bigger frames, longer on the wire) is measured.
+   */
+  desktop?: boolean;
+  /**
+   * Stretch a PyroWave picture smaller than the element with SGSR 1 (`@cha/pyrowave-webgpu`'s
+   * upscaler) instead of leaving it to the browser. Off by default, and never for a `desktop`:
+   * it sharpens edges, which on text means halos.
+   */
+  upscaler?: "sgsr";
   /** The app's display has a fixed size: never ask for a resize, so the
    *  browser letterboxes the picture instead. */
   fixedSize?: boolean;
@@ -786,7 +812,26 @@ export class Player {
     snapshot.shownSentFps = sent?.shown ?? null;
     snapshot.encodeP99Ms = this.encodeP99Ms;
     snapshot.node = this.nodeStats && ageMs <= NODE_STATS_FRESH_MS ? { ...this.nodeStats.stats, ageMs } : null;
+    Object.assign(snapshot, this.scaling(snapshot));
     return snapshot;
+  }
+
+  /** The size the picture is drawn at on screen and what stretches it there, for the stats. */
+  private scaling(s: StatsSnapshot): Pick<StatsSnapshot, "shownWidth" | "shownHeight" | "upscaler" | "upscaleMs"> {
+    // PyroWave's upscaler makes frames the size they are shown at: the decoded size is its.
+    const pyro = this.wt?.pipeline.pyro?.takeScaling();
+    if (pyro?.shownWidth) {
+      [s.width, s.height] = [pyro.width, pyro.height];
+      return { shownWidth: pyro.shownWidth, shownHeight: pyro.shownHeight, upscaler: pyro.upscaler, upscaleMs: pyro.upscaleMs };
+    }
+    const picture = s.width && s.height ? { w: s.width, h: s.height } : null;
+    const shown = picture && shownSize(picture, this.options.video.getBoundingClientRect(), devicePixelRatio);
+    return {
+      shownWidth: shown?.w ?? null,
+      shownHeight: shown?.h ?? null,
+      upscaler: shown ? "browser" : null,
+      upscaleMs: null,
+    };
   }
 
   /**
@@ -1097,9 +1142,13 @@ export class Player {
     if (!this.wt) this.reportRates();
 
     // The picture follows the element's size (in device pixels, capped).
-    const observer = new ResizeObserver(() => this.requestSize());
+    const observer = new ResizeObserver(() => {
+      this.measureDisplay();
+      this.requestSize();
+    });
     observer.observe(video);
     this.cleanup.push(() => observer.disconnect());
+    this.measureDisplay();
     this.requestSize();
 
     // Every presented frame: latency from the server's send time, and the probe.
@@ -1181,6 +1230,24 @@ export class Player {
   }
 
   private resizeTimer?: ReturnType<typeof setTimeout>;
+  /** The element's size in device pixels, which an upscaled PyroWave frame is drawn to fit. */
+  private display: { width: number; height: number } | null = null;
+
+  private measureDisplay(): void {
+    const r = this.options.video.getBoundingClientRect();
+    this.display = { width: Math.round(r.width * devicePixelRatio), height: Math.round(r.height * devicePixelRatio) };
+  }
+
+  /** The filter PyroWave pictures are stretched with, if any (`upscaler`; never a desktop's). */
+  private upscaleFilter(): "sgsr" | null {
+    return this.options.upscaler === "sgsr" && !this.options.desktop ? "sgsr" : null;
+  }
+
+  /** The largest picture to ask for now (`maxSize`, `desktop`); it changes with the codec. */
+  private sizeCap(): { width: number; height: number } {
+    if (this.options.maxSize) return this.options.maxSize;
+    return this.options.desktop && !isPyroWave(this.codec) ? DESKTOP_CAP : STREAM_CAP;
+  }
 
   /** Asks for a picture the element's size, after resizing settles. */
   private requestSize(): void {
@@ -1189,17 +1256,12 @@ export class Player {
     // The controller's page sizes the picture; viewers scale it.
     if (!this.hasControl) return;
     this.resizeTimer = setTimeout(() => {
-      const r = this.options.video.getBoundingClientRect();
-      const max = this.options.maxSize ?? { width: 2560, height: 1440 };
-      let w = r.width * devicePixelRatio;
-      let h = r.height * devicePixelRatio;
-      const scale = Math.min(1, max.width / w, max.height / h);
-      w = Math.floor((w * scale) / 8) * 8;
-      h = Math.floor((h * scale) / 8) * 8;
-      const size = `${w}x${h}`;
-      if (w < 320 || h < 240 || size === this.lastSize) return;
+      const wanted = requestedSize(this.options.video.getBoundingClientRect(), devicePixelRatio, this.sizeCap());
+      if (!wanted) return;
+      const size = `${wanted.w}x${wanted.h}`;
+      if (size === this.lastSize) return;
       this.lastSize = size;
-      this.send({ t: "resize", w, h });
+      this.send({ t: "resize", w: wanted.w, h: wanted.h });
     }, 250);
   }
 
@@ -1732,7 +1794,7 @@ export class Player {
     if (p.pyroRebuilt) return this.lose(`PyroWave's GPU failed again: ${reason}`);
     p.pyroRebuilt = true;
     wt.videoRestarts++;
-    PyroPresenter.create().then(
+    PyroPresenter.create({ upscale: this.upscaleFilter() }).then(
       (next) => {
         if (p.closed || this.wt !== wt) return next.destroy();
         next.onLost = (why) => this.recoverPyro(wt, p, why);
@@ -1747,7 +1809,7 @@ export class Player {
   private async newPipeline(wt: NonNullable<Player["wt"]>, codec: Codec): Promise<VideoPipeline> {
     const p: VideoPipeline = { codec, pyro: null, video: null, sawKey: false, closed: false };
     if (isPyroWave(codec)) {
-      p.pyro = await PyroPresenter.create();
+      p.pyro = await PyroPresenter.create({ upscale: this.upscaleFilter() });
       p.pyro.onLost = (reason) => this.recoverPyro(wt, p, reason);
     } else p.video = this.newVideoDecoder(wt, p);
     return p;
@@ -1799,6 +1861,8 @@ export class Player {
     wt.stream = stream;
     this.codec = switching.pipeline.codec;
     switching.done();
+    // A desktop on PyroWave keeps the 1440p cap, and gets the screen's size back off it.
+    if (this.options.desktop) this.requestSize();
   }
 
   private decodeVideo(wt: NonNullable<Player["wt"]>, msg: Extract<FromWorker, { type: "video" }>): void {
@@ -1810,6 +1874,8 @@ export class Player {
       const started = performance.now();
       this.noteSent(wt, msg.id, msg.sendTs, started);
       let frame: VideoFrame | null;
+      p.pyro.display = this.display;
+      p.pyro.frameMs = 1000 / (this.streamFps ?? 60);
       try {
         frame = p.pyro.decode(new Uint8Array(msg.data), msg.id, msg.partial ?? false);
       } catch (err) {

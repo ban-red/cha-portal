@@ -124,6 +124,15 @@ pub fn show(
                 "Send as Ctrl (Cmd+C copies)",
             );
             ui.end_row();
+
+            ui.label("Upscaling");
+            ui.checkbox(&mut config.sharpen, "Sharpen with SGSR 1 (experimental)")
+                .on_hover_text(
+                    "When the picture is smaller than the window, stretch it with SGSR 1, which \
+                     sharpens edges, instead of the plain bilinear filter. It falls back to \
+                     bilinear if it slows frames down. Best for games: on text it can leave halos.",
+                );
+            ui.end_row();
         });
     ui.add_space(6.0);
     ui.weak("Applies to the next launch. A host may pick less than you ask for.");

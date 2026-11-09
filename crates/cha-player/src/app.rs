@@ -19,6 +19,7 @@ const INPUT_ACCESS_RECHECK: Duration = Duration::from_secs(2);
 
 use anyhow::{Context, Result};
 use cha_client::{Ended, PerfOverlay, Session, Transport, VideoFrame};
+use cha_upscale::{Filter, Ladder, Upscaler};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{
@@ -35,7 +36,7 @@ use crate::present::{self, FrameImporter, ImportedFrame};
 use crate::render::egui_layer::EguiLayer;
 use crate::render::video::{VideoPipeline, aspect_fit};
 use crate::render::{Gpu, Skip};
-use crate::session::{self, Rates, Running};
+use crate::session::{self, Rates, Running, Scaler};
 use crate::stream_prefs::{self, StreamPrefs};
 use crate::theme::ThemeController;
 use crate::ui::{self, Action, Launcher, ToolbarAction};
@@ -129,6 +130,9 @@ struct Graphics {
     /// The newest PyroWave frame, taken from the session but not yet decoded
     /// (no drawable yet): a newer one replaces it.
     pyro_pending: Option<VideoFrame>,
+    /// SGSR 1 and the ladder that steps it down, made the first time a picture
+    /// smaller than the window is drawn with Settings > Upscaling on.
+    upscale: Option<(Upscaler, Ladder)>,
 }
 
 struct Stream {
@@ -1350,30 +1354,104 @@ impl App {
                 }
             }
         }
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("video"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            if stream.running.codec.is_pyrowave() {
-                if let Some(pyro) = &gfx.pyro {
-                    pyro.draw(&mut pass, gfx.gpu.size());
+        // With Settings > Upscaling on and a picture smaller than the window, the
+        // picture is drawn at its own size first and SGSR 1 stretches it into the
+        // window (cha-upscale); otherwise it is drawn straight into the window.
+        let picture = if stream.running.codec.is_pyrowave() {
+            gfx.pyro.as_ref().and_then(|p| p.picture_size())
+        } else {
+            gfx.history.back().map(|f| (f.width, f.height))
+        };
+        let window_size = gfx.gpu.size();
+        let sharpen = self.launcher.config().sharpen
+            && picture.is_some_and(|p| cha_upscale::enlarges(p, window_size));
+        if sharpen && gfx.upscale.is_none() {
+            let up = Upscaler::new(
+                &gfx.gpu.device,
+                &gfx.gpu.queue,
+                gfx.gpu.format,
+                gfx.gpu.format,
+            );
+            gfx.upscale = Some((up, Ladder::new(Filter::Sgsr)));
+        }
+        let upscale = gfx.upscale.as_mut().filter(|_| sharpen).zip(picture);
+        if let Some(((upscaler, ladder), picture)) = upscale {
+            {
+                let source = upscaler.source(picture);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("video"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: source,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                if stream.running.codec.is_pyrowave() {
+                    if let Some(pyro) = &gfx.pyro {
+                        pyro.draw(&mut pass, picture);
+                    }
+                } else if let Some(frame) = gfx.history.back() {
+                    let prepared = gfx.video.prepare(&gfx.gpu.device, frame, picture);
+                    gfx.video.draw(&mut pass, &prepared);
                 }
-            } else if let Some(frame) = gfx.history.back() {
-                let prepared = gfx.video.prepare(&gfx.gpu.device, frame, gfx.gpu.size());
-                gfx.video.draw(&mut pass, &prepared);
+            }
+            let filter = ladder.filter();
+            if let Some(rect) = upscaler.draw(&mut encoder, &view, window_size, filter) {
+                // The newest reading is a frame or two old: the GPU writes it back later.
+                let gpu_ns = upscaler.take_gpu_ns();
+                if let Some(ns) = gpu_ns {
+                    let interval = Duration::from_secs(1) / self.launcher.config().fps.max(1);
+                    ladder.record(Duration::from_nanos(ns), interval);
+                }
+                let scaler = match filter {
+                    Filter::Sgsr => Scaler::Sgsr,
+                    Filter::Bilinear => Scaler::Bilinear,
+                };
+                let drawn = (rect.width as u32, rect.height as u32);
+                shared.drew(picture, drawn, scaler, gpu_ns);
+            }
+        } else {
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("video"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                if stream.running.codec.is_pyrowave() {
+                    if let Some(pyro) = &gfx.pyro {
+                        pyro.draw(&mut pass, gfx.gpu.size());
+                        if let Some(picture) = pyro.picture_size() {
+                            let v = aspect_fit(picture, gfx.gpu.size());
+                            let drawn = (v.width as u32, v.height as u32);
+                            shared.drew(picture, drawn, Scaler::Nearest, None);
+                        }
+                    }
+                } else if let Some(frame) = gfx.history.back() {
+                    let prepared = gfx.video.prepare(&gfx.gpu.device, frame, gfx.gpu.size());
+                    gfx.video.draw(&mut pass, &prepared);
+                    let v = prepared.viewport;
+                    let drawn = (v.width as u32, v.height as u32);
+                    shared.drew((frame.width, frame.height), drawn, Scaler::Bilinear, None);
+                }
             }
         }
         let reconnecting = shared.reconnecting.lock().unwrap().clone();
@@ -1455,6 +1533,9 @@ impl App {
         if let Some(pyro) = &mut gfx.pyro {
             pyro.after_submit();
         }
+        if let Some((upscaler, _)) = &mut gfx.upscale {
+            upscaler.after_submit();
+        }
         match surface {
             Some(surface) => {
                 window.pre_present_notify();
@@ -1513,6 +1594,7 @@ impl ApplicationHandler<UserEvent> for App {
                     offscreen: None,
                     pyro: None,
                     pyro_pending: None,
+                    upscale: None,
                     gpu,
                 })
             });
