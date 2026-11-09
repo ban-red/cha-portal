@@ -43,6 +43,11 @@ export interface RecordingSummary {
   shown: { width: number; height: number; upscaler: string | null } | null;
   /** The upscaler's GPU time per frame (per-second means), ms; nulls when it wasn't measured. */
   upscaleMs: { p50: number | null; p95: number | null };
+  /** The colour pictures were decoded in, and what the screen was, at the end; null where unknown. */
+  colour: string | null;
+  display: string | null;
+  /** How long the app's newest picture waited on the node before it was encoded (the streamer's medians), ms. */
+  nodeWaitMs: { p50: number | null; p95: number | null };
   /** Seconds covered, and snapshots taken (fewer than the seconds if the tab was hidden). */
   durationS: number;
   snapshots: number;
@@ -123,6 +128,7 @@ export function summarizeRecording(
   const fps = sortedOf(busy.map((s) => s.shownSentFps ?? s.fps));
   const decode = sortedOf(snapshots.map((s) => s.decodeMs));
   const upscale = sortedOf(snapshots.map((s) => s.upscaleMs));
+  const nodeWait = sortedOf(snapshots.map((s) => s.nodeWaitMs));
   const frames = meta.latencySamples?.length ? sortedOf(meta.latencySamples) : null;
   const perSecond = sortedOf(snapshots.map((s) => s.latencyMs));
   const lat = frames ?? perSecond;
@@ -150,6 +156,9 @@ export function summarizeRecording(
         ? { width: last.shownWidth, height: last.shownHeight, upscaler: last.upscaler ?? null }
         : null,
     upscaleMs: { p50: round(pct(upscale, 0.5)), p95: round(pct(upscale, 0.95)) },
+    colour: lastWith("colour"),
+    display: lastWith("display"),
+    nodeWaitMs: { p50: round(pct(nodeWait, 0.5)), p95: round(pct(nodeWait, 0.95)) },
     durationS: meta.durationS,
     snapshots: snapshots.length,
     fps: {
@@ -199,6 +208,8 @@ export function recordingMarkdown(r: RecordingSummary): string {
     ["Codec", r.codec ?? "n/a"],
     ["Decoded size", r.width && r.height ? `${r.width}×${r.height}` : "n/a"],
     ["Shown at", r.shown ? `${r.shown.width}×${r.shown.height}${r.shown.upscaler ? ` (${r.shown.upscaler})` : ""}` : "its own size"],
+    ["Colour", r.colour ?? "n/a"],
+    ["Display", r.display ?? "n/a"],
     ["Run", `${r.durationS} s, ${r.snapshots} snapshots`],
     ["FPS shown vs target", `p50 ${n(r.fps.shownP50)}, min ${n(r.fps.shownMin)} of ${n(r.fps.target)} (streamer sent ${n(r.fps.sentMean)}/s on average)`],
     [
@@ -206,6 +217,9 @@ export function recordingMarkdown(r: RecordingSummary): string {
       `p50 ${n(r.latencyMs.p50, " ms")}, p95 ${n(r.latencyMs.p95, " ms")}, p99 ${n(r.latencyMs.p99, " ms")}`,
     ],
     ["Decode (per-second mean)", `p50 ${n(r.decodeMs.p50, " ms")}, p95 ${n(r.decodeMs.p95, " ms")}`],
+    ...(r.nodeWaitMs.p50 === null
+      ? []
+      : ([["Wait on node (streamer's medians)", `p50 ${n(r.nodeWaitMs.p50, " ms")}, p95 ${n(r.nodeWaitMs.p95, " ms")}`]] as [string, string][])),
     ...(r.upscaleMs.p50 === null
       ? []
       : ([["Upscale (per-second mean)", `p50 ${n(r.upscaleMs.p50, " ms")}, p95 ${n(r.upscaleMs.p95, " ms")}`]] as [string, string][])),

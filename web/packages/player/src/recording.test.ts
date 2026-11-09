@@ -136,6 +136,27 @@ describe("summarizeRecording", () => {
     expect(md).toContain("| Upscale (per-second mean) | p50 0.9 ms, p95 1.2 ms |");
   });
 
+  test("a recording keeps the colour, the screen and how long pictures waited on the node", () => {
+    const r = summarizeRecording(
+      [
+        snap({ colour: "8-bit sRGB, BT.709 primaries", display: "120 Hz, HDR", nodeWaitMs: 8.2 }),
+        snap({ colour: "8-bit sRGB, BT.709 primaries", display: "120 Hz, HDR", nodeWaitMs: 9.1 }),
+        snap({ colour: "8-bit sRGB, BT.709 primaries", display: "120 Hz, HDR", nodeWaitMs: 1.4 }),
+      ],
+      [],
+      meta,
+    );
+    expect(r.colour).toBe("8-bit sRGB, BT.709 primaries");
+    expect(r.display).toBe("120 Hz, HDR");
+    expect(r.nodeWaitMs).toEqual({ p50: 8.2, p95: 9.1 });
+    const md = recordingMarkdown(r);
+    expect(md).toContain("| Colour | 8-bit sRGB, BT.709 primaries |");
+    expect(md).toContain("| Display | 120 Hz, HDR |");
+    expect(md).toContain("| Wait on node (streamer's medians) | p50 8.2 ms, p95 9.1 ms |");
+    // An older streamer says nothing about the wait: no row for it.
+    expect(recordingMarkdown(summarizeRecording([snap()], [], meta))).not.toContain("Wait on node");
+  });
+
   test("a value's pipes and backslashes stay inside its cell", () => {
     const md = recordingMarkdown(summarizeRecording([snap()], [], { ...meta, userAgent: "a|b\\" }));
     expect(md).toContain("| Browser | a\\|b\\\\ |");

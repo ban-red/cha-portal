@@ -26,6 +26,15 @@ import { overlayAnswer, parseOverlay, type OverlayLevel, type OverlayState } fro
 import { ClickProbe, percentile, type ProbeResult } from "./probe";
 import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type StatsSnapshot } from "./stats";
 import { PyroPresenter } from "./pyro";
+import {
+  codecDepth,
+  colourText,
+  displayText,
+  dynamicRangeHigh,
+  refreshFromIntervals,
+  videoFrameColour,
+  type PictureColour,
+} from "./colour";
 import type { FromWorker, ToWorker } from "./reassembly";
 import { transportOrder } from "./transports";
 import { resolveWsUrl } from "./ws-url";
@@ -399,6 +408,10 @@ export class Player {
   /** The streamer's composited → encoded p99 from its last `stats` message, ms. */
   private encodeP99Ms: number | null = null;
   private nodeWaitMs: number | null = null;
+  /** The colour WebCodecs last decoded a picture in (WebTransport); null before one. */
+  private decodedColour: PictureColour | null = null;
+  /** The screen's refresh rate, measured from `requestAnimationFrame` when the player starts. */
+  private refreshHz: number | null = null;
   /** The streamer's cumulative `frames_sent` at each recent `stats` message, for the send rate. */
   private sentCounts: { at: number; frames: number }[] = [];
   /** Presented-frame counts (requestVideoFrameCallback's `presentedFrames`) by local time, for `shownSentFps`. */
@@ -467,6 +480,7 @@ export class Player {
 
   constructor(private readonly options: PlayerOptions) {
     this.codec = options.codec ?? supportedCodecs()[0] ?? "h264";
+    this.measureRefresh();
     this.muted = options.muted ?? false;
     this.audio = document.createElement("audio");
     this.audio.muted = this.muted;
@@ -815,9 +829,25 @@ export class Player {
     snapshot.shownSentFps = sent?.shown ?? null;
     snapshot.encodeP99Ms = this.encodeP99Ms;
     snapshot.nodeWaitMs = this.nodeWaitMs;
+    snapshot.colour = colourText(this.wt ? (this.wt.pipeline.pyro?.colour ?? this.decodedColour) : null);
+    snapshot.display = displayText(dynamicRangeHigh(), this.refreshHz);
     snapshot.node = this.nodeStats && ageMs <= NODE_STATS_FRESH_MS ? { ...this.nodeStats.stats, ageMs } : null;
     Object.assign(snapshot, this.scaling(snapshot));
     return snapshot;
+  }
+
+  /** Samples `requestAnimationFrame` for about a second and a half to learn the screen's refresh rate. */
+  private measureRefresh(): void {
+    if (typeof requestAnimationFrame !== "function") return;
+    const intervals: number[] = [];
+    let last: number | null = null;
+    const tick = (now: number) => {
+      if (last !== null) intervals.push(now - last);
+      last = now;
+      if (intervals.length < 90) requestAnimationFrame(tick);
+      else this.refreshHz = refreshFromIntervals(intervals);
+    };
+    requestAnimationFrame(tick);
   }
 
   /** The size the picture is drawn at on screen and what stretches it there, for the stats. */
@@ -1824,6 +1854,7 @@ export class Player {
     const decoder = new VideoDecoder({
       output: (frame) => {
         const sent = wt.sent.get(frame.timestamp);
+        this.decodedColour = videoFrameColour(frame.colorSpace, frame.format, codecDepth(p.codec));
         if (sent) {
           this.pushDecodeMs(wt, performance.now() - sent.decodeAt);
           this.noteDelivery(wt, sent.ts);

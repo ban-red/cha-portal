@@ -18,6 +18,8 @@
     "latency_ms": { "kind": "number", "platforms": ["web", "native"] },
     "decode_ms": { "kind": "number", "platforms": ["web", "native"] },
     "node_wait_ms": { "kind": "number", "platforms": ["web", "native"] },
+    "colour": { "kind": "string", "platforms": ["web"] },
+    "display": { "kind": "string", "platforms": ["web"] },
     "jitter_buffer_ms": { "kind": "number", "platforms": ["web"] },
     "audio_jitter_ms": { "kind": "number", "platforms": ["web", "native"] },
     "audio_underruns": { "kind": "number", "platforms": ["web", "native"] },
@@ -117,6 +119,22 @@
             { "text": " fps" }
           ],
           "bad": ["stutter", "freeze"]
+        },
+        {
+          "id": "colour",
+          "label": "Colour",
+          "tooltip": "What the decoder says the pictures are: their bit depth, the curve their brightness is coded with (sRGB and BT.709 for ordinary pictures, PQ for HDR) and the primaries that set how saturated colours can be. The browser's WebRTC path doesn't say.",
+          "value": "{colour}",
+          "when": ["colour"],
+          "platforms": ["web"]
+        },
+        {
+          "id": "display",
+          "label": "Display",
+          "tooltip": "This screen's refresh rate, measured when the stream started, and whether the browser says it can show HDR. A stream at a rate the screen doesn't divide into (90 fps on 120 Hz) can judder.",
+          "value": "{display}",
+          "when": ["display"],
+          "platforms": ["web"]
         },
         {
           "id": "bitrate",
@@ -398,6 +416,7 @@
           { "text": "{width:int}×{height:int}" },
           { "text": "shown at {shown_width:int}×{shown_height:int} ({upscaler})", "when": ["shown_width", "shown_height", "upscaler"] },
           { "text": "scaling {upscale_ms:f2} ms", "when": ["upscale_ms", "shown_width"] },
+          { "text": "{colour}", "when": ["colour"], "platforms": ["web"] },
           { "text": "{shown_fps:f0} of {target_fps:f0} fps", "when": ["target_fps"] },
           { "text": "{shown_fps:f0} fps", "unless": ["target_fps"] },
           { "text": "{mbps:mbit}" }
@@ -434,6 +453,13 @@
           { "text": "{audio_underruns:int} audio underruns", "when": ["audio_underruns"] },
           { "text": "{audio_dropped_ms:int} ms audio dropped", "platforms": ["native"] }
         ]
+      },
+      {
+        "id": "display",
+        "label": "Display",
+        "platforms": ["web"],
+        "when": ["display"],
+        "parts": [{ "text": "{display}" }]
       },
       {
         "id": "node",

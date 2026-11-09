@@ -64,6 +64,8 @@ const FULL: StatsSnapshot = {
   mbps: 58,
   decodeMs: 3,
   nodeWaitMs: 8,
+  colour: "8-bit sRGB, BT.709 primaries",
+  display: "120 Hz, HDR",
   jitterMs: 1,
   rttMs: 2,
   packetsLost: 1,
