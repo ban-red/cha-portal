@@ -376,6 +376,9 @@ pub struct State {
     pub hub: Arc<FrameHub>,
     /// Something visible changed since the last composite.
     pub dirty: bool,
+    /// When an app last committed a visible change, since the last composite
+    /// (taken by it: how long the picture waited before it was composited).
+    pub last_commit: Option<Instant>,
     force_frame: bool,
     encode_period: Duration,
     tick_period: Duration,
@@ -598,6 +601,7 @@ impl State {
             pool,
             hub,
             dirty: true,
+            last_commit: None,
             force_frame: false,
             encode_period,
             tick_period: Duration::from_secs(1) / tick_hz,

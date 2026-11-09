@@ -2137,5 +2137,123 @@
       ],
       "report": "Health: not measured, Paused while the tab is hidden\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nBrowser: Mozilla/5.0 {braces} stay"
     }
+  },
+  {
+    "name": "a node that says how long the app's pictures waited shows it under latency",
+    "values": {
+      "shown_fps": 60,
+      "target_fps": 60,
+      "mbps": 58.21,
+      "codec_tag": "HEVC/WT",
+      "width": 2560,
+      "height": 1440,
+      "latency_ms": 11.64,
+      "decode_ms": 3.184,
+      "node_wait_ms": 8.31,
+      "jitter_buffer_ms": 1.5,
+      "audio_jitter_ms": 30.4,
+      "audio_underruns": 0,
+      "audio_dropped_ms": 0,
+      "decode_errors": 0,
+      "rtt_ms": 2.44,
+      "lost": 0,
+      "recovered": 0,
+      "dropped": 0
+    },
+    "expect": {
+      "web": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s",
+            "row_ids": [
+              "codec",
+              "size",
+              "fps",
+              "bitrate"
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": [
+              "latency",
+              "decode",
+              "node-wait",
+              "jitter-buffer",
+              "audio-buffer",
+              "audio-underruns"
+            ],
+            "rows": [
+              {
+                "id": "node-wait",
+                "label": "Wait on node",
+                "value": "8.3 ms"
+              }
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 0 dropped",
+            "row_ids": [
+              "rtt",
+              "lost",
+              "recovered",
+              "dropped"
+            ]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: send → shown 11.6 ms, decode 3.18 ms, wait on node 8.3 ms, jitter buffer 1.50 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 audio underruns\nBrowser: Test Agent/1.0"
+      },
+      "native": {
+        "grade_tone": "ok",
+        "compact": "60 fps · 11.6 ms · 58.2 Mbit/s · HEVC/WT",
+        "sections": [
+          {
+            "id": "stream",
+            "summary": "HEVC/WT · 60 fps · 58.2 Mbit/s",
+            "row_ids": [
+              "codec",
+              "size",
+              "fps",
+              "bitrate"
+            ]
+          },
+          {
+            "id": "latency",
+            "summary": "11.6 ms · decode 3.2 ms",
+            "row_ids": [
+              "latency",
+              "decode",
+              "node-wait",
+              "audio-buffer",
+              "audio-underruns",
+              "audio-dropped"
+            ],
+            "rows": [
+              {
+                "id": "node-wait",
+                "label": "Wait on node",
+                "value": "8.3 ms"
+              }
+            ]
+          },
+          {
+            "id": "network",
+            "summary": "2.4 ms · 0 lost · 0 dropped",
+            "row_ids": [
+              "rtt",
+              "lost",
+              "recovered",
+              "dropped",
+              "decode-errors"
+            ]
+          }
+        ],
+        "report": "Health: A (100/100), Smooth\nStream: HEVC/WT, 2560×1440, 60 of 60 fps, 58.2 Mbit/s\nLatency: received → shown 11.6 ms, decode 3.18 ms, wait on node 8.3 ms, audio buffer 30 ms\nNetwork: round trip 2.4 ms, 0 lost, 0 dropped\nPlayback: 0 decode errors, 0 partial frames, 0 audio underruns, 0 ms audio dropped\nPlayer: Test Agent/1.0"
+      }
+    }
   }
 ]

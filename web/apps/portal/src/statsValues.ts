@@ -55,6 +55,7 @@ export function statsValues({ stats: s, codec, transport, reconnects }: StatsVal
     reconnects: positive(reconnects),
     latency_ms: s?.latencyMs,
     decode_ms: s?.decodeMs,
+    node_wait_ms: s?.nodeWaitMs ?? undefined,
     jitter_buffer_ms: s?.jitterMs,
     audio_jitter_ms: s?.audioJitterMs,
     // The sound output's counters come with WebTransport; the track path has none.

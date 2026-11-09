@@ -17,6 +17,7 @@
     "reconnects": { "kind": "number", "platforms": ["web", "native"] },
     "latency_ms": { "kind": "number", "platforms": ["web", "native"] },
     "decode_ms": { "kind": "number", "platforms": ["web", "native"] },
+    "node_wait_ms": { "kind": "number", "platforms": ["web", "native"] },
     "jitter_buffer_ms": { "kind": "number", "platforms": ["web"] },
     "audio_jitter_ms": { "kind": "number", "platforms": ["web", "native"] },
     "audio_underruns": { "kind": "number", "platforms": ["web", "native"] },
@@ -160,6 +161,13 @@
           },
           "value": "{decode_ms:f2} ms",
           "bad": ["decode"]
+        },
+        {
+          "id": "node-wait",
+          "label": "Wait on node",
+          "tooltip": "How long the app's newest picture waited on the node before it was encoded (the median over the node's last report): the time until the compositor took it in, and the encode. It doesn't include the network or the time the app took to draw it.",
+          "value": "{node_wait_ms:f1} ms",
+          "when": ["node_wait_ms"]
         },
         {
           "id": "jitter-buffer",
@@ -401,6 +409,7 @@
         "parts": [
           { "text": { "web": "send → shown {latency_ms:f1} ms", "native": "received → shown {latency_ms:f1} ms" } },
           { "text": "decode {decode_ms:f2} ms" },
+          { "text": "wait on node {node_wait_ms:f1} ms", "when": ["node_wait_ms"] },
           { "text": "jitter buffer {jitter_buffer_ms:f2} ms", "platforms": ["web"] },
           { "text": "audio buffer {audio_jitter_ms:f0} ms" }
         ]

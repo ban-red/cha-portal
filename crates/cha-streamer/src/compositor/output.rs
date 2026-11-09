@@ -411,14 +411,26 @@ impl State {
             .render_us
             .push(rendered.duration_since(started).as_micros() as u64);
 
+        let committed = self.take_commit(rendered);
         self.hub.publish(Frame {
             slot,
             width: self.pool.size.0,
             height: self.pool.size.1,
             generation: self.pool.generation,
             rendered,
+            committed,
         });
         Ok(())
+    }
+
+    /// The newest commit this composite took in, recorded as the compositor's
+    /// wait (commit to composited) and cleared for the next one.
+    fn take_commit(&mut self, rendered: Instant) -> Option<Instant> {
+        let committed = self.last_commit.take()?;
+        self.stats
+            .commit_us
+            .push(rendered.saturating_duration_since(committed).as_micros() as u64);
+        Some(committed)
     }
 }
 
@@ -516,12 +528,14 @@ impl State {
         self.stats
             .render_us
             .push(rendered.duration_since(started).as_micros() as u64);
+        let committed = self.take_commit(rendered);
         self.hub.publish(Frame {
             slot: Arc::clone(&self.pool.entries[index].slot),
             width: self.pool.size.0,
             height: self.pool.size.1,
             generation: self.pool.generation,
             rendered,
+            committed,
         });
         Ok(())
     }
@@ -551,6 +565,8 @@ pub struct Stats {
     pub starved: u64,
     pub commits: u64,
     pub render_us: Vec<u64>,
+    /// From an app's newest commit to the composite that took it in.
+    pub commit_us: Vec<u64>,
     /// What each frame tap capture took, on top of the composite.
     pub tap_us: Vec<u64>,
     last_log: Option<Instant>,
@@ -568,6 +584,7 @@ impl Stats {
         self.last_log = Some(now);
         let secs = now.duration_since(last).as_secs_f64();
         self.render_us.sort_unstable();
+        self.commit_us.sort_unstable();
         self.tap_us.sort_unstable();
         let pct = |q: f64| percentile(&self.render_us, q);
         if self.composited > 0 || self.commits > 0 {
@@ -577,6 +594,8 @@ impl Stats {
                 starved = self.starved,
                 render_us_p50 = pct(0.5),
                 render_us_p99 = pct(0.99),
+                commit_wait_us_p50 = percentile(&self.commit_us, 0.5),
+                commit_wait_us_p99 = percentile(&self.commit_us, 0.99),
                 taps = self.tap_us.len(),
                 tap_us_p50 = percentile(&self.tap_us, 0.5),
                 tap_us_p99 = percentile(&self.tap_us, 0.99),
@@ -593,6 +612,7 @@ impl Stats {
         self.starved = 0;
         self.commits = 0;
         self.render_us.clear();
+        self.commit_us.clear();
         self.tap_us.clear();
     }
 }
@@ -831,6 +851,7 @@ mod tests {
                         height: height as u32,
                         generation: 0,
                         rendered: Instant::now(),
+                        committed: None,
                     };
                     let (cpu0, t) = (cpu_seconds(), Instant::now());
                     let key = encoder.encode(&frame, n == 60, &mut out).unwrap();
@@ -914,6 +935,7 @@ mod tests {
                 height: height as u32,
                 generation: 0,
                 rendered: Instant::now(),
+                committed: None,
             };
             // A big cut of the target is worth a keyframe (the library takes a
             // new rate on one), the second after the last; this is it.

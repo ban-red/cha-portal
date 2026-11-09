@@ -32,6 +32,9 @@ pub struct StatsSnapshot {
     pub shown_sent_fps: Option<f32>,
     /// The host's composited to encoded p99, ms.
     pub encode_p99_ms: Option<f32>,
+    /// How long the app's newest picture waited on the host before it was
+    /// encoded, ms (the host's median).
+    pub node_wait_ms: Option<f32>,
     /// Received video, Mbit/s.
     pub mbps: Option<f32>,
     pub decode_ms: Option<f32>,
@@ -92,6 +95,7 @@ impl StatsSnapshot {
             .opt("reconnects", Some(self.reconnects).filter(|r| *r > 0))
             .opt("latency_ms", self.latency_ms)
             .opt("decode_ms", self.decode_ms)
+            .opt("node_wait_ms", self.node_wait_ms)
             // The panel's `audio_jitter_ms` is the sound waiting in the buffer, here and in the browser.
             .opt("audio_jitter_ms", self.audio_buffer_ms)
             .num("audio_underruns", self.audio_underruns as f64)

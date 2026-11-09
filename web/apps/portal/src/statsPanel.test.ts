@@ -63,6 +63,7 @@ const FULL: StatsSnapshot = {
   shownSentFps: 60,
   mbps: 58,
   decodeMs: 3,
+  nodeWaitMs: 8,
   jitterMs: 1,
   rttMs: 2,
   packetsLost: 1,

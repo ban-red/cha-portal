@@ -36,8 +36,8 @@ use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
 use crate::congestion::MediaWindowFactory;
 use crate::control::{
-    Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msgs, next_clipboard,
-    next_cursor, next_pointer, next_status, pad_audience, percentile,
+    CommitWaits, Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msgs,
+    next_clipboard, next_cursor, next_pointer, next_status, pad_audience, percentile,
 };
 use crate::framerate;
 use crate::gamepad::Gamepads;
@@ -477,6 +477,8 @@ pub(crate) struct Video {
     /// Composited → encoded (ms) and encoded → sent (µs) since the last report.
     pub(crate) encode_ms: Vec<f64>,
     pub(crate) hop_us: Vec<u64>,
+    /// How long the app's pictures waited on the node, since the last report.
+    pub(crate) commit_waits: CommitWaits,
     /// The loss rate parity is sized for (0: no FEC); the pacing sets it.
     pub(crate) fec_loss: f64,
     /// Recent frame size (bytes, smoothed), to count the send queue in frames.
@@ -507,6 +509,7 @@ impl Video {
             fragmenter,
             encode_ms: Vec::new(),
             hop_us: Vec::new(),
+            commit_waits: CommitWaits::default(),
             frame_bytes: 0.0,
             keyframe_asked: None,
             fps,
@@ -616,6 +619,8 @@ impl Video {
         };
         self.encode_ms
             .push(frame.encoded.duration_since(frame.composited).as_secs_f64() * 1e3);
+        self.commit_waits
+            .push(frame.committed, frame.composited, frame.encoded);
         self.hop_us.push(frame.encoded.elapsed().as_micros() as u64);
         self.frame_id = self.frame_id.wrapping_add(1);
         stats.frames_sent += 1;
@@ -734,6 +739,7 @@ impl Video {
         self.sent.clear();
         self.encode_ms.clear();
         self.hop_us.clear();
+        self.commit_waits.clear();
     }
 
     /// The delays since the last report into `stats`.
@@ -744,8 +750,10 @@ impl Video {
         stats.composite_to_encoded_ms_p99 = percentile(&self.encode_ms, 0.99);
         stats.encoded_to_sent_us_p50 = percentile(&self.hop_us, 0.5);
         stats.encoded_to_sent_us_p99 = percentile(&self.hop_us, 0.99);
+        self.commit_waits.report(stats);
         self.encode_ms.clear();
         self.hop_us.clear();
+        self.commit_waits.clear();
     }
 }
 

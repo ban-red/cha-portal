@@ -29,8 +29,8 @@ use crate::audio::{Audio, AudioPacket};
 use crate::codec::VideoCodec;
 use crate::compositor::{ClipboardWatch, CursorWatch, PointerWatch};
 use crate::control::{
-    Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msgs, next_clipboard,
-    next_cursor, next_pointer, next_status, pad_audience, percentile,
+    CommitWaits, Control, PadFeed, ServerMsg, StreamerStats, cursor_msg, floor_msgs,
+    next_clipboard, next_cursor, next_pointer, next_status, pad_audience, percentile,
 };
 use crate::gamepad::Gamepads;
 use crate::media::{EncodedFrame, Media, Pace};
@@ -202,6 +202,7 @@ struct Session {
     stats: StreamerStats,
     encode_ms: Vec<f64>,
     hop_us: Vec<u64>,
+    commit_waits: CommitWaits,
     last_encoded: Option<Instant>,
     intervals_ms: Vec<f64>,
 }
@@ -265,6 +266,7 @@ impl Session {
             stats: StreamerStats::default(),
             encode_ms: Vec::new(),
             hop_us: Vec::new(),
+            commit_waits: CommitWaits::default(),
             last_encoded: None,
             intervals_ms: Vec::new(),
         }
@@ -501,6 +503,8 @@ impl Session {
             .push(frame.encoded.duration_since(frame.composited).as_secs_f64() * 1000.0);
         self.hop_us
             .push(now.duration_since(frame.encoded).as_micros() as u64);
+        self.commit_waits
+            .push(frame.committed, frame.composited, frame.encoded);
         if let Some(last) = self.last_encoded {
             self.intervals_ms
                 .push(frame.encoded.duration_since(last).as_secs_f64() * 1000.0);
@@ -537,6 +541,7 @@ impl Session {
         encode.sort_by(f64::total_cmp);
         stats.composite_to_encoded_ms_p50 = percentile(&encode, 0.5);
         stats.composite_to_encoded_ms_p99 = percentile(&encode, 0.99);
+        self.commit_waits.report(&mut stats);
         let mut hop = self.hop_us.clone();
         hop.sort_unstable();
         stats.encoded_to_sent_us_p50 = percentile(&hop, 0.5);

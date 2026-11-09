@@ -47,6 +47,11 @@ pub struct Frame {
     pub generation: u64,
     /// When the GPU finished compositing it.
     pub rendered: Instant,
+    /// When an app last committed a change that this picture shows (the
+    /// newest since the previous composite): how long the picture waited on
+    /// the compositor is `rendered - committed`. `None` when nothing new was
+    /// committed (a composite forced for a keyframe or the frame tap).
+    pub committed: Option<Instant>,
 }
 
 /// One encoded access unit (Annex-B for H.264/HEVC, OBUs for AV1, a
@@ -64,6 +69,9 @@ pub struct EncodedFrame {
     pub recovery: Option<u64>,
     /// When the composited frame was ready.
     pub composited: Instant,
+    /// The app's commit this frame shows ([`Frame::committed`]); `None` for a
+    /// re-encode of an old picture.
+    pub committed: Option<Instant>,
     /// When encoding finished.
     pub encoded: Instant,
 }
@@ -781,6 +789,7 @@ impl EncoderWorker {
                     index,
                     recovery,
                     composited,
+                    committed: if reencode { None } else { frame.committed },
                     encoded,
                 },
             );
