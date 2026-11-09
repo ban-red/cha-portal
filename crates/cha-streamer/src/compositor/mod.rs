@@ -17,6 +17,9 @@ mod cursor;
 mod handlers;
 mod input;
 mod output;
+mod schedule;
+
+use schedule::{Pacing, Schedule, Wake};
 mod tap;
 
 use std::ffi::OsString;
@@ -48,7 +51,7 @@ use smithay::reexports::wayland_server::backend::{ClientData, ClientId, Disconne
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::utils::{Clock, Logical, Monotonic, Point, Transform};
-use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::compositor::{CompositorClientState, CompositorState, with_states};
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufState};
 use smithay::wayland::output::OutputManagerState;
@@ -57,8 +60,8 @@ use smithay::wayland::presentation::{PresentationState, Refresh};
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::{DataDeviceState, set_data_device_selection};
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
-use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::xdg::{XdgShellState, XdgToplevelSurfaceData};
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
 use smithay::wayland::socket::ListeningSocketSource;
@@ -109,10 +112,36 @@ pub struct Config {
     /// Composited (and encoded) frames per second, at most; [`Command::SetFps`]
     /// changes it.
     pub encode_fps: u32,
+    /// When to composite (`--pacing`).
+    pub pacing: PacingChoice,
+    /// Under commit pacing, send the last picture again at half the stream's
+    /// rate while nothing changes: stock Moonlight clients (the GameStream
+    /// host) expect a steady stream; Cha's own players don't.
+    pub keepalive: bool,
     /// The Wayland socket's name in `$XDG_RUNTIME_DIR`.
     pub socket_name: String,
     /// The frame tap (`--frame-tap`), if there is one: small pictures for local readers.
     pub tap: Option<Arc<crate::tap::Tap>>,
+}
+
+/// `--pacing`: when the compositor composites ([`schedule`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum PacingChoice {
+    /// When gamescope's window commits while it is up (a Steam session: the
+    /// game's own cadence), on the encode tick otherwise (desktops, whose
+    /// apps pace themselves to the 240 Hz feedback).
+    #[default]
+    Auto,
+    /// On the encode tick, whatever the app (what every session did before).
+    Fixed,
+    /// When the first window commits, whatever the app.
+    Commit,
+}
+
+/// Under `--pacing auto`, whether a window with this xdg `app_id` drives
+/// compositing: gamescope's (its Wayland backend names its window so).
+fn drives(app_id: Option<&str>) -> bool {
+    app_id == Some("gamescope")
 }
 
 /// What the rest of the streamer asks of the compositor.
@@ -218,6 +247,17 @@ fn run(config: Config, hub: Arc<FrameHub>, ready: &std_mpsc::Sender<Result<Handl
             },
         )
         .map_err(|e| anyhow!("timer: {e}"))?;
+    event_loop
+        .handle()
+        .insert_source(
+            Generic::new(state.alarm.clone(), Interest::READ, Mode::Level),
+            |_, alarm, state| {
+                alarm.clear();
+                state.alarm();
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|e| anyhow!("alarm: {e}"))?;
 
     info!(
         socket = ?state.socket_name,
@@ -275,6 +315,51 @@ impl Ticker {
             },
         )?;
         Ok(())
+    }
+
+    /// A one-shot timer, disarmed until [`Ticker::arm_in`].
+    fn alarm() -> Result<Self> {
+        let fd = timerfd_create(
+            TimerfdClockId::Monotonic,
+            TimerfdFlags::NONBLOCK | TimerfdFlags::CLOEXEC,
+        )?;
+        Ok(Self(Arc::new(fd)))
+    }
+
+    /// Fires once, `delay` from now (at least a microsecond: zero disarms).
+    fn arm_in(&self, delay: Duration) {
+        let delay = delay.max(Duration::from_micros(1));
+        let spec = Timespec {
+            tv_sec: delay.as_secs() as _,
+            tv_nsec: delay.subsec_nanos() as _,
+        };
+        let none = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let _ = timerfd_settime(
+            &*self.0,
+            TimerfdTimerFlags::empty(),
+            &Itimerspec {
+                it_interval: none,
+                it_value: spec,
+            },
+        );
+    }
+
+    fn disarm(&self) {
+        let none = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let _ = timerfd_settime(
+            &*self.0,
+            TimerfdTimerFlags::empty(),
+            &Itimerspec {
+                it_interval: none,
+                it_value: none,
+            },
+        );
     }
 
     /// Reads the expiration count so the fd stops being readable.
@@ -380,14 +465,19 @@ pub struct State {
     /// (taken by it: how long the picture waited before it was composited).
     pub last_commit: Option<Instant>,
     force_frame: bool,
-    encode_period: Duration,
+    /// When to composite: the encode tick, or the driving surface's commits.
+    schedule: Schedule,
+    pacing_choice: PacingChoice,
+    /// The surface whose commits drive compositing (`Pacing::Commit`).
+    pub driver: Option<WlSurface>,
+    /// Wakes the compositor when a commit-paced composite is due.
+    alarm: Ticker,
     tick_period: Duration,
     /// `--compositor-fps`: the tick rate is the lowest multiple of the
     /// encode rate at or above it.
     min_tick_hz: u32,
     ticker: Ticker,
     ticks: u64,
-    next_encode: Instant,
     pub stats: Stats,
     /// The frame tap's capture side, when `--frame-tap` is on.
     tap: Option<tap::Capture>,
@@ -553,6 +643,7 @@ impl State {
             .map_err(|e| anyhow!("display source: {e}"))?;
 
         let encode_period = Duration::from_secs(1) / config.encode_fps.max(1);
+        let alarm = Ticker::alarm()?;
         let pointer_location = (
             f64::from(config.width) / 2.0,
             f64::from(config.height) / 2.0,
@@ -603,12 +694,18 @@ impl State {
             dirty: true,
             last_commit: None,
             force_frame: false,
-            encode_period,
+            schedule: {
+                let mut s = Schedule::new(Pacing::Fixed, encode_period, Instant::now());
+                s.set_keepalive(config.keepalive.then_some(2));
+                s
+            },
+            pacing_choice: config.pacing,
+            driver: None,
+            alarm,
             tick_period: Duration::from_secs(1) / tick_hz,
             min_tick_hz: config.compositor_fps,
             ticker,
             ticks: 0,
-            next_encode: Instant::now(),
             stats: Stats::default(),
             tap: config.tap.clone().map(tap::Capture::new),
         })
@@ -647,37 +744,19 @@ impl State {
         self.clipboard.poll(&self.seat);
         self.publish_cursor();
         let now = Instant::now();
-        if now + self.encode_period / 8 >= self.next_encode {
-            self.next_encode += self.encode_period;
-            if self.next_encode < now {
-                // Fell behind (e.g. a stall): realign instead of bursting.
-                self.next_encode = now + self.encode_period;
+        self.update_pacing(now);
+        match self.schedule.pacing() {
+            Pacing::Fixed => {
+                if self.schedule.poll(now) == Wake::Composite {
+                    self.encode_wake(false);
+                }
             }
-            self.stats.encode_ticks += 1;
-            self.publish_pointer();
-            // The frame tap wants pictures while a reader keeps asking, with or without a viewer.
-            let listeners = self.hub.has_listeners();
-            let (tap_on, tap_force) = self
-                .tap
-                .as_mut()
-                .map_or((false, false), |t| t.want(listeners));
-            if tap_force {
-                self.force_frame = true;
-            }
-            // With nobody encoding, only a capture that is due composites (not every change).
-            let wanted = if listeners {
-                self.dirty || self.force_frame
-            } else {
-                tap_on && self.force_frame
-            };
-            if !self.dirty && !self.force_frame {
-                self.stats.clean += 1;
-            }
-            if wanted {
-                self.force_frame = false;
-                self.dirty = false;
-                if let Err(err) = self.composite() {
-                    warn!("compositing failed: {err:#}");
+            Pacing::Commit => {
+                // A change besides the driving surface's (a popup, the
+                // cursor, a forced frame) composites at the next chance too.
+                if self.dirty || self.force_frame {
+                    self.schedule.on_commit(true);
+                    self.arm_alarm(now);
                 }
             }
         }
@@ -689,7 +768,16 @@ impl State {
         self.ticks += 1;
         let output = self.output.clone();
         let mut feedback = OutputPresentationFeedback::new(&output);
+        let commit_paced = self.schedule.pacing() == Pacing::Commit;
         for window in self.space.elements() {
+            // The driving surface hears when it is actually composited.
+            if commit_paced
+                && window
+                    .toplevel()
+                    .is_some_and(|t| Some(t.wl_surface()) == self.driver.as_ref())
+            {
+                continue;
+            }
             window.take_presentation_feedback(
                 &mut feedback,
                 |_, _| Some(output.clone()),
@@ -734,9 +822,13 @@ impl State {
             return;
         }
         info!(fps, tick_hz = hz, "changing the frame rate");
-        self.encode_period = Duration::from_secs(1) / fps.max(1);
+        let now = Instant::now();
+        self.schedule
+            .set_period(Duration::from_secs(1) / fps.max(1), now);
         self.tick_period = Duration::from_secs(1) / hz;
-        self.next_encode = Instant::now();
+        if self.schedule.pacing() == Pacing::Commit {
+            self.arm_alarm(now);
+        }
         if let Some(mode) = self.output.current_mode() {
             let mode = OutputMode {
                 refresh: (hz * 1000) as i32,
@@ -791,6 +883,143 @@ impl State {
             })
     }
 
+    /// An encode tick (`Fixed`) or a due commit-paced composite: composite
+    /// if anything changed and someone wants the picture. A keep-alive
+    /// sends the last picture again.
+    fn encode_wake(&mut self, keepalive: bool) {
+        self.stats.encode_ticks += 1;
+        self.publish_pointer();
+        // The frame tap wants pictures while a reader keeps asking, with or without a viewer.
+        let listeners = self.hub.has_listeners();
+        let (tap_on, tap_force) = self
+            .tap
+            .as_mut()
+            .map_or((false, false), |t| t.want(listeners));
+        if tap_force || keepalive {
+            self.force_frame = true;
+        }
+        // With nobody encoding, only a capture that is due composites (not every change).
+        let wanted = if listeners {
+            self.dirty || self.force_frame
+        } else {
+            tap_on && self.force_frame
+        };
+        if !self.dirty && !self.force_frame {
+            self.stats.clean += 1;
+        }
+        if wanted {
+            self.force_frame = false;
+            self.dirty = false;
+            if let Err(err) = self.composite() {
+                warn!("compositing failed: {err:#}");
+            }
+            if self.schedule.pacing() == Pacing::Commit {
+                self.present_driver();
+                // No free buffer (the encoders still hold them all): the
+                // change is still waiting.
+                if self.dirty {
+                    self.schedule.on_commit(true);
+                }
+            }
+        }
+    }
+
+    /// The commit-paced alarm went off.
+    fn alarm(&mut self) {
+        let now = Instant::now();
+        if self.schedule.pacing() != Pacing::Commit {
+            return;
+        }
+        match self.schedule.poll(now) {
+            Wake::Composite => self.encode_wake(false),
+            Wake::KeepAlive => self.encode_wake(true),
+            Wake::Idle => {}
+        }
+        self.arm_alarm(now);
+    }
+
+    /// Arms the alarm for the schedule's next composite, if one is waiting.
+    fn arm_alarm(&self, now: Instant) {
+        match self.schedule.due(now) {
+            Some(at) => self.alarm.arm_in(at.saturating_duration_since(now)),
+            None => self.alarm.disarm(),
+        }
+    }
+
+    /// The driving surface committed a change: composite it as soon as the
+    /// schedule allows (on the event loop's next turn at the earliest, once
+    /// the commit is fully handled).
+    pub fn driver_committed(&mut self) {
+        self.schedule.on_commit(true);
+        self.arm_alarm(Instant::now());
+    }
+
+    /// Tells the driving surface its last commit was composited now, with a
+    /// variable refresh: a version 1 binder (gamescope) hears refresh 0, which
+    /// with `--adaptive-sync` makes it paint when the game has a frame.
+    fn present_driver(&mut self) {
+        let Some(window) = self.driver.as_ref().and_then(|d| self.window_for(d)) else {
+            return;
+        };
+        let output = self.output.clone();
+        let mut feedback = OutputPresentationFeedback::new(&output);
+        window.take_presentation_feedback(
+            &mut feedback,
+            |_, _| Some(output.clone()),
+            |_, _| wp_presentation_feedback::Kind::Vsync,
+        );
+        self.ticks += 1;
+        feedback.presented(
+            self.clock.now(),
+            Refresh::Variable(self.schedule.period()),
+            self.ticks,
+            wp_presentation_feedback::Kind::Vsync,
+        );
+    }
+
+    /// Which surface drives compositing, and so the pacing: gamescope's
+    /// window under `auto`, the first window under `commit`, none under
+    /// `fixed`.
+    fn update_pacing(&mut self, now: Instant) {
+        let app_id = |surface: &WlSurface| {
+            with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|d| d.lock().ok()?.app_id.clone())
+            })
+        };
+        let driver = match self.pacing_choice {
+            PacingChoice::Fixed => None,
+            PacingChoice::Auto => self.space.elements().find_map(|w| {
+                let surface = w.toplevel()?.wl_surface();
+                drives(app_id(surface).as_deref()).then(|| surface.clone())
+            }),
+            PacingChoice::Commit => self
+                .space
+                .elements()
+                .find_map(|w| w.toplevel().map(|t| t.wl_surface().clone())),
+        };
+        if driver == self.driver {
+            return;
+        }
+        self.driver = driver;
+        let pacing = if self.driver.is_some() {
+            Pacing::Commit
+        } else {
+            Pacing::Fixed
+        };
+        if pacing != self.schedule.pacing() {
+            info!(?pacing, "compositing pacing");
+            self.schedule.set_pacing(pacing, now);
+            if pacing == Pacing::Fixed {
+                self.alarm.disarm();
+            } else {
+                self.arm_alarm(now);
+            }
+        }
+    }
+
     pub fn window_for(&self, surface: &WlSurface) -> Option<Window> {
         self.space
             .elements()
@@ -802,6 +1031,17 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_gamescope_drives_compositing_under_auto() {
+        assert!(drives(Some("gamescope")));
+        // Desktops and browsers keep the encode tick, and a window without
+        // an app id (yet) isn't gamescope.
+        for other in ["google-chrome", "firefox", "org.kde.dolphin", "steam", ""] {
+            assert!(!drives(Some(other)), "{other}");
+        }
+        assert!(!drives(None));
+    }
 
     #[test]
     fn the_clock_is_a_multiple_of_the_encode_rate() {

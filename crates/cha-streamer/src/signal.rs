@@ -21,7 +21,7 @@ use tracing::{info, warn};
 
 use crate::audio::Audio;
 use crate::codec::VideoCodec;
-use crate::compositor::{self, fit_size};
+use crate::compositor::{self, PacingChoice, fit_size};
 use crate::device::{self, Device, DeviceKind};
 use crate::gamepad::{GamepadKind, Gamepads};
 use crate::media::{EncodeSettings, FrameHub, Media};
@@ -64,6 +64,13 @@ struct Args {
     /// `--fps`, so each encoded frame falls on a tick (270 for 90).
     #[arg(long, default_value_t = 240)]
     compositor_fps: u32,
+    /// When the compositor composites: `fixed` on every `--fps` tick if
+    /// anything changed (as before), `commit` when the app's window commits a
+    /// new picture (at most `--fps` a second), or `auto`: `commit` for
+    /// gamescope's window (Steam sessions, which then run at the game's own
+    /// cadence), `fixed` for everything else.
+    #[arg(long, value_enum, default_value_t = PacingChoice::Auto)]
+    pacing: PacingChoice,
     /// A local Unix socket (mode 0600) that serves the latest picture, small, to
     /// processes on the node: health checks, thumbnails, agents (see `tap.rs`).
     /// Off unless set, and idle until a reader asks.
@@ -331,6 +338,11 @@ pub fn main() -> Result<()> {
             height,
             compositor_fps: args.compositor_fps,
             encode_fps: args.fps,
+            pacing: args.pacing,
+            #[cfg(feature = "gamestream")]
+            keepalive: args.gamestream_ports.is_some(),
+            #[cfg(not(feature = "gamestream"))]
+            keepalive: false,
             socket_name: args.socket.clone(),
             tap: tap.clone(),
         },
