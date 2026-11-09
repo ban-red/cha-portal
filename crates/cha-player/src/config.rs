@@ -45,6 +45,9 @@ pub struct Config {
     /// Send Cmd as Ctrl, as the browser player does (Cmd+C copies in a Linux
     /// app); off sends it as Super.
     pub command_as_control: bool,
+    /// Stretch a picture smaller than the window with SGSR 1 (`cha-upscale`)
+    /// instead of the plain bilinear filter. Off by default.
+    pub sharpen: bool,
     /// Colours, appearance and UI scale.
     pub theme: ThemePrefs,
     /// The stats panel: shown or hidden, folded, where it sits, how opaque.
@@ -64,6 +67,7 @@ impl Default for Config {
             bitrate_kbps: 80_000,
             codecs: vec![Codec::Hevc, Codec::H264],
             command_as_control: true,
+            sharpen: false,
             theme: ThemePrefs::default(),
             overlay: OverlayPrefs::default(),
             toolbar: BTreeMap::new(),
@@ -260,6 +264,16 @@ mod tests {
         assert_eq!(old.theme.source, Some(crate::theme::ThemeSource::Local));
         assert_eq!(old.theme.portal_look, None);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn sharpening_is_off_until_turned_on_and_is_kept() {
+        assert!(!Config::default().sharpen);
+        let on: Config = serde_json::from_str(r#"{"sharpen": true}"#).unwrap();
+        assert!(on.sharpen);
+        // A config.json from before the setting reads as off.
+        let old: Config = serde_json::from_str(r#"{"fps": 60}"#).unwrap();
+        assert!(!old.sharpen);
     }
 
     #[test]

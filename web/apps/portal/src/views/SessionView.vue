@@ -34,6 +34,7 @@ import { useRoute, useRouter } from "vue-router";
 import { api, type JoinableEnvironment } from "../api";
 import { backoffDelay, classifyConnectError } from "../reconnect";
 import { loadSteamPassthrough } from "../controllerPrefs";
+import { loadUpscaler } from "../streamPrefs";
 import EnvironmentLog from "../components/EnvironmentLog.vue";
 import PowerOffDialog from "../components/PowerOffDialog.vue";
 import SessionAccessPanel from "../components/SessionAccessPanel.vue";
@@ -541,6 +542,7 @@ async function connect() {
     iceServers,
     transport: transportChoice.value,
     rawSteam: loadSteamPassthrough(),
+    upscaler: loadUpscaler(),
     webTransport: async (c) => {
       const r = await api.connect(id.value, { codec: c, transport: "webtransport" });
       return { urls: r.urls ?? [], certHash: r.certHash ?? "" };

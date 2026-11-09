@@ -31,6 +31,7 @@ cha-proto = { path = "crates/cha-proto" }
 cha-pyrowave = { path = "crates/cha-pyrowave" }
 cha-pyrowave-wgpu = { path = "crates/cha-pyrowave-wgpu" }
 cha-sysinfo = { path = "crates/cha-sysinfo" }
+cha-upscale = { path = "crates/cha-upscale" }
 cha-ui-spec = { path = "crates/cha-ui-spec" }
 cha-wire = { path = "crates/cha-wire" }
 cha-workspace-hack = { version = "0.1", path = "crates/cha-workspace-hack" }

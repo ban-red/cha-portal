@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "license": "AGPL-3.0-or-later AND MIT",
+  "license": "AGPL-3.0-or-later AND MIT AND BSD-3-Clause",
   "description": "PyroWave decoder on WebGPU: TypeScript host for the WGSL port of imbcmdth/pyrowave@webgpu",
   "exports": {
     ".": "./src/index.ts"

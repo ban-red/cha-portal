@@ -1,0 +1,21 @@
+[package]
+name = "cha-upscale"
+version.workspace = true
+description = "Draws a decoded picture into a window on wgpu, stretched by the GPU's bilinear filter or by SGSR 1 (Snapdragon Game Super Resolution), with its GPU time"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+bytemuck = { workspace = true, features = ["derive"] }
+wgpu.workspace = true
+cha-workspace-hack.workspace = true
+
+[dev-dependencies]
+# wgpu's own WGSL front end, to validate the shader with no GPU (CI has none).
+naga = { version = "29", default-features = false, features = ["wgsl-in"] }
+pollster.workspace = true
+
+[lints]
+workspace = true
