@@ -19,10 +19,11 @@ use anyhow::{Result, ensure};
 use super::ffi;
 use super::h264::{Rate, zeroed};
 use super::sys;
-use crate::encoder::Params;
 use crate::encoder::bitstream::h265::{
     self, NAL_IDR_N_LP, NAL_TRAIL_R, PROFILE_MAIN, Pps, SLICE_I, SLICE_P, SliceHeader, Sps, Vui,
 };
+use crate::encoder::color;
+use crate::encoder::{Backend, Params};
 
 /// `log2_max_pic_order_cnt_lsb`: the slice header carries the POC modulo 256.
 pub const LOG2_MAX_POC_LSB: u32 = 8;
@@ -185,7 +186,7 @@ impl Layout {
             sao: tools.sao,
             temporal_mvp: tools.temporal_mvp,
             strong_intra_smoothing: tools.strong_intra_smoothing,
-            vui: Some(Vui::bt709(params.fps)),
+            vui: Some(Vui::bt709(params.fps).with_color(color::sdr(Backend::Vaapi))),
         };
         let pps = Pps {
             pps_id: 0,
@@ -220,7 +221,7 @@ impl Layout {
     pub fn with_fps(&mut self, params: &Params) {
         let (width, height) = self.coded_size();
         self.sps.level_idc = h265::level_for(width, height, params.fps);
-        self.sps.vui = Some(Vui::bt709(params.fps));
+        self.sps.vui = Some(Vui::bt709(params.fps).with_color(color::sdr(Backend::Vaapi)));
     }
 }
 

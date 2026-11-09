@@ -15,7 +15,6 @@
 use anyhow::{Result, ensure};
 
 use super::ffi;
-use crate::encoder::Params;
 use crate::encoder::bitstream::{
     self,
     h264::{
@@ -23,6 +22,8 @@ use crate::encoder::bitstream::{
         PROFILE_BASELINE, PROFILE_HIGH, PROFILE_MAIN, Pps, SliceHeader, SliceKind, Sps, Vui,
     },
 };
+use crate::encoder::color;
+use crate::encoder::{Backend, Params};
 
 /// `log2_max_frame_num`: frame numbers wrap every 256 pictures.
 pub const LOG2_MAX_FRAME_NUM: u32 = 8;
@@ -112,7 +113,10 @@ impl Layout {
             height_mbs,
             direct_8x8_inference: true,
             crop: [0, crop_right, 0, crop_bottom],
-            vui: Some(Vui::bt709_low_latency(params.fps, REFERENCES)),
+            vui: Some(
+                Vui::bt709_low_latency(params.fps, REFERENCES)
+                    .with_color(color::sdr(Backend::Vaapi)),
+            ),
         };
         let pps = Pps {
             pps_id: 0,
@@ -141,7 +145,9 @@ impl Layout {
     /// timing follow.
     pub fn with_fps(&mut self, params: &Params) {
         self.sps.level_idc = h264::level_for(params.width, params.height, params.fps);
-        self.sps.vui = Some(Vui::bt709_low_latency(params.fps, REFERENCES));
+        self.sps.vui = Some(
+            Vui::bt709_low_latency(params.fps, REFERENCES).with_color(color::sdr(Backend::Vaapi)),
+        );
     }
 }
 

@@ -17,7 +17,9 @@ pub mod sys;
 use std::fmt;
 
 pub use cuda::{CudaContext, RegisteredImage, Surface};
-pub use nvenc::{Codec, Encoder, EncoderConfig, InputFormat, Timings, max_supported_version};
+pub use nvenc::{
+    Codec, ColorDescription, Encoder, EncoderConfig, InputFormat, Timings, max_supported_version,
+};
 
 #[derive(Debug, Clone)]
 pub struct Error(String);

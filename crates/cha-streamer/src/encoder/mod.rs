@@ -22,6 +22,7 @@ pub use cha_nvenc::{Codec, Timings};
 use crate::media::Frame;
 
 pub mod bitstream;
+pub mod color;
 pub mod dl;
 pub mod i420;
 pub mod nvenc;

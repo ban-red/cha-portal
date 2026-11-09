@@ -18,6 +18,7 @@
 //! project's code.
 
 use super::BitWriter;
+use crate::encoder::color::ColorTags;
 
 pub const OBU_SEQUENCE_HEADER: u8 = 1;
 pub const OBU_TEMPORAL_DELIMITER: u8 = 2;
@@ -68,9 +69,8 @@ pub fn temporal_delimiter() -> Vec<u8> {
 }
 
 /// What the sequence header says. Everything not here is fixed: Profile 0,
-/// 8-bit, 4:2:0, BT.709 limited range signalled, one operating point, no
-/// timing info, no frame ids, 64×64 superblocks unless `use_128x128`, order
-/// hints on, no film grain.
+/// 8-bit, 4:2:0, one operating point, no timing info, no frame ids, 64×64
+/// superblocks unless `use_128x128`, order hints on, no film grain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seq {
     pub level_idx: u8,
@@ -91,6 +91,8 @@ pub struct Seq {
     pub cdef: bool,
     pub restoration: bool,
     pub order_hint_bits: u32,
+    /// The colour config's description (BT.709 limited range by default).
+    pub color: ColorTags,
 }
 
 impl Seq {
@@ -114,6 +116,7 @@ impl Seq {
             cdef: true,
             restoration: false,
             order_hint_bits: 7,
+            color: ColorTags::BT709,
         }
     }
 }
@@ -166,10 +169,10 @@ pub fn sequence_header_payload(seq: &Seq) -> Vec<u8> {
     w.put_bit(false); // high_bitdepth
     w.put_bit(false); // mono_chrome
     w.put_bit(true); // color_description_present_flag
-    w.put_bits(1, 8); // color_primaries: BT.709
-    w.put_bits(1, 8); // transfer_characteristics: BT.709
-    w.put_bits(1, 8); // matrix_coefficients: BT.709
-    w.put_bit(false); // color_range: limited
+    w.put_bits(u32::from(seq.color.primaries), 8);
+    w.put_bits(u32::from(seq.color.transfer), 8);
+    w.put_bits(u32::from(seq.color.matrix), 8);
+    w.put_bit(seq.color.full_range); // color_range
     w.put_bits(0, 2); // chroma_sample_position: unknown
     w.put_bit(false); // separate_uv_delta_q
     w.put_bit(false); // film_grain_params_present

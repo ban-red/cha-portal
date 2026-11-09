@@ -25,10 +25,11 @@ use anyhow::{Result, bail, ensure};
 use super::ffi;
 use super::h264::{Rate, zeroed};
 use super::sys;
-use crate::encoder::Params;
 use crate::encoder::bitstream::av1::{
     self, Cdef, FILTER_SWITCHABLE, Frame, Header, PRIMARY_REF_NONE, Seq,
 };
+use crate::encoder::color;
+use crate::encoder::{Backend, Params};
 
 /// The GOP length told to the driver. We choose every picture's type, so it
 /// never ends one; a rate controller wants a number.
@@ -238,6 +239,7 @@ impl Layout {
             coded.1
         );
         let mut seq = Seq::new(width, height);
+        seq.color = color::sdr(Backend::Vaapi);
         seq.filter_intra = tools.filter_intra;
         seq.intra_edge_filter = tools.intra_edge_filter;
         seq.interintra_compound = tools.interintra_compound;

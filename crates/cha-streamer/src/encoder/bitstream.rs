@@ -215,6 +215,7 @@ pub mod h265;
 
 pub mod h264 {
     use super::*;
+    use crate::encoder::color::ColorTags;
 
     pub const NAL_SLICE: u8 = 1;
     pub const NAL_IDR: u8 = 5;
@@ -265,6 +266,17 @@ pub mod h264 {
                 timing: Some((1, fps.max(1) * 2)),
                 max_num_reorder_frames: 0,
                 max_dec_frame_buffering,
+            }
+        }
+
+        /// The same with another colour description.
+        pub fn with_color(self, tags: ColorTags) -> Self {
+            Self {
+                full_range: tags.full_range,
+                colour_primaries: tags.primaries,
+                transfer_characteristics: tags.transfer,
+                matrix_coefficients: tags.matrix,
+                ..self
             }
         }
     }
