@@ -273,6 +273,9 @@ pub struct TransportStats {
     pub sent_span_ms: Option<u32>,
     /// The host's composited to encoded p99 over its last report, ms.
     pub encode_p99_ms: Option<f32>,
+    /// How long the app's newest picture waited on the host before it was
+    /// encoded, the median over its last report, ms.
+    pub node_wait_ms: Option<f32>,
     /// The host's resource use, if it reported lately.
     pub node: Option<NodeStats>,
     /// Whether this session has the keyboard and mouse (the floor): `None`

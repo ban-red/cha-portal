@@ -97,6 +97,7 @@ fn full() -> StatsSnapshot {
         target_fps: Some(60),
         mbps: Some(60.0),
         decode_ms: Some(3.0),
+        node_wait_ms: Some(8.0),
         latency_ms: Some(10.0),
         rtt_ms: Some(2.0),
         lost: Some(1),

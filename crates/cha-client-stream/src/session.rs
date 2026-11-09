@@ -91,6 +91,7 @@ struct Live {
     /// The streamer's cumulative `frames_sent` at its recent reports.
     sent: VecDeque<(Instant, u64)>,
     encode_p99_ms: Option<f32>,
+    node_wait_ms: Option<f32>,
     node: Option<(Instant, NodeStats)>,
     rtt: Option<Duration>,
     /// From the streamer's `floor`: whether this session has the keyboard and
@@ -115,6 +116,7 @@ impl Live {
         self.target_fps = None;
         self.sent.clear();
         self.encode_p99_ms = None;
+        self.node_wait_ms = None;
         self.node = None;
         self.floor = None;
         self.overlay = None;
@@ -159,6 +161,7 @@ impl Live {
             sent_fps: sent.map(|s| s.0),
             sent_span_ms: sent.map(|s| s.1),
             encode_p99_ms: self.encode_p99_ms,
+            node_wait_ms: self.node_wait_ms,
             node: self
                 .node
                 .as_ref()
@@ -950,10 +953,12 @@ impl Task {
                 fps,
                 frames_sent,
                 encode_p99_ms,
+                node_wait_ms,
                 overlay,
             } => {
                 let mut live = self.live.lock().expect("live lock");
                 live.on_stats(now, fps, frames_sent, encode_p99_ms);
+                live.node_wait_ms = node_wait_ms;
                 // A report without one means the app has none.
                 live.overlay = overlay;
             }

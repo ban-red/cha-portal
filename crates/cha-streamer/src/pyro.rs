@@ -238,6 +238,7 @@ impl PyroWorker {
                     index: 0,
                     recovery: None,
                     composited: if heal { started } else { frame.rendered },
+                    committed: if heal { None } else { frame.committed },
                     encoded,
                     packets: packets.clone(),
                 },

@@ -31,8 +31,9 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use cha_nvenc::{Codec, Timings};
 use tracing::{info, warn};
 
+use super::color;
 use super::dl::Library;
-use super::{Params, VideoEncoder};
+use super::{Backend, Params, VideoEncoder};
 use crate::media::Frame;
 
 /// Pixels per second of 1080p60: above it, a CPU struggles to keep up.
@@ -232,7 +233,7 @@ pub fn options(params: &Params) -> Options {
     // The rate control's buffer, in time: a frame's worth, and never below
     // the library's minimum (20 ms). The most it holds is twice that.
     let frame_ms = 1000u32.div_ceil(fps).max(20);
-    let pairs = vec![
+    let mut pairs = vec![
         ("width", params.width.to_string()),
         ("height", params.height.to_string()),
         ("fps-num", fps.to_string()),
@@ -262,12 +263,9 @@ pub fn options(params: &Params) -> Options {
         // not done).
         ("enable-tf", "0".into()),
         ("enable-overlays", "0".into()),
-        // BT.709, limited range, as the NVENC path signals.
-        ("color-primaries", "1".into()),
-        ("transfer-characteristics", "1".into()),
-        ("matrix-coefficients", "1".into()),
-        ("color-range", "0".into()),
     ];
+    // The colour the stream says it is: BT.709 limited range today (`color`).
+    pairs.extend(color::sdr(Backend::SvtAv1).svtav1());
     Options {
         preset: preset(),
         pairs,

@@ -541,6 +541,7 @@ impl Rates {
             s.transport_tag = "";
             s.target_fps = Some(self.asked_fps);
             (s.sent_fps, s.shown_sent_fps, s.encode_p99_ms) = (None, None, None);
+            s.node_wait_ms = None;
             (s.rtt_ms, s.lost, s.recovered, s.node) = (None, None, None, None);
             return;
         };
@@ -548,6 +549,7 @@ impl Rates {
         s.target_fps = t.target_fps.or(Some(self.asked_fps));
         s.sent_fps = t.sent_fps;
         s.encode_p99_ms = t.encode_p99_ms;
+        s.node_wait_ms = t.node_wait_ms;
         s.rtt_ms = t.rtt_ms;
         s.lost = Some(t.lost);
         s.recovered = Some(t.recovered);

@@ -13,6 +13,7 @@
 //! it comes from another project's code.
 
 use super::{BitReader, BitWriter, escape, unescape};
+use crate::encoder::color::ColorTags;
 
 pub const NAL_TRAIL_R: u8 = 1;
 pub const NAL_IDR_W_RADL: u8 = 19;
@@ -70,6 +71,17 @@ impl Vui {
             transfer_characteristics: 1,
             matrix_coefficients: 1,
             timing: Some((1, fps.max(1))),
+        }
+    }
+
+    /// The same with another colour description.
+    pub fn with_color(self, tags: ColorTags) -> Self {
+        Self {
+            full_range: tags.full_range,
+            colour_primaries: tags.primaries,
+            transfer_characteristics: tags.transfer,
+            matrix_coefficients: tags.matrix,
+            ..self
         }
     }
 }

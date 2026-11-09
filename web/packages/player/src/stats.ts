@@ -19,6 +19,15 @@ export interface StatsSnapshot {
    */
   encodeP99Ms?: number | null;
   /**
+   * How long the app's newest picture waited on the node before it was encoded, the median over
+   * the streamer's last report, ms. Null on a streamer that doesn't say, or with nothing new drawn.
+   */
+  nodeWaitMs?: number | null;
+  /** The colour pictures are decoded in ("8-bit sRGB, BT.709 primaries"), where the path can see it. */
+  colour?: string | null;
+  /** What the screen is ("120 Hz, HDR"). */
+  display?: string | null;
+  /**
    * Frames per second shown over the same span as `sentFps` (between its first and last report,
    * shifted by the latency), so a burst of sends then a still screen compares like with like.
    * Null without `sentFps`; judge stutter with this and fall back to `fps`.

@@ -104,6 +104,9 @@ pub enum ServerMsg {
         fps: Option<u32>,
         frames_sent: Option<u64>,
         encode_p99_ms: Option<f32>,
+        /// How long the app's newest picture waited on the node before it
+        /// was encoded, the median over the report (newer streamers).
+        node_wait_ms: Option<f32>,
         overlay: Option<PerfOverlay>,
     },
     /// The node's CPU, RAM and GPU use, about once a second.
@@ -233,6 +236,10 @@ pub fn parse(line: &str) -> Option<ServerMsg> {
             frames_sent: v.get("frames_sent").and_then(Value::as_u64),
             encode_p99_ms: v
                 .get("composite_to_encoded_ms_p99")
+                .and_then(Value::as_f64)
+                .map(|n| n as f32),
+            node_wait_ms: v
+                .get("commit_to_encoded_ms_p50")
                 .and_then(Value::as_f64)
                 .map(|n| n as f32),
             overlay: parse_overlay(v.get("overlay")),
@@ -474,12 +481,13 @@ mod tests {
     fn stats_line() {
         assert_eq!(
             parse(
-                r#"{"t":"stats","elapsed_ms":5000,"fps":120,"frames_sent":300,"composite_to_encoded_ms_p99":2.5}"#
+                r#"{"t":"stats","elapsed_ms":5000,"fps":120,"frames_sent":300,"composite_to_encoded_ms_p99":2.5,"commit_to_encoded_ms_p50":7.25}"#
             ),
             Some(ServerMsg::Stats {
                 fps: Some(120),
                 frames_sent: Some(300),
                 encode_p99_ms: Some(2.5),
+                node_wait_ms: Some(7.25),
                 overlay: None
             })
         );
@@ -489,6 +497,7 @@ mod tests {
                 fps: None,
                 frames_sent: None,
                 encode_p99_ms: None,
+                node_wait_ms: None,
                 overlay: None
             })
         );

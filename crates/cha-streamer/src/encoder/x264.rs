@@ -21,8 +21,9 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use cha_nvenc::{Codec, Timings};
 use tracing::{info, warn};
 
+use super::color;
 use super::dl::Library;
-use super::{Params, VideoEncoder};
+use super::{Backend, Params, VideoEncoder};
 use crate::media::Frame;
 
 /// Pixels per second of 1080p60: above it, a CPU struggles to keep up.
@@ -240,7 +241,7 @@ pub fn options(params: &Params, threads: usize) -> Options {
     // One frame of bits: nothing queues behind a big frame. x264 won't take
     // less than that.
     let vbv_kbit = (params.bitrate_bps / fps / 1000).max(1);
-    let pairs = vec![
+    let mut pairs = vec![
         ("fps", format!("{fps}/1")),
         ("threads", threads.to_string()),
         // Keyframes (IDR) only when asked: no GOP, no scene-cut ones.
@@ -256,12 +257,9 @@ pub fn options(params: &Params, threads: usize) -> Options {
         ("repeat-headers", "1".into()),
         ("annexb", "1".into()),
         ("aud", "0".into()),
-        // BT.709, limited range, as the NVENC path signals.
-        ("colorprim", "bt709".into()),
-        ("transfer", "bt709".into()),
-        ("colormatrix", "bt709".into()),
-        ("fullrange", "off".into()),
     ];
+    // The colour the stream says it is: BT.709 limited range today (`color`).
+    pairs.extend(color::sdr(Backend::X264).x264());
     Options {
         preset: preset_for(params.width, params.height, fps),
         tune: "zerolatency",

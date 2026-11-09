@@ -7,7 +7,8 @@ use std::time::Instant;
 use anyhow::{Result, anyhow};
 use cha_nvenc::{CudaContext, Encoder, EncoderConfig, InputFormat, Timings};
 
-use super::{Params, VideoEncoder};
+use super::color;
+use super::{Backend, Params, VideoEncoder};
 use crate::compositor::MAX_SIZE;
 use crate::media::Frame;
 
@@ -30,6 +31,7 @@ impl Nvenc {
                 max_height: MAX_SIZE.1,
                 fps: params.fps,
                 bitrate_bps: params.bitrate_bps,
+                color: color::sdr(Backend::Nvenc).nvenc(),
             },
         )
         .map_err(|e| anyhow!("{e}"))?;

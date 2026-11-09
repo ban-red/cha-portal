@@ -4,6 +4,7 @@
 
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
+use std::time::Instant;
 
 use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -70,6 +71,18 @@ impl CompositorHandler for State {
         // A cursor the page draws isn't part of the picture.
         if !(cursor && self.client_cursor) {
             self.dirty = true;
+            self.last_commit = Some(Instant::now());
+        }
+        // The driving surface's commit (or one of its subsurfaces') paces
+        // the composite (`--pacing`).
+        if self.driver.is_some() {
+            let mut root = surface.clone();
+            while let Some(parent) = get_parent(&root) {
+                root = parent;
+            }
+            if self.driver.as_ref() == Some(&root) {
+                self.driver_committed();
+            }
         }
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();

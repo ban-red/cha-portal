@@ -32,6 +32,12 @@ r="${CHA_REFRESH:-60}"
 # -steamos3 makes Steam act as it does on SteamOS, which is what makes it carry
 # out Power > "Switch to Desktop": it then runs steamos-session-select (ours,
 # which asks steam-session for the desktop session).
+#
+# --adaptive-sync: our compositor composites gamescope's window when it
+# commits and tells it the refresh is variable (zero), so gamescope paints when
+# the game has a frame, at most -r a second, instead of on a clock of its own
+# (cha-streamer's --pacing; research 12). Without it a game frame waits for
+# gamescope's clock first.
 exec dbus-run-session -- gamescope --backend wayland \
-  -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" \
+  -W "$w" -H "$h" -w "$w" -h "$h" -r "$r" --adaptive-sync \
   -e --mangoapp -- sh -c 'steam-touch-mode & steam-focus & (until cha-x11-clipboard; do sleep 1; done) & LD_PRELOAD="/opt/cha/\$LIB/libcha-uinput.so${LD_PRELOAD:+ $LD_PRELOAD}" exec steam -steamos3 -gamepadui'

@@ -8,6 +8,7 @@
 // drawn at its own size first, then stretched by SGSR 1 into a canvas of the
 // size it is shown at, so the <video> shows the frame pixel for pixel.
 
+import { pyroColour, type PictureColour } from "./colour";
 import {
   FILTER_NAMES,
   Ladder,
@@ -93,6 +94,11 @@ export class PyroPresenter {
     const upscale = options.upscale ?? null;
     // Timestamps time the upscaler only; the decoder is timed only when asked.
     return new PyroPresenter(await PyroWaveDevice.create(adapter, { timestamps: !!upscale }), upscale);
+  }
+
+  /** The colour the stream's sequence header says its pictures are in; null before a frame. */
+  get colour(): PictureColour | null {
+    return this.colorSet ? pyroColour(this.decoder?.parser.color) : null;
   }
 
   /** How pictures were drawn since the last call: the size, the stretch and its GPU time. Null before a frame. */

@@ -217,6 +217,17 @@ pub struct StreamerStats {
     /// window, so a codec switch shows within one).
     pub composite_to_encoded_ms_p50: Option<f64>,
     pub composite_to_encoded_ms_p99: Option<f64>,
+    /// An app's newest change → composited, and → encoded: how long the
+    /// app's picture waited on the node before it was encoded, over the same
+    /// window. Absent when no frame in it carried a commit (re-encodes only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_to_composite_ms_p50: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_to_composite_ms_p99: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_to_encoded_ms_p50: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_to_encoded_ms_p99: Option<f64>,
     /// Encoded → handed to the transport.
     pub encoded_to_sent_us_p50: Option<u64>,
     pub encoded_to_sent_us_p99: Option<u64>,
@@ -1156,6 +1167,43 @@ pub async fn next_clipboard(watch: &mut Option<ClipboardWatch>) -> Option<Arc<st
     }
 }
 
+/// How long the app's pictures waited on the node, for the frames a session
+/// sent: from the app's commit to the composite, and to the end of encoding.
+/// Frames without a commit (re-encodes of an old picture) don't count.
+#[derive(Debug, Default)]
+pub struct CommitWaits {
+    composite_ms: Vec<f64>,
+    encoded_ms: Vec<f64>,
+}
+
+impl CommitWaits {
+    pub fn push(&mut self, committed: Option<Instant>, composited: Instant, encoded: Instant) {
+        let Some(committed) = committed else { return };
+        let ms = |t: Instant| t.saturating_duration_since(committed).as_secs_f64() * 1e3;
+        self.composite_ms.push(ms(composited));
+        self.encoded_ms.push(ms(encoded));
+    }
+
+    /// Writes the percentiles of what was pushed into `stats`.
+    pub fn report(&self, stats: &mut StreamerStats) {
+        let sorted = |v: &[f64]| {
+            let mut v = v.to_vec();
+            v.sort_by(f64::total_cmp);
+            v
+        };
+        let (composite, encoded) = (sorted(&self.composite_ms), sorted(&self.encoded_ms));
+        stats.commit_to_composite_ms_p50 = percentile(&composite, 0.5);
+        stats.commit_to_composite_ms_p99 = percentile(&composite, 0.99);
+        stats.commit_to_encoded_ms_p50 = percentile(&encoded, 0.5);
+        stats.commit_to_encoded_ms_p99 = percentile(&encoded, 0.99);
+    }
+
+    pub fn clear(&mut self) {
+        self.composite_ms.clear();
+        self.encoded_ms.clear();
+    }
+}
+
 pub fn percentile<T: Copy>(sorted: &[T], q: f64) -> Option<T> {
     if sorted.is_empty() {
         return None;
@@ -1447,6 +1495,37 @@ mod tests {
             ..StreamerStats::default()
         };
         assert_eq!(line(known)["fps"], 90);
+    }
+
+    #[test]
+    fn the_stats_say_how_long_the_apps_pictures_waited() {
+        let line = |stats: StreamerStats| serde_json::to_value(stats).unwrap();
+        let mut waits = CommitWaits::default();
+        let mut stats = StreamerStats::default();
+        waits.report(&mut stats);
+        // Nothing committed (an idle desktop, or only re-encodes): no fields.
+        assert!(line(stats).get("commit_to_encoded_ms_p50").is_none());
+
+        let t = Instant::now();
+        let ms = Duration::from_millis;
+        // Waits of 1, 2, … 10 ms before the composite, and 2 ms of encode.
+        for n in 1..=10 {
+            waits.push(Some(t), t + ms(n), t + ms(n + 2));
+        }
+        // A re-encode of an old picture carries no commit and counts for nothing.
+        waits.push(None, t, t + ms(500));
+        let mut stats = StreamerStats::default();
+        waits.report(&mut stats);
+        assert_eq!(stats.commit_to_composite_ms_p50, Some(6.0));
+        assert_eq!(stats.commit_to_composite_ms_p99, Some(10.0));
+        assert_eq!(stats.commit_to_encoded_ms_p50, Some(8.0));
+        assert_eq!(stats.commit_to_encoded_ms_p99, Some(12.0));
+        assert_eq!(line(stats)["commit_to_encoded_ms_p50"], 8.0);
+
+        waits.clear();
+        let mut stats = StreamerStats::default();
+        waits.report(&mut stats);
+        assert_eq!(stats.commit_to_composite_ms_p50, None);
     }
 
     #[test]

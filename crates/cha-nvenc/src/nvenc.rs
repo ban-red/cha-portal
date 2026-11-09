@@ -107,6 +107,33 @@ pub enum InputFormat {
     Nv12,
 }
 
+/// What the stream says its pictures' colour is, as H.273 code points: the
+/// H.264/HEVC VUI's `colour_primaries`, `transfer_characteristics` and
+/// `matrix_coefficients`, and the AV1 colour config's. It describes the
+/// pictures; it doesn't change NVENC's own RGB to YUV conversion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColorDescription {
+    pub primaries: u32,
+    pub transfer: u32,
+    pub matrix: u32,
+    pub full_range: bool,
+}
+
+impl Default for ColorDescription {
+    /// BT.709 primaries and matrix with the sRGB transfer, limited range: the
+    /// desktop's pixels are sRGB-encoded and NVENC converts them without
+    /// changing the curve (tagged BT.709, Chrome on a Mac showed the midtones
+    /// about 11 levels too light).
+    fn default() -> Self {
+        Self {
+            primaries: 1,
+            transfer: 13,
+            matrix: 1,
+            full_range: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct EncoderConfig {
     pub codec: Codec,
@@ -118,6 +145,7 @@ pub struct EncoderConfig {
     pub max_height: u32,
     pub fps: u32,
     pub bitrate_bps: u32,
+    pub color: ColorDescription,
 }
 
 struct Api {
@@ -714,7 +742,7 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
                 h264.numRefL0 = NV_ENC_NUM_REF_FRAMES::NV_ENC_NUM_REF_FRAMES_1;
                 h264.set_repeatSPSPPS(1);
                 h264.set_outputAUD(0);
-                vui(&mut h264.h264VUIParameters);
+                vui(&mut h264.h264VUIParameters, c.color);
             }
             Codec::Hevc => {
                 let hevc = &mut config.encodeCodecConfig.hevcConfig;
@@ -723,7 +751,7 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
                 hevc.numRefL0 = NV_ENC_NUM_REF_FRAMES::NV_ENC_NUM_REF_FRAMES_1;
                 hevc.set_repeatSPSPPS(1);
                 hevc.set_outputAUD(0);
-                vui(&mut hevc.hevcVUIParameters);
+                vui(&mut hevc.hevcVUIParameters, c.color);
             }
             Codec::Av1 => {
                 let av1 = &mut config.encodeCodecConfig.av1Config;
@@ -733,30 +761,26 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
                 av1.set_repeatSeqHdr(1);
                 // Low-overhead OBUs (what WebRTC's AV1 packetizer expects).
                 av1.set_outputAnnexBFormat(0);
-                av1.colorPrimaries = NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-                av1.transferCharacteristics =
-                    NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB;
-                av1.matrixCoefficients = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
-                av1.colorRange = 0;
+                av1.colorPrimaries = NV_ENC_VUI_COLOR_PRIMARIES(c.color.primaries);
+                av1.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC(c.color.transfer);
+                av1.matrixCoefficients = NV_ENC_VUI_MATRIX_COEFFS(c.color.matrix);
+                av1.colorRange = u32::from(c.color.full_range);
             }
         }
     }
 }
 
-/// BT.709 primaries and matrix with the sRGB transfer (the desktop's pixels
-/// are sRGB-encoded and NVENC converts them without changing the curve; tagged
-/// BT.709, Chrome on a Mac showed the midtones about 11 levels too light),
-/// limited range, and the bitstream restriction that carries
-/// `max_num_reorder_frames = 0` (so hardware decoders don't hold frames).
-fn vui(vui: &mut NV_ENC_CONFIG_H264_VUI_PARAMETERS) {
+/// The colour description (by default [`ColorDescription::default`]'s) and
+/// the bitstream restriction that carries `max_num_reorder_frames = 0` (so
+/// hardware decoders don't hold frames).
+fn vui(vui: &mut NV_ENC_CONFIG_H264_VUI_PARAMETERS, color: ColorDescription) {
     vui.videoSignalTypePresentFlag = 1;
     vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT::NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
-    vui.videoFullRangeFlag = 0;
+    vui.videoFullRangeFlag = u32::from(color.full_range);
     vui.colourDescriptionPresentFlag = 1;
-    vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-    vui.transferCharacteristics =
-        NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB;
-    vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
+    vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES(color.primaries);
+    vui.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC(color.transfer);
+    vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS(color.matrix);
     vui.bitstreamRestrictionFlag = 1;
 }
 
@@ -831,6 +855,7 @@ mod tests {
                     max_height: h,
                     fps: 60,
                     bitrate_bps: base,
+                    color: ColorDescription::default(),
                 },
             )
             .unwrap();
