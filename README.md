@@ -23,7 +23,7 @@ The streaming engine is our own: a headless Wayland compositor, zero-copy NVENC,
 ## What works
 
 - **Environments:** Google Chrome, Firefox, XFCE, KDE Plasma 6, Steam Big Picture (inside gamescope, with Proton games) and a test pattern for measuring latency. A node downloads an app's image the first time it's launched there, with a progress bar in the portal.
-- **Streaming:** H.264, HEVC and AV1 over WebRTC (tested in Chrome and Safari; Firefox gets H.264 only, and hasn't had a full test run); WebTransport as a faster path in Chromium; PyroWave, a low-latency wavelet codec, decoded on WebGPU for wired LANs. Measured send → shown latency is about 5 ms at the median on a wired LAN.
+- **Streaming:** H.264, HEVC and AV1 over WebRTC (tested in Chrome and Safari; Firefox gets H.264 only, and hasn't had a full test run); WebTransport as a faster path in Chromium; PyroWave, a low-latency wavelet codec, decoded on WebGPU for wired LANs. Measured send → shown latency is about 5 ms at the median on a wired LAN. Desktops and browsers stream at the screen's own size (up to 3840×2160); games can be sharpened with SGSR 1 when they arrive smaller than the screen (PyroWave in the browser, any codec in Cha Player; off by default), and on NVIDIA nodes they get their own DLSS at its newest model and Reflex.
 - **WAN:** delay-based rate control, FEC and reference-frame invalidation, so a stream adapts to loss and throttling instead of stalling.
 - **Input:** keyboard (with keyboard lock), mouse with pointer lock, text clipboard both ways, and virtual Xbox 360, DualSense and Steam Controller pads fed from the browser's Gamepad API or WebHID.
 - **Sound:** stereo Opus from our own PulseAudio-protocol server.
