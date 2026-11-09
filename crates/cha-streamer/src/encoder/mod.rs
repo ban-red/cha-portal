@@ -26,6 +26,7 @@ pub mod color;
 pub mod dl;
 pub mod i420;
 pub mod nvenc;
+pub mod patches;
 pub mod svtav1;
 pub mod vaapi;
 pub mod x264;
