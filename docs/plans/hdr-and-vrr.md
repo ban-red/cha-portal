@@ -22,7 +22,11 @@ Built, with their tests passing here; none yet run on the node or a Mac:
 | 3.4 | `fixed_frame_rate_flag = 0` in the H.264 SPS | — |
 | 4 | The screen's refresh measured once per page (`refresh.ts`); the in-stream frame-rate menu (web-only toolbar state `display_hz`, `fit_60/90/120`) and the app card mark rates that judder or exceed the screen; the Safari hint in the *Display* tooltip; 1.3's Perfetto recipe in `docs/benchmarks/README.md` | The Perfetto trace on the Mac (the gate); a default of 120 fps for games on 120 Hz screens where the node and link allow it; Cha Player's menu |
 
-Next: 6.1 and 6.3's header writers (the 10-bit codec names, Main10 and AV1 10-bit headers), which can also be built and tested here.
+| 6.1, 6.2 | `hevc-10` and `av1-10` (`VideoCodec::Hw10`): NVENC sessions at 10 bits from the 8-bit composite (HEVC Main 10's GUID from SDK 13.0's header); `/streams` codec strings and `depth`; the portal accepts them on any transport but WebRTC. **Offered only when `--codecs` names them, on NVIDIA**, not by default as 6.1 first said, until the gate passes | Encode time on the 4090 against 8-bit and a 10-bit decode with the right tags (the gate); then the node's probe reports them, which puts them in the menu; `hello.stream.color` moves to step 8, where HDR needs it |
+| 6.3 | Cha's HEVC SPS/VPS write Main 10 and the AV1 sequence header 10-bit (`ten_bit`), tested bit by bit | The video processor writing P010, and the self-test on the 780M |
+| 6.4 | The browser decodes both through WebCodecs where `isConfigSupported` says hardware does (`codecs.ts`), over WebTransport only; toolbar labels | Hardware decode in Chrome on the Mac and Windows (the gate) |
+
+Next: 6.5 (Cha Player asks VideoToolbox for 10-bit formats when the stream is 10-bit, which needs the native client to know the 10-bit names; Mac only), then step 7's recorded HDR10 clip through each client path, whose PQ maths (7.1) can be built and tested here.
 
 Abbreviations: COMP = `crates/cha-streamer/src/compositor/mod.rs`, HAND = `crates/cha-streamer/src/compositor/handlers.rs`, OUT = `crates/cha-streamer/src/compositor/output.rs`, MEDIA = `crates/cha-streamer/src/media.rs`, CTRL = `crates/cha-streamer/src/control.rs`, WT = `crates/cha-streamer/src/wt.rs`, NV = `crates/cha-nvenc/src/nvenc.rs`, BS = `crates/cha-streamer/src/encoder/bitstream.rs`, PT = `web/packages/player/src/player.ts`, PYRO = `web/packages/player/src/pyro.ts`, SPEC = `web/packages/ui-spec/stats-panel.json`.
 
