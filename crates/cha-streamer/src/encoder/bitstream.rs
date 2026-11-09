@@ -370,7 +370,9 @@ pub mod h264 {
         if let Some((units, scale)) = vui.timing {
             w.put_bits(units, 32);
             w.put_bits(scale, 32);
-            w.put_flag(true); // fixed_frame_rate_flag
+            // No fixed rate: a stream paced by the app's commits has frames
+            // at the game's cadence, and the timing is only the ceiling's.
+            w.put_flag(false); // fixed_frame_rate_flag
         }
         w.put_flag(false); // nal_hrd_parameters_present_flag
         w.put_flag(false); // vcl_hrd_parameters_present_flag
@@ -874,7 +876,9 @@ pub mod h264 {
             assert_eq!(hex(&sps_rbsp(&sample_sps(None))), "640033ac2c4a00a002d640");
             assert_eq!(
                 hex(&sps_rbsp(&sample_sps(Some(Vui::bt709_low_latency(60, 1))))),
-                "640033ac2c4a00a002d69a808080a00000002000000f11e1008540"
+                // fixed_frame_rate_flag (bit 179) is 0: the earlier golden
+                // ...0f11e1... with that one bit cleared.
+                "640033ac2c4a00a002d69a808080a00000002000000f01e1008540"
             );
         }
 
@@ -950,7 +954,8 @@ pub mod h264 {
             assert!(!r.bit().unwrap()); // chroma loc
             assert!(r.bit().unwrap()); // timing
             assert_eq!((r.bits(32).unwrap(), r.bits(32).unwrap()), (1, 120));
-            assert!(r.bit().unwrap()); // fixed frame rate
+            // No fixed rate: frames follow the app's commits (plan step 3.4).
+            assert!(!r.bit().unwrap(), "fixed_frame_rate_flag");
             assert_eq!(r.bits(3).unwrap(), 0); // hrd x2, pic_struct
             assert!(r.bit().unwrap()); // bitstream_restriction_flag
             assert!(r.bit().unwrap()); // mv over pic boundaries
