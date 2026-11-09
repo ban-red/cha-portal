@@ -131,7 +131,7 @@
         {
           "id": "display",
           "label": "Display",
-          "tooltip": "This screen's refresh rate, measured when the stream started, and whether the browser says it can show HDR. A stream at a rate the screen doesn't divide into (90 fps on 120 Hz) can judder.",
+          "tooltip": "This screen's refresh rate, measured when the stream started, and whether the browser says it can show HDR. A stream at a rate the screen doesn't divide into (90 fps on 120 Hz) judders, so the frame-rate menu marks those. Safari draws pages at about 60 Hz on a 120 Hz Mac unless its \"Prefer Page Rendering Updates near 60fps\" feature flag is off.",
           "value": "{display}",
           "when": ["display"],
           "platforms": ["web"]

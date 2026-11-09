@@ -32,3 +32,15 @@ Raw results from spike and benchmark runs. Each file is the JSON a harness expor
 | [p2amd-2026-10-09-electron152-mini-titan-780m-probe.json](p2amd-2026-10-09-electron152-mini-titan-780m-probe.json) | [P2 AMD node](../../deploy/proxmox/README.md) | Claude app's browser (Chromium 152) → test pattern on the 780M (LXC) and on the 4090, AV1 over WebTransport | Click → shown 16.0 ms p50 on the 780M (4090 in the same browser: 15.8 in p15, 24.2 in a run sharing the GPU); click → sound 64-93 ms, varying by session |
 | [pad-2026-10-10-electron152-gpu-node-testpattern.json](pad-2026-10-10-electron152-gpu-node-testpattern.json) | [Pad latency](pad-latency.md) | Claude app's browser (Chromium 152) on the M4 Pro → test pattern on the 4090 node, 1 GbE | Pad A press → decoded frame p50: WebTransport 18.6 (AV1) / 18.9 (H.264) ms at 60 fps, 13.6 / 13.0 at 120; WebRTC 19–21 at 60, 14–15 at 120. Not glass to glass: no USB hop, no scan-out. Baseline for pad input over datagrams |
 | [pad-2026-10-10-electron152-gpu-node-testpattern-datagrams.json](pad-2026-10-10-electron152-gpu-node-testpattern-datagrams.json) | [Pad latency](pad-latency.md) | same as the row above, streamer d0dadb9e | Same probe with pad state as datagrams (confirmed in use): p50 within about 1 ms of before on six of eight configs; WebTransport 120 fps and AV1 60 came out 1.4-3.2 ms slower in a busier pane, and a same-session reliable control on H.264 120 showed no datagram effect. No lossy run |
+
+## Recipes
+
+### Which refresh rate Chrome runs a stream at on a ProMotion Mac
+
+Chrome on macOS never asks a ProMotion panel for an arbitrary rate: it skips vsyncs in powers of two (120, 60 or 30 Hz), and with only video changing on the page it may pick the longest interval with an even cadence to the video ([research 12](../research/12-hdr-and-vrr/README.md)). Whether it does for a MediaStream `<video>` (both WebRTC and the WebTransport track generator) decides whether a 60 fps stream waits for a 60 Hz latch, and the frame-rate menu's marks rest on it ([plan](../plans/hdr-and-vrr.md), step 4). To read it:
+
+1. Open `chrome://tracing` (or Perfetto's UI with the Chrome extension) and record with the `viz` and `gpu` categories.
+2. Play a stream full screen at 60, then 90, then 120 fps for about ten seconds each, with the stats panel closed and the mouse still (anything else that animates keeps Chrome at 120 Hz).
+3. In the trace, find `ExternalBeginFrameSourceMac::SetPreferredInterval` and read its `vsync_subsampling_factor`: 1 is 120 Hz, 2 is 60 Hz.
+
+Record the browser and its version, the Mac and the stream's size, as for any benchmark.

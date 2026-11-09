@@ -6,7 +6,7 @@ import { Activity, AppWindow, Copy, Gamepad2, Gauge, Globe, Monitor, MonitorPlay
 import { computed, ref } from "vue";
 
 import { catalogIconUrl, type AppSettings, type ControllerApp, type Environment, type PlacementChoice, type Placements, type StorageApp, type Template } from "../api";
-import { FPS_CHOICES } from "../appFps";
+import { FPS_CHOICES, fpsLabel, useDisplayHz } from "../appFps";
 import { KINDS, kindLabel } from "../controllerKinds";
 import { dataNote } from "../customEnv";
 import { autoOption } from "../placements";
@@ -15,6 +15,9 @@ import GpuBadge from "./GpuBadge.vue";
 import FormError from "./FormError.vue";
 import WarningNote from "./WarningNote.vue";
 import LaunchButton from "./LaunchButton.vue";
+
+/** The screen's refresh rate, to mark frame rates that don't fit it. */
+const displayHz = useDisplayHz();
 
 const props = defineProps<{
   template: Template;
@@ -168,11 +171,11 @@ const controllerShort = computed(() => (props.controller ? kindLabel(props.contr
               :id="`${t.id}-fps`"
               :value="fps.fps ?? ''"
               :class="SELECT"
-              title="Frame rate: your screen needs to refresh this fast for it to show; 120 needs a 120 Hz display. From the next launch"
+              title="Frame rate: your screen needs to refresh this fast for it to show, and at a multiple of it to show it evenly (90 fps judders on a 120 Hz screen). From the next launch"
               @change="emit('chooseFps', $event)"
             >
               <option value="">Default ({{ fps.defaultFps }} fps)</option>
-              <option v-for="f in FPS_CHOICES" :key="f" :value="f">{{ f }} fps</option>
+              <option v-for="f in FPS_CHOICES" :key="f" :value="f">{{ fpsLabel(f, displayHz) }}</option>
             </select>
           </div>
         </div>

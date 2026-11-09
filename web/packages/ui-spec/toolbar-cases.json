@@ -1299,6 +1299,158 @@
           }
         }
       }
+    },
+    {
+      "name": "web: on a 120 Hz screen the frame-rate menu marks 90 fps as uneven",
+      "platforms": [
+        "web"
+      ],
+      "caps": "web-portal",
+      "state": {
+        "menu_open": "stream",
+        "overlay": "3",
+        "fps": 60,
+        "viewers": 2,
+        "display_hz": 120,
+        "fit_60": "",
+        "fit_90": "uneven",
+        "fit_120": ""
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back",
+          "power",
+          "share",
+          "name",
+          "gpu",
+          "viewers",
+          "stream",
+          "capture",
+          "mouse",
+          "sound",
+          "controllers",
+          "fullscreen",
+          "stats"
+        ],
+        "pin": {
+          "stream": {
+            "active": true,
+            "tone": "accent"
+          }
+        },
+        "menu": {
+          "control": "stream",
+          "rows": [
+            "codec",
+            "fps",
+            "overlay",
+            "transport",
+            "probe"
+          ],
+          "pin": {
+            "fps": {
+              "value": "60",
+              "options": [
+                {
+                  "value": "60",
+                  "label": "60 fps",
+                  "disabled": false
+                },
+                {
+                  "value": "90",
+                  "label": "90 fps, uneven at 120 Hz",
+                  "disabled": false
+                },
+                {
+                  "value": "120",
+                  "label": "120 fps",
+                  "disabled": false
+                }
+              ],
+              "editable": true,
+              "disabled": false,
+              "tooltip": "Frame rate"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "web: on a 60 Hz screen 90 and 120 fps are more than it shows",
+      "platforms": [
+        "web"
+      ],
+      "caps": "web-portal",
+      "state": {
+        "menu_open": "stream",
+        "overlay": "3",
+        "fps": 60,
+        "viewers": 2,
+        "display_hz": 60,
+        "fit_60": "",
+        "fit_90": "over",
+        "fit_120": "over"
+      },
+      "expect": {
+        "visible": true,
+        "controls": [
+          "back",
+          "power",
+          "share",
+          "name",
+          "gpu",
+          "viewers",
+          "stream",
+          "capture",
+          "mouse",
+          "sound",
+          "controllers",
+          "fullscreen",
+          "stats"
+        ],
+        "pin": {
+          "stream": {
+            "active": true,
+            "tone": "accent"
+          }
+        },
+        "menu": {
+          "control": "stream",
+          "rows": [
+            "codec",
+            "fps",
+            "overlay",
+            "transport",
+            "probe"
+          ],
+          "pin": {
+            "fps": {
+              "value": "60",
+              "options": [
+                {
+                  "value": "60",
+                  "label": "60 fps",
+                  "disabled": false
+                },
+                {
+                  "value": "90",
+                  "label": "90 fps, more than 60 Hz shows",
+                  "disabled": false
+                },
+                {
+                  "value": "120",
+                  "label": "120 fps, more than 60 Hz shows",
+                  "disabled": false
+                }
+              ],
+              "editable": true,
+              "disabled": false,
+              "tooltip": "Frame rate"
+            }
+          }
+        }
+      }
     }
   ]
 }

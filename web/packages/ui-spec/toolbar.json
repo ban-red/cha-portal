@@ -74,6 +74,10 @@
     "fps": { "kind": "number", "platforms": ["web", "native"], "doc": "The frame rate the host encodes at; null until known." },
     "fixed_size": { "kind": "bool", "platforms": ["web"], "doc": "The app's display has a fixed size, so its refresh rate cannot change while it runs." },
     "fps_switching": { "kind": "bool", "platforms": ["web"], "doc": "A frame rate change is under way." },
+    "display_hz": { "kind": "number", "platforms": ["web"], "doc": "The screen's refresh rate the page measured; 0 until measured." },
+    "fit_60": { "kind": "enum", "values": ["", "uneven", "over"], "platforms": ["web"], "doc": "How a stream at 60 fps fits the screen: \"\" evenly (or not measured), \"uneven\" (its refresh isn't a multiple of 60: it judders), \"over\" (faster than the screen shows)." },
+    "fit_90": { "kind": "enum", "values": ["", "uneven", "over"], "platforms": ["web"], "doc": "How a stream at 90 fps fits the screen: \"\" evenly (or not measured), \"uneven\" (its refresh isn't a multiple of 90: it judders), \"over\" (faster than the screen shows)." },
+    "fit_120": { "kind": "enum", "values": ["", "uneven", "over"], "platforms": ["web"], "doc": "How a stream at 120 fps fits the screen: \"\" evenly (or not measured), \"uneven\" (its refresh isn't a multiple of 120: it judders), \"over\" (faster than the screen shows)." },
     "overlay": { "kind": "string", "platforms": ["web", "native"], "doc": "The app's performance overlay: '0'..'4', 'custom', or null when it has none." },
     "overlay_switching": { "kind": "bool", "platforms": ["web"], "doc": "An overlay change is under way." },
     "transport_choice": { "kind": "string", "platforms": ["web"], "doc": "The transport picked: auto, webtransport, webrtc or websocket." },
@@ -218,9 +222,30 @@
             "value": "fps",
             "options": {
               "items": [
-                { "value": "60", "label": "60 fps" },
-                { "value": "90", "label": "90 fps" },
-                { "value": "120", "label": "120 fps" }
+                {
+                  "value": "60",
+                  "label": "60 fps",
+                  "states": [
+                    { "platforms": ["web"], "when": ["fit_60=uneven"], "label": "60 fps, uneven at {display_hz:f0} Hz" },
+                    { "platforms": ["web"], "when": ["fit_60=over"], "label": "60 fps, more than {display_hz:f0} Hz shows" }
+                  ]
+                },
+                {
+                  "value": "90",
+                  "label": "90 fps",
+                  "states": [
+                    { "platforms": ["web"], "when": ["fit_90=uneven"], "label": "90 fps, uneven at {display_hz:f0} Hz" },
+                    { "platforms": ["web"], "when": ["fit_90=over"], "label": "90 fps, more than {display_hz:f0} Hz shows" }
+                  ]
+                },
+                {
+                  "value": "120",
+                  "label": "120 fps",
+                  "states": [
+                    { "platforms": ["web"], "when": ["fit_120=uneven"], "label": "120 fps, uneven at {display_hz:f0} Hz" },
+                    { "platforms": ["web"], "when": ["fit_120=over"], "label": "120 fps, more than {display_hz:f0} Hz shows" }
+                  ]
+                }
               ]
             },
             "edit_needs": ["fps-change"],

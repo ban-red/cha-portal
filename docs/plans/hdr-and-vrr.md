@@ -20,8 +20,9 @@ Built, with their tests passing here; none yet run on the node or a Mac:
 | 3.1, 3.2 | `compositor/schedule.rs` and `--pacing auto\|fixed\|commit`: gamescope's window composited on its commits with a variable refresh in its feedback; desktops on the encode tick as before; a keep-alive for the GameStream host | The gate on the node; `hello.stream.pacing` and `/info` (the log says the pacing today) |
 | 3.3 | `--adaptive-sync` on Steam's gamescope, with a test of its command line | `-r` at the session's ceiling with live rate changes (3.5), gamescope from upstream 3.17.0, `xprop GAMESCOPE_VRR_FEEDBACK` on the node |
 | 3.4 | `fixed_frame_rate_flag = 0` in the H.264 SPS | — |
+| 4 | The screen's refresh measured once per page (`refresh.ts`); the in-stream frame-rate menu (web-only toolbar state `display_hz`, `fit_60/90/120`) and the app card mark rates that judder or exceed the screen; the Safari hint in the *Display* tooltip; 1.3's Perfetto recipe in `docs/benchmarks/README.md` | The Perfetto trace on the Mac (the gate); a default of 120 fps for games on 120 Hz screens where the node and link allow it; Cha Player's menu |
 
-Next: step 4 (the refresh rates offered per client), then 6.1 and 6.3's header writers, which can also be built and tested here.
+Next: 6.1 and 6.3's header writers (the 10-bit codec names, Main10 and AV1 10-bit headers), which can also be built and tested here.
 
 Abbreviations: COMP = `crates/cha-streamer/src/compositor/mod.rs`, HAND = `crates/cha-streamer/src/compositor/handlers.rs`, OUT = `crates/cha-streamer/src/compositor/output.rs`, MEDIA = `crates/cha-streamer/src/media.rs`, CTRL = `crates/cha-streamer/src/control.rs`, WT = `crates/cha-streamer/src/wt.rs`, NV = `crates/cha-nvenc/src/nvenc.rs`, BS = `crates/cha-streamer/src/encoder/bitstream.rs`, PT = `web/packages/player/src/player.ts`, PYRO = `web/packages/player/src/pyro.ts`, SPEC = `web/packages/ui-spec/stats-panel.json`.
 

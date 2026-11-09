@@ -1,5 +1,7 @@
+// The pure module, not the package index: that pulls in the player and its workers.
+import { fitOf, measureRefresh } from "@cha/player/refresh";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
-import { computed, reactive } from "vue";
+import { computed, reactive, ref, type Ref } from "vue";
 
 import { ApiError, api, type AppSettings, type Fps } from "./api";
 import { notAvailable, patchApp } from "./storage";
@@ -10,6 +12,28 @@ import { notAvailable, patchApp } from "./storage";
 export const APP_SETTINGS_KEY = ["app-settings"] as const;
 
 export const FPS_CHOICES: Fps[] = [60, 90, 120];
+
+/**
+ * A frame rate as the choice shows it on a screen refreshing at `hz` (null: not measured): a rate
+ * the refresh isn't a multiple of judders (90 fps on a 120 Hz Mac), and one above it shows no more.
+ */
+export function fpsLabel(fps: number, hz: number | null): string {
+  switch (fitOf(fps, hz)) {
+    case "uneven":
+      return `${fps} fps (uneven at ${hz} Hz)`;
+    case "over":
+      return `${fps} fps (more than ${hz} Hz shows)`;
+    default:
+      return `${fps} fps`;
+  }
+}
+
+/** This screen's refresh rate, once measured (shared with the player: one measurement per page). */
+export function useDisplayHz(): Ref<number | null> {
+  const hz = ref<number | null>(null);
+  void measureRefresh().then((v) => (hz.value = v));
+  return hz;
+}
 
 export function useAppFps() {
   const queryClient = useQueryClient();
