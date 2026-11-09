@@ -4,7 +4,7 @@
 //! with a note, where wgpu finds no adapter.
 
 /// What each output slot computes, and its expected value.
-const CASES: &[(&str, f32)] = &[
+const CASES: &[(&str, f64)] = &[
     ("nits_to_pq(203.0)", 0.580689), // BT.2408's reference white: 58% PQ
     ("nits_to_pq(1000.0)", 0.751827),
     ("pq_to_nits(0.5)", 92.245709),
@@ -118,7 +118,8 @@ fn the_hdr_functions_compute_what_the_standards_say() {
 
     let mut wrong = Vec::new();
     for ((expr, want), got) in CASES.iter().zip(&got) {
-        // f32 against float64: a few parts in 10⁵, and a floor near zero.
+        // f32 against float64: a few parts in 10⁴, and a floor near zero.
+        let (got, want) = (f64::from(*got), *want);
         let tolerance = (want.abs() * 3e-4).max(2e-4);
         if (got - want).abs() > tolerance {
             wrong.push(format!("{expr}: {got} (want {want})"));
