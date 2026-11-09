@@ -31,6 +31,11 @@ steam-oobe-skip || echo "start-steam: couldn't mark Steam's first-run setup as d
 # GTK 4's Vulkan renderer fails under gamescope's WSI layer (Steam's zenity
 # dialogs crashed): GL instead.
 export GSK_RENDERER=gl
+# Games' own upscalers at their newest (DLSS) and Reflex on NVIDIA nodes, as
+# defaults a game's launch options can change; never frame generation
+# (steam-upscalers). gamescope draws games at the stream's size and doesn't
+# scale them: a game's DLSS or FSR does that better, with its motion vectors.
+eval "$(steam-upscalers)"
 # The performance overlay: gamescope starts mangoapp (--mangoapp), which draws
 # in gamescope's picture and re-reads this file whenever it changes. Plain
 # -gamepadui never offers Steam's overlay-level setting, so Steam doesn't write
