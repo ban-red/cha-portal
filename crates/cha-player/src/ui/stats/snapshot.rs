@@ -10,6 +10,13 @@ use cha_ui_spec::panel::Values;
 pub struct StatsSnapshot {
     pub width: u32,
     pub height: u32,
+    /// The size the window draws the picture at, in pixels, when that isn't
+    /// `width`×`height` (`Shared::drew`).
+    pub shown: Option<(u32, u32)>,
+    /// What stretches it there ("bilinear", "SGSR 1"), when it is stretched.
+    pub upscaler: Option<&'static str>,
+    /// The upscaler's GPU time per frame over the last second, ms, when measured.
+    pub upscale_ms: Option<f32>,
     /// The codec as the core names it ("Hevc", "PyroWave444").
     pub codec: String,
     /// How the stream travels ("WT"), if the transport says.
@@ -78,6 +85,10 @@ impl StatsSnapshot {
             .text("codec_tag", &self.codec_text())
             .opt("width", Some(self.width).filter(|w| *w > 0))
             .opt("height", Some(self.height).filter(|h| *h > 0))
+            .opt("shown_width", self.shown.map(|(w, _)| w))
+            .opt("shown_height", self.shown.map(|(_, h)| h))
+            .text("upscaler", self.upscaler.unwrap_or_default())
+            .opt("upscale_ms", self.upscale_ms)
             .opt("reconnects", Some(self.reconnects).filter(|r| *r > 0))
             .opt("latency_ms", self.latency_ms)
             .opt("decode_ms", self.decode_ms)

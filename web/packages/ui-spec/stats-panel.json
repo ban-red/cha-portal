@@ -10,6 +10,10 @@
     "codec_tag": { "kind": "string", "platforms": ["web", "native"] },
     "width": { "kind": "number", "platforms": ["web", "native"] },
     "height": { "kind": "number", "platforms": ["web", "native"] },
+    "shown_width": { "kind": "number", "platforms": ["web", "native"] },
+    "shown_height": { "kind": "number", "platforms": ["web", "native"] },
+    "upscaler": { "kind": "string", "platforms": ["web", "native"] },
+    "upscale_ms": { "kind": "number", "platforms": ["web", "native"] },
     "reconnects": { "kind": "number", "platforms": ["web", "native"] },
     "latency_ms": { "kind": "number", "platforms": ["web", "native"] },
     "decode_ms": { "kind": "number", "platforms": ["web", "native"] },
@@ -78,10 +82,26 @@
           "id": "size",
           "label": "Size",
           "tooltip": {
-            "web": "The resolution of the picture the browser is decoding, in pixels.",
-            "native": "The resolution of the picture this player is decoding, in pixels."
+            "web": "The resolution of the picture the browser is decoding, in pixels, and after the arrow the size it is drawn at on your screen, when that differs.",
+            "native": "The resolution of the picture this player is decoding, in pixels, and after the arrow the size it is drawn at in this window, when that differs."
           },
-          "value": "{width:int}×{height:int}"
+          "value": [
+            { "text": "{width:int}×{height:int}" },
+            { "text": " → {shown_width:int}×{shown_height:int}", "when": ["shown_width", "shown_height"] }
+          ]
+        },
+        {
+          "id": "scaling",
+          "label": "Scaling",
+          "tooltip": {
+            "web": "What stretches the picture to the size it is shown at, and the graphics card's time for it per frame when that is measured. The browser's own scaling is smooth but soft; SGSR 1 sharpens edges.",
+            "native": "What stretches the picture to the size it is shown at, and the graphics card's time for it per frame when that is measured. Bilinear is smooth but soft; SGSR 1 sharpens edges."
+          },
+          "value": [
+            { "text": "{upscaler}" },
+            { "text": ", {upscale_ms:f2} ms", "when": ["upscale_ms"] }
+          ],
+          "when": ["upscaler", "shown_width"]
         },
         {
           "id": "fps",
@@ -368,6 +388,8 @@
         "parts": [
           { "text": "{codec_tag}" },
           { "text": "{width:int}×{height:int}" },
+          { "text": "shown at {shown_width:int}×{shown_height:int} ({upscaler})", "when": ["shown_width", "shown_height", "upscaler"] },
+          { "text": "scaling {upscale_ms:f2} ms", "when": ["upscale_ms", "shown_width"] },
           { "text": "{shown_fps:f0} of {target_fps:f0} fps", "when": ["target_fps"] },
           { "text": "{shown_fps:f0} fps", "unless": ["target_fps"] },
           { "text": "{mbps:mbit}" }

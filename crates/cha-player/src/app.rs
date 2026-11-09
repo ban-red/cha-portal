@@ -35,7 +35,7 @@ use crate::present::{self, FrameImporter, ImportedFrame};
 use crate::render::egui_layer::EguiLayer;
 use crate::render::video::{VideoPipeline, aspect_fit};
 use crate::render::{Gpu, Skip};
-use crate::session::{self, Rates, Running};
+use crate::session::{self, Rates, Running, Scaler};
 use crate::stream_prefs::{self, StreamPrefs};
 use crate::theme::ThemeController;
 use crate::ui::{self, Action, Launcher, ToolbarAction};
@@ -1370,10 +1370,18 @@ impl App {
             if stream.running.codec.is_pyrowave() {
                 if let Some(pyro) = &gfx.pyro {
                     pyro.draw(&mut pass, gfx.gpu.size());
+                    if let Some(picture) = pyro.picture_size() {
+                        let v = aspect_fit(picture, gfx.gpu.size());
+                        let drawn = (v.width as u32, v.height as u32);
+                        shared.drew(picture, drawn, Scaler::Nearest, None);
+                    }
                 }
             } else if let Some(frame) = gfx.history.back() {
                 let prepared = gfx.video.prepare(&gfx.gpu.device, frame, gfx.gpu.size());
                 gfx.video.draw(&mut pass, &prepared);
+                let v = prepared.viewport;
+                let drawn = (v.width as u32, v.height as u32);
+                shared.drew((frame.width, frame.height), drawn, Scaler::Bilinear, None);
             }
         }
         let reconnecting = shared.reconnecting.lock().unwrap().clone();

@@ -74,6 +74,19 @@ export interface StatsSnapshot {
   audioJitterMs: number | null;
   /** The node's resource use, from the streamer's last report; null if none came in the last 3 s. */
   node: NodeStats | null;
+  /**
+   * The size the picture is drawn at on screen, in device pixels, when that differs from
+   * `width`×`height` (null when it is shown at its own size or not yet). Set by `Player.readStats`.
+   */
+  shownWidth?: number | null;
+  shownHeight?: number | null;
+  /**
+   * What stretches the picture to that size: "browser" (the `<video>` element's own scaling) or the
+   * player's upscaler ("SGSR 1"); null when it isn't scaled.
+   */
+  upscaler?: string | null;
+  /** The upscaler's GPU time per frame over the last interval, ms; null when it isn't measured. */
+  upscaleMs?: number | null;
 }
 
 /** The node's CPU, RAM and GPU, once a second (the `system` control message). Percent is 0..100. */

@@ -93,6 +93,10 @@ const FULL: StatsSnapshot = {
     streamerCpu: 40,
     ageMs: 0,
   },
+  shownWidth: 3024,
+  shownHeight: 1964,
+  upscaler: "SGSR 1",
+  upscaleMs: 0.8,
 };
 
 describe("the browser fills the panel's values", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cropSize, viewBox } from "./crop";
+import { cropSize, shownSize, viewBox } from "./crop";
 
 describe("cropSize", () => {
   test("crops AMD's padded AV1: width to 64, height to 16", () => {
@@ -32,5 +32,26 @@ describe("viewBox", () => {
   test("is empty when there is nothing to crop", () => {
     expect(viewBox({ w: 1920, h: 1080 }, { w: 1920, h: 1080 })).toBe("");
     expect(viewBox({ w: 1920, h: 1080 }, null)).toBe("");
+  });
+});
+
+describe("shownSize", () => {
+  test("a 1440p cap stretched to a MacBook panel", () => {
+    // requestSize asks 2216×1440 of a full-screen 1512×982 element at 2× (3024×1964).
+    expect(shownSize({ w: 2216, h: 1440 }, { width: 1512, height: 982 }, 2)).toEqual({ w: 3022, h: 1964 });
+  });
+  test("letterboxes by the tighter side", () => {
+    expect(shownSize({ w: 1920, h: 1080 }, { width: 1000, height: 1000 }, 1)).toEqual({ w: 1000, h: 563 });
+  });
+  test("a picture shown at its own size, give or take a pixel of rounding, isn't scaled", () => {
+    expect(shownSize({ w: 2560, h: 1440 }, { width: 1280, height: 720 }, 2)).toBeNull();
+    expect(shownSize({ w: 2560, h: 1440 }, { width: 1280.4, height: 720.2 }, 2)).toBeNull();
+  });
+  test("a smaller window shrinks it", () => {
+    expect(shownSize({ w: 2560, h: 1440 }, { width: 640, height: 360 }, 2)).toEqual({ w: 1280, h: 720 });
+  });
+  test("nothing laid out or no picture yet", () => {
+    expect(shownSize({ w: 2560, h: 1440 }, { width: 0, height: 0 }, 2)).toBeNull();
+    expect(shownSize({ w: 0, h: 0 }, { width: 640, height: 360 }, 2)).toBeNull();
   });
 });

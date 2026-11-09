@@ -87,6 +87,9 @@ fn full() -> StatsSnapshot {
     StatsSnapshot {
         width: 2560,
         height: 1440,
+        shown: Some((3024, 1964)),
+        upscaler: Some("SGSR 1"),
+        upscale_ms: Some(0.8),
         codec: "PyroWave444".into(),
         transport_tag: "WT",
         present_fps: 60.0,

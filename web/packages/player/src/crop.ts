@@ -59,6 +59,22 @@ export function viewBox(coded: Size, stream: Size | null | undefined): string {
   return `inset(0 ${right.toFixed(4)}% ${bottom.toFixed(4)}% 0)`;
 }
 
+/**
+ * The size a `picture` is drawn at in an element of `box` CSS pixels (object-fit: contain), in
+ * device pixels at `dpr`; null when that is the picture's own size (within a pixel either way,
+ * which is rounding, not scaling) or nothing is laid out yet.
+ */
+export function shownSize(picture: Size, box: { width: number; height: number }, dpr: number): Size | null {
+  const bw = box.width * dpr;
+  const bh = box.height * dpr;
+  if (!(picture.w > 0 && picture.h > 0 && bw > 0 && bh > 0)) return null;
+  const scale = Math.min(bw / picture.w, bh / picture.h);
+  const w = Math.round(picture.w * scale);
+  const h = Math.round(picture.h * scale);
+  if (Math.abs(w - picture.w) <= 1 && Math.abs(h - picture.h) <= 1) return null;
+  return { w, h };
+}
+
 /** The true size each element's picture is meant to show, as far as the page knows it. */
 const streamSizes = new WeakMap<HTMLVideoElement, Size>();
 

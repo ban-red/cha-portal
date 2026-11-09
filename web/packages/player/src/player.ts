@@ -31,7 +31,7 @@ import { transportOrder } from "./transports";
 import { resolveWsUrl } from "./ws-url";
 import { capturesDevices, inputAllowed, readsPads, sendsControls, type InputMode } from "./inputMode";
 import { parseWatchers, type Watcher } from "./watchers";
-import { cropFrame, cropSize, pictureSize, setStreamSize, viewBox, type Size } from "./crop";
+import { cropFrame, cropSize, pictureSize, setStreamSize, shownSize, viewBox, type Size } from "./crop";
 
 /** Hardware codecs (every transport) and PyroWave (WebTransport only). */
 export type Codec = "hevc" | "h264" | "av1" | "pyrowave420" | "pyrowave444";
@@ -786,7 +786,20 @@ export class Player {
     snapshot.shownSentFps = sent?.shown ?? null;
     snapshot.encodeP99Ms = this.encodeP99Ms;
     snapshot.node = this.nodeStats && ageMs <= NODE_STATS_FRESH_MS ? { ...this.nodeStats.stats, ageMs } : null;
+    Object.assign(snapshot, this.scaling(snapshot));
     return snapshot;
+  }
+
+  /** The size the picture is drawn at on screen and what stretches it there, for the stats. */
+  private scaling(s: StatsSnapshot): Pick<StatsSnapshot, "shownWidth" | "shownHeight" | "upscaler" | "upscaleMs"> {
+    const picture = s.width && s.height ? { w: s.width, h: s.height } : null;
+    const shown = picture && shownSize(picture, this.options.video.getBoundingClientRect(), devicePixelRatio);
+    return {
+      shownWidth: shown?.w ?? null,
+      shownHeight: shown?.h ?? null,
+      upscaler: shown ? "browser" : null,
+      upscaleMs: null,
+    };
   }
 
   /**
