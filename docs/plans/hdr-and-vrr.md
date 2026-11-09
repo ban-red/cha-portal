@@ -8,6 +8,21 @@ Where a step can be checked:
 - **Mac**: an M4 or M4 Pro MacBook Pro, for Cha Player (its Metal code builds only on macOS) and for Chrome and Safari on the XDR panel.
 - **rig**: the glass-to-glass rig (C2.4), which doesn't exist yet.
 
+## Where it stands (2026-11-09)
+
+Built, with their tests passing here; none yet run on the node or a Mac:
+
+| Step | What is built | Still to do |
+|---|---|---|
+| 1.1 | The node's wait (`commit_to_composite_ms_*`, `commit_to_encoded_ms_*` in `stats`; *Wait on node* in both players' panels and the copy report; `commit_wait_us_*` in the compositor's log) | Read it in a Steam session and a Chrome session on the node (the gate); Cha Player's part was written without a Mac |
+| 1.2 | The browser's *Colour* and *Display* rows (WebCodecs' `colorSpace`, PyroWave's header, `dynamic-range`, the refresh measured from rAF), in the report and recordings | Cha Player's side (`CVPixelBuffer` format, `NSScreen` EDR values); 1.3's Perfetto recipe and the rig |
+| 2.1 | One table of colour tags (`encoder/color.rs`) for every encoder, today's values by default, `CHA_SDR_TRANSFER` and `CHA_SDR_MATRIX` to try others | 2.2's patch pattern and `scripts/color-check.py`, then the measurements of 2.2–2.4 |
+| 3.1, 3.2 | `compositor/schedule.rs` and `--pacing auto\|fixed\|commit`: gamescope's window composited on its commits with a variable refresh in its feedback; desktops on the encode tick as before; a keep-alive for the GameStream host | The gate on the node; `hello.stream.pacing` and `/info` (the log says the pacing today) |
+| 3.3 | `--adaptive-sync` on Steam's gamescope, with a test of its command line | `-r` at the session's ceiling with live rate changes (3.5), gamescope from upstream 3.17.0, `xprop GAMESCOPE_VRR_FEEDBACK` on the node |
+| 3.4 | `fixed_frame_rate_flag = 0` in the H.264 SPS | — |
+
+Next: step 4 (the refresh rates offered per client), then 6.1 and 6.3's header writers, which can also be built and tested here.
+
 Abbreviations: COMP = `crates/cha-streamer/src/compositor/mod.rs`, HAND = `crates/cha-streamer/src/compositor/handlers.rs`, OUT = `crates/cha-streamer/src/compositor/output.rs`, MEDIA = `crates/cha-streamer/src/media.rs`, CTRL = `crates/cha-streamer/src/control.rs`, WT = `crates/cha-streamer/src/wt.rs`, NV = `crates/cha-nvenc/src/nvenc.rs`, BS = `crates/cha-streamer/src/encoder/bitstream.rs`, PT = `web/packages/player/src/player.ts`, PYRO = `web/packages/player/src/pyro.ts`, SPEC = `web/packages/ui-spec/stats-panel.json`.
 
 ## 0. Decisions this plan rests on
