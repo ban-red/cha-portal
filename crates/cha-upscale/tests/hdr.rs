@@ -112,8 +112,10 @@ fn the_hdr_functions_compute_what_the_standards_say() {
         .expect("poll");
     let data = readback.slice(..).get_mapped_range();
     let got: Vec<f32> = data
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect();
 
     let mut wrong = Vec::new();
