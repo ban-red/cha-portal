@@ -26,6 +26,11 @@ use bytemuck::{Pod, Zeroable};
 /// The WGSL, also used by the browser (`@cha/pyrowave-webgpu`).
 pub const SHADER: &str = include_str!("sgsr1.wgsl");
 
+/// HDR10 to the screen: PQ, BT.2020 to BT.709, BT.2390's roll-off and the
+/// signed sRGB curve, as WGSL functions a renderer includes (no entry point;
+/// docs/plans/hdr-and-vrr.md, step 7.1).
+pub const HDR_SHADER: &str = include_str!("hdr.wgsl");
+
 /// SGSR's edge threshold as shipped for phones and desktops (4/255 is for VR).
 pub const EDGE_THRESHOLD: f32 = 8.0 / 255.0;
 /// SGSR's edge sharpness (1 to 2), as shipped.
@@ -561,6 +566,17 @@ mod tests {
                 Filter::Bilinear
             );
         }
+    }
+
+    #[test]
+    fn the_hdr_functions_parse_and_validate() {
+        let module = naga::front::wgsl::parse_str(HDR_SHADER).expect("WGSL parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("WGSL validates");
     }
 
     #[test]
