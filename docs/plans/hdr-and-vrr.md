@@ -26,7 +26,9 @@ Built, with their tests passing here; none yet run on the node or a Mac:
 | 6.3 | Cha's HEVC SPS/VPS write Main 10 and the AV1 sequence header 10-bit (`ten_bit`), tested bit by bit | The video processor writing P010, and the self-test on the 780M |
 | 6.4 | The browser decodes both through WebCodecs where `isConfigSupported` says hardware does (`codecs.ts`), over WebTransport only; toolbar labels | Hardware decode in Chrome on the Mac and Windows (the gate) |
 
-Next: 6.5 (Cha Player asks VideoToolbox for 10-bit formats when the stream is 10-bit, which needs the native client to know the 10-bit names; Mac only), then step 7's recorded HDR10 clip through each client path, whose PQ maths (7.1) can be built and tested here.
+| 7.1 | The HDR10 maths once: `cha-upscale`'s `HDR_SHADER` (`hdr.wgsl`: PQ both ways, BT.2020 to BT.709, BT.2390's roll-off, a PQ pixel to linear BT.709 at 203 cd/m² = 1.0, the signed sRGB curve), its browser copy kept identical by a test, run on a wgpu device (lavapipe here) against float64 values from the standards; `web/packages/player/src/hdr.ts`, the reference in double precision | Using it: 7.3 and 7.4 |
+
+Next, each needing a browser with WebGPU or a Mac: 7.3 (PyroWave's canvas at `rgba16float` with `toneMapping: extended`, its renderer running `hdr10_to_display` for PQ streams), 7.4 (Cha Player on wgpu 30 with an extended-linear surface and the same functions), 7.2 (the WebCodecs → `<video>` probe page on the XDR panel), and 6.5 (Cha Player's 10-bit decode).
 
 Abbreviations: COMP = `crates/cha-streamer/src/compositor/mod.rs`, HAND = `crates/cha-streamer/src/compositor/handlers.rs`, OUT = `crates/cha-streamer/src/compositor/output.rs`, MEDIA = `crates/cha-streamer/src/media.rs`, CTRL = `crates/cha-streamer/src/control.rs`, WT = `crates/cha-streamer/src/wt.rs`, NV = `crates/cha-nvenc/src/nvenc.rs`, BS = `crates/cha-streamer/src/encoder/bitstream.rs`, PT = `web/packages/player/src/player.ts`, PYRO = `web/packages/player/src/pyro.ts`, SPEC = `web/packages/ui-spec/stats-panel.json`.
 
