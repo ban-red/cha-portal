@@ -104,7 +104,9 @@
   },
   "codec_labels": {
     "pyrowave444": "LAN quality (PyroWave 4:4:4)",
-    "pyrowave420": "PyroWave 4:2:0"
+    "pyrowave420": "PyroWave 4:2:0",
+    "hevc-10": "HEVC 10-bit",
+    "av1-10": "AV1 10-bit"
   },
   "controls": [
     {

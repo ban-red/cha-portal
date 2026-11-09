@@ -717,6 +717,7 @@ mod tests {
             height,
             fps,
             bitrate_bps,
+            ten_bit: false,
         }
     }
 

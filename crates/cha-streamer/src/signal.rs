@@ -671,12 +671,8 @@ async fn streams_handler(State(state): State<Arc<AppState>>) -> Json<Vec<Value>>
                 json!({
                     "name": format!("live-{}", codec.name()),
                     "codec": codec.name(),
-                    "codecString": match codec.hw() {
-                        Some(Codec::H264) => "avc1.640033",
-                        Some(Codec::Hevc) => "hev1.1.6.L153.B0",
-                        Some(Codec::Av1) => "av01.0.13M.08",
-                        None => "pyrowave",
-                    },
+                    "codecString": codec.codec_string(),
+                    "depth": if codec.ten_bit() { 10 } else { 8 },
                     "width": width,
                     "height": height,
                     "chroma": "420",

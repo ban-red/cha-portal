@@ -30,6 +30,8 @@ pub const NAL_HEADER_LEN: usize = 2;
 
 /// `general_profile_idc` of Main.
 pub const PROFILE_MAIN: u8 = 1;
+/// `general_profile_idc` of Main 10.
+pub const PROFILE_MAIN10: u8 = 2;
 
 /// Appends one NAL unit with a four-byte start code, a header for layer 0 and
 /// temporal id 0, and `payload` (the RBSP; emulation prevention is added here).
@@ -86,10 +88,13 @@ impl Vui {
     }
 }
 
-/// A sequence parameter set for progressive 4:2:0 8-bit Main video with one
-/// short-term reference picture set (the picture before) and no reordering.
+/// A sequence parameter set for progressive 4:2:0 video, 8-bit Main or 10-bit
+/// Main 10, with one short-term reference picture set (the picture before)
+/// and no reordering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sps {
+    /// Main 10: 10-bit samples (`bit_depth_*_minus8 = 2`).
+    pub ten_bit: bool,
     /// `general_level_idc`: 30 times the level.
     pub level_idc: u8,
     pub sps_id: u32,
@@ -128,14 +133,20 @@ impl Sps {
     }
 }
 
-/// `profile_tier_level(1, 0)`: Main profile, Main tier, progressive frames
-/// only, no sub-layers. 96 bits.
-fn put_profile_tier_level(w: &mut BitWriter, level_idc: u8) {
+/// `profile_tier_level(1, 0)`: Main or Main 10 profile, Main tier,
+/// progressive frames only, no sub-layers. 96 bits.
+fn put_profile_tier_level(w: &mut BitWriter, level_idc: u8, ten_bit: bool) {
     w.put_bits(0, 2); // general_profile_space
     w.put_flag(false); // general_tier_flag
-    w.put_bits(u32::from(PROFILE_MAIN), 5);
-    // general_profile_compatibility_flag[j]: Main (1) and Main 10 (2) decode it.
-    w.put_bits(0x6000_0000, 32);
+    if ten_bit {
+        w.put_bits(u32::from(PROFILE_MAIN10), 5);
+        // general_profile_compatibility_flag[j]: only Main 10 (2) decodes it.
+        w.put_bits(0x2000_0000, 32);
+    } else {
+        w.put_bits(u32::from(PROFILE_MAIN), 5);
+        // general_profile_compatibility_flag[j]: Main (1) and Main 10 (2) decode it.
+        w.put_bits(0x6000_0000, 32);
+    }
     w.put_flag(true); // general_progressive_source_flag
     w.put_flag(false); // general_interlaced_source_flag
     w.put_flag(false); // general_non_packed_constraint_flag
@@ -156,7 +167,7 @@ pub fn vps_rbsp(sps: &Sps) -> Vec<u8> {
     w.put_bits(0, 3); // vps_max_sub_layers_minus1
     w.put_flag(true); // vps_temporal_id_nesting_flag
     w.put_bits(0xffff, 16); // vps_reserved_0xffff_16bits
-    put_profile_tier_level(&mut w, sps.level_idc);
+    put_profile_tier_level(&mut w, sps.level_idc, sps.ten_bit);
     w.put_flag(true); // vps_sub_layer_ordering_info_present_flag
     w.put_ue(sps.max_dec_pic_buffering - 1);
     w.put_ue(0); // vps_max_num_reorder_pics
@@ -181,7 +192,7 @@ pub fn sps_rbsp(sps: &Sps) -> Vec<u8> {
     w.put_bits(0, 4); // sps_video_parameter_set_id
     w.put_bits(0, 3); // sps_max_sub_layers_minus1
     w.put_flag(true); // sps_temporal_id_nesting_flag
-    put_profile_tier_level(&mut w, sps.level_idc);
+    put_profile_tier_level(&mut w, sps.level_idc, sps.ten_bit);
     w.put_ue(sps.sps_id);
     w.put_ue(1); // chroma_format_idc: 4:2:0
     w.put_ue(sps.width);
@@ -193,8 +204,9 @@ pub fn sps_rbsp(sps: &Sps) -> Vec<u8> {
             w.put_ue(offset);
         }
     }
-    w.put_ue(0); // bit_depth_luma_minus8
-    w.put_ue(0); // bit_depth_chroma_minus8
+    let depth_minus8 = if sps.ten_bit { 2 } else { 0 };
+    w.put_ue(depth_minus8); // bit_depth_luma_minus8
+    w.put_ue(depth_minus8); // bit_depth_chroma_minus8
     w.put_ue(sps.log2_max_poc_lsb - 4);
     w.put_flag(true); // sps_sub_layer_ordering_info_present_flag
     w.put_ue(sps.max_dec_pic_buffering - 1);
@@ -584,8 +596,52 @@ mod tests {
     }
 
     /// 1280×720 at 60: level 4, a 32×32 CTB over 8×8 coding blocks.
+    /// Main 10 says so in the profile (and only Main 10 decoders may take
+    /// it) and in both bit depths; the rest of the SPS reads as before.
+    #[test]
+    fn a_main10_sps_has_its_profile_and_bit_depths() {
+        let sps = Sps {
+            ten_bit: true,
+            ..sample_sps()
+        };
+        let rbsp = sps_rbsp(&sps);
+        let mut r = BitReader::new(&rbsp);
+        r.bits(4).unwrap(); // sps_video_parameter_set_id
+        r.bits(3).unwrap(); // sps_max_sub_layers_minus1
+        r.bit().unwrap(); // sps_temporal_id_nesting_flag
+        r.bits(2).unwrap(); // general_profile_space
+        r.bit().unwrap(); // general_tier_flag
+        assert_eq!(r.bits(5).unwrap(), u32::from(PROFILE_MAIN10));
+        assert_eq!(
+            r.bits(32).unwrap(),
+            0x2000_0000,
+            "compatible with Main 10 only"
+        );
+        r.bits(32).unwrap(); // the rest of profile_tier_level: 56 bits
+        r.bits(24).unwrap();
+        r.ue().unwrap(); // sps_seq_parameter_set_id
+        assert_eq!(r.ue().unwrap(), 1, "chroma_format_idc 4:2:0");
+        r.ue().unwrap(); // width
+        r.ue().unwrap(); // height
+        if r.bit().unwrap() {
+            for _ in 0..4 {
+                r.ue().unwrap();
+            }
+        }
+        assert_eq!(r.ue().unwrap(), 2, "bit_depth_luma_minus8");
+        assert_eq!(r.ue().unwrap(), 2, "bit_depth_chroma_minus8");
+        // The size still reads the same, so the fields after the depths line up.
+        assert_eq!(
+            parse_sps_size(&rbsp).unwrap(),
+            parse_sps_size(&sps_rbsp(&sample_sps())).unwrap()
+        );
+        // And the VPS carries the same profile.
+        assert_ne!(vps_rbsp(&sps), vps_rbsp(&sample_sps()));
+    }
+
     fn sample_sps() -> Sps {
         Sps {
+            ten_bit: false,
             level_idc: 120,
             sps_id: 0,
             width: 1280,

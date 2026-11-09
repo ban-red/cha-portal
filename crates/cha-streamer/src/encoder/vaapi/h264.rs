@@ -543,6 +543,7 @@ mod tests {
             height,
             fps,
             bitrate_bps: 40_000_000,
+            ten_bit: false,
         }
     }
 

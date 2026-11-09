@@ -32,6 +32,7 @@ impl Nvenc {
                 fps: params.fps,
                 bitrate_bps: params.bitrate_bps,
                 color: color::sdr(Backend::Nvenc).nvenc(),
+                ten_bit: params.ten_bit,
             },
         )
         .map_err(|e| anyhow!("{e}"))?;

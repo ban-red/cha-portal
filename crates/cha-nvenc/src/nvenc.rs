@@ -27,6 +27,13 @@ const fn guid(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> GUID {
 }
 
 // From nvEncodeAPI.h (static definitions bindgen can't carry over).
+/// `NV_ENC_HEVC_PROFILE_MAIN10_GUID` (SDK 13.0's header).
+const PROFILE_HEVC_MAIN10: GUID = guid(
+    0xfa4d2b6c,
+    0x3a5b,
+    0x411a,
+    [0x80, 0x18, 0x0a, 0x3f, 0x5e, 0x3c, 0x9b, 0xe5],
+);
 const CODEC_H264: GUID = guid(
     0x6bc82762,
     0x4e63,
@@ -146,6 +153,10 @@ pub struct EncoderConfig {
     pub fps: u32,
     pub bitrate_bps: u32,
     pub color: ColorDescription,
+    /// Encode 10 bits a sample from 8-bit input (HEVC Main 10, AV1 10-bit;
+    /// not H.264): NVENC converts the depth itself, for HEVC with a CUDA
+    /// pass before Blackwell, for AV1 in hardware.
+    pub ten_bit: bool,
 }
 
 struct Api {
@@ -263,6 +274,11 @@ unsafe impl Send for Encoder {}
 
 impl Encoder {
     pub fn new(ctx: Arc<CudaContext>, config: EncoderConfig) -> Result<Self> {
+        if config.ten_bit && config.codec == Codec::H264 {
+            return Err(Error::new(
+                "10-bit H.264 isn't encoded here (NVENC makes it only on Blackwell, and browsers don't decode it)",
+            ));
+        }
         let api = api()?;
         let _current = ctx.push()?;
         let mut open = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS {
@@ -718,6 +734,20 @@ fn init_params(c: &EncoderConfig, config: &mut NV_ENC_CONFIG) -> NV_ENC_INITIALI
 
 /// Our low-latency settings on top of the P1 / ultra-low-latency preset.
 fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
+    if c.ten_bit && c.codec == Codec::Hevc {
+        config.profileGUID = PROFILE_HEVC_MAIN10;
+    }
+    let (input_depth, output_depth) = if c.ten_bit {
+        (
+            NV_ENC_BIT_DEPTH::NV_ENC_BIT_DEPTH_8,
+            NV_ENC_BIT_DEPTH::NV_ENC_BIT_DEPTH_10,
+        )
+    } else {
+        (
+            NV_ENC_BIT_DEPTH::NV_ENC_BIT_DEPTH_8,
+            NV_ENC_BIT_DEPTH::NV_ENC_BIT_DEPTH_8,
+        )
+    };
     config.gopLength = NVENC_INFINITE_GOPLENGTH;
     config.frameIntervalP = 1;
     let rc = &mut config.rcParams;
@@ -751,6 +781,8 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
                 hevc.numRefL0 = NV_ENC_NUM_REF_FRAMES::NV_ENC_NUM_REF_FRAMES_1;
                 hevc.set_repeatSPSPPS(1);
                 hevc.set_outputAUD(0);
+                hevc.inputBitDepth = input_depth;
+                hevc.outputBitDepth = output_depth;
                 vui(&mut hevc.hevcVUIParameters, c.color);
             }
             Codec::Av1 => {
@@ -759,6 +791,8 @@ fn tune(config: &mut NV_ENC_CONFIG, c: &EncoderConfig) {
                 av1.maxNumRefFramesInDPB = DPB_FRAMES;
                 av1.numFwdRefs = NV_ENC_NUM_REF_FRAMES::NV_ENC_NUM_REF_FRAMES_1;
                 av1.set_repeatSeqHdr(1);
+                av1.inputBitDepth = input_depth;
+                av1.outputBitDepth = output_depth;
                 // Low-overhead OBUs (what WebRTC's AV1 packetizer expects).
                 av1.set_outputAnnexBFormat(0);
                 av1.colorPrimaries = NV_ENC_VUI_COLOR_PRIMARIES(c.color.primaries);
@@ -856,6 +890,7 @@ mod tests {
                     fps: 60,
                     bitrate_bps: base,
                     color: ColorDescription::default(),
+                    ten_bit: false,
                 },
             )
             .unwrap();

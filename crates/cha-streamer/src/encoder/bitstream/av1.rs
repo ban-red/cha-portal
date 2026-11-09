@@ -69,7 +69,7 @@ pub fn temporal_delimiter() -> Vec<u8> {
 }
 
 /// What the sequence header says. Everything not here is fixed: Profile 0,
-/// 8-bit, 4:2:0, one operating point, no timing info, no frame ids, 64×64
+/// 4:2:0, one operating point, no timing info, no frame ids, 64×64
 /// superblocks unless `use_128x128`, order hints on, no film grain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seq {
@@ -93,6 +93,8 @@ pub struct Seq {
     pub order_hint_bits: u32,
     /// The colour config's description (BT.709 limited range by default).
     pub color: ColorTags,
+    /// 10-bit samples (`high_bitdepth`; Profile 0 has 8 or 10).
+    pub ten_bit: bool,
 }
 
 impl Seq {
@@ -117,6 +119,7 @@ impl Seq {
             restoration: false,
             order_hint_bits: 7,
             color: ColorTags::BT709,
+            ten_bit: false,
         }
     }
 }
@@ -166,7 +169,7 @@ pub fn sequence_header_payload(seq: &Seq) -> Vec<u8> {
     w.put_bit(seq.cdef);
     w.put_bit(seq.restoration);
     // color_config()
-    w.put_bit(false); // high_bitdepth
+    w.put_bit(seq.ten_bit); // high_bitdepth
     w.put_bit(false); // mono_chrome
     w.put_bit(true); // color_description_present_flag
     w.put_bits(u32::from(seq.color.primaries), 8);
@@ -715,6 +718,27 @@ pub fn shape_temporal_unit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 10 bits is the one `high_bitdepth` bit in the colour config: the
+    /// header is otherwise the 8-bit one, bit for bit.
+    #[test]
+    fn a_ten_bit_sequence_header_differs_only_in_high_bitdepth() {
+        let mut seq = Seq::new(2560, 1440);
+        let eight = sequence_header_payload(&seq);
+        seq.ten_bit = true;
+        let ten = sequence_header_payload(&seq);
+        assert_eq!(eight.len(), ten.len());
+        let differing: u32 = eight
+            .iter()
+            .zip(&ten)
+            .map(|(a, b)| (a ^ b).count_ones())
+            .sum();
+        assert_eq!(differing, 1);
+        // It is set in the 10-bit one.
+        let set: u32 = ten.iter().map(|b| b.count_ones()).sum();
+        let unset: u32 = eight.iter().map(|b| b.count_ones()).sum();
+        assert_eq!(set, unset + 1);
+    }
 
     fn frame(key: bool) -> Frame {
         Frame {

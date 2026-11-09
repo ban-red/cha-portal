@@ -57,7 +57,8 @@ fn theirs(codec: VideoCodec) -> Option<cha_gamestream::VideoCodec> {
         VideoCodec::Hw(Codec::H264) => Some(cha_gamestream::VideoCodec::H264),
         VideoCodec::Hw(Codec::Hevc) => Some(cha_gamestream::VideoCodec::Hevc),
         VideoCodec::Hw(Codec::Av1) => Some(cha_gamestream::VideoCodec::Av1),
-        VideoCodec::PyroWave(_) => None,
+        // GameStream's 10-bit streams are its HDR mode, which isn't built.
+        VideoCodec::Hw10(_) | VideoCodec::PyroWave(_) => None,
     }
 }
 

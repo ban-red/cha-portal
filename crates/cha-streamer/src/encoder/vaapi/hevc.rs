@@ -169,6 +169,8 @@ impl Layout {
         let crop_right = (coded_width - width) / 2;
         let crop_bottom = (coded_height - height) / 2;
         let sps = Sps {
+            // 8-bit until the video processor writes P010 (plan step 6.3).
+            ten_bit: false,
             level_idc: h265::level_for(coded_width, coded_height, params.fps),
             sps_id: 0,
             width: coded_width,
@@ -452,6 +454,7 @@ mod tests {
             height,
             fps,
             bitrate_bps: 40_000_000,
+            ten_bit: false,
         }
     }
 

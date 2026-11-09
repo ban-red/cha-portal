@@ -3,6 +3,7 @@ import {
   Player,
   supportedCodecs,
   supportsPyroWave,
+  supportedTenBitCodecs,
   supportsWebTransport,
   HEALTH_WINDOW,
   assessHealth,
@@ -82,6 +83,11 @@ const PYROWAVE: Codec[] = ["pyrowave444", "pyrowave420"];
 if (wtSupported) {
   void supportsPyroWave().then((ok) => {
     if (ok) codecs.value = [...codecs.value, ...PYROWAVE];
+  });
+  // HEVC Main 10 and AV1 10-bit, over WebTransport, where this browser decodes them in hardware.
+  // The menu shows them only for an environment whose device encodes them.
+  void supportedTenBitCodecs().then((ten) => {
+    if (ten.length) codecs.value = [...codecs.value, ...ten];
   });
 }
 /** The codecs the environment's device encodes, once known (null: any). */

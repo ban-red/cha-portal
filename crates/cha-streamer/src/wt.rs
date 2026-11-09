@@ -1129,7 +1129,7 @@ pub(crate) fn ceiling_bps(media: &Media, codec: VideoCodec) -> u32 {
         VideoCodec::PyroWave(_) => {
             (f64::from(media.bitrate_bps_for(codec)) / VIDEO_SHARE).min(f64::from(u32::MAX)) as u32
         }
-        VideoCodec::Hw(_) => media.bitrate_bps(),
+        VideoCodec::Hw(_) | VideoCodec::Hw10(_) => media.bitrate_bps(),
     }
 }
 

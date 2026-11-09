@@ -28,6 +28,7 @@ import { NODE_STATS_FRESH_MS, StatsReader, toNodeStats, type NodeStats, type Sta
 import { PyroPresenter } from "./pyro";
 import { codecDepth, colourText, displayText, dynamicRangeHigh, videoFrameColour, type PictureColour } from "./colour";
 import { measureRefresh } from "./refresh";
+import { isTenBit, WEBCODECS, type HwCodec } from "./codecs";
 import type { FromWorker, ToWorker } from "./reassembly";
 import { transportOrder } from "./transports";
 import { resolveWsUrl } from "./ws-url";
@@ -46,20 +47,21 @@ import {
   type Size,
 } from "./crop";
 
-/** Hardware codecs (every transport) and PyroWave (WebTransport only). */
-export type Codec = "hevc" | "h264" | "av1" | "pyrowave420" | "pyrowave444";
+/** Hardware codecs (every transport), their 10-bit forms and PyroWave (WebTransport only). */
+export type Codec = "hevc" | "h264" | "av1" | "hevc-10" | "av1-10" | "pyrowave420" | "pyrowave444";
 
 export function isPyroWave(codec: Codec): codec is "pyrowave420" | "pyrowave444" {
   return codec === "pyrowave420" || codec === "pyrowave444";
 }
+
 export type PlayerState = "idle" | "connecting" | "connected" | "disconnected" | "failed";
 
 export type Transport = "webrtc" | "webtransport" | "websocket";
 
-type HwCodec = "hevc" | "h264" | "av1";
-const MIME: Record<HwCodec, string> = { hevc: "video/h265", h264: "video/h264", av1: "video/av1" };
-/** WebCodecs names for what NVENC sends (Annex B, parameter sets in band). */
-const WEBCODECS: Record<HwCodec, string> = { hevc: "hev1.1.6.L153.B0", h264: "avc1.640033", av1: "av01.0.13M.08" };
+/** What WebRTC carries: the 8-bit codecs. */
+type RtcCodec = "hevc" | "h264" | "av1";
+const MIME: Record<RtcCodec, string> = { hevc: "video/h265", h264: "video/h264", av1: "video/av1" };
+
 
 // Chromium's main-thread insertable stream (the standard is VideoTrackGenerator, in workers).
 declare class MediaStreamTrackGenerator<T> extends MediaStreamTrack {
@@ -100,7 +102,7 @@ export interface WebTransportOffer {
 /** Fastest to the screen first, as measured on the baseline (P1.3): HEVC
  *  decodes ~0.6 ms faster than H.264 in Chrome on Apple silicon, AV1 ~1.9 ms
  *  slower. */
-const PREFERENCE: HwCodec[] = ["hevc", "h264", "av1"];
+const PREFERENCE: RtcCodec[] = ["hevc", "h264", "av1"];
 
 /** The hardware codecs this browser can receive over WebRTC, best first. */
 export function supportedCodecs(): Codec[] {
@@ -485,7 +487,8 @@ export class Player {
     this.streamFps = null;
     this.streamOverlay = null;
     this.setState("connecting");
-    const order = transportOrder(this.options, isPyroWave(this.codec), {
+    // PyroWave and the 10-bit codecs travel over WebTransport alone.
+    const order = transportOrder(this.options, isPyroWave(this.codec) || isTenBit(this.codec), {
       webtransport: !!this.options.webTransport && supportsWebTransport(),
       websocket: !!this.options.webSocket && supportsWebSocket(),
       webrtc: true,
