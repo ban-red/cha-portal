@@ -75,6 +75,26 @@ export function shownSize(picture: Size, box: { width: number; height: number },
   return { w, h };
 }
 
+/** The largest picture a page asks for by default: the baseline, 1440p. */
+export const STREAM_CAP = { width: 2560, height: 1440 } as const;
+/** The largest a node composes (`cha-streamer`'s `compositor::MAX_SIZE`): a desktop's cap. */
+export const DESKTOP_CAP = { width: 3840, height: 2160 } as const;
+
+/**
+ * The picture to ask the node for, for an element of `box` CSS pixels at `dpr`: its device pixels,
+ * scaled down to fit `max` with the aspect kept, in multiples of 8 (NVENC's). Null when it is
+ * smaller than the node composes (320×240).
+ */
+export function requestedSize(box: { width: number; height: number }, dpr: number, max: { width: number; height: number }): Size | null {
+  let w = box.width * dpr;
+  let h = box.height * dpr;
+  const scale = Math.min(1, max.width / w, max.height / h);
+  w = Math.floor((w * scale) / 8) * 8;
+  h = Math.floor((h * scale) / 8) * 8;
+  if (!(w >= 320 && h >= 240)) return null;
+  return { w, h };
+}
+
 /** The true size each element's picture is meant to show, as far as the page knows it. */
 const streamSizes = new WeakMap<HTMLVideoElement, Size>();
 

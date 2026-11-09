@@ -31,7 +31,18 @@ import { transportOrder } from "./transports";
 import { resolveWsUrl } from "./ws-url";
 import { capturesDevices, inputAllowed, readsPads, sendsControls, type InputMode } from "./inputMode";
 import { parseWatchers, type Watcher } from "./watchers";
-import { cropFrame, cropSize, pictureSize, setStreamSize, shownSize, viewBox, type Size } from "./crop";
+import {
+  DESKTOP_CAP,
+  STREAM_CAP,
+  cropFrame,
+  cropSize,
+  pictureSize,
+  requestedSize,
+  setStreamSize,
+  shownSize,
+  viewBox,
+  type Size,
+} from "./crop";
 
 /** Hardware codecs (every transport) and PyroWave (WebTransport only). */
 export type Codec = "hevc" | "h264" | "av1" | "pyrowave420" | "pyrowave444";
@@ -105,8 +116,17 @@ export interface PlayerOptions {
   /** STUN/TURN servers (the portal mints TURN credentials). Without them,
    *  only direct paths: LAN, mesh, or a port-forwarded node. */
   iceServers?: RTCIceServer[];
-  /** The largest picture to ask for (default 2560×1440, the baseline). */
+  /**
+   * The largest picture to ask for. Default: 2560×1440 (the baseline), or for a `desktop` up to
+   * 3840×2160, what a node composes.
+   */
   maxSize?: { width: number; height: number };
+  /**
+   * The app is a desktop or a browser: text, which no filter sharpens back once it is stretched. The
+   * page asks for the screen's own size, up to what a node composes, instead of 2560×1440; PyroWave
+   * keeps the 1440p cap until its cost at that size (bigger frames, longer on the wire) is measured.
+   */
+  desktop?: boolean;
   /** The app's display has a fixed size: never ask for a resize, so the
    *  browser letterboxes the picture instead. */
   fixedSize?: boolean;
@@ -1195,6 +1215,12 @@ export class Player {
 
   private resizeTimer?: ReturnType<typeof setTimeout>;
 
+  /** The largest picture to ask for now (`maxSize`, `desktop`); it changes with the codec. */
+  private sizeCap(): { width: number; height: number } {
+    if (this.options.maxSize) return this.options.maxSize;
+    return this.options.desktop && !isPyroWave(this.codec) ? DESKTOP_CAP : STREAM_CAP;
+  }
+
   /** Asks for a picture the element's size, after resizing settles. */
   private requestSize(): void {
     clearTimeout(this.resizeTimer);
@@ -1202,17 +1228,12 @@ export class Player {
     // The controller's page sizes the picture; viewers scale it.
     if (!this.hasControl) return;
     this.resizeTimer = setTimeout(() => {
-      const r = this.options.video.getBoundingClientRect();
-      const max = this.options.maxSize ?? { width: 2560, height: 1440 };
-      let w = r.width * devicePixelRatio;
-      let h = r.height * devicePixelRatio;
-      const scale = Math.min(1, max.width / w, max.height / h);
-      w = Math.floor((w * scale) / 8) * 8;
-      h = Math.floor((h * scale) / 8) * 8;
-      const size = `${w}x${h}`;
-      if (w < 320 || h < 240 || size === this.lastSize) return;
+      const wanted = requestedSize(this.options.video.getBoundingClientRect(), devicePixelRatio, this.sizeCap());
+      if (!wanted) return;
+      const size = `${wanted.w}x${wanted.h}`;
+      if (size === this.lastSize) return;
       this.lastSize = size;
-      this.send({ t: "resize", w, h });
+      this.send({ t: "resize", w: wanted.w, h: wanted.h });
     }, 250);
   }
 
@@ -1812,6 +1833,8 @@ export class Player {
     wt.stream = stream;
     this.codec = switching.pipeline.codec;
     switching.done();
+    // A desktop on PyroWave keeps the 1440p cap, and gets the screen's size back off it.
+    if (this.options.desktop) this.requestSize();
   }
 
   private decodeVideo(wt: NonNullable<Player["wt"]>, msg: Extract<FromWorker, { type: "video" }>): void {

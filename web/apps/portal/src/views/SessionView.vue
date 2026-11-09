@@ -509,17 +509,22 @@ async function connect() {
     .then((r) => r.iceServers)
     .catch(() => []);
   // Whether its display has a fixed size (Steam's), which the picture then
-  // keeps, and which codecs its device encodes (a CPU one only H.264).
-  const { fixed, offered, templateId } = await Promise.all([
+  // keeps, whether it is text (a desktop or a browser, streamed at the
+  // screen's own size), and which codecs its device encodes (a CPU one only H.264).
+  const { fixed, desktop, offered, templateId } = await Promise.all([
     queryClient.fetchQuery({ queryKey: ["environment", id], queryFn: () => api.environment(id.value), staleTime: 5000 }),
     queryClient.fetchQuery({ queryKey: ["catalog"], queryFn: api.catalog, staleTime: 60_000 }),
   ])
-    .then(([e, templates]) => ({
-      fixed: !!templates.find((t) => t.id === e.templateId)?.fixedSize,
-      offered: e.codecs ?? null,
-      templateId: e.templateId,
-    }))
-    .catch(() => ({ fixed: false, offered: null, templateId: null }));
+    .then(([e, templates]) => {
+      const template = templates.find((t) => t.id === e.templateId);
+      return {
+        fixed: !!template?.fixedSize,
+        desktop: template?.class === "desktop" || template?.class === "browser",
+        offered: e.codecs ?? null,
+        templateId: e.templateId,
+      };
+    })
+    .catch(() => ({ fixed: false, desktop: false, offered: null, templateId: null }));
   if (leaving || mine !== attempt || !video.value) return;
   if (!profileKey && templateId && session.user?.id) applyProfile(toolbarKey(session.user.id, templateId));
   fixedSize.value = fixed;
@@ -531,6 +536,7 @@ async function connect() {
   const p = new Player({
     video: video.value,
     fixedSize: fixed,
+    desktop,
     codec: codec.value,
     iceServers,
     transport: transportChoice.value,

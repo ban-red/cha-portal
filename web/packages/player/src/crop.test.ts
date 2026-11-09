@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cropSize, shownSize, viewBox } from "./crop";
+import { DESKTOP_CAP, STREAM_CAP, cropSize, requestedSize, shownSize, viewBox } from "./crop";
 
 describe("cropSize", () => {
   test("crops AMD's padded AV1: width to 64, height to 16", () => {
@@ -53,5 +53,23 @@ describe("shownSize", () => {
   test("nothing laid out or no picture yet", () => {
     expect(shownSize({ w: 2560, h: 1440 }, { width: 0, height: 0 }, 2)).toBeNull();
     expect(shownSize({ w: 0, h: 0 }, { width: 640, height: 360 }, 2)).toBeNull();
+  });
+});
+
+describe("requestedSize", () => {
+  const panel14 = { width: 1512, height: 982 }; // a full-screen MacBook Pro 14" at 2×
+  test("the 1440p cap scales a MacBook panel down with its aspect", () => {
+    expect(requestedSize(panel14, 2, STREAM_CAP)).toEqual({ w: 2216, h: 1440 });
+  });
+  test("a desktop's cap asks for the panel's own size, in multiples of 8", () => {
+    expect(requestedSize(panel14, 2, DESKTOP_CAP)).toEqual({ w: 3024, h: 1960 });
+  });
+  test("a panel taller than a node composes keeps its aspect", () => {
+    // MacBook Pro 16": 3456×2234 is over 2160 high.
+    expect(requestedSize({ width: 1728, height: 1117 }, 2, DESKTOP_CAP)).toEqual({ w: 3336, h: 2160 });
+  });
+  test("too small to compose, or nothing laid out", () => {
+    expect(requestedSize({ width: 150, height: 100 }, 2, STREAM_CAP)).toBeNull();
+    expect(requestedSize({ width: 0, height: 0 }, 2, STREAM_CAP)).toBeNull();
   });
 });
