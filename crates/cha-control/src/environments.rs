@@ -52,6 +52,25 @@ const MEDIA_TOKEN_SECS: i64 = 60;
 const CODECS: [&str; 3] = ["h264", "hevc", "av1"];
 /// The LAN tier's codec (plan §3.2), over WebTransport only.
 const PYROWAVE_CODECS: [&str; 2] = ["pyrowave420", "pyrowave444"];
+/// HEVC Main 10 and AV1 10-bit (docs/plans/hdr-and-vrr.md, step 6): not over
+/// WebRTC, whose decoders fall back to 8-bit software ones.
+const TEN_BIT_CODECS: [&str; 2] = ["hevc-10", "av1-10"];
+
+/// Whether a session may ask for `codec` over `transport`, and why not.
+fn codec_refusal(codec: &str, transport: Transport) -> Option<&'static str> {
+    let pyrowave = PYROWAVE_CODECS.contains(&codec);
+    let ten_bit = TEN_BIT_CODECS.contains(&codec);
+    if !CODECS.contains(&codec) && !pyrowave && !ten_bit {
+        return Some("codec must be h264, hevc, av1, hevc-10, av1-10, pyrowave420 or pyrowave444");
+    }
+    if pyrowave && transport != Transport::WebTransport {
+        return Some("PyroWave goes over WebTransport only");
+    }
+    if ten_bit && transport == Transport::WebRtc {
+        return Some("10-bit streams don't go over WebRTC");
+    }
+    None
+}
 const WIDTH: u32 = 2560;
 const HEIGHT: u32 = 1440;
 
@@ -1276,18 +1295,8 @@ pub(crate) async fn broker(
             format!("the environment is {}", row.state),
         ));
     }
-    let pyrowave = PYROWAVE_CODECS.contains(&req.codec.as_str());
-    if !CODECS.contains(&req.codec.as_str()) && !pyrowave {
-        return Err(ApiError::bad_request(
-            "bad_codec",
-            "codec must be h264, hevc, av1, pyrowave420 or pyrowave444",
-        ));
-    }
-    if pyrowave && req.transport != Transport::WebTransport {
-        return Err(ApiError::bad_request(
-            "bad_codec",
-            "PyroWave goes over WebTransport only",
-        ));
+    if let Some(why) = codec_refusal(&req.codec, req.transport) {
+        return Err(ApiError::bad_request("bad_codec", why));
     }
     if req.transport == Transport::WebRtc && req.offer.get("sdp").and_then(|s| s.as_str()).is_none()
     {
@@ -1625,6 +1634,26 @@ mod tests {
     use cha_wire::DeviceKind;
 
     use super::*;
+
+    #[test]
+    fn which_codecs_go_over_which_transport() {
+        use Transport::*;
+        for codec in ["h264", "hevc", "av1"] {
+            for t in [WebRtc, WebTransport, WebSocket] {
+                assert_eq!(codec_refusal(codec, t), None, "{codec} {t:?}");
+            }
+        }
+        // PyroWave: WebTransport only. 10-bit: anything but WebRTC.
+        assert_eq!(codec_refusal("pyrowave444", WebTransport), None);
+        assert!(codec_refusal("pyrowave420", WebSocket).is_some());
+        for codec in ["hevc-10", "av1-10"] {
+            assert_eq!(codec_refusal(codec, WebTransport), None);
+            assert_eq!(codec_refusal(codec, WebSocket), None);
+            assert!(codec_refusal(codec, WebRtc).unwrap().contains("WebRTC"));
+        }
+        assert!(codec_refusal("vp9", WebTransport).is_some());
+        assert!(codec_refusal("h264-10", WebTransport).is_some());
+    }
 
     #[test]
     fn a_log_is_cut_to_its_last_lines_and_short_lines() {
